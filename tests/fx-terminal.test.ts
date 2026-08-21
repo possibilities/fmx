@@ -149,6 +149,50 @@ test("forwards host key bytes without re-encoding them", async () => {
   }
 })
 
+test("conceals the host cursor until the cursor is revealed", async () => {
+  const setup = await createTestRenderer({ width: 20, height: 6 })
+  const cursorUpdates: { x: number; y: number; visible: boolean | undefined }[] = []
+
+  try {
+    const terminal = new FxTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: () => {},
+    })
+    setup.renderer.root.add(terminal)
+    const setCursorPosition = setup.renderer.setCursorPosition.bind(setup.renderer)
+    setup.renderer.setCursorPosition = (x, y, visible) => {
+      cursorUpdates.push({ x, y, visible })
+      setCursorPosition(x, y, visible)
+    }
+    terminal.focus()
+    terminal.applyHostPalette({
+      palette: [],
+      defaultForeground: "#102030",
+      defaultBackground: "#123456",
+      cursorColor: null,
+      mouseForeground: null,
+      mouseBackground: null,
+      tekForeground: null,
+      tekBackground: null,
+      highlightBackground: null,
+      highlightForeground: null,
+    })
+    await setup.renderOnce()
+
+    expect(cursorUpdates.length).toBeGreaterThan(0)
+    expect(cursorUpdates.at(-1)?.visible).toBe(false)
+
+    terminal.write("fx frame\u001b[4;3H")
+    terminal.revealCursor()
+    await setup.renderOnce()
+
+    expect(cursorUpdates.at(-1)).toEqual({ x: 3, y: 4, visible: true })
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
 test("ordinary drags select embedded text when fx has not requested mouse input", async () => {
   const setup = await createTestRenderer({ width: 20, height: 6 })
   const sent: string[] = []
