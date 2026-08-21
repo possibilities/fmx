@@ -20,5 +20,6 @@ _Avoid_: message, packet, event.
 
 **Debug panel** — the scrollable column of frames down the right third of the
 screen, present only when `FMX_DEBUG_PANEL` is set. An observation surface: it
-reads frames and changes nothing.
+reads frames and never writes to the socket or to fx. Its `[clear]` button
+empties the view alone; the socket keeps running and later frames still arrive.
 _Avoid_: log pane, console, inspector.

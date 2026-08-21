@@ -21,6 +21,26 @@ async function createMultiplexer(width: number, height: number, debugPanel: bool
   return { setup, multiplexer, agentSocket, find }
 }
 
+
+async function sendFrame(agentSocket: AgentSocket, payload: string): Promise<void> {
+  const connection = await Bun.connect({
+    unix: agentSocket.path,
+    socket: {
+      open: (socket) => {
+        socket.write(`${payload}\n`)
+      },
+      data: () => {},
+    },
+  })
+  // The listener runs synchronously inside the socket's data callback; one
+  // turn of the event loop is enough for it to have landed.
+  await Bun.sleep(20)
+  connection.end()
+}
+
+const WORKING_REPORT =
+  '{"id":"1","method":"pane.report_agent","params":{"pane_id":"p_1","source":"custom:fx","agent":"fx","state":"working"}}'
+
 test("the panel is absent unless its environment variable is present", () => {
   expect(debugPanelRequested({})).toBe(false)
   expect(debugPanelRequested({ FMX_DEBUG_PANEL: "" })).toBe(true)
@@ -78,21 +98,7 @@ test("appends a scrollable entry per frame crossing the socket", async () => {
   const { setup, multiplexer, agentSocket, find } = await createMultiplexer(90, 24, true)
   try {
     agentSocket.start()
-    const connection = await Bun.connect({
-      unix: agentSocket.path,
-      socket: {
-        open: (socket) => {
-          socket.write(
-            '{"id":"1","method":"pane.report_agent","params":{"pane_id":"p_1","source":"custom:fx","agent":"fx","state":"working"}}\n',
-          )
-        },
-        data: () => {},
-      },
-    })
-    // The listener runs synchronously inside the socket's data callback; one
-    // turn of the event loop is enough for it to have landed.
-    await Bun.sleep(20)
-    connection.end()
+    await sendFrame(agentSocket, WORKING_REPORT)
 
     await setup.renderOnce()
     expect(find("fmx-debug-panel-scroll")).toBeDefined()
@@ -115,4 +121,35 @@ test("sizes the panel to a third at any width", () => {
   // eat into the embedded terminal.
   expect(debugPanelWidth(40)).toBe(13)
   expect(debugPanelWidth(1)).toBe(1)
+})
+
+test("clicking clear empties the tail without stopping the socket", async () => {
+  const { setup, multiplexer, agentSocket, find } = await createMultiplexer(90, 24, true)
+  try {
+    agentSocket.start()
+    await sendFrame(agentSocket, WORKING_REPORT)
+    await setup.renderOnce()
+
+    const strip = () => setup.captureCharFrame().replace(/[\s│]+/gu, "")
+    expect(strip()).toContain("pane.report_agent")
+
+    const button = find("fmx-debug-panel-clear")!
+    expect(button.width).toBe("[clear]".length)
+    await setup.mockMouse.click(button.x, button.y)
+    await setup.renderOnce()
+
+    const cleared = strip()
+    expect(cleared).not.toContain("pane.report_agent")
+    // The heading and the button survive; only the entries go.
+    expect(cleared).toContain("[clear]")
+    expect(cleared).toContain("agentsocket·")
+
+    // The socket is still live, so the next frame lands in the empty panel.
+    await sendFrame(agentSocket, WORKING_REPORT)
+    await setup.renderOnce()
+    expect(strip()).toContain("pane.report_agent")
+  } finally {
+    agentSocket.close()
+    await multiplexer.shutdown()
+  }
 })

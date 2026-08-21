@@ -16,6 +16,7 @@ export const DEBUG_PANEL_ENV_VAR = "FMX_DEBUG_PANEL"
 export const DEBUG_PANEL_SCREEN_FRACTION = 1 / 3
 /** Older entries are dropped rather than paged; this is a live tail. */
 const MAX_ENTRIES = 2000
+const CLEAR_LABEL = "[clear]"
 
 const FALLBACK_COLORS = {
   foreground: "#d8dee9",
@@ -24,6 +25,7 @@ const FALLBACK_COLORS = {
   payload: "#9aa5b1",
   malformed: "#f87171",
   heading: "#a3a3a3",
+  button: "#7dd3fc",
 }
 
 type PanelColors = typeof FALLBACK_COLORS
@@ -49,6 +51,7 @@ export class DebugPanel {
   readonly root: BoxRenderable
   private readonly scroll: ScrollBoxRenderable
   private readonly heading: TextRenderable
+  private readonly clearLabel: TextRenderable
   private readonly entries: TextRenderable[] = []
   private colors: PanelColors = FALLBACK_COLORS
   private nextEntryId = 0
@@ -64,13 +67,42 @@ export class DebugPanel {
       flexDirection: "column",
       paddingLeft: 1,
     })
+    const headingRow = new BoxRenderable(renderer, {
+      id: "fmx-debug-panel-heading-row",
+      width: "100%",
+      flexDirection: "row",
+      alignItems: "flex-start",
+      flexShrink: 0,
+    })
     this.heading = new TextRenderable(renderer, {
       id: "fmx-debug-panel-heading",
       content: this.headingText(),
       fg: FALLBACK_COLORS.heading,
       selectable: false,
-      flexShrink: 0,
+      flexGrow: 1,
+      flexShrink: 1,
     })
+    this.clearLabel = new TextRenderable(renderer, {
+      id: "fmx-debug-panel-clear-label",
+      content: CLEAR_LABEL,
+      fg: FALLBACK_COLORS.button,
+      selectable: false,
+    })
+    // A box, not the label itself, owns the click: only BoxRenderable carries
+    // the mouse handlers, and the hit area should cover the whole affordance.
+    const clearButton = new BoxRenderable(renderer, {
+      id: "fmx-debug-panel-clear",
+      width: CLEAR_LABEL.length,
+      height: 1,
+      flexShrink: 0,
+      onMouseDown: (event) => {
+        // Keep the press out of the selection layer and away from fx.
+        event.preventDefault()
+        event.stopPropagation()
+        this.clear()
+      },
+    })
+    clearButton.add(this.clearLabel)
     this.scroll = new ScrollBoxRenderable(renderer, {
       id: "fmx-debug-panel-scroll",
       flexGrow: 1,
@@ -82,7 +114,9 @@ export class DebugPanel {
       stickyStart: "bottom",
       contentOptions: { flexDirection: "column" },
     })
-    this.root.add(this.heading)
+    headingRow.add(this.heading)
+    headingRow.add(clearButton)
+    this.root.add(headingRow)
     this.root.add(this.scroll)
   }
 
@@ -99,10 +133,21 @@ export class DebugPanel {
     this.trim()
   }
 
+  /** Drop the tail. The socket keeps running; only the view is emptied. */
+  clear(): void {
+    for (const entry of this.entries) {
+      this.scroll.remove(entry)
+      entry.destroy()
+    }
+    this.entries.length = 0
+    this.scroll.scrollTop = 0
+  }
+
   applyPalette(colors: TerminalColors | null): void {
     this.colors = panelColors(colors)
     this.heading.fg = this.colors.heading
     this.heading.content = this.headingText()
+    this.clearLabel.fg = this.colors.button
   }
 
   setWidth(width: number): void {
@@ -154,5 +199,9 @@ function panelColors(colors: TerminalColors | null): PanelColors {
       detectedTerminalColor(colors?.palette[9]) ??
       FALLBACK_COLORS.malformed,
     heading: detectedTerminalColor(colors?.palette[8]) ?? FALLBACK_COLORS.heading,
+    button:
+      detectedTerminalColor(colors?.palette[4]) ??
+      detectedTerminalColor(colors?.palette[12]) ??
+      FALLBACK_COLORS.button,
   }
 }
