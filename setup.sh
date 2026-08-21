@@ -3,6 +3,7 @@
 set -euo pipefail
 
 release_base_url="${FMX_RELEASE_BASE_URL:-__FMX_RELEASE_BASE_URL__}"
+unconfigured_release_base_url='__FMX_'"RELEASE_BASE_URL__"
 install_dir="${FMX_INSTALL_DIR:-$HOME/.local/bin}"
 requested_version="${FMX_VERSION:-}"
 
@@ -11,7 +12,7 @@ fail() {
   exit 1
 }
 
-if [[ "$release_base_url" == *'__FMX_RELEASE_BASE_URL__'* ]]; then
+if [[ "$release_base_url" == "$unconfigured_release_base_url" ]]; then
   fail 'this installer has not been configured with a public release URL'
 fi
 release_base_url="${release_base_url%/}"

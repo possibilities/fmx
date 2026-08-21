@@ -64,8 +64,11 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified gzip fallback and reject
 
   try {
     const baseUrl = `http://127.0.0.1:${server.port}`
+    const publishedSetup = join(tempDirectory, "published-setup.sh")
+    const setupSource = await readFile(join(ROOT, "setup.sh"), "utf8")
+    await writeFile(publishedSetup, setupSource.replaceAll("__FMX_RELEASE_BASE_URL__", baseUrl))
     const installDirectory = join(tempDirectory, "verified", "bin")
-    const installed = await runSetup(baseUrl, installDirectory)
+    const installed = await runSetup(undefined, installDirectory, publishedSetup)
     expect(installed.code).toBe(0)
     expect(installed.stdout).toContain(`Installed fmx ${version}`)
     expect(await readFile(join(installDirectory, "fmx"), "utf8")).toContain(version)
@@ -83,16 +86,20 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified gzip fallback and reject
 })
 
 async function runSetup(
-  releaseBaseUrl: string,
+  releaseBaseUrl: string | undefined,
   installDirectory: string,
+  setupPath = join(ROOT, "setup.sh"),
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const child = Bun.spawn(["bash", "setup.sh"], {
+  const env = {
+    ...process.env,
+    FMX_INSTALL_DIR: installDirectory,
+    FMX_RELEASE_BASE_URL: releaseBaseUrl,
+  }
+  if (releaseBaseUrl === undefined) delete env.FMX_RELEASE_BASE_URL
+
+  const child = Bun.spawn(["bash", setupPath], {
     cwd: ROOT,
-    env: {
-      ...process.env,
-      FMX_INSTALL_DIR: installDirectory,
-      FMX_RELEASE_BASE_URL: releaseBaseUrl,
-    },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   })
