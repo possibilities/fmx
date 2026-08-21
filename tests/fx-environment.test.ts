@@ -38,3 +38,40 @@ test("fx child environment describes the embedded terminal, not the outer multip
 test("unrelated WINDOW variables survive outside GNU screen", () => {
   expect(createFxEnvironment({ WINDOW: "editor" }, 1, "/work").WINDOW).toBe("editor")
 })
+
+test("an inherited agent socket never reaches fx", () => {
+  const env = createFxEnvironment(
+    {
+      HERDR_ENV: "1",
+      HERDR_SOCKET_PATH: "/tmp/someone-else.sock",
+      HERDR_CLIENT_SOCKET_PATH: "/tmp/someone-else-client.sock",
+      HERDR_PANE_ID: "w1:p9",
+      HERDR_TAB_ID: "t3",
+      HERDR_WORKSPACE_ID: "w1",
+      HERDR_BIN_PATH: "/usr/local/bin/other",
+    },
+    3,
+    "/work",
+  )
+
+  expect(env.HERDR_ENV).toBeUndefined()
+  expect(env.HERDR_SOCKET_PATH).toBeUndefined()
+  expect(env.HERDR_CLIENT_SOCKET_PATH).toBeUndefined()
+  expect(env.HERDR_PANE_ID).toBeUndefined()
+  expect(env.HERDR_TAB_ID).toBeUndefined()
+  expect(env.HERDR_WORKSPACE_ID).toBeUndefined()
+  expect(env.HERDR_BIN_PATH).toBeUndefined()
+})
+
+test("fmx's own agent socket replaces whatever was inherited", () => {
+  const env = createFxEnvironment(
+    { HERDR_SOCKET_PATH: "/tmp/someone-else.sock", HERDR_PANE_ID: "w1:p9" },
+    3,
+    "/work",
+    { socketPath: "/tmp/fmx-42.sock", paneId: "p_3" },
+  )
+
+  expect(env.HERDR_SOCKET_PATH).toBe("/tmp/fmx-42.sock")
+  expect(env.HERDR_PANE_ID).toBe("p_3")
+  expect(env.HERDR_ENV).toBeUndefined()
+})

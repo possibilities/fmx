@@ -15,8 +15,10 @@ import {
   type ThemeMode,
 } from "@opentui/core"
 import { basename } from "node:path"
+import type { AgentSocket } from "./agent-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
-import { createFxEnvironment } from "./fx-environment.ts"
+import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
+import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { detectedTerminalColor, hasDetectedBackground, themeModeReport } from "./host-palette.ts"
 import {
@@ -28,6 +30,7 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
+import type { SocketFrame } from "./socket-frames.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
 const MODAL_FALLBACK_COLORS = {
@@ -74,6 +77,8 @@ type MultiplexerOptions = {
   cwd: string
   initialFxArgs: string[]
   keybindings: Keybindings
+  agentSocket?: AgentSocket | null
+  debugPanel?: boolean
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited"
@@ -102,6 +107,7 @@ class FxInstance {
     private readonly cwd: string,
     private readonly argv: string[],
     private readonly fxPath: string,
+    private readonly agentSocket: FxAgentSocketBinding | null,
     hostPalette: TerminalColors | null,
     private readonly events: InstanceEvents,
   ) {
@@ -133,7 +139,7 @@ class FxInstance {
   start(): void {
     const processHandle = Bun.spawn([this.fxPath, ...this.argv], {
       cwd: this.cwd,
-      env: createFxEnvironment(process.env, this.id, this.cwd),
+      env: createFxEnvironment(process.env, this.id, this.cwd, this.agentSocket),
       terminal: {
         cols: Math.max(1, this.terminal.width || 80),
         rows: Math.max(1, this.terminal.height || 24),
@@ -247,6 +253,9 @@ export class Multiplexer {
   private readonly sidebar: BoxRenderable
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
+  private readonly debugDivider: BoxRenderable | null = null
+  private readonly debugPanel: DebugPanel | null = null
+  private readonly agentSocket: AgentSocket | null
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   private dividerDragging = false
   private readonly modalBackdrop: BoxRenderable
@@ -268,7 +277,8 @@ export class Multiplexer {
   private readonly keyreleaseHandler = (key: KeyEvent) => this.onKeyRelease(key)
   private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
-  private readonly resizeHandler = () => this.applySidebarWidth()
+  private readonly resizeHandler = () => this.applyLayout()
+  private readonly frameHandler = (frame: SocketFrame) => this.debugPanel?.append(frame)
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -318,6 +328,22 @@ export class Multiplexer {
     this.stage.add(this.divider)
     this.stage.add(this.content)
 
+    this.agentSocket = options.agentSocket ?? null
+    if (options.debugPanel && this.agentSocket) {
+      this.debugDivider = new BoxRenderable(renderer, {
+        id: "fmx-debug-divider",
+        width: 1,
+        height: "100%",
+        flexShrink: 0,
+        border: ["left"],
+        borderStyle: "single",
+        borderColor: DIVIDER_FALLBACK_COLOR,
+      })
+      this.debugPanel = new DebugPanel(renderer, this.agentSocket.path)
+      this.stage.add(this.debugDivider)
+      this.stage.add(this.debugPanel.root)
+    }
+
     this.modalBackdrop = new BoxRenderable(renderer, {
       id: "fmx-modal-backdrop",
       position: "absolute",
@@ -365,7 +391,8 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
-    this.applySidebarWidth()
+    if (this.debugPanel) this.agentSocket?.addFrameListener(this.frameHandler)
+    this.applyLayout()
     this.refreshTerminalTitle()
   }
 
@@ -410,12 +437,14 @@ export class Multiplexer {
 
   private createInstance(argv: string[] = []): void {
     if (this.shuttingDown) return
+    const instanceId = this.nextId++
     const instance = new FxInstance(
       this.renderer,
-      this.nextId++,
+      instanceId,
       this.options.cwd,
       argv,
       this.options.fxPath,
+      this.agentSocketBinding(instanceId),
       this.hostPalette,
       {
         onTitleChange: (candidate) => {
@@ -487,6 +516,12 @@ export class Multiplexer {
     return this.instances[this.activeIndex] ?? null
   }
 
+  private agentSocketBinding(instanceId: number): FxAgentSocketBinding | null {
+    const socket = this.agentSocket
+    if (!socket) return null
+    return { socketPath: socket.path, paneId: socket.paneIdFor(instanceId) }
+  }
+
   private beginDividerDrag(event: MouseEvent): void {
     event.preventDefault()
     event.stopPropagation()
@@ -516,11 +551,29 @@ export class Multiplexer {
     capturer.setCapturedRenderable?.(renderable)
   }
 
+  private applyLayout(requestedSidebarWidth = this.sidebarWidth): void {
+    this.applyDebugPanelWidth()
+    this.applySidebarWidth(requestedSidebarWidth)
+  }
+
+  private applyDebugPanelWidth(): void {
+    this.debugPanel?.setWidth(debugPanelWidth(this.renderer.width))
+  }
+
   private applySidebarWidth(requested = this.sidebarWidth): void {
-    const max = Math.max(1, Math.floor(this.renderer.width * SIDEBAR_MAX_SCREEN_FRACTION))
+    // The sidebar's third is measured against the space the debug panel leaves
+    // behind, so the embedded terminal keeps the middle rather than being
+    // squeezed between two fixed columns.
+    const available = this.renderer.width - this.reservedDebugWidth()
+    const max = Math.max(1, Math.floor(available * SIDEBAR_MAX_SCREEN_FRACTION))
     const min = Math.min(SIDEBAR_MIN_WIDTH, max)
     this.sidebarWidth = Math.max(min, Math.min(max, requested))
     this.sidebar.width = this.sidebarWidth
+  }
+
+  private reservedDebugWidth(): number {
+    if (!this.debugPanel) return 0
+    return debugPanelWidth(this.renderer.width) + 1
   }
 
   private onPalette(colors: TerminalColors): void {
@@ -535,6 +588,11 @@ export class Multiplexer {
     const color = dividerColor(colors)
     this.divider.borderColor = color
     this.divider.focusedBorderColor = color
+    if (this.debugDivider) {
+      this.debugDivider.borderColor = color
+      this.debugDivider.focusedBorderColor = color
+    }
+    this.debugPanel?.applyPalette(colors)
   }
 
   private applyModalPalette(colors: TerminalColors | null): void {

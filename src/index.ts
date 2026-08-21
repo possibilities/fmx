@@ -3,8 +3,10 @@
 import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opentui/core"
 import { access, constants, realpath } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
+import { AgentSocket } from "./agent-socket.ts"
 import { parseArgs, usage, VERSION } from "./cli.ts"
 import { loadConfig } from "./config.ts"
+import { debugPanelRequested } from "./debug-panel.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 
@@ -41,8 +43,11 @@ async function main(): Promise<void> {
   let renderer: CliRenderer | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
+  const debugPanel = debugPanelRequested()
+  const agentSocket = new AgentSocket()
 
   try {
+    agentSocket.start()
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: [],
@@ -54,6 +59,8 @@ async function main(): Promise<void> {
       cwd: workspace,
       initialFxArgs: options.initialFxArgs,
       keybindings: loadedConfig.keybindings,
+      agentSocket,
+      debugPanel,
     })
 
     for (const [signal, exitCode] of [
@@ -77,6 +84,7 @@ async function main(): Promise<void> {
     throw error
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+    agentSocket.close()
   }
 }
 
