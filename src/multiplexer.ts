@@ -33,7 +33,7 @@ const MODAL_FALLBACK_COLORS = {
   background: "#232938",
   foreground: "#d8dee9",
   accent: "#7dd3fc",
-  backdrop: "#00000026",
+  backdrop: "#00000033",
   error: "#f87171",
   key: "#a3a3a3",
 }

@@ -53,7 +53,7 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
       modal.width - (modalText.x - modal.x) - modalText.width,
       modal.height - (modalText.y - modal.y) - modalText.height,
     ]).toEqual([2, 1])
-    expect(rgba(modalBackdrop.backgroundColor)).toEqual([0, 0, 0, 38])
+    expect(rgba(modalBackdrop.backgroundColor)).toEqual([0, 0, 0, 51])
     expect(rgb(modal.backgroundColor)).toEqual([241, 242, 243])
     expect(rgb(modal.borderColor)).toEqual([0, 170, 187])
     expect(rgb(modalText.fg)).toEqual([16, 32, 48])
@@ -66,7 +66,7 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
 
     multiplexer.setHostPalette(hostPalette("#e8e9ea", "#111213", "#33ccdd", "#8899aa"))
 
-    expect(rgba(modalBackdrop.backgroundColor)).toEqual([0, 0, 0, 38])
+    expect(rgba(modalBackdrop.backgroundColor)).toEqual([0, 0, 0, 51])
     expect(rgb(modal.backgroundColor)).toEqual([17, 18, 19])
     expect(rgb(modal.borderColor)).toEqual([51, 204, 221])
     expect(rgb(modalText.fg)).toEqual([232, 233, 234])
