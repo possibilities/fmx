@@ -2,12 +2,11 @@ import { describe, expect, test } from "bun:test"
 import type { KeyEvent } from "@opentui/core"
 import {
   actionForKey,
-  DEFAULT_KEYS_CONFIG,
+  keyIdentity,
   keyMatchesCombo,
   parseKeyCombo,
   resolveKeybindings,
 } from "../src/keybindings.ts"
-import { keyIdentity } from "../src/keys.ts"
 
 const key = (overrides: Partial<KeyEvent> = {}): KeyEvent =>
   ({
@@ -25,14 +24,6 @@ const key = (overrides: Partial<KeyEvent> = {}): KeyEvent =>
 
 describe("keybindings", () => {
   test("provides default bindings for every supported action", () => {
-    expect(DEFAULT_KEYS_CONFIG).toEqual({
-      prefix: "ctrl+b",
-      help: "prefix+?",
-      new_tab: "prefix+c",
-      previous_tab: "prefix+p",
-      next_tab: "prefix+n",
-    })
-
     const { keybindings, diagnostics } = resolveKeybindings()
     expect(diagnostics).toEqual([])
     expect(keybindings.prefixLabel).toBe("ctrl+b")

@@ -3,9 +3,9 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { resolveKeybindings, type Keybindings } from "./keybindings.ts"
 
-export const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
+const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
 
-export type LoadedConfig = {
+type LoadedConfig = {
   path: string
   keybindings: Keybindings
   diagnostics: string[]
@@ -25,37 +25,19 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
   try {
     content = await readFile(path, "utf8")
   } catch (error) {
-    if (isMissingFile(error)) {
-      const { keybindings } = resolveKeybindings()
-      return { path, keybindings, diagnostics: [] }
-    }
-    const { keybindings } = resolveKeybindings()
-    return {
-      path,
-      keybindings,
-      diagnostics: [`config read error: ${errorMessage(error)}; using defaults`],
-    }
+    if (isMissingFile(error)) return defaultConfig(path)
+    return defaultConfig(path, `config read error: ${errorMessage(error)}; using defaults`)
   }
 
   let document: unknown
   try {
     document = Bun.TOML.parse(content)
   } catch (error) {
-    const { keybindings } = resolveKeybindings()
-    return {
-      path,
-      keybindings,
-      diagnostics: [`config parse error: ${errorMessage(error)}; using defaults`],
-    }
+    return defaultConfig(path, `config parse error: ${errorMessage(error)}; using defaults`)
   }
 
   if (!isRecord(document)) {
-    const { keybindings } = resolveKeybindings()
-    return {
-      path,
-      keybindings,
-      diagnostics: ["config parse error: top-level config must be a table; using defaults"],
-    }
+    return defaultConfig(path, "config parse error: top-level config must be a table; using defaults")
   }
 
   const diagnostics: string[] = []
@@ -65,6 +47,10 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
   const resolved = resolveKeybindings(document.keys)
   diagnostics.push(...resolved.diagnostics)
   return { path, keybindings: resolved.keybindings, diagnostics }
+}
+
+function defaultConfig(path: string, ...diagnostics: string[]): LoadedConfig {
+  return { path, keybindings: resolveKeybindings().keybindings, diagnostics }
 }
 
 function isMissingFile(error: unknown): boolean {

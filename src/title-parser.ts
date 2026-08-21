@@ -2,9 +2,8 @@ const ESC = 0x1b
 const BEL = 0x07
 const OSC_LIMIT = 1024
 
-export type OscTitleParserOptions = {
+type OscTitleParserOptions = {
   onTitle: (title: string) => void
-  onBell?: () => void
 }
 
 type ParserState = "ground" | "escape" | "osc" | "osc-escape"
@@ -32,11 +31,7 @@ export class OscTitleParser {
   private pushByte(byte: number): void {
     switch (this.state) {
       case "ground":
-        if (byte === ESC) {
-          this.state = "escape"
-        } else if (byte === BEL) {
-          this.options.onBell?.()
-        }
+        if (byte === ESC) this.state = "escape"
         return
 
       case "escape":

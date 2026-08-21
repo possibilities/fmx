@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable, type RGBA, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 
 test("renders no persistent chrome and themes keyboard-opened help", async () => {
@@ -9,8 +10,9 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
     fxPath: "fx",
     cwd: process.cwd(),
     initialFxArgs: [],
-    hostPalette: hostPalette("#102030", "#f1f2f3", "#00aabb", "#778899"),
+    keybindings: resolveKeybindings().keybindings,
   })
+  multiplexer.setHostPalette(hostPalette("#102030", "#f1f2f3", "#00aabb", "#778899"))
 
   const stage = setup.renderer.root.findDescendantById("fmx-stage")
   const helpModal = setup.renderer.root.findDescendantById("fmx-help")

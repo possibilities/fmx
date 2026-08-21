@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { CliRenderEvents, type Selection } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 
 test("clears a selection only after a successful clipboard copy", async () => {
@@ -9,6 +10,7 @@ test("clears a selection only after a successful clipboard copy", async () => {
     fxPath: "fx",
     cwd: process.cwd(),
     initialFxArgs: [],
+    keybindings: resolveKeybindings().keybindings,
   })
   const originalClearSelection = setup.renderer.clearSelection.bind(setup.renderer)
   let clearCount = 0

@@ -1,8 +1,8 @@
 import type { KeyEvent } from "@opentui/core"
 
-export type BindingConfig = string | string[]
+type BindingConfig = string | string[]
 
-export type KeysConfig = {
+type KeysConfig = {
   prefix: string
   help: BindingConfig
   new_tab: BindingConfig
@@ -10,7 +10,7 @@ export type KeysConfig = {
   next_tab: BindingConfig
 }
 
-export const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
+const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   prefix: "ctrl+b",
   help: "prefix+?",
   new_tab: "prefix+c",
@@ -18,10 +18,10 @@ export const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   next_tab: "prefix+n",
 }
 
-export const KEY_CONFIG_FIELDS = ["prefix", "help", "new_tab", "previous_tab", "next_tab"] as const
+const KEY_CONFIG_FIELDS = ["prefix", "help", "new_tab", "previous_tab", "next_tab"] as const
 
-export type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
-export type BindingTrigger = "direct" | "prefix"
+type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
+type BindingTrigger = "direct" | "prefix"
 
 type KeyModifiers = {
   ctrl: boolean
@@ -31,7 +31,7 @@ type KeyModifiers = {
   hyper: boolean
 }
 
-export type KeyCombo = KeyModifiers & {
+type KeyCombo = KeyModifiers & {
   key: string
 }
 
@@ -52,7 +52,7 @@ export type Keybindings = {
 
 export type KeyAction = { name: KeyActionName }
 
-export type ResolvedKeybindings = {
+type ResolvedKeybindings = {
   keybindings: Keybindings
   diagnostics: string[]
 }
@@ -483,4 +483,14 @@ function isUnmodifiedPrintable(combo: KeyCombo): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+type CommandKey = {
+  name: string
+  code?: string
+  baseCode?: number
+}
+
+export function keyIdentity(key: CommandKey): string {
+  return key.code ?? (key.baseCode === undefined ? key.name.toLowerCase() : String(key.baseCode))
 }

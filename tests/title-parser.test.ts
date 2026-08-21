@@ -12,18 +12,25 @@ describe("OscTitleParser", () => {
     expect(titles).toEqual(["release notes"])
   })
 
-  test("parses ST-terminated OSC 0 and reports only real bells", () => {
+  test("parses ST-terminated OSC 0", () => {
     const titles: string[] = []
-    let bells = 0
-    const parser = new OscTitleParser({
-      onTitle: (title) => titles.push(title),
-      onBell: () => (bells += 1),
-    })
+    const parser = new OscTitleParser({ onTitle: (title) => titles.push(title) })
 
-    parser.push(new TextEncoder().encode("\u001b]0;workspace · model\u001b\\\u0007"))
+    parser.push(new TextEncoder().encode("\u001b]0;workspace · model\u001b\\"))
 
     expect(titles).toEqual(["workspace · model"])
-    expect(bells).toBe(1)
+  })
+
+  test("survives every two-way split", () => {
+    const encoded = new TextEncoder().encode("prefix\u001b]2;fx · split title\u001b\\suffix")
+
+    for (let split = 0; split <= encoded.length; split += 1) {
+      const titles: string[] = []
+      const parser = new OscTitleParser({ onTitle: (title) => titles.push(title) })
+      parser.push(encoded.slice(0, split))
+      parser.push(encoded.slice(split))
+      expect(titles).toEqual(["split title"])
+    }
   })
 
   test("ignores unrelated OSC commands", () => {

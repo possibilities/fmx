@@ -20,14 +20,13 @@ import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { detectedTerminalColor, hasDetectedBackground, themeModeReport } from "./host-palette.ts"
 import {
   actionForKey,
+  keyIdentity,
   keyMatchesCombo,
   parseKeyCombo,
-  resolveKeybindings,
   type KeyAction,
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
-import { keyIdentity } from "./keys.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
 const HELP_FALLBACK_COLORS = {
@@ -59,12 +58,11 @@ const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
 const FORCED_EXIT_TIMEOUT_MS = 500
 const MAX_SCROLLBACK_BYTES = 10_000_000
 
-export type MultiplexerOptions = {
+type MultiplexerOptions = {
   fxPath: string
   cwd: string
   initialFxArgs: string[]
-  hostPalette?: TerminalColors | null
-  keybindings?: Keybindings
+  keybindings: Keybindings
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited" | "failed"
@@ -284,8 +282,7 @@ export class Multiplexer {
     this.donePromise = new Promise((resolveDone) => {
       this.resolveDone = resolveDone
     })
-    this.hostPalette = options.hostPalette ?? null
-    this.keybindings = options.keybindings ?? resolveKeybindings().keybindings
+    this.keybindings = options.keybindings
     const help = helpPlainText(this.keybindings)
     const helpLines = help.split("\n")
     const helpWidth = Math.max(...helpLines.map((line) => line.length)) + 5

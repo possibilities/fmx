@@ -8,7 +8,7 @@ import {
 } from "@opentui/core"
 import { buildHostPaletteSequence } from "./host-palette.ts"
 
-export type FxTerminalOptions = Omit<EmbeddedTerminalOptions, "selectable">
+type FxTerminalOptions = Omit<EmbeddedTerminalOptions, "selectable">
 
 // fx requests Kitty's disambiguate flag and no other progressive-enhancement
 // flags. The host terminal must use the same mode so raw key reports can pass
