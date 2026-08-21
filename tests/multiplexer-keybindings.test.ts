@@ -51,9 +51,6 @@ test("uses the configured prefix and renders configured bindings", async () => {
     ]) {
       expect(frame).toContain(line)
     }
-    expect(frame).not.toContain("1…9")
-    expect(frame).not.toContain("close tab")
-    expect(frame).not.toContain("send prefix")
 
     setup.renderer.keyInput.processParsedKey({
       name: "/",

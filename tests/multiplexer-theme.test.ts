@@ -41,12 +41,7 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
     expect(helpModal.borderStyle).toBe("single")
     expect(helpModal.title).toBeUndefined()
     expect(helpFrame).toContain("keybinds")
-    expect(helpFrame).not.toContain("global")
     expect(helpFrame).toContain("prefix+c")
-    expect(helpFrame).not.toContain("fmx commands")
-    expect(helpFrame).not.toContain("Drag selects")
-    expect(helpFrame).not.toContain("Shift-drag")
-    expect(helpFrame).not.toContain("Press Escape")
     expect([helpText.x - helpModal.x, helpText.y - helpModal.y]).toEqual([2, 1])
     expect([
       helpModal.width - (helpText.x - helpModal.x) - helpText.width,

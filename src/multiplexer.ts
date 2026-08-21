@@ -65,7 +65,7 @@ type MultiplexerOptions = {
   keybindings: Keybindings
 }
 
-type InstanceStatus = "starting" | "running" | "closing" | "exited" | "failed"
+type InstanceStatus = "starting" | "running" | "closing" | "exited"
 type FxProcess = ReturnType<typeof Bun.spawn>
 
 type InstanceEvents = {
@@ -81,8 +81,6 @@ class FxInstance {
 
   private processHandle: FxProcess | null = null
   private ptyClosed = false
-  private stopPromise: Promise<void> | null = null
-  private pendingInput: Array<{ data: Uint8Array; source: EmbeddedTerminalDataSource }> = []
   private readonly cursorReportAdapter = new CursorReportAdapter()
   private readonly titleParser: OscTitleParser
 
@@ -121,8 +119,6 @@ class FxInstance {
   }
 
   start(): void {
-    if (this.processHandle) return
-
     try {
       const processHandle = Bun.spawn([this.fxPath, ...this.argv], {
         cwd: this.cwd,
@@ -135,10 +131,8 @@ class FxInstance {
       })
       this.processHandle = processHandle
       this.status = "running"
-      this.flushPendingInput()
-      void processHandle.exited.then((exitCode) => this.recordExit(processHandle, exitCode))
+      void processHandle.exited.then((exitCode) => this.recordExit(exitCode))
     } catch (error) {
-      this.status = "failed"
       this.terminal.write(`\r\nfmx: failed to start fx: ${errorMessage(error)}\r\n`)
     }
   }
@@ -146,11 +140,6 @@ class FxInstance {
   updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
     if (!this.terminal.applyHostPalette(colors)) return
     if (themeMode && hasDetectedBackground(colors)) this.writeInput(themeModeReport(themeMode), "response")
-  }
-
-  stop(): Promise<void> {
-    if (!this.stopPromise) this.stopPromise = this.stopImpl()
-    return this.stopPromise
   }
 
   destroy(): void {
@@ -167,10 +156,7 @@ class FxInstance {
 
   private writeInput(data: Uint8Array, source: EmbeddedTerminalDataSource): void {
     const pty = this.processHandle?.terminal
-    if (!pty || this.status === "exited" || this.status === "failed") {
-      if (this.status === "starting") this.pendingInput.push({ data: data.slice(), source })
-      return
-    }
+    if (!pty || this.status === "exited") return
     // Stop accepting user input once shutdown begins, but keep terminal-query
     // responses flowing so fx can restore and finalize its terminal cleanly.
     if (this.status === "closing" && source === "input") return
@@ -182,12 +168,6 @@ class FxInstance {
     }
   }
 
-  private flushPendingInput(): void {
-    if (!this.processHandle?.terminal) return
-    for (const { data, source } of this.pendingInput) this.writeInput(data, source)
-    this.pendingInput = []
-  }
-
   private resizePty(cols: number, rows: number): void {
     try {
       this.processHandle?.terminal?.resize(Math.max(1, cols), Math.max(1, rows))
@@ -196,18 +176,17 @@ class FxInstance {
     }
   }
 
-  private recordExit(processHandle: FxProcess, exitCode: number): void {
-    if (this.processHandle !== processHandle) return
+  private recordExit(exitCode: number): void {
     const trailingTerminalData = this.cursorReportAdapter.flushTerminalBytes()
     if (trailingTerminalData.byteLength > 0) this.terminal.write(trailingTerminalData)
-    if (this.status !== "failed") this.status = "exited"
+    this.status = "exited"
     this.closePty()
     this.events.onExit(this, exitCode)
   }
 
-  private async stopImpl(): Promise<void> {
+  async stop(): Promise<void> {
     const processHandle = this.processHandle
-    if (!processHandle || this.status === "exited" || this.status === "failed") {
+    if (!processHandle || this.status === "exited") {
       this.closePty()
       return
     }

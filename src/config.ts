@@ -6,7 +6,6 @@ import { resolveKeybindings, type Keybindings } from "./keybindings.ts"
 const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
 
 type LoadedConfig = {
-  path: string
   keybindings: Keybindings
   diagnostics: string[]
 }
@@ -25,19 +24,19 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
   try {
     content = await readFile(path, "utf8")
   } catch (error) {
-    if (isMissingFile(error)) return defaultConfig(path)
-    return defaultConfig(path, `config read error: ${errorMessage(error)}; using defaults`)
+    if (isMissingFile(error)) return defaultConfig()
+    return defaultConfig(`config read error: ${errorMessage(error)}; using defaults`)
   }
 
   let document: unknown
   try {
     document = Bun.TOML.parse(content)
   } catch (error) {
-    return defaultConfig(path, `config parse error: ${errorMessage(error)}; using defaults`)
+    return defaultConfig(`config parse error: ${errorMessage(error)}; using defaults`)
   }
 
   if (!isRecord(document)) {
-    return defaultConfig(path, "config parse error: top-level config must be a table; using defaults")
+    return defaultConfig("config parse error: top-level config must be a table; using defaults")
   }
 
   const diagnostics: string[] = []
@@ -46,11 +45,11 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
   }
   const resolved = resolveKeybindings(document.keys)
   diagnostics.push(...resolved.diagnostics)
-  return { path, keybindings: resolved.keybindings, diagnostics }
+  return { keybindings: resolved.keybindings, diagnostics }
 }
 
-function defaultConfig(path: string, ...diagnostics: string[]): LoadedConfig {
-  return { path, keybindings: resolveKeybindings().keybindings, diagnostics }
+function defaultConfig(...diagnostics: string[]): LoadedConfig {
+  return { keybindings: resolveKeybindings().keybindings, diagnostics }
 }
 
 function isMissingFile(error: unknown): boolean {
