@@ -11,7 +11,6 @@ test("uses the configured prefix and renders configured bindings", async () => {
     fxPath: "fx",
     cwd: process.cwd(),
     initialFxArgs: [],
-    maxScrollback: 10_000_000,
     keybindings,
   })
   const helpModal = setup.renderer.root.findDescendantById("fmx-help")

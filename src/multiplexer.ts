@@ -57,12 +57,12 @@ const MODIFIER_ONLY_KEYS = new Set([
 ])
 const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
 const FORCED_EXIT_TIMEOUT_MS = 500
+const MAX_SCROLLBACK_BYTES = 10_000_000
 
 export type MultiplexerOptions = {
   fxPath: string
   cwd: string
   initialFxArgs: string[]
-  maxScrollback: number
   hostPalette?: TerminalColors | null
   keybindings?: Keybindings
 }
@@ -94,7 +94,6 @@ class FxInstance {
     private readonly cwd: string,
     private readonly argv: string[],
     private readonly fxPath: string,
-    maxScrollback: number,
     hostPalette: TerminalColors | null,
     private readonly events: InstanceEvents,
   ) {
@@ -116,7 +115,7 @@ class FxInstance {
       width: "100%",
       height: "100%",
       visible: false,
-      maxScrollback,
+      maxScrollback: MAX_SCROLLBACK_BYTES,
       onData: (data, source) => this.writeInput(data, source),
       onTerminalResize: (cols, rows) => this.resizePty(cols, rows),
     })
@@ -376,7 +375,6 @@ export class Multiplexer {
       this.options.cwd,
       argv,
       this.options.fxPath,
-      this.options.maxScrollback,
       this.hostPalette,
       {
         onTitleChange: (candidate) => {

@@ -9,7 +9,6 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
     fxPath: "fx",
     cwd: process.cwd(),
     initialFxArgs: [],
-    maxScrollback: 1_000,
     hostPalette: hostPalette("#102030", "#f1f2f3", "#00aabb", "#778899"),
   })
 

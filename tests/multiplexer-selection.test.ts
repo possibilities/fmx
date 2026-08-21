@@ -9,7 +9,6 @@ test("clears a selection only after a successful clipboard copy", async () => {
     fxPath: "fx",
     cwd: process.cwd(),
     initialFxArgs: [],
-    maxScrollback: 1_000,
   })
   const originalClearSelection = setup.renderer.clearSelection.bind(setup.renderer)
   let clearCount = 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opentui/core"
-import { access, constants, realpath, stat } from "node:fs/promises"
+import { access, constants, realpath } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { parseArgs, usage, VERSION } from "./cli.ts"
 import { loadConfig } from "./config.ts"
@@ -33,8 +33,7 @@ async function main(): Promise<void> {
     throw new Error("fmx requires Bun 1.4 or newer")
   }
 
-  const workspace = await realpath(options.cwd)
-  if (!(await stat(workspace)).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`)
+  const workspace = await realpath(process.cwd())
   const fxPath = await resolveExecutable(process.env.FMX_FX_PATH ?? "fx")
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
@@ -54,7 +53,6 @@ async function main(): Promise<void> {
       fxPath,
       cwd: workspace,
       initialFxArgs: options.initialFxArgs,
-      maxScrollback: options.maxScrollback,
       keybindings: loadedConfig.keybindings,
     })
 
