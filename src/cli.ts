@@ -26,7 +26,6 @@ export function parseArgs(args: string[], currentDirectory = process.cwd()): Cli
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!
     if (arg === "--") {
-      ensureNoInitialLaunch(options, arg)
       options.initialFxArgs = args.slice(index + 1)
       return options
     }
@@ -46,19 +45,6 @@ export function parseArgs(args: string[], currentDirectory = process.cwd()): Cli
       case "-C":
       case "--cwd":
         options.cwd = resolve(currentDirectory, requiredValue(args, ++index, arg))
-        break
-      case "-r":
-      case "--resume-picker":
-        ensureNoInitialLaunch(options, arg)
-        options.initialFxArgs = ["-r"]
-        break
-      case "--resume-last":
-        ensureNoInitialLaunch(options, arg)
-        options.initialFxArgs = ["--resume-last"]
-        break
-      case "--resume":
-        ensureNoInitialLaunch(options, arg)
-        options.initialFxArgs = ["--resume", requiredValue(args, ++index, arg)]
         break
       case "--scrollback": {
         const raw = requiredValue(args, ++index, arg)
@@ -83,12 +69,6 @@ function requiredValue(args: string[], index: number, option: string): string {
   return value
 }
 
-function ensureNoInitialLaunch(options: CliOptions, option: string): void {
-  if (options.initialFxArgs.length > 0) {
-    throw new Error(`${option} conflicts with another resume option`)
-  }
-}
-
 export function usage(): string {
   return `fmx ${VERSION} — run multiple fx sessions in one terminal
 
@@ -98,9 +78,6 @@ Usage:
 Options:
   --fx PATH             fx executable (or FMX_FX_PATH)
   -C, --cwd PATH        workspace for new instances
-  -r, --resume-picker   open fx's saved-session picker
-  --resume-last         resume the latest workspace session
-  --resume ID           resume an exact session
   --scrollback BYTES    scrollback retained per instance (default: ${DEFAULT_SCROLLBACK})
   -h, --help            show this help
   -v, --version         show the version

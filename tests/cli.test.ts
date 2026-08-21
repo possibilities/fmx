@@ -10,16 +10,9 @@ describe("parseArgs", () => {
     })
   })
 
-  test("maps resume modes to fx's interactive launch language", () => {
-    expect(parseArgs(["-r"]).initialFxArgs).toEqual(["-r"])
-    expect(parseArgs(["--resume-last"]).initialFxArgs).toEqual(["--resume-last"])
-    expect(parseArgs(["--resume", "session-123"]).initialFxArgs).toEqual(["--resume", "session-123"])
-  })
-
   test("passes trailing arguments only after the separator", () => {
     expect(parseArgs(["--", "--record"]).initialFxArgs).toEqual(["--record"])
     expect(() => parseArgs(["--record"])).toThrow("unknown option")
-    expect(() => parseArgs(["-r", "--", "--record"])).toThrow("conflicts")
   })
 
   test("resolves a requested workspace", () => {
