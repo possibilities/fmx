@@ -96,6 +96,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
         5_000,
         () => output,
       )
+      // Let the newly focused terminal finish its first frame before simulating
+      // a human drag. Arm64 Actions runners can deliver the title and selection
+      // readiness in adjacent event-loop turns.
+      await Bun.sleep(250)
       const copiedFakeCount = countOccurrences(output, "ZmFrZQ==")
       child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;1M\u001b[<32;4;1M\u001b[<0;4;1m"))
       await waitUntil(() => countOccurrences(output, "ZmFrZQ==") > copiedFakeCount, 5_000, () => output)
