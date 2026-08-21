@@ -1,6 +1,8 @@
 # fmx
 
-Tabs for [fx](https://fx.sh/). Each tab runs a real fx in its own PTY, full screen, no chrome — fx can't tell it's not alone.
+[fx](https://fx.sh/) dedicated multiplexer
+
+## Install
 
 Requires Bun 1.4+ and `fx` on `PATH`.
 
@@ -9,7 +11,9 @@ bun install
 bun run src/index.ts
 ```
 
-`Ctrl-B` is the prefix key; `Ctrl-B ?` lists the bindings. Rebind them in `~/.config/fmx/config.toml` — the `[keys]` table is a strict subset of Herdr's schema.
+## Usage
+
+`ctrl-b` is the prefix key; `ctrl-b ?` lists the bindings. Rebind them in `~/.config/fmx/config.toml` in the `[keys]` table — a strict subset of Herdr's schema.
 
 ## Development
 
