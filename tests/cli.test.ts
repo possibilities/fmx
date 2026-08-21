@@ -19,6 +19,7 @@ describe("parseArgs", () => {
   test("passes trailing arguments only after the separator", () => {
     expect(parseArgs(["--", "--record"]).initialFxArgs).toEqual(["--record"])
     expect(() => parseArgs(["--record"])).toThrow("unknown option")
+    expect(() => parseArgs(["-r", "--", "--record"])).toThrow("conflicts")
   })
 
   test("resolves a requested workspace", () => {

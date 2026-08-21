@@ -84,7 +84,7 @@ export class OscTitleParser {
     if (separator > 0) {
       const command = payload.slice(0, separator)
       if (command === "0" || command === "2") {
-        this.options.onTitle(sanitizeTitle(payload.slice(separator + 1)))
+        this.options.onTitle(sanitizeFxTitle(payload.slice(separator + 1)))
       }
     }
     this.reset()
@@ -94,7 +94,10 @@ export class OscTitleParser {
 export function sanitizeTitle(value: string): string {
   return value
     .replace(/[\u0000-\u001f\u007f-\u009f]/gu, "")
-    .replace(/^fx\s*[·|:-]\s*/iu, "")
     .trim()
     .slice(0, 160)
+}
+
+export function sanitizeFxTitle(value: string): string {
+  return sanitizeTitle(value).replace(/^fx · /u, "")
 }

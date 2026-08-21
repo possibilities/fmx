@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { OscTitleParser, sanitizeTitle } from "../src/title-parser.ts"
+import { OscTitleParser, sanitizeFxTitle, sanitizeTitle } from "../src/title-parser.ts"
 
 describe("OscTitleParser", () => {
   test("parses BEL-terminated OSC 2 across arbitrary chunks", () => {
@@ -46,6 +46,11 @@ describe("OscTitleParser", () => {
   })
 })
 
-test("sanitizeTitle removes control bytes and fx's display prefix", () => {
-  expect(sanitizeTitle("\u0000fx · safe\u001btitle\u007f")).toBe("safetitle")
+test("sanitizeTitle removes control bytes without rewriting ordinary labels", () => {
+  expect(sanitizeTitle("\u0000fx: safe\u001btitle\u007f")).toBe("fx: safetitle")
+})
+
+test("sanitizeFxTitle removes only fx's exact display prefix", () => {
+  expect(sanitizeFxTitle("\u0000fx · safe\u001btitle\u007f")).toBe("safetitle")
+  expect(sanitizeFxTitle("fx: user title")).toBe("fx: user title")
 })

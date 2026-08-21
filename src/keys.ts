@@ -5,12 +5,39 @@ export type CommandKey = {
   shift: boolean
   ctrl: boolean
   meta: boolean
+  option?: boolean
+  super?: boolean
+  hyper?: boolean
   code?: string
   baseCode?: number
 }
 
 export function isPrefixKey(key: CommandKey): boolean {
-  return key.ctrl && (key.name.toLowerCase() === "b" || key.baseCode === 98)
+  return (
+    key.ctrl &&
+    !key.shift &&
+    !key.meta &&
+    !key.option &&
+    !key.super &&
+    !key.hyper &&
+    (key.name.toLowerCase() === "b" || key.baseCode === 98)
+  )
+}
+
+export function hasCommandModifier(key: CommandKey): boolean {
+  return key.ctrl || key.meta || Boolean(key.option || key.super || key.hyper)
+}
+
+export function isSuspendKey(key: CommandKey): boolean {
+  return (
+    key.ctrl &&
+    !key.shift &&
+    !key.meta &&
+    !key.option &&
+    !key.super &&
+    !key.hyper &&
+    (key.name.toLowerCase() === "z" || key.baseCode === 122)
+  )
 }
 
 export function commandKeyName(key: CommandKey): string {
@@ -28,5 +55,5 @@ export function commandKeyName(key: CommandKey): string {
 }
 
 export function keyIdentity(key: CommandKey): string {
-  return `${key.code ?? key.name}:${key.ctrl ? 1 : 0}:${key.meta ? 1 : 0}:${key.shift ? 1 : 0}`
+  return key.code ?? (key.baseCode === undefined ? key.name.toLowerCase() : String(key.baseCode))
 }

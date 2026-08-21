@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     throw new Error("fmx requires an interactive terminal (TTY)")
   }
   if (typeof Bun.Terminal !== "function") {
-    throw new Error("fmx requires a Bun release with Bun.Terminal support")
+    throw new Error("fmx requires Bun 1.4 or newer")
   }
 
   const workspace = await realpath(options.cwd)
@@ -43,6 +43,7 @@ async function main(): Promise<void> {
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: [],
+      useKittyKeyboard: { events: true },
     })
     renderer.start()
     app = new Multiplexer(renderer, {
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
     for (const [signal, exitCode] of [
       ["SIGHUP", 129],
       ["SIGINT", 130],
+      ["SIGQUIT", 131],
       ["SIGTERM", 143],
     ] as const) {
       const handler = () => void app?.shutdown(exitCode)

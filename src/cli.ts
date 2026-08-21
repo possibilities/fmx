@@ -26,6 +26,7 @@ export function parseArgs(args: string[], currentDirectory = process.cwd()): Cli
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!
     if (arg === "--") {
+      ensureNoInitialLaunch(options, arg)
       options.initialFxArgs = args.slice(index + 1)
       return options
     }
@@ -100,7 +101,7 @@ Options:
   -r, --resume-picker   open fx's saved-session picker
   --resume-last         resume the latest workspace session
   --resume ID           resume an exact session
-  --scrollback BYTES     scrollback retained per instance (default: ${DEFAULT_SCROLLBACK})
+  --scrollback BYTES    scrollback retained per instance (default: ${DEFAULT_SCROLLBACK})
   -h, --help            show this help
   -v, --version         show the version
 

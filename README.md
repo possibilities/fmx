@@ -4,7 +4,7 @@ fmx is a lightweight terminal multiplexer for running several interactive [fx](h
 
 ## Requirements
 
-- Bun 1.3 or newer
+- Bun 1.4 or newer
 - `fx` on `PATH`, or an explicit `--fx PATH`
 - A supported interactive terminal
 
@@ -37,7 +37,7 @@ bun run src/index.ts -r
 
 ## Keys
 
-fmx uses a tmux-style `Ctrl-B` prefix. Every key that is not part of an fmx command is encoded by OpenTUI and sent to the active fx PTY.
+fmx uses a tmux-style `Ctrl-B` prefix. On Unix, `Ctrl-Z` suspends the whole fmx job. Every other key that is not part of an fmx command is encoded by OpenTUI and sent to the active fx PTY.
 
 | Key | Action |
 | --- | --- |
@@ -50,14 +50,15 @@ fmx uses a tmux-style `Ctrl-B` prefix. Every key that is not part of an fmx comm
 | `Ctrl-B q` | Gracefully stop all instances and quit |
 | `Ctrl-B b` | Send a literal `Ctrl-B` to fx |
 | `Ctrl-B ?` | Show key help |
+| `Ctrl-Z` | Suspend fmx and all fx instances (Unix) |
 
-`Ctrl-C` is deliberately not owned by fmx. It reaches fx unchanged, preserving fx's native cancel and double-press exit behavior.
+`Ctrl-C` is deliberately not owned by fmx. It reaches fx unchanged, preserving fx's native cancel and double-press exit behavior. On Unix, `Ctrl-Z` pauses fmx and all of its fx children; `fg` resumes them together.
 
 Inactive tabs are marked `*` after output and `!` after a terminal bell. fx's OSC-2 session title becomes the tab label and the outer terminal title.
 
 ## Shutdown behavior
 
-Closing a tab or quitting sends fx its semantic Ctrl-C exit gesture first. This lets fx finish persistence, release its session lock, restore terminal modes, and create its normal resume handoff. fmx falls back to `SIGTERM` and then `SIGKILL` only when the child does not exit within the grace periods.
+Closing a tab or quitting sends fx its semantic Ctrl-C exit gesture first. This lets fx finish persistence, release its session lock, restore terminal modes, and create its normal resume handoff. fmx falls back to `SIGTERM` and then `SIGKILL` only when the child does not exit within the grace periods. An fx process that exits on its own remains as an `x`-marked tab until `Ctrl-B x` removes it.
 
 ## Development
 
@@ -67,4 +68,4 @@ bun run typecheck
 bun run test:pty  # requires a host that permits PTY allocation
 ```
 
-The regular suite reports the PTY end-to-end test as skipped. `test:pty` opts into the real nested-PTY check, which creates, switches, resumes, closes, and gracefully shuts down fake fx instances.
+The regular suite reports the PTY end-to-end test as skipped. `test:pty` opts into the real nested-PTY check, which suspends, creates, switches, resumes, closes, and gracefully shuts down fake fx instances.

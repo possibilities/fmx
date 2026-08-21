@@ -1,13 +1,14 @@
 import {
   BoxRenderable,
   type CliRenderer,
+  type EmbeddedTerminalDataSource,
   EmbeddedTerminalRenderable,
   type KeyEvent,
   TextRenderable,
 } from "@opentui/core"
 import { basename } from "node:path"
 import { createFxEnvironment } from "./fx-environment.ts"
-import { commandKeyName, isPrefixKey, keyIdentity } from "./keys.ts"
+import { commandKeyName, hasCommandModifier, isPrefixKey, isSuspendKey, keyIdentity } from "./keys.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
 const COLORS = {
@@ -24,7 +25,7 @@ const COLORS = {
 const CTRL_B = new Uint8Array([0x02])
 const CTRL_C = new Uint8Array([0x03])
 const PREFIX_TIMEOUT_MS = 2_000
-const GRACEFUL_EXIT_TIMEOUT_MS = 2_000
+const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
 const FORCED_EXIT_TIMEOUT_MS = 500
 
 export type MultiplexerOptions = {
@@ -55,7 +56,7 @@ class FxInstance {
   private processHandle: FxProcess | null = null
   private ptyClosed = false
   private stopPromise: Promise<void> | null = null
-  private pendingInput: Uint8Array[] = []
+  private pendingInput: Array<{ data: Uint8Array; source: EmbeddedTerminalDataSource }> = []
   private readonly titleParser: OscTitleParser
 
   constructor(
@@ -90,7 +91,7 @@ class FxInstance {
       visible: false,
       maxScrollback,
       selectable: true,
-      onData: (data) => this.writeInput(data),
+      onData: (data, source) => this.writeInput(data, source),
       onTerminalResize: (cols, rows) => this.resizePty(cols, rows),
     })
   }
@@ -121,7 +122,28 @@ class FxInstance {
   }
 
   sendLiteralPrefix(): void {
-    this.writeInput(CTRL_B)
+    this.writeInput(CTRL_B, "input")
+  }
+
+  pauseForJobControl(): void {
+    const processHandle = this.processHandle
+    if (!processHandle || processHandle.exitCode !== null) return
+    try {
+      // Bun.Subprocess.kill() ignores job-control signals in Bun 1.4.
+      process.kill(processHandle.pid, "SIGSTOP")
+    } catch {
+      // The child may have exited as suspension began.
+    }
+  }
+
+  resumeFromJobControl(): void {
+    const processHandle = this.processHandle
+    if (!processHandle || processHandle.exitCode !== null) return
+    try {
+      process.kill(processHandle.pid, "SIGCONT")
+    } catch {
+      // The child may have exited while fmx itself was suspended.
+    }
   }
 
   stop(): Promise<void> {
@@ -160,12 +182,15 @@ class FxInstance {
     if (this.unread !== unreadBefore || this.attention !== attentionBefore) this.events.onChange()
   }
 
-  private writeInput(data: Uint8Array): void {
+  private writeInput(data: Uint8Array, source: EmbeddedTerminalDataSource): void {
     const pty = this.processHandle?.terminal
     if (!pty || this.status === "exited" || this.status === "failed") {
-      if (this.status === "starting") this.pendingInput.push(data.slice())
+      if (this.status === "starting") this.pendingInput.push({ data: data.slice(), source })
       return
     }
+    // Stop accepting user input once shutdown begins, but keep terminal-query
+    // responses flowing so fx can restore and finalize its terminal cleanly.
+    if (this.status === "closing" && source === "input") return
     try {
       pty.write(data)
     } catch {
@@ -175,7 +200,7 @@ class FxInstance {
 
   private flushPendingInput(): void {
     if (!this.processHandle?.terminal) return
-    for (const data of this.pendingInput) this.writeInput(data)
+    for (const { data, source } of this.pendingInput) this.writeInput(data, source)
     this.pendingInput = []
   }
 
@@ -261,6 +286,7 @@ export class Multiplexer {
   private messageTimer: ReturnType<typeof setTimeout> | null = null
   private transientMessage: string | null = null
   private helpVisible = false
+  private suspending = false
   private shuttingDown = false
   private readonly swallowedReleases = new Set<string>()
   private readonly donePromise: Promise<void>
@@ -335,7 +361,7 @@ export class Multiplexer {
       left: "50%",
       top: "50%",
       width: 56,
-      height: 16,
+      height: 17,
       marginLeft: -28,
       marginTop: -8,
       padding: 1,
@@ -361,6 +387,7 @@ export class Multiplexer {
           "Ctrl-B q       gracefully quit fmx",
           "Ctrl-B b       send literal Ctrl-B to fx",
           "Ctrl-B ?       toggle this help",
+          "Ctrl-Z         suspend fmx and fx sessions (Unix)",
           "",
           "Ctrl-C, paste, mouse, and all other input go to fx.",
           "Press Escape or ? to close this help.",
@@ -488,8 +515,14 @@ export class Multiplexer {
   }
 
   private onKeyPress(key: KeyEvent): void {
-    if (this.shuttingDown) {
+    if (this.shuttingDown || this.suspending) {
       this.swallow(key)
+      return
+    }
+
+    if (process.platform !== "win32" && isSuspendKey(key)) {
+      this.swallow(key)
+      this.suspendToJobControl()
       return
     }
 
@@ -519,7 +552,45 @@ export class Multiplexer {
     key.stopPropagation()
   }
 
+  private suspendToJobControl(): void {
+    if (this.suspending || this.shuttingDown) return
+    this.suspending = true
+    this.cancelPrefix()
+    const active = this.activeInstance()
+    const instances = [...this.instances]
+    for (const instance of instances) instance.pauseForJobControl()
+
+    let rendererSuspended = false
+    let failure: unknown = null
+    try {
+      this.renderer.suspend()
+      rendererSuspended = true
+      // fmx can itself run in an orphaned PTY process group, where SIGTSTP is
+      // ignored. SIGSTOP still produces a normal shell-resumable stopped job.
+      process.kill(process.pid, "SIGSTOP")
+    } catch (error) {
+      failure = error
+    } finally {
+      try {
+        if (rendererSuspended) this.renderer.resume()
+      } catch (error) {
+        failure ??= error
+      }
+      for (const instance of instances) instance.resumeFromJobControl()
+      this.suspending = false
+      if (!this.helpVisible && !this.shuttingDown) active?.terminal.focus()
+      this.refreshChrome()
+    }
+
+    if (failure) this.showMessage(`failed to suspend: ${errorMessage(failure)}`)
+  }
+
   private runCommand(key: KeyEvent): void {
+    if (hasCommandModifier(key)) {
+      if (isPrefixKey(key)) this.activeInstance()?.sendLiteralPrefix()
+      else this.showMessage("command keys cannot use Ctrl, Alt, or Meta")
+      return
+    }
     const name = commandKeyName(key)
     switch (name) {
       case "c":
