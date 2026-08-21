@@ -7,14 +7,13 @@
 Install the native binary from the public Vercel Blob store:
 
 ```sh
-curl -fsSL https://<store-id>.public.blob.vercel-storage.com/fmx/setup.sh | bash
+curl -fsSL https://c1g42cnmuvvspilo.public.blob.vercel-storage.com/setup.sh | bash
 ```
 
-Replace `<store-id>` with the Blob store identifier until the final public URL
-is configured in this repository. The installer selects Linux or macOS and
-x86_64 or arm64, verifies the archive's SHA-256 checksum, and installs to
-`~/.local/bin/fmx`. Set `FMX_INSTALL_DIR` to use another directory, or
-`FMX_VERSION` to install a specific release.
+The installer selects Linux or macOS and x86_64 or arm64, verifies the
+archive's SHA-256 checksum, and installs to `~/.local/bin/fmx`. Set
+`FMX_INSTALL_DIR` to use another directory, or `FMX_VERSION` to install a
+specific release.
 
 `fx` must also be on `PATH`; install it from [fx.sh](https://fx.sh/).
 
