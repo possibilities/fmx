@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -12,11 +12,13 @@ const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 const PTY_TEST_ENABLED = process.env.FMX_RUN_PTY_TESTS === "1" && typeof Bun.Terminal === "function"
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "multiplexer suspends, creates sessions, and gracefully closes every PTY",
+  "multiplexer uses configured Herdr bindings and gracefully closes every PTY",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-e2e-"))
     const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "config.toml")
+    await writeFile(configFile, '[keys]\nprefix = "ctrl+space"\n')
 
     let output = ""
     const decoder = new TextDecoder()
@@ -26,10 +28,12 @@ test.skipIf(!PTY_TEST_ENABLED)(
         ...process.env,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
+        FMX_CONFIG_PATH: configFile,
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_HEARTBEAT: "1",
         FMX_TEST_KEYBOARD_MODE: "1",
         FMX_TEST_PASSTHROUGH_KEYS: "1",
+        FMX_TEST_LITERAL_PREFIX_BYTE: "0",
         FMX_TEST_PRIVATE_CURSOR_QUERY: "1",
         FMX_TEST_QUERY_ON_EXIT: "1",
       },
@@ -72,19 +76,19 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ctrl-c 1"), 5_000, () => output)
       expect(child.exitCode).toBeNull()
 
-      child.terminal?.write(Uint8Array.of(control("b"), control("b")))
+      child.terminal?.write(Uint8Array.of(0, 0))
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("literal-prefix 1"),
         5_000,
         () => output,
       )
 
-      child.terminal?.write(Uint8Array.of(control("b"), control("c")))
+      child.terminal?.write(Uint8Array.of(0, control("c")))
       await Bun.sleep(100)
       expect(await readLifecycle(lifecycleLog)).not.toContain("start 2")
 
       const activeFakeTitleCount = countOccurrences(output, "\u001b]0;fmx · fake session\u0007")
-      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      child.terminal?.write(Uint8Array.of(0, "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
       await waitUntil(
         () => countOccurrences(output, "\u001b]0;fmx · fake session\u0007") > activeFakeTitleCount,
@@ -95,87 +99,28 @@ test.skipIf(!PTY_TEST_ENABLED)(
       child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;1M\u001b[<32;4;1M\u001b[<0;4;1m"))
       await waitUntil(() => countOccurrences(output, "ZmFrZQ==") > copiedFakeCount, 5_000, () => output)
 
-      if (process.platform !== "win32") {
-        await waitUntil(
-          async () => {
-            const lifecycle = await readLifecycle(lifecycleLog)
-            return lifecycle.includes("alive 1") && lifecycle.includes("alive 2")
-          },
-          5_000,
-          () => output,
-        )
-        child.terminal?.write(Uint8Array.of(control("z")))
-        await Bun.sleep(120)
-        const lifecycleWhileStopped = await readLifecycle(lifecycleLog)
-        const aliveBeforeContinue = [
-          countOccurrences(lifecycleWhileStopped, "alive 1"),
-          countOccurrences(lifecycleWhileStopped, "alive 2"),
-        ]
-        await Bun.sleep(100)
-        const lifecycleStillStopped = await readLifecycle(lifecycleLog)
-        expect(countOccurrences(lifecycleStillStopped, "alive 1")).toBe(aliveBeforeContinue[0])
-        expect(countOccurrences(lifecycleStillStopped, "alive 2")).toBe(aliveBeforeContinue[1])
-        process.kill(child.pid, "SIGCONT")
-        await waitUntil(
-          async () => {
-            const lifecycle = await readLifecycle(lifecycleLog)
-            return (
-              countOccurrences(lifecycle, "alive 1") > aliveBeforeContinue[0]! &&
-              countOccurrences(lifecycle, "alive 2") > aliveBeforeContinue[1]!
-            )
-          },
-          5_000,
-          () => output,
-        )
-      }
+      child.terminal?.write(Uint8Array.of(control("z")))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ctrl-z 2"), 5_000, () => output)
 
-      child.terminal?.write(Uint8Array.of(control("b"), "p".charCodeAt(0)))
+      child.terminal?.write(Uint8Array.of(0, "p".charCodeAt(0)))
       await Bun.sleep(100)
-      child.terminal?.write(Uint8Array.of(control("b"), "x".charCodeAt(0)))
+      child.terminal?.write(Uint8Array.of(0, "X".charCodeAt(0)))
       child.terminal?.write(new TextEncoder().encode("u"))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
       const lifecycleAfterClose = await readLifecycle(lifecycleLog)
       expect(lifecycleAfterClose).toContain("terminal-response 1")
       expect(lifecycleAfterClose).not.toContain("unexpected-input 1")
 
-      child.terminal?.write(Uint8Array.of(control("b"), "R".charCodeAt(0)))
-      await waitUntil(
-        async () => (await readLifecycle(lifecycleLog)).includes('start 3 ["--resume-last"]'),
-        5_000,
-        () => output,
-      )
-
-      child.terminal?.write(Uint8Array.of(control("b"), "r".charCodeAt(0)))
-      await waitUntil(
-        async () => (await readLifecycle(lifecycleLog)).includes('start 4 ["-r"]'),
-        5_000,
-        () => output,
-      )
-
-      child.terminal?.write(Uint8Array.of(control("b"), "q".charCodeAt(0)))
+      child.terminal?.write(Uint8Array.of(0, "q".charCodeAt(0)))
       const code = await withTimeout(child.exited, 6_000, "fmx did not exit")
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(code).toBe(0)
       expect(lifecycle).toContain("graceful 2")
-      expect(lifecycle).toContain("graceful 3")
-      expect(lifecycle).toContain("graceful 4")
       expect(lifecycle).toContain("terminal-response 2")
-      expect(lifecycle).toContain("terminal-response 3")
-      expect(lifecycle).toContain("terminal-response 4")
       expect(output).toContain("fake session")
       expect(output).not.toContain("invalid device status report command")
     } finally {
-      if (child.exitCode === null) {
-        if (process.platform !== "win32") {
-          try {
-            process.kill(child.pid, "SIGCONT")
-            await Bun.sleep(20)
-          } catch {
-            // The child may have exited while the test was unwinding.
-          }
-        }
-        child.kill("SIGKILL")
-      }
+      if (child.exitCode === null) child.kill("SIGKILL")
       child.terminal?.close()
       await rm(tempDirectory, { recursive: true, force: true })
     }
@@ -184,11 +129,73 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
+  "removes fx processes that exit normally and exits after the final one",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-natural-exit-e2e-"))
+    const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "missing-config.toml")
+
+    let output = ""
+    const decoder = new TextDecoder()
+    const child = Bun.spawn([process.execPath, "src/index.ts", "--fx", FAKE_FX], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        FMX_CONFIG_PATH: configFile,
+        FMX_TEST_LOG: lifecycleLog,
+        FMX_TEST_PASSTHROUGH_KEYS: "1",
+      },
+      terminal: {
+        cols: 100,
+        rows: 24,
+        data: (_terminal, bytes) => {
+          output += decoder.decode(bytes, { stream: true })
+        },
+      },
+    })
+
+    try {
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
+
+      child.terminal?.write(Uint8Array.of(control("c"), control("c")))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 2"), 5_000, () => output)
+      await waitUntil(
+        async () => {
+          child.terminal?.write(Uint8Array.of(control("u")))
+          return (await readLifecycle(lifecycleLog)).includes("ctrl-u 1")
+        },
+        5_000,
+        () => output,
+      )
+      expect(child.exitCode).toBeNull()
+
+      child.terminal?.write(Uint8Array.of(control("c"), control("c")))
+      const code = await withTimeout(child.exited, 6_000, "fmx did not exit after the final fx process exited")
+      expect(code).toBe(0)
+      const lifecycle = await readLifecycle(lifecycleLog)
+      expect(lifecycle).toContain("graceful 1")
+      expect(lifecycle).toContain("graceful 2")
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL")
+      child.terminal?.close()
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  15_000,
+)
+
+test.skipIf(!PTY_TEST_ENABLED)(
   "mirrors the outer terminal background before fx starts",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-palette-e2e-"))
     const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "missing-config.toml")
 
     let output = ""
     const decoder = new TextDecoder()
@@ -208,6 +215,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         ...process.env,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
+        FMX_CONFIG_PATH: configFile,
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_BACKGROUND_QUERY: "1",
         FMX_TEST_THEME_UPDATES: "1",
@@ -262,6 +270,7 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-signal-e2e-"))
     const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "missing-config.toml")
 
     let output = ""
     const decoder = new TextDecoder()
@@ -271,6 +280,7 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
         ...process.env,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
+        FMX_CONFIG_PATH: configFile,
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_QUERY_ON_EXIT: "1",
       },

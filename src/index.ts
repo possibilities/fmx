@@ -4,6 +4,7 @@ import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opent
 import { access, constants, realpath, stat } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { parseArgs, usage, VERSION } from "./cli.ts"
+import { loadConfig } from "./config.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 
@@ -35,6 +36,8 @@ async function main(): Promise<void> {
   const workspace = await realpath(options.cwd)
   if (!(await stat(workspace)).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`)
   const fxPath = await resolveExecutable(options.fxPath ?? process.env.FMX_FX_PATH ?? "fx")
+  const loadedConfig = await loadConfig()
+  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
 
   let renderer: CliRenderer | null = null
   let app: Multiplexer | null = null
@@ -52,6 +55,7 @@ async function main(): Promise<void> {
       cwd: workspace,
       initialFxArgs: options.initialFxArgs,
       maxScrollback: options.maxScrollback,
+      keybindings: loadedConfig.keybindings,
     })
 
     for (const [signal, exitCode] of [

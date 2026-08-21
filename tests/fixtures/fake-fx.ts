@@ -12,11 +12,13 @@ if (process.env.FMX_TEST_HEARTBEAT === "1") setInterval(() => recordLifecycle("a
 
 const PASSTHROUGH_KEYS = [
   { sequence: "\u0015", event: "ctrl-u" },
+  { sequence: "\u001a", event: "ctrl-z" },
   { sequence: "\u001b\u007f", event: "legacy-alt-backspace" },
   { sequence: "\u001b[127;3u", event: "kitty-alt-backspace" },
   { sequence: "\u001b[127;9u", event: "kitty-super-backspace" },
 ] as const
 const passthroughTailLength = Math.max(...PASSTHROUGH_KEYS.map(({ sequence }) => sequence.length))
+const literalPrefixByte = Number(process.env.FMX_TEST_LITERAL_PREFIX_BYTE ?? 2)
 
 let ctrlCCount = 0
 let waitingForExitCursorReport = false
@@ -84,7 +86,7 @@ process.stdin.on("data", (chunk: Buffer) => {
           finishGracefulExit()
         }
       }
-    } else if (byte === 2) {
+    } else if (byte === literalPrefixByte) {
       ctrlCCount = 0
       recordLifecycle("literal-prefix")
       process.stdout.write(Uint8Array.of(byte))

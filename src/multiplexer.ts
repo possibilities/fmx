@@ -14,7 +14,18 @@ import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { createFxEnvironment } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { detectedTerminalColor, hasDetectedBackground, themeModeReport } from "./host-palette.ts"
-import { commandKeyName, hasCommandModifier, isPrefixKey, isSuspendKey, keyIdentity } from "./keys.ts"
+import {
+  actionForKey,
+  displayBindings,
+  displayIndexedBindings,
+  displayKeyCombo,
+  keyMatchesCombo,
+  parseKeyCombo,
+  resolveKeybindings,
+  type KeyAction,
+  type Keybindings,
+} from "./keybindings.ts"
+import { keyIdentity } from "./keys.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
 const HELP_FALLBACK_COLORS = {
@@ -23,9 +34,24 @@ const HELP_FALLBACK_COLORS = {
   accent: "#7dd3fc",
 }
 
-const CTRL_B = new Uint8Array([0x02])
 const CTRL_C = new Uint8Array([0x03])
-const PREFIX_TIMEOUT_MS = 2_000
+const HELP_CLOSE_KEY = parseKeyCombo("?")!
+const MODIFIER_ONLY_KEYS = new Set([
+  "leftshift",
+  "leftctrl",
+  "leftalt",
+  "leftsuper",
+  "lefthyper",
+  "leftmeta",
+  "rightshift",
+  "rightctrl",
+  "rightalt",
+  "rightsuper",
+  "righthyper",
+  "rightmeta",
+  "iso_level3_shift",
+  "iso_level5_shift",
+])
 const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
 const FORCED_EXIT_TIMEOUT_MS = 500
 
@@ -35,6 +61,7 @@ export type MultiplexerOptions = {
   initialFxArgs: string[]
   maxScrollback: number
   hostPalette?: TerminalColors | null
+  keybindings?: Keybindings
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited" | "failed"
@@ -42,6 +69,7 @@ type FxProcess = ReturnType<typeof Bun.spawn>
 
 type InstanceEvents = {
   onTitleChange: (instance: FxInstance) => void
+  onExit: (instance: FxInstance, exitCode: number) => void
 }
 
 class FxInstance {
@@ -68,7 +96,7 @@ class FxInstance {
     private readonly events: InstanceEvents,
   ) {
     const workspace = basename(cwd) || "workspace"
-    const fallback = argv.length > 0 ? `${workspace} (${launchLabel(argv)})` : workspace
+    const fallback = argv.length > 0 ? `${workspace} (${argv.join(" ")})` : workspace
     this.fallbackLabel = sanitizeTitle(fallback) || "fx"
     this.label = this.fallbackLabel
     this.titleParser = new OscTitleParser({
@@ -108,41 +136,20 @@ class FxInstance {
       this.processHandle = processHandle
       this.status = "running"
       this.flushPendingInput()
-      void processHandle.exited.then(() => this.recordExit(processHandle))
+      void processHandle.exited.then((exitCode) => this.recordExit(processHandle, exitCode))
     } catch (error) {
       this.status = "failed"
       this.terminal.write(`\r\nfmx: failed to start fx: ${errorMessage(error)}\r\n`)
     }
   }
 
-  sendLiteralPrefix(): void {
-    this.writeInput(CTRL_B, "input")
+  sendLiteralPrefix(data: Uint8Array): void {
+    this.writeInput(data, "input")
   }
 
   updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
     if (!this.terminal.applyHostPalette(colors)) return
     if (themeMode && hasDetectedBackground(colors)) this.writeInput(themeModeReport(themeMode), "response")
-  }
-
-  pauseForJobControl(): void {
-    const processHandle = this.processHandle
-    if (!processHandle || processHandle.exitCode !== null) return
-    try {
-      // Bun.Subprocess.kill() ignores job-control signals in Bun 1.4.
-      process.kill(processHandle.pid, "SIGSTOP")
-    } catch {
-      // The child may have exited as suspension began.
-    }
-  }
-
-  resumeFromJobControl(): void {
-    const processHandle = this.processHandle
-    if (!processHandle || processHandle.exitCode !== null) return
-    try {
-      process.kill(processHandle.pid, "SIGCONT")
-    } catch {
-      // The child may have exited while fmx itself was suspended.
-    }
   }
 
   stop(): Promise<void> {
@@ -193,12 +200,13 @@ class FxInstance {
     }
   }
 
-  private recordExit(processHandle: FxProcess): void {
+  private recordExit(processHandle: FxProcess, exitCode: number): void {
     if (this.processHandle !== processHandle) return
     const trailingTerminalData = this.cursorReportAdapter.flushTerminalBytes()
     if (trailingTerminalData.byteLength > 0) this.terminal.write(trailingTerminalData)
     if (this.status !== "failed") this.status = "exited"
     this.closePty()
+    this.events.onExit(this, exitCode)
   }
 
   private async stopImpl(): Promise<void> {
@@ -255,14 +263,13 @@ export class Multiplexer {
   private readonly stage: BoxRenderable
   private readonly helpModal: BoxRenderable
   private readonly helpText: TextRenderable
+  private readonly keybindings: Keybindings
   private readonly instances: FxInstance[] = []
   private activeIndex = -1
   private nextId = 1
   private prefixArmed = false
-  private prefixTimer: ReturnType<typeof setTimeout> | null = null
   private helpVisible = false
   private hostPalette: TerminalColors | null = null
-  private suspending = false
   private shuttingDown = false
   private readonly swallowedReleases = new Set<string>()
   private readonly donePromise: Promise<void>
@@ -280,6 +287,11 @@ export class Multiplexer {
       this.resolveDone = resolveDone
     })
     this.hostPalette = options.hostPalette ?? null
+    this.keybindings = options.keybindings ?? resolveKeybindings().keybindings
+    const help = helpContent(this.keybindings)
+    const helpLines = help.split("\n")
+    const helpWidth = Math.max(...helpLines.map((line) => line.length)) + 4
+    const helpHeight = helpLines.length + 4
 
     this.stage = new BoxRenderable(renderer, {
       id: "fmx-stage",
@@ -292,38 +304,21 @@ export class Multiplexer {
       position: "absolute",
       left: "50%",
       top: "50%",
-      width: 56,
-      height: 18,
-      marginLeft: -28,
-      marginTop: -9,
+      width: helpWidth,
+      height: helpHeight,
+      marginLeft: -Math.floor(helpWidth / 2),
+      marginTop: -Math.floor(helpHeight / 2),
       padding: 1,
       border: true,
-      borderStyle: "double",
+      borderStyle: "single",
       borderColor: HELP_FALLBACK_COLORS.accent,
       backgroundColor: HELP_FALLBACK_COLORS.background,
-      title: "fmx commands",
-      titleAlignment: "center",
       zIndex: 100,
       visible: false,
     })
     this.helpText = new TextRenderable(renderer, {
       id: "fmx-help-text",
-      content: [
-        "Ctrl-B c       new fx session",
-        "Ctrl-B r       open fx session picker",
-        "Ctrl-B R       resume latest session",
-        "Ctrl-B n / p   next / previous instance",
-        "Ctrl-B 1..9    select instance",
-        "Ctrl-B x       gracefully close active instance",
-        "Ctrl-B q       gracefully quit fmx",
-        "Ctrl-B b       send literal Ctrl-B to fx",
-        "Ctrl-B ?       toggle this help",
-        "Ctrl-Z         suspend fmx and fx sessions (Unix)",
-        "",
-        "Drag selects and copies; fx-owned mouse screens get drag.",
-        "Shift-drag always uses the outer terminal's selection.",
-        "Press Escape or ? to close this help.",
-      ].join("\n"),
+      content: help,
       fg: HELP_FALLBACK_COLORS.foreground,
       bg: HELP_FALLBACK_COLORS.background,
       selectable: false,
@@ -388,6 +383,7 @@ export class Multiplexer {
         onTitleChange: (candidate) => {
           if (this.activeInstance() === candidate) this.refreshTerminalTitle()
         },
+        onExit: (candidate, exitCode) => this.handleInstanceExit(candidate, exitCode),
       },
     )
     this.instances.push(instance)
@@ -402,27 +398,35 @@ export class Multiplexer {
 
     try {
       await instance.stop()
-      if (this.shuttingDown) return
-
-      const index = this.instances.indexOf(instance)
-      if (index === -1) return
-      const wasActive = this.activeInstance() === instance
-      this.stage.remove(instance.terminal)
-      instance.destroy()
-      this.instances.splice(index, 1)
-
-      if (this.instances.length === 0) {
-        this.activeIndex = -1
-        this.refreshTerminalTitle()
-      } else if (wasActive) {
-        this.activeIndex = -1
-        this.switchTo(Math.min(index, this.instances.length - 1))
-      } else if (index < this.activeIndex) {
-        this.activeIndex -= 1
-      }
+      if (!this.shuttingDown) this.removeInstance(instance)
     } catch {
       // Keep the session visible if its shutdown sequence fails unexpectedly.
     }
+  }
+
+  private handleInstanceExit(instance: FxInstance, exitCode: number): void {
+    if (this.shuttingDown || !this.removeInstance(instance)) return
+    if (this.instances.length === 0) void this.shutdown(exitCode)
+  }
+
+  private removeInstance(instance: FxInstance): boolean {
+    const index = this.instances.indexOf(instance)
+    if (index === -1) return false
+    const wasActive = this.activeInstance() === instance
+    this.stage.remove(instance.terminal)
+    instance.destroy()
+    this.instances.splice(index, 1)
+
+    if (this.instances.length === 0) {
+      this.activeIndex = -1
+      this.refreshTerminalTitle()
+    } else if (wasActive) {
+      this.activeIndex = -1
+      this.switchTo(Math.min(index, this.instances.length - 1))
+    } else if (index < this.activeIndex) {
+      this.activeIndex -= 1
+    }
+    return true
   }
 
   private switchTo(index: number): void {
@@ -466,7 +470,6 @@ export class Multiplexer {
       this.helpModal.backgroundColor = HELP_FALLBACK_COLORS.background
       this.helpModal.borderColor = HELP_FALLBACK_COLORS.accent
       this.helpModal.focusedBorderColor = HELP_FALLBACK_COLORS.accent
-      this.helpModal.titleColor = HELP_FALLBACK_COLORS.accent
       this.helpText.fg = HELP_FALLBACK_COLORS.foreground
       this.helpText.bg = HELP_FALLBACK_COLORS.background
       return
@@ -477,7 +480,6 @@ export class Multiplexer {
     this.helpModal.backgroundColor = background
     this.helpModal.borderColor = accent
     this.helpModal.focusedBorderColor = accent
-    this.helpModal.titleColor = accent
     this.helpText.fg = foreground
     this.helpText.bg = background
   }
@@ -497,33 +499,41 @@ export class Multiplexer {
 
   private onKeyPress(key: KeyEvent): void {
     if (this.renderer.hasSelection) this.renderer.clearSelection()
-    if (this.shuttingDown || this.suspending) {
+    if (this.shuttingDown) {
       this.swallow(key)
-      return
-    }
-
-    if (process.platform !== "win32" && isSuspendKey(key)) {
-      this.swallow(key)
-      this.suspendToJobControl()
       return
     }
 
     if (this.helpVisible) {
       this.swallow(key)
-      if (key.name === "escape" || key.name === "?" || key.sequence === "?") this.hideHelp()
+      if (key.name === "escape" || keyMatchesCombo(key, HELP_CLOSE_KEY)) this.hideHelp()
       return
     }
 
     if (this.prefixArmed) {
       this.swallow(key)
+      if (MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) return
       this.cancelPrefix()
-      this.runCommand(key)
+      if (keyMatchesCombo(key, this.keybindings.prefix)) {
+        this.activeInstance()?.sendLiteralPrefix(keyBytes(key))
+        return
+      }
+      if (key.name === "escape") return
+      const action = actionForKey(this.keybindings, key, "prefix")
+      if (action) this.executeAction(action)
       return
     }
 
-    if (isPrefixKey(key)) {
+    const directAction = actionForKey(this.keybindings, key, "direct")
+    if (directAction) {
       this.swallow(key)
-      this.armPrefix()
+      this.executeAction(directAction)
+      return
+    }
+
+    if (keyMatchesCombo(key, this.keybindings.prefix)) {
+      this.swallow(key)
+      this.prefixArmed = true
     }
   }
 
@@ -534,92 +544,34 @@ export class Multiplexer {
     key.stopPropagation()
   }
 
-  private suspendToJobControl(): void {
-    if (this.suspending || this.shuttingDown) return
-    this.suspending = true
-    this.cancelPrefix()
-    const active = this.activeInstance()
-    const instances = [...this.instances]
-    for (const instance of instances) instance.pauseForJobControl()
-
-    let rendererSuspended = false
-    try {
-      this.renderer.suspend()
-      rendererSuspended = true
-      // fmx can itself run in an orphaned PTY process group, where SIGTSTP is
-      // ignored. SIGSTOP still produces a normal shell-resumable stopped job.
-      process.kill(process.pid, "SIGSTOP")
-    } catch {
-      // Terminal ownership is restored below; fmx has no persistent status UI.
-    } finally {
-      try {
-        if (rendererSuspended) this.renderer.resume()
-      } catch {
-        // Child PTYs still need to be resumed even if renderer recovery fails.
-      }
-      for (const instance of instances) instance.resumeFromJobControl()
-      this.suspending = false
-      if (!this.helpVisible && !this.shuttingDown) active?.terminal.focus()
-    }
-  }
-
-  private runCommand(key: KeyEvent): void {
-    if (hasCommandModifier(key)) {
-      if (isPrefixKey(key)) this.activeInstance()?.sendLiteralPrefix()
-      return
-    }
-    const name = commandKeyName(key)
-    switch (name) {
-      case "c":
+  private executeAction(action: KeyAction): void {
+    switch (action.name) {
+      case "new_tab":
         this.createInstance()
         return
-      case "r":
-        this.createInstance(["-r"])
-        return
-      case "R":
-        this.createInstance(["--resume-last"])
-        return
-      case "n":
-        this.switchTo(this.activeIndex + 1)
-        return
-      case "p":
+      case "previous_tab":
         this.switchTo(this.activeIndex - 1)
         return
-      case "x":
+      case "next_tab":
+        this.switchTo(this.activeIndex + 1)
+        return
+      case "switch_tab":
+        if (action.index < this.instances.length) this.switchTo(action.index)
+        return
+      case "close_tab":
         void this.closeActive()
         return
-      case "q":
+      case "detach":
         void this.shutdown(0)
         return
-      case "b":
-        this.activeInstance()?.sendLiteralPrefix()
-        return
-      case "?":
+      case "help":
         this.showHelp()
         return
-      case "escape":
-        return
     }
-
-    if (/^[1-9]$/u.test(name)) {
-      const index = Number(name) - 1
-      if (index < this.instances.length) this.switchTo(index)
-    }
-  }
-
-  private armPrefix(): void {
-    this.prefixArmed = true
-    if (this.prefixTimer) clearTimeout(this.prefixTimer)
-    this.prefixTimer = setTimeout(() => {
-      this.prefixTimer = null
-      this.prefixArmed = false
-    }, PREFIX_TIMEOUT_MS)
   }
 
   private cancelPrefix(): void {
     this.prefixArmed = false
-    if (this.prefixTimer) clearTimeout(this.prefixTimer)
-    this.prefixTimer = null
   }
 
   private showHelp(): void {
@@ -648,11 +600,28 @@ export class Multiplexer {
   }
 }
 
-function launchLabel(argv: string[]): string {
-  if (argv[0] === "-r") return "resume picker"
-  if (argv[0] === "--resume-last" || argv[0] === "-c") return "resume last"
-  if (argv[0] === "--resume") return argv[1] ? `resume ${argv[1].slice(0, 8)}` : "resume last"
-  return argv.join(" ")
+function helpContent(keybindings: Keybindings): string {
+  const entries: Array<readonly [string, string]> = []
+  const add = (label: string, description: string) => {
+    if (label) entries.push([label, description])
+  }
+
+  add(displayBindings(keybindings.new_tab, keybindings.prefix), "new fx tab")
+  add(displayBindings(keybindings.previous_tab, keybindings.prefix), "previous tab")
+  add(displayBindings(keybindings.next_tab, keybindings.prefix), "next tab")
+  add(displayIndexedBindings(keybindings.switch_tab, keybindings.prefix), "switch tab 1-9")
+  add(displayBindings(keybindings.close_tab, keybindings.prefix), "close tab")
+  add(displayBindings(keybindings.detach, keybindings.prefix), "detach (quit fmx)")
+  add(displayBindings(keybindings.help, keybindings.prefix), "keybinds")
+  const prefix = displayKeyCombo(keybindings.prefix)
+  add(`${prefix} ${prefix}`, "send prefix")
+
+  const keyColumn = Math.min(30, Math.max(16, ...entries.map(([label]) => label.length + 2)))
+  return entries.map(([label, description]) => `${label.padEnd(keyColumn)}${description}`).join("\n")
+}
+
+function keyBytes(key: KeyEvent): Uint8Array {
+  return new TextEncoder().encode(key.raw || key.sequence)
 }
 
 function errorMessage(error: unknown): string {

@@ -29,17 +29,28 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
     await setup.renderOnce()
     expect([stage.x, stage.y, stage.width, stage.height]).toEqual([0, 0, 80, 24])
     expect(helpModal.visible).toBe(false)
-    expect(setup.captureCharFrame()).not.toContain("fmx commands")
+    expect(setup.captureCharFrame()).not.toContain("Ctrl-B c")
 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("?")
     await setup.renderOnce()
 
+    const helpFrame = setup.captureCharFrame()
     expect(helpModal.visible).toBe(true)
-    expect(setup.captureCharFrame()).toContain("fmx commands")
+    expect(helpModal.borderStyle).toBe("single")
+    expect(helpModal.title).toBeUndefined()
+    expect(helpFrame).toContain("Ctrl-B c")
+    expect(helpFrame).not.toContain("fmx commands")
+    expect(helpFrame).not.toContain("Drag selects")
+    expect(helpFrame).not.toContain("Shift-drag")
+    expect(helpFrame).not.toContain("Press Escape")
+    expect([helpText.x - helpModal.x, helpText.y - helpModal.y]).toEqual([2, 2])
+    expect([
+      helpModal.width - (helpText.x - helpModal.x) - helpText.width,
+      helpModal.height - (helpText.y - helpModal.y) - helpText.height,
+    ]).toEqual([2, 2])
     expect(rgb(helpModal.backgroundColor)).toEqual([241, 242, 243])
     expect(rgb(helpModal.borderColor)).toEqual([0, 170, 187])
-    expect(rgb(helpModal.titleColor)).toEqual([0, 170, 187])
     expect(rgb(helpText.fg)).toEqual([16, 32, 48])
     expect(rgb(helpText.bg)).toEqual([241, 242, 243])
 
@@ -47,14 +58,13 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
 
     expect(rgb(helpModal.backgroundColor)).toEqual([17, 18, 19])
     expect(rgb(helpModal.borderColor)).toEqual([51, 204, 221])
-    expect(rgb(helpModal.titleColor)).toEqual([51, 204, 221])
     expect(rgb(helpText.fg)).toEqual([232, 233, 234])
     expect(rgb(helpText.bg)).toEqual([17, 18, 19])
 
     setup.mockInput.pressKey("?")
     await setup.renderOnce()
     expect(helpModal.visible).toBe(false)
-    expect(setup.captureCharFrame()).not.toContain("fmx commands")
+    expect(setup.captureCharFrame()).not.toContain("Ctrl-B c")
   } finally {
     await multiplexer.shutdown()
   }
