@@ -79,8 +79,5 @@ Options:
 
 Configuration:
   ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)
-  [keys] is a strict subset of Herdr's keybinding schema.
-
-Inside fmx, Ctrl-B enters prefix mode by default. Press Ctrl-B ? for bindings.
 `
 }
