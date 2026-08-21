@@ -6,6 +6,7 @@ import {
   type EmbeddedTerminalDataSource,
   fg,
   type KeyEvent,
+  type MouseEvent,
   type Selection,
   StyledText,
   type TerminalColors,
@@ -37,6 +38,11 @@ const MODAL_FALLBACK_COLORS = {
   error: "#f87171",
   key: "#a3a3a3",
 }
+
+const SIDEBAR_DEFAULT_WIDTH = 26
+const SIDEBAR_MIN_WIDTH = 16
+const SIDEBAR_MAX_SCREEN_FRACTION = 1 / 3
+const DIVIDER_FALLBACK_COLOR = "#4c566a"
 
 const CTRL_C = new Uint8Array([0x03])
 const HELP_CLOSE_KEY = parseKeyCombo("?")!
@@ -235,6 +241,11 @@ class FxInstance {
 
 export class Multiplexer {
   private readonly stage: BoxRenderable
+  private readonly sidebar: BoxRenderable
+  private readonly divider: BoxRenderable
+  private readonly content: BoxRenderable
+  private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
+  private dividerDragging = false
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
@@ -254,6 +265,7 @@ export class Multiplexer {
   private readonly keyreleaseHandler = (key: KeyEvent) => this.onKeyRelease(key)
   private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
+  private readonly resizeHandler = () => this.applySidebarWidth()
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -272,7 +284,36 @@ export class Multiplexer {
       id: "fmx-stage",
       width: "100%",
       height: "100%",
+      flexDirection: "row",
     })
+    this.sidebar = new BoxRenderable(renderer, {
+      id: "fmx-sidebar",
+      width: this.sidebarWidth,
+      height: "100%",
+      flexShrink: 0,
+    })
+    this.divider = new BoxRenderable(renderer, {
+      id: "fmx-divider",
+      width: 1,
+      height: "100%",
+      flexShrink: 0,
+      border: ["left"],
+      borderStyle: "single",
+      borderColor: DIVIDER_FALLBACK_COLOR,
+      onMouseDown: (event) => this.beginDividerDrag(event),
+      onMouseDrag: (event) => this.continueDividerDrag(event),
+      onMouseUp: () => this.endDividerDrag(),
+      onMouseDragEnd: () => this.endDividerDrag(),
+    })
+    this.content = new BoxRenderable(renderer, {
+      id: "fmx-content",
+      flexGrow: 1,
+      flexShrink: 1,
+      height: "100%",
+    })
+    this.stage.add(this.sidebar)
+    this.stage.add(this.divider)
+    this.stage.add(this.content)
 
     this.modalBackdrop = new BoxRenderable(renderer, {
       id: "fmx-modal-backdrop",
@@ -320,6 +361,8 @@ export class Multiplexer {
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
+    this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
+    this.applySidebarWidth()
     this.refreshTerminalTitle()
   }
 
@@ -351,6 +394,7 @@ export class Multiplexer {
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
       this.renderer.off(CliRenderEvents.SELECTION, this.selectionHandler)
       this.renderer.off(CliRenderEvents.PALETTE, this.paletteHandler)
+      this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const instance of this.instances) instance.destroy()
     } finally {
@@ -378,7 +422,7 @@ export class Multiplexer {
       },
     )
     this.instances.push(instance)
-    this.stage.add(instance.terminal)
+    this.content.add(instance.terminal)
     this.switchTo(this.instances.length - 1)
     try {
       instance.start()
@@ -397,7 +441,7 @@ export class Multiplexer {
     const index = this.instances.indexOf(instance)
     if (index === -1) return false
     const wasActive = this.activeInstance() === instance
-    this.stage.remove(instance.terminal)
+    this.content.remove(instance.terminal)
     instance.destroy()
     this.instances.splice(index, 1)
 
@@ -440,11 +484,54 @@ export class Multiplexer {
     return this.instances[this.activeIndex] ?? null
   }
 
+  private beginDividerDrag(event: MouseEvent): void {
+    event.preventDefault()
+    event.stopPropagation()
+    this.dividerDragging = true
+    // Capture immediately: OpenTUI only latches drag capture on the first drag
+    // event, and a fast flick can put that event past this one-cell divider —
+    // over the terminal, which forwards motion to fx and stops propagation.
+    this.captureMouse(this.divider)
+  }
+
+  private continueDividerDrag(event: MouseEvent): void {
+    if (!this.dividerDragging) return
+    event.preventDefault()
+    event.stopPropagation()
+    this.applySidebarWidth(event.x)
+  }
+
+  private endDividerDrag(): void {
+    this.dividerDragging = false
+  }
+
+  private captureMouse(renderable: BoxRenderable): void {
+    // Not in CliRenderer's public typings; the renderer clears it on mouse-up.
+    const capturer = this.renderer as unknown as {
+      setCapturedRenderable?: (renderable: BoxRenderable) => void
+    }
+    capturer.setCapturedRenderable?.(renderable)
+  }
+
+  private applySidebarWidth(requested = this.sidebarWidth): void {
+    const max = Math.max(1, Math.floor(this.renderer.width * SIDEBAR_MAX_SCREEN_FRACTION))
+    const min = Math.min(SIDEBAR_MIN_WIDTH, max)
+    this.sidebarWidth = Math.max(min, Math.min(max, requested))
+    this.sidebar.width = this.sidebarWidth
+  }
+
   private onPalette(colors: TerminalColors): void {
     this.hostPalette = colors
     this.applyModalPalette(colors)
+    this.applyDividerPalette(colors)
     const themeMode = this.renderer.themeMode
     for (const instance of this.instances) instance.updateHostPalette(colors, themeMode)
+  }
+
+  private applyDividerPalette(colors: TerminalColors | null): void {
+    const color = dividerColor(colors)
+    this.divider.borderColor = color
+    this.divider.focusedBorderColor = color
   }
 
   private applyModalPalette(colors: TerminalColors | null): void {
@@ -611,6 +698,14 @@ export class Multiplexer {
 
 type ModalColors = typeof MODAL_FALLBACK_COLORS
 type HelpEntry = readonly [key: string, description: string]
+
+function dividerColor(colors: TerminalColors | null): string {
+  return (
+    detectedTerminalColor(colors?.palette[8]) ??
+    detectedTerminalColor(colors?.palette[7]) ??
+    DIVIDER_FALLBACK_COLOR
+  )
+}
 
 function modalColors(colors: TerminalColors | null): ModalColors {
   const foreground = detectedTerminalColor(colors?.defaultForeground) ?? MODAL_FALLBACK_COLORS.foreground
