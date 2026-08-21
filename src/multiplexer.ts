@@ -83,6 +83,8 @@ type MultiplexerOptions = {
   keybindings: Keybindings
   agentSocket?: AgentSocket | null
   debugPanel?: boolean
+  initialSidebarWidth?: number
+  onSidebarWidthChange?: (width: number) => void
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited"
@@ -262,6 +264,7 @@ export class Multiplexer {
   private readonly agentSocket: AgentSocket | null
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   private dividerDragging = false
+  private dragStartWidth = SIDEBAR_DEFAULT_WIDTH
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
@@ -292,6 +295,7 @@ export class Multiplexer {
       this.resolveDone = resolveDone
     })
     this.keybindings = options.keybindings
+    this.sidebarWidth = options.initialSidebarWidth ?? SIDEBAR_DEFAULT_WIDTH
     const help = helpPlainText(this.keybindings)
     const helpLines = help.split("\n")
     const helpWidth = Math.max(...helpLines.map((line) => line.length)) + 5
@@ -533,6 +537,7 @@ export class Multiplexer {
     event.preventDefault()
     event.stopPropagation()
     this.dividerDragging = true
+    this.dragStartWidth = this.sidebarWidth
     // Capture immediately: OpenTUI only latches drag capture on the first drag
     // event, and a fast flick can put that event past this one-cell divider —
     // over the terminal, which forwards motion to fx and stops propagation.
@@ -547,7 +552,11 @@ export class Multiplexer {
   }
 
   private endDividerDrag(): void {
+    if (!this.dividerDragging) return
     this.dividerDragging = false
+    if (this.sidebarWidth !== this.dragStartWidth) {
+      this.options.onSidebarWidthChange?.(this.sidebarWidth)
+    }
   }
 
   private captureMouse(renderable: BoxRenderable): void {

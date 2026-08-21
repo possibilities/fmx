@@ -9,6 +9,7 @@ import { loadConfig } from "./config.ts"
 import { debugPanelRequested } from "./debug-panel.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
+import { loadState, saveState } from "./state.ts"
 
 async function main(): Promise<void> {
   let options
@@ -39,6 +40,7 @@ async function main(): Promise<void> {
   const fxPath = await resolveExecutable(process.env.FMX_FX_PATH ?? "fx")
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
+  const persistedState = await loadState()
 
   let renderer: CliRenderer | null = null
   let app: Multiplexer | null = null
@@ -61,6 +63,13 @@ async function main(): Promise<void> {
       keybindings: loadedConfig.keybindings,
       agentSocket,
       debugPanel,
+      initialSidebarWidth: persistedState.sidebarWidth,
+      onSidebarWidthChange: (width) => {
+        persistedState.sidebarWidth = width
+        // State persistence is an enhancement; a failed write must never
+        // disturb the running session.
+        void saveState(persistedState).catch(() => {})
+      },
     })
 
     for (const [signal, exitCode] of [

@@ -109,6 +109,53 @@ test("themes the divider from the host palette", async () => {
   }
 })
 
+test("restores a persisted width and reports changes on drag end", async () => {
+  const widthChanges: number[] = []
+  const setup = await createTestRenderer({ width: 90, height: 24 })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: "fx",
+    cwd: process.cwd(),
+    initialFxArgs: [],
+    keybindings: resolveKeybindings().keybindings,
+    initialSidebarWidth: 22,
+    onSidebarWidthChange: (width) => widthChanges.push(width),
+  })
+  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  try {
+    await setup.renderOnce()
+    expect(sidebar.width).toBe(22)
+
+    await setup.mockMouse.drag(22, 10, 28, 10)
+    await setup.renderOnce()
+    expect(sidebar.width).toBe(28)
+    expect(widthChanges).toEqual([28])
+
+    // A click that never moves reports nothing.
+    await setup.mockMouse.click(28, 10)
+    expect(widthChanges).toEqual([28])
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("clamps a stale persisted width to the current screen", async () => {
+  const setup = await createTestRenderer({ width: 90, height: 24 })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: "fx",
+    cwd: process.cwd(),
+    initialFxArgs: [],
+    keybindings: resolveKeybindings().keybindings,
+    initialSidebarWidth: 70,
+  })
+  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  try {
+    await setup.renderOnce()
+    expect(sidebar.width).toBe(30)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 function hostPalette(
   entries: Record<number, string>,
   defaults: { foreground?: string; background?: string } = {},
