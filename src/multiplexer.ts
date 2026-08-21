@@ -42,6 +42,9 @@ const MODAL_FALLBACK_COLORS = {
 const SIDEBAR_DEFAULT_WIDTH = 26
 const SIDEBAR_MIN_WIDTH = 16
 const SIDEBAR_MAX_SCREEN_FRACTION = 1 / 3
+// Blending the background slightly toward the foreground keeps the divider a
+// faint hairline in any theme; a full palette gray reads visibly heavier.
+const DIVIDER_BLEND = 0.2
 const DIVIDER_FALLBACK_COLOR = "#4c566a"
 
 const CTRL_C = new Uint8Array([0x03])
@@ -700,11 +703,25 @@ type ModalColors = typeof MODAL_FALLBACK_COLORS
 type HelpEntry = readonly [key: string, description: string]
 
 function dividerColor(colors: TerminalColors | null): string {
+  const background = detectedTerminalColor(colors?.defaultBackground)
+  const foreground = detectedTerminalColor(colors?.defaultForeground)
+  if (background && foreground) return mixHexColors(background, foreground, DIVIDER_BLEND)
   return (
     detectedTerminalColor(colors?.palette[8]) ??
     detectedTerminalColor(colors?.palette[7]) ??
     DIVIDER_FALLBACK_COLOR
   )
+}
+
+function mixHexColors(base: string, tint: string, amount: number): string {
+  const channel = (offset: number) => {
+    const from = parseInt(base.slice(offset, offset + 2), 16)
+    const to = parseInt(tint.slice(offset, offset + 2), 16)
+    return Math.round(from + (to - from) * amount)
+      .toString(16)
+      .padStart(2, "0")
+  }
+  return `#${channel(1)}${channel(3)}${channel(5)}`
 }
 
 function modalColors(colors: TerminalColors | null): ModalColors {

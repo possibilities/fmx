@@ -83,6 +83,13 @@ test("themes the divider from the host palette", async () => {
   try {
     expect(rgb(divider.borderColor)).toEqual([76, 86, 106])
 
+    // Detected foreground + background: a faint blend 20% toward the foreground.
+    multiplexer.setHostPalette(
+      hostPalette({ 8: "#334455" }, { foreground: "#f1f2f3", background: "#102030" }),
+    )
+    expect(rgb(divider.borderColor)).toEqual([61, 74, 87])
+
+    // Without both defaults, fall back through the palette grays.
     multiplexer.setHostPalette(hostPalette({ 8: "#334455" }))
     expect(rgb(divider.borderColor)).toEqual([51, 68, 85])
 
@@ -93,13 +100,16 @@ test("themes the divider from the host palette", async () => {
   }
 })
 
-function hostPalette(entries: Record<number, string>): TerminalColors {
+function hostPalette(
+  entries: Record<number, string>,
+  defaults: { foreground?: string; background?: string } = {},
+): TerminalColors {
   const palette: Array<string | null> = Array(16).fill(null)
   for (const [index, color] of Object.entries(entries)) palette[Number(index)] = color
   return {
     palette,
-    defaultForeground: null,
-    defaultBackground: null,
+    defaultForeground: defaults.foreground ?? null,
+    defaultBackground: defaults.background ?? null,
     cursorColor: null,
     mouseForeground: null,
     mouseBackground: null,
