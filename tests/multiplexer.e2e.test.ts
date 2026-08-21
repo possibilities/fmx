@@ -12,7 +12,7 @@ const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 const PTY_TEST_ENABLED = process.env.FMX_RUN_PTY_TESTS === "1" && typeof Bun.Terminal === "function"
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "multiplexer uses configured Herdr bindings and gracefully closes every PTY",
+  "multiplexer uses configured bindings and leaves PTY exits to fx",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-e2e-"))
@@ -22,10 +22,11 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([process.execPath, "src/index.ts", "--fx", FAKE_FX], {
+    const child = Bun.spawn([process.execPath, "src/index.ts"], {
       cwd: ROOT,
       env: {
         ...process.env,
+        FMX_FX_PATH: FAKE_FX,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
@@ -33,7 +34,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         FMX_TEST_HEARTBEAT: "1",
         FMX_TEST_KEYBOARD_MODE: "1",
         FMX_TEST_PASSTHROUGH_KEYS: "1",
-        FMX_TEST_LITERAL_PREFIX_BYTE: "0",
+        FMX_TEST_FORBIDDEN_PREFIX_BYTE: "0",
         FMX_TEST_PRIVATE_CURSOR_QUERY: "1",
         FMX_TEST_QUERY_ON_EXIT: "1",
       },
@@ -77,11 +78,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(child.exitCode).toBeNull()
 
       child.terminal?.write(Uint8Array.of(0, 0))
-      await waitUntil(
-        async () => (await readLifecycle(lifecycleLog)).includes("literal-prefix 1"),
-        5_000,
-        () => output,
-      )
+      await Bun.sleep(100)
+      expect(await readLifecycle(lifecycleLog)).not.toContain("forbidden-prefix-byte 1")
 
       child.terminal?.write(Uint8Array.of(0, control("c")))
       await Bun.sleep(100)
@@ -105,14 +103,22 @@ test.skipIf(!PTY_TEST_ENABLED)(
       child.terminal?.write(Uint8Array.of(0, "p".charCodeAt(0)))
       await Bun.sleep(100)
       child.terminal?.write(Uint8Array.of(0, "X".charCodeAt(0)))
-      child.terminal?.write(new TextEncoder().encode("u"))
+      await Bun.sleep(100)
+      expect(await readLifecycle(lifecycleLog)).not.toContain("graceful 1")
+
+      child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
       const lifecycleAfterClose = await readLifecycle(lifecycleLog)
       expect(lifecycleAfterClose).toContain("terminal-response 1")
       expect(lifecycleAfterClose).not.toContain("unexpected-input 1")
 
       child.terminal?.write(Uint8Array.of(0, "q".charCodeAt(0)))
-      const code = await withTimeout(child.exited, 6_000, "fmx did not exit")
+      await Bun.sleep(100)
+      expect(child.exitCode).toBeNull()
+      expect(await readLifecycle(lifecycleLog)).not.toContain("graceful 2")
+
+      child.terminal?.write(Uint8Array.of(control("c"), control("c")))
+      const code = await withTimeout(child.exited, 6_000, "fmx did not exit after the final fx process exited")
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(code).toBe(0)
       expect(lifecycle).toContain("graceful 2")
@@ -138,10 +144,11 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([process.execPath, "src/index.ts", "--fx", FAKE_FX], {
+    const child = Bun.spawn([process.execPath, "src/index.ts"], {
       cwd: ROOT,
       env: {
         ...process.env,
+        FMX_FX_PATH: FAKE_FX,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
@@ -209,10 +216,11 @@ test.skipIf(!PTY_TEST_ENABLED)(
       (reply) => sendHostReply(reply),
       () => hostBackground,
     )
-    const child = Bun.spawn([process.execPath, "src/index.ts", "--fx", FAKE_FX], {
+    const child = Bun.spawn([process.execPath, "src/index.ts"], {
       cwd: ROOT,
       env: {
         ...process.env,
+        FMX_FX_PATH: FAKE_FX,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
@@ -253,8 +261,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(updatedLifecycle).toContain("theme-notification 1")
       expect(updatedLifecycle).toContain("rgb:eeee/eeee/eeee")
 
-      child.terminal?.write(Uint8Array.of(control("b"), "q".charCodeAt(0)))
-      expect(await withTimeout(child.exited, 6_000, "fmx did not exit")).toBe(0)
+      child.terminal?.write(Uint8Array.of(control("c"), control("c")))
+      expect(await withTimeout(child.exited, 6_000, "fmx did not exit after fx exited")).toBe(0)
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL")
       child.terminal?.close()
@@ -274,10 +282,11 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([process.execPath, "src/index.ts", "--fx", FAKE_FX], {
+    const child = Bun.spawn([process.execPath, "src/index.ts"], {
       cwd: ROOT,
       env: {
         ...process.env,
+        FMX_FX_PATH: FAKE_FX,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,

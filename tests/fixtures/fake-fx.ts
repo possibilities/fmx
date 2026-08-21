@@ -18,7 +18,7 @@ const PASSTHROUGH_KEYS = [
   { sequence: "\u001b[127;9u", event: "kitty-super-backspace" },
 ] as const
 const passthroughTailLength = Math.max(...PASSTHROUGH_KEYS.map(({ sequence }) => sequence.length))
-const literalPrefixByte = Number(process.env.FMX_TEST_LITERAL_PREFIX_BYTE ?? 2)
+const forbiddenPrefixByte = Number(process.env.FMX_TEST_FORBIDDEN_PREFIX_BYTE ?? 2)
 
 let ctrlCCount = 0
 let waitingForExitCursorReport = false
@@ -86,9 +86,9 @@ process.stdin.on("data", (chunk: Buffer) => {
           finishGracefulExit()
         }
       }
-    } else if (byte === literalPrefixByte) {
+    } else if (byte === forbiddenPrefixByte) {
       ctrlCCount = 0
-      recordLifecycle("literal-prefix")
+      recordLifecycle("forbidden-prefix-byte")
       process.stdout.write(Uint8Array.of(byte))
     } else {
       ctrlCCount = 0

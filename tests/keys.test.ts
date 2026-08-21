@@ -3,9 +3,6 @@ import type { KeyEvent } from "@opentui/core"
 import {
   actionForKey,
   DEFAULT_KEYS_CONFIG,
-  displayBindings,
-  displayIndexedBindings,
-  displayKeyCombo,
   keyMatchesCombo,
   parseKeyCombo,
   resolveKeybindings,
@@ -26,24 +23,20 @@ const key = (overrides: Partial<KeyEvent> = {}): KeyEvent =>
     ...overrides,
   }) as KeyEvent
 
-describe("Herdr-compatible keybindings", () => {
-  test("uses Herdr's exact defaults for the supported action subset", () => {
+describe("keybindings", () => {
+  test("provides default bindings for every supported action", () => {
     expect(DEFAULT_KEYS_CONFIG).toEqual({
       prefix: "ctrl+b",
       help: "prefix+?",
-      detach: "prefix+q",
       new_tab: "prefix+c",
       previous_tab: "prefix+p",
       next_tab: "prefix+n",
-      switch_tab: "prefix+1..9",
-      close_tab: "prefix+shift+x",
     })
 
     const { keybindings, diagnostics } = resolveKeybindings()
     expect(diagnostics).toEqual([])
-    expect(displayKeyCombo(keybindings.prefix)).toBe("Ctrl-B")
-    expect(displayBindings(keybindings.new_tab, keybindings.prefix)).toBe("Ctrl-B c")
-    expect(displayIndexedBindings(keybindings.switch_tab, keybindings.prefix)).toBe("Ctrl-B 1…9")
+    expect(keybindings.prefixLabel).toBe("ctrl+b")
+    expect(keybindings.new_tab.map((binding) => binding.label)).toEqual(["prefix+c"])
   })
 
   test("supports a Ctrl-Space prefix without changing action bindings", () => {
@@ -53,26 +46,24 @@ describe("Herdr-compatible keybindings", () => {
       true,
     )
     expect(actionForKey(keybindings, key({ name: "c" }), "prefix")).toEqual({ name: "new_tab" })
-    expect(displayBindings(keybindings.help, keybindings.prefix)).toBe("Ctrl-Space ?")
+    expect(keybindings.help.map((binding) => binding.label)).toEqual(["prefix+?"])
   })
 
-  test("supports Herdr string arrays, direct chords, and indexed ranges", () => {
+  test("supports string arrays and direct chords", () => {
     const { keybindings, diagnostics } = resolveKeybindings({
       previous_tab: ["prefix+p", "alt+1"],
       next_tab: ["prefix+n", "alt+2"],
-      switch_tab: "ctrl+1..9",
     })
     expect(diagnostics).toEqual([])
     expect(actionForKey(keybindings, key({ name: "1", sequence: "\u001b1", raw: "\u001b1", meta: true }), "direct")).toEqual({
       name: "previous_tab",
     })
-    expect(actionForKey(keybindings, key({ name: "2", ctrl: true }), "direct")).toEqual({
-      name: "switch_tab",
-      index: 1,
+    expect(actionForKey(keybindings, key({ name: "2", sequence: "\u001b2", raw: "\u001b2", meta: true }), "direct")).toEqual({
+      name: "next_tab",
     })
   })
 
-  test("lets user bindings displace conflicting defaults like Herdr", () => {
+  test("lets user bindings displace conflicting defaults", () => {
     const { keybindings, diagnostics } = resolveKeybindings({ help: "prefix+c" })
     expect(diagnostics).toEqual([])
     expect(actionForKey(keybindings, key({ name: "c" }), "prefix")).toEqual({ name: "help" })
@@ -89,24 +80,16 @@ describe("Herdr-compatible keybindings", () => {
     expect(space.diagnostics.join("\n")).toContain("unsafe direct keybinding")
   })
 
-  test("matches shifted punctuation and Herdr's Shift-X close binding", () => {
+  test("matches shifted punctuation without reserving Shift-X", () => {
     const { keybindings } = resolveKeybindings()
     expect(actionForKey(keybindings, key({ name: "/", sequence: "/", raw: "\u001b[47;2u", shift: true }), "prefix")).toEqual({
       name: "help",
     })
-    expect(actionForKey(keybindings, key({ name: "x", sequence: "X", raw: "X", shift: true }), "prefix")).toEqual({
-      name: "close_tab",
-    })
+    expect(actionForKey(keybindings, key({ name: "x", sequence: "X", raw: "X", shift: true }), "prefix")).toBeNull()
     expect(actionForKey(keybindings, key({ name: "x" }), "prefix")).toBeNull()
-
-    const shiftedTabs = resolveKeybindings({ switch_tab: "prefix+shift+1..9" }).keybindings
-    expect(actionForKey(shiftedTabs, key({ name: "@", sequence: "@", raw: "@" }), "prefix")).toEqual({
-      name: "switch_tab",
-      index: 1,
-    })
   })
 
-  test("parses Herdr modifier and named-key aliases", () => {
+  test("parses modifier and named-key aliases", () => {
     expect(parseKeyCombo("control+option+return")).toMatchObject({ ctrl: true, alt: true, key: "enter" })
     expect(parseKeyCombo("cmd+shift+f12")).toMatchObject({ super: true, shift: true, key: "f12" })
     expect(parseKeyCombo("shift+tab")).toMatchObject({ shift: false, key: "backtab" })

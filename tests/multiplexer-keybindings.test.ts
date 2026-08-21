@@ -4,7 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 
-test("uses configured Herdr-compatible prefix and renders configured bindings", async () => {
+test("uses the configured prefix and renders configured bindings", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const { keybindings } = resolveKeybindings({ prefix: "ctrl+space" })
   const multiplexer = new Multiplexer(setup.renderer, {
@@ -40,10 +40,21 @@ test("uses configured Herdr-compatible prefix and renders configured bindings", 
     await setup.renderOnce()
 
     expect(helpModal.visible).toBe(true)
-    expect(setup.captureCharFrame()).toContain("Ctrl-Space c")
-    expect(setup.captureCharFrame()).toContain("Ctrl-Space Shift-X")
-    expect(setup.captureCharFrame()).not.toContain("resume latest")
-    expect(setup.captureCharFrame()).not.toContain("Ctrl-Z")
+    const frame = setup.captureCharFrame()
+    for (const line of [
+      "┌───────────────────────────┐",
+      "│  ctrl+space  prefix mode  │",
+      "│  prefix+?    keybinds     │",
+      "│  prefix+c    new agent    │",
+      "│  prefix+p    prev agent   │",
+      "│  prefix+n    next agent   │",
+      "└───────────────────────────┘",
+    ]) {
+      expect(frame).toContain(line)
+    }
+    expect(frame).not.toContain("1…9")
+    expect(frame).not.toContain("close tab")
+    expect(frame).not.toContain("send prefix")
 
     setup.renderer.keyInput.processParsedKey({
       name: "/",

@@ -5,37 +5,22 @@ export type BindingConfig = string | string[]
 export type KeysConfig = {
   prefix: string
   help: BindingConfig
-  detach: BindingConfig
   new_tab: BindingConfig
   previous_tab: BindingConfig
   next_tab: BindingConfig
-  switch_tab: BindingConfig
-  close_tab: BindingConfig
 }
 
 export const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   prefix: "ctrl+b",
   help: "prefix+?",
-  detach: "prefix+q",
   new_tab: "prefix+c",
   previous_tab: "prefix+p",
   next_tab: "prefix+n",
-  switch_tab: "prefix+1..9",
-  close_tab: "prefix+shift+x",
 }
 
-export const KEY_CONFIG_FIELDS = [
-  "prefix",
-  "help",
-  "detach",
-  "new_tab",
-  "previous_tab",
-  "next_tab",
-  "switch_tab",
-  "close_tab",
-] as const
+export const KEY_CONFIG_FIELDS = ["prefix", "help", "new_tab", "previous_tab", "next_tab"] as const
 
-export type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix" | "switch_tab">
+export type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
 export type BindingTrigger = "direct" | "prefix"
 
 type KeyModifiers = {
@@ -56,28 +41,16 @@ export type ResolvedBinding = {
   label: string
 }
 
-export type IndexedBinding = ResolvedBinding & {
-  index: number
-}
-
 export type Keybindings = {
   prefix: KeyCombo
   prefixLabel: string
   help: ResolvedBinding[]
-  detach: ResolvedBinding[]
   new_tab: ResolvedBinding[]
   previous_tab: ResolvedBinding[]
   next_tab: ResolvedBinding[]
-  switch_tab: IndexedBinding[]
-  close_tab: ResolvedBinding[]
 }
 
-export type KeyAction =
-  | { name: KeyActionName }
-  | {
-      name: "switch_tab"
-      index: number
-    }
+export type KeyAction = { name: KeyActionName }
 
 export type ResolvedKeybindings = {
   keybindings: Keybindings
@@ -86,10 +59,8 @@ export type ResolvedKeybindings = {
 
 type BindingSource = "default" | "user"
 type RegisteredBinding = { field: string; source: BindingSource }
-type ParsedBinding = ResolvedBinding | ResolvedBinding[]
 
 const ACTION_FIELDS = KEY_CONFIG_FIELDS.filter((field) => field !== "prefix")
-const SIMPLE_ACTION_FIELDS = ACTION_FIELDS.filter((field) => field !== "switch_tab")
 const EMPTY_MODIFIERS: KeyModifiers = {
   ctrl: false,
   alt: false,
@@ -182,12 +153,9 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
     prefix,
     prefixLabel: formatKeyCombo(prefix),
     help: [],
-    detach: [],
     new_tab: [],
     previous_tab: [],
     next_tab: [],
-    switch_tab: [],
-    close_tab: [],
   }
 
   const registry = new Map<string, RegisteredBinding>()
@@ -204,27 +172,15 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
       const values = bindingValues(rawValue, `keys.${field}`, diagnostics)
       if (!values) continue
 
-      if (field === "switch_tab") {
-        keybindings.switch_tab = parseIndexedBindings(
-          field,
-          values,
-          source,
-          prefix,
-          prefixIsUserConfigured,
-          registry,
-          diagnostics,
-        )
-      } else {
-        keybindings[field] = parseActionBindings(
-          field,
-          values,
-          source,
-          prefix,
-          prefixIsUserConfigured,
-          registry,
-          diagnostics,
-        )
-      }
+      keybindings[field] = parseActionBindings(
+        field,
+        values,
+        source,
+        prefix,
+        prefixIsUserConfigured,
+        registry,
+        diagnostics,
+      )
     }
   }
 
@@ -265,51 +221,13 @@ export function actionForKey(
   key: KeyEvent,
   trigger: BindingTrigger,
 ): KeyAction | null {
-  for (const field of SIMPLE_ACTION_FIELDS) {
+  for (const field of ACTION_FIELDS) {
     if (keybindings[field].some((binding) => binding.trigger === trigger && keyMatchesCombo(key, binding.combo))) {
       return { name: field }
     }
   }
 
-  for (const binding of keybindings.switch_tab) {
-    if (binding.trigger === trigger && keyMatchesCombo(key, binding.combo)) {
-      return { name: "switch_tab", index: binding.index }
-    }
-  }
-
   return null
-}
-
-export function displayKeyCombo(combo: KeyCombo): string {
-  const parts: string[] = []
-  if (combo.ctrl) parts.push("Ctrl")
-  if (combo.alt) parts.push("Alt")
-  if (combo.shift) parts.push("Shift")
-  if (combo.super) parts.push(process.platform === "darwin" ? "Cmd" : "Super")
-  if (combo.hyper) parts.push("Hyper")
-  parts.push(displayKeyName(combo.key, parts.length > 0))
-  return parts.join("-")
-}
-
-export function displayBindings(bindings: ResolvedBinding[], prefix: KeyCombo): string {
-  return bindings.map((binding) => displayBinding(binding, prefix)).join(" / ")
-}
-
-export function displayIndexedBindings(bindings: IndexedBinding[], prefix: KeyCombo): string {
-  if (bindings.length === 9 && bindings.every((binding, index) => binding.index === index)) {
-    const first = bindings[0]!
-    if (
-      bindings.every(
-        (binding) => binding.trigger === first.trigger && modifiersEqual(binding.combo, first.combo),
-      )
-    ) {
-      const rangeCombo = { ...first.combo, key: "1…9" }
-      return first.trigger === "prefix"
-        ? `${displayKeyCombo(prefix)} ${displayKeyCombo(rangeCombo)}`
-        : displayKeyCombo(rangeCombo)
-    }
-  }
-  return displayBindings(bindings, prefix)
 }
 
 function parseActionBindings(
@@ -329,47 +247,8 @@ function parseActionBindings(
       diagnostics.push(`invalid keybinding: keys.${field} = ${JSON.stringify(raw)}; disabling binding`)
       continue
     }
-    if (Array.isArray(parsed)) {
-      diagnostics.push(
-        `range keybinding is only valid for indexed actions: keys.${field} = ${JSON.stringify(raw)}; disabling binding`,
-      )
-      continue
-    }
     if (registerBinding(field, parsed, source, prefix, prefixIsUserConfigured, registry, diagnostics)) {
       bindings.push(parsed)
-    }
-  }
-  return bindings
-}
-
-function parseIndexedBindings(
-  field: "switch_tab",
-  values: string[],
-  source: BindingSource,
-  prefix: KeyCombo,
-  prefixIsUserConfigured: boolean,
-  registry: Map<string, RegisteredBinding>,
-  diagnostics: string[],
-): IndexedBinding[] {
-  const bindings: IndexedBinding[] = []
-  for (const raw of values) {
-    if (!raw.trim()) continue
-    const parsed = parseBinding(raw)
-    if (!parsed) {
-      diagnostics.push(`invalid keybinding: keys.${field} = ${JSON.stringify(raw)}; disabling binding`)
-      continue
-    }
-    const candidates = Array.isArray(parsed) ? parsed : [parsed]
-    for (const candidate of candidates) {
-      if (!/^[1-9]$/u.test(candidate.combo.key)) {
-        diagnostics.push(
-          `indexed keybinding must use 1..9: keys.${field} = ${JSON.stringify(candidate.label)}; disabling binding`,
-        )
-        continue
-      }
-      if (registerBinding(field, candidate, source, prefix, prefixIsUserConfigured, registry, diagnostics)) {
-        bindings.push({ ...candidate, index: Number(candidate.combo.key) - 1 })
-      }
     }
   }
   return bindings
@@ -388,7 +267,7 @@ function registerBinding(
   if (binding.trigger === "prefix" && combosEqual(binding.combo, prefix)) {
     if (source === "default" && prefixIsUserConfigured) return false
     diagnostics.push(
-      `reserved keybinding: ${qualifiedField} = ${JSON.stringify(binding.label)} uses keys.prefix as the prefix-mode key; pressing the prefix twice sends a literal prefix key, so this binding is disabled`,
+      `reserved keybinding: ${qualifiedField} = ${JSON.stringify(binding.label)} uses keys.prefix as the prefix-mode key; this binding is disabled`,
     )
     return false
   }
@@ -412,23 +291,10 @@ function registerBinding(
   return true
 }
 
-function parseBinding(raw: string): ParsedBinding | null {
+function parseBinding(raw: string): ResolvedBinding | null {
   const trimmed = raw.trim()
   const prefix = trimmed.startsWith("prefix+")
   const body = prefix ? trimmed.slice("prefix+".length) : trimmed
-  const rangeModifiers = parseRangeModifiers(body)
-  if (rangeModifiers) {
-    return Array.from({ length: 9 }, (_, index) => {
-      const combo = { ...rangeModifiers, key: String(index + 1) }
-      const label = formatKeyCombo(combo)
-      return {
-        trigger: prefix ? "prefix" : "direct",
-        combo,
-        label: prefix ? `prefix+${label}` : label,
-      }
-    })
-  }
-
   const combo = parseKeyCombo(body)
   if (!combo) return null
   const label = formatKeyCombo(combo)
@@ -437,21 +303,6 @@ function parseBinding(raw: string): ParsedBinding | null {
     combo,
     label: prefix ? `prefix+${label}` : label,
   }
-}
-
-function parseRangeModifiers(raw: string): KeyModifiers | null {
-  const modifiers = { ...EMPTY_MODIFIERS }
-  let sawRange = false
-  for (const part of raw.split("+")) {
-    const token = part.trim()
-    if (token === "1..9") {
-      if (sawRange) return null
-      sawRange = true
-    } else if (!applyModifier(modifiers, token)) {
-      return null
-    }
-  }
-  return sawRange ? modifiers : null
 }
 
 export function parseKeyCombo(raw: string): KeyCombo | null {
@@ -531,38 +382,6 @@ function formatKeyName(key: string): string {
   if (key === "escape") return "esc"
   if (key === "backtab") return "shift+tab"
   return key
-}
-
-function displayBinding(binding: ResolvedBinding, prefix: KeyCombo): string {
-  const key = displayKeyCombo(binding.combo)
-  return binding.trigger === "prefix" ? `${displayKeyCombo(prefix)} ${key}` : key
-}
-
-function displayKeyName(key: string, modified: boolean): string {
-  switch (key) {
-    case "space":
-      return "Space"
-    case "escape":
-      return "Esc"
-    case "enter":
-      return "Enter"
-    case "tab":
-      return "Tab"
-    case "backtab":
-      return "Shift-Tab"
-    case "backspace":
-      return "Backspace"
-    case "left":
-      return "Left"
-    case "right":
-      return "Right"
-    case "up":
-      return "Up"
-    case "down":
-      return "Down"
-    default:
-      return key.length === 1 && !modified ? key : key.toUpperCase()
-  }
 }
 
 function eventModifiers(key: KeyEvent): KeyModifiers {

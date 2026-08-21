@@ -1,11 +1,15 @@
 import {
+  bold,
   BoxRenderable,
   type CliRenderer,
   CliRenderEvents,
   type EmbeddedTerminalDataSource,
+  fg,
   type KeyEvent,
   type Selection,
+  StyledText,
   type TerminalColors,
+  type TextChunk,
   TextRenderable,
   type ThemeMode,
 } from "@opentui/core"
@@ -16,14 +20,12 @@ import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { detectedTerminalColor, hasDetectedBackground, themeModeReport } from "./host-palette.ts"
 import {
   actionForKey,
-  displayBindings,
-  displayIndexedBindings,
-  displayKeyCombo,
   keyMatchesCombo,
   parseKeyCombo,
   resolveKeybindings,
   type KeyAction,
   type Keybindings,
+  type ResolvedBinding,
 } from "./keybindings.ts"
 import { keyIdentity } from "./keys.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
@@ -32,6 +34,7 @@ const HELP_FALLBACK_COLORS = {
   background: "#232938",
   foreground: "#d8dee9",
   accent: "#7dd3fc",
+  key: "#a3a3a3",
 }
 
 const CTRL_C = new Uint8Array([0x03])
@@ -141,10 +144,6 @@ class FxInstance {
       this.status = "failed"
       this.terminal.write(`\r\nfmx: failed to start fx: ${errorMessage(error)}\r\n`)
     }
-  }
-
-  sendLiteralPrefix(data: Uint8Array): void {
-    this.writeInput(data, "input")
   }
 
   updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
@@ -288,10 +287,10 @@ export class Multiplexer {
     })
     this.hostPalette = options.hostPalette ?? null
     this.keybindings = options.keybindings ?? resolveKeybindings().keybindings
-    const help = helpContent(this.keybindings)
+    const help = helpPlainText(this.keybindings)
     const helpLines = help.split("\n")
-    const helpWidth = Math.max(...helpLines.map((line) => line.length)) + 4
-    const helpHeight = helpLines.length + 4
+    const helpWidth = Math.max(...helpLines.map((line) => line.length)) + 5
+    const helpHeight = helpLines.length + 2
 
     this.stage = new BoxRenderable(renderer, {
       id: "fmx-stage",
@@ -308,7 +307,7 @@ export class Multiplexer {
       height: helpHeight,
       marginLeft: -Math.floor(helpWidth / 2),
       marginTop: -Math.floor(helpHeight / 2),
-      padding: 1,
+      paddingX: 1,
       border: true,
       borderStyle: "single",
       borderColor: HELP_FALLBACK_COLORS.accent,
@@ -318,7 +317,7 @@ export class Multiplexer {
     })
     this.helpText = new TextRenderable(renderer, {
       id: "fmx-help-text",
-      content: help,
+      content: styledHelpContent(this.keybindings, helpColors(this.hostPalette)),
       fg: HELP_FALLBACK_COLORS.foreground,
       bg: HELP_FALLBACK_COLORS.background,
       selectable: false,
@@ -392,18 +391,6 @@ export class Multiplexer {
     instance.start()
   }
 
-  private async closeActive(): Promise<void> {
-    const instance = this.activeInstance()
-    if (!instance || this.shuttingDown || instance.status === "closing") return
-
-    try {
-      await instance.stop()
-      if (!this.shuttingDown) this.removeInstance(instance)
-    } catch {
-      // Keep the session visible if its shutdown sequence fails unexpectedly.
-    }
-  }
-
   private handleInstanceExit(instance: FxInstance, exitCode: number): void {
     if (this.shuttingDown || !this.removeInstance(instance)) return
     if (this.instances.length === 0) void this.shutdown(exitCode)
@@ -464,24 +451,13 @@ export class Multiplexer {
   }
 
   private applyHelpPalette(colors: TerminalColors | null): void {
-    const foreground = detectedTerminalColor(colors?.defaultForeground)
-    const background = detectedTerminalColor(colors?.defaultBackground)
-    if (!foreground || !background) {
-      this.helpModal.backgroundColor = HELP_FALLBACK_COLORS.background
-      this.helpModal.borderColor = HELP_FALLBACK_COLORS.accent
-      this.helpModal.focusedBorderColor = HELP_FALLBACK_COLORS.accent
-      this.helpText.fg = HELP_FALLBACK_COLORS.foreground
-      this.helpText.bg = HELP_FALLBACK_COLORS.background
-      return
-    }
-
-    const accent =
-      detectedTerminalColor(colors?.palette[14]) ?? detectedTerminalColor(colors?.palette[6]) ?? foreground
-    this.helpModal.backgroundColor = background
-    this.helpModal.borderColor = accent
-    this.helpModal.focusedBorderColor = accent
-    this.helpText.fg = foreground
-    this.helpText.bg = background
+    const palette = helpColors(colors)
+    this.helpModal.backgroundColor = palette.background
+    this.helpModal.borderColor = palette.accent
+    this.helpModal.focusedBorderColor = palette.accent
+    this.helpText.fg = palette.foreground
+    this.helpText.bg = palette.background
+    this.helpText.content = styledHelpContent(this.keybindings, palette)
   }
 
   private onSelection(selection: Selection): void {
@@ -514,10 +490,6 @@ export class Multiplexer {
       this.swallow(key)
       if (MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) return
       this.cancelPrefix()
-      if (keyMatchesCombo(key, this.keybindings.prefix)) {
-        this.activeInstance()?.sendLiteralPrefix(keyBytes(key))
-        return
-      }
       if (key.name === "escape") return
       const action = actionForKey(this.keybindings, key, "prefix")
       if (action) this.executeAction(action)
@@ -555,15 +527,6 @@ export class Multiplexer {
       case "next_tab":
         this.switchTo(this.activeIndex + 1)
         return
-      case "switch_tab":
-        if (action.index < this.instances.length) this.switchTo(action.index)
-        return
-      case "close_tab":
-        void this.closeActive()
-        return
-      case "detach":
-        void this.shutdown(0)
-        return
       case "help":
         this.showHelp()
         return
@@ -600,28 +563,57 @@ export class Multiplexer {
   }
 }
 
-function helpContent(keybindings: Keybindings): string {
-  const entries: Array<readonly [string, string]> = []
-  const add = (label: string, description: string) => {
-    if (label) entries.push([label, description])
+type HelpColors = typeof HELP_FALLBACK_COLORS
+type HelpEntry = readonly [key: string, description: string]
+
+function helpColors(colors: TerminalColors | null): HelpColors {
+  const foreground = detectedTerminalColor(colors?.defaultForeground) ?? HELP_FALLBACK_COLORS.foreground
+  return {
+    foreground,
+    background: detectedTerminalColor(colors?.defaultBackground) ?? HELP_FALLBACK_COLORS.background,
+    accent:
+      detectedTerminalColor(colors?.palette[4]) ??
+      detectedTerminalColor(colors?.palette[12]) ??
+      HELP_FALLBACK_COLORS.accent,
+    key:
+      detectedTerminalColor(colors?.palette[7]) ?? detectedTerminalColor(colors?.palette[8]) ?? foreground,
   }
-
-  add(displayBindings(keybindings.new_tab, keybindings.prefix), "new fx tab")
-  add(displayBindings(keybindings.previous_tab, keybindings.prefix), "previous tab")
-  add(displayBindings(keybindings.next_tab, keybindings.prefix), "next tab")
-  add(displayIndexedBindings(keybindings.switch_tab, keybindings.prefix), "switch tab 1-9")
-  add(displayBindings(keybindings.close_tab, keybindings.prefix), "close tab")
-  add(displayBindings(keybindings.detach, keybindings.prefix), "detach (quit fmx)")
-  add(displayBindings(keybindings.help, keybindings.prefix), "keybinds")
-  const prefix = displayKeyCombo(keybindings.prefix)
-  add(`${prefix} ${prefix}`, "send prefix")
-
-  const keyColumn = Math.min(30, Math.max(16, ...entries.map(([label]) => label.length + 2)))
-  return entries.map(([label, description]) => `${label.padEnd(keyColumn)}${description}`).join("\n")
 }
 
-function keyBytes(key: KeyEvent): Uint8Array {
-  return new TextEncoder().encode(key.raw || key.sequence)
+function helpEntries(keybindings: Keybindings): HelpEntry[] {
+  return [
+    [keybindings.prefixLabel, "prefix mode"],
+    [bindingLabel(keybindings.help), "keybinds"],
+    [bindingLabel(keybindings.new_tab), "new agent"],
+    [bindingLabel(keybindings.previous_tab), "prev agent"],
+    [bindingLabel(keybindings.next_tab), "next agent"],
+  ]
+}
+
+function helpPlainText(keybindings: Keybindings): string {
+  const entries = helpEntries(keybindings)
+  const keyColumn = helpKeyColumn(entries)
+  return entries.map(([key, description]) => ` ${key.padEnd(keyColumn)}${description}`).join("\n")
+}
+
+function styledHelpContent(keybindings: Keybindings, colors: HelpColors): StyledText {
+  const entries = helpEntries(keybindings)
+  const keyColumn = helpKeyColumn(entries)
+  const chunks: TextChunk[] = []
+  for (const [index, [key, description]] of entries.entries()) {
+    chunks.push(fg(colors.foreground)(index === 0 ? " " : "\n "))
+    chunks.push(bold(fg(colors.key)(key.padEnd(keyColumn))))
+    chunks.push(fg(colors.foreground)(description))
+  }
+  return new StyledText(chunks)
+}
+
+function helpKeyColumn(entries: HelpEntry[]): number {
+  return Math.max(...entries.map(([key]) => key.length)) + 2
+}
+
+function bindingLabel(bindings: ResolvedBinding[]): string {
+  return bindings.map((binding) => binding.label).join(" / ") || "unset"
 }
 
 function errorMessage(error: unknown): string {
