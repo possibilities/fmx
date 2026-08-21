@@ -35,7 +35,7 @@ async function main(): Promise<void> {
 
   const workspace = await realpath(options.cwd)
   if (!(await stat(workspace)).isDirectory()) throw new Error(`workspace is not a directory: ${workspace}`)
-  const fxPath = await resolveExecutable(options.fxPath ?? process.env.FMX_FX_PATH ?? "fx")
+  const fxPath = await resolveExecutable(process.env.FMX_FX_PATH ?? "fx")
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
 
@@ -98,7 +98,7 @@ async function resolveExecutable(requested: string): Promise<string> {
       ? requested
       : resolve(process.cwd(), requested)
     : Bun.which(requested)
-  if (!candidate) throw new Error(`fx executable not found: ${requested} (use --fx or FMX_FX_PATH)`)
+  if (!candidate) throw new Error(`fx executable not found: ${requested} (set FMX_FX_PATH)`)
   try {
     await access(candidate, constants.X_OK)
   } catch {

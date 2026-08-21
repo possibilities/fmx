@@ -4,7 +4,6 @@ export const VERSION = "0.1.0"
 
 export type CliOptions = {
   cwd: string
-  fxPath?: string
   initialFxArgs: string[]
   maxScrollback: number
   help: boolean
@@ -38,9 +37,6 @@ export function parseArgs(args: string[], currentDirectory = process.cwd()): Cli
       case "-v":
       case "--version":
         options.version = true
-        break
-      case "--fx":
-        options.fxPath = requiredValue(args, ++index, arg)
         break
       case "-C":
       case "--cwd":
@@ -76,7 +72,6 @@ Usage:
   fmx [options] [-- <fx arguments>]
 
 Options:
-  --fx PATH             fx executable (or FMX_FX_PATH)
   -C, --cwd PATH        workspace for new instances
   --scrollback BYTES    scrollback retained per instance (default: ${DEFAULT_SCROLLBACK})
   -h, --help            show this help
