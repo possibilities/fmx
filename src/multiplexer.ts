@@ -49,6 +49,10 @@ const SIDEBAR_MAX_SCREEN_FRACTION = 1 / 3
 // faint hairline in any theme; a full palette gray reads visibly heavier.
 const DIVIDER_BLEND = 0.2
 const DIVIDER_FALLBACK_COLOR = "#4c566a"
+// Dividers stay invisible until the host palette is known (or fx starts and it
+// is definitively unknowable) so the theme-derived color never flashes over a
+// guessed one on startup.
+const DIVIDER_UNREVEALED_COLOR = "transparent"
 
 const CTRL_C = new Uint8Array([0x03])
 const HELP_CLOSE_KEY = parseKeyCombo("?")!
@@ -312,7 +316,7 @@ export class Multiplexer {
       flexShrink: 0,
       border: ["left"],
       borderStyle: "single",
-      borderColor: DIVIDER_FALLBACK_COLOR,
+      borderColor: DIVIDER_UNREVEALED_COLOR,
       onMouseDown: (event) => this.beginDividerDrag(event),
       onMouseDrag: (event) => this.continueDividerDrag(event),
       onMouseUp: () => this.endDividerDrag(),
@@ -337,7 +341,7 @@ export class Multiplexer {
         flexShrink: 0,
         border: ["left"],
         borderStyle: "single",
-        borderColor: DIVIDER_FALLBACK_COLOR,
+        borderColor: DIVIDER_UNREVEALED_COLOR,
       })
       this.debugPanel = new DebugPanel(renderer, this.agentSocket.path)
       this.stage.add(this.debugDivider)
@@ -397,6 +401,9 @@ export class Multiplexer {
   }
 
   start(): void {
+    // The host palette query has settled by the time fx launches; if it never
+    // produced colors, the fallback is the best divider color there will be.
+    if (!this.hostPalette) this.applyDividerPalette(null)
     try {
       this.createInstance(this.options.initialFxArgs)
     } catch (error) {

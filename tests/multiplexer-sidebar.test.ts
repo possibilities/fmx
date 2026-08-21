@@ -30,6 +30,9 @@ test("lays out sidebar, divider line, and content row", async () => {
     expect([divider.x, divider.y, divider.width, divider.height]).toEqual([26, 0, 1, 24])
     expect([content.x, content.y, content.width, content.height]).toEqual([27, 0, 63, 24])
 
+    // The line is invisible until the host palette reveals it.
+    multiplexer.setHostPalette(hostPalette({}))
+    await setup.renderOnce()
     const frame = setup.captureCharFrame().split("\n").filter((row) => row.length > 0)
     expect(frame).toHaveLength(24)
     for (const row of frame) expect(row[26]).toBe("│")
@@ -81,6 +84,12 @@ test("re-clamps the sidebar when the terminal shrinks", async () => {
 test("themes the divider from the host palette", async () => {
   const { multiplexer, divider } = await createMultiplexer(90, 24)
   try {
+    // Invisible until the host palette settles: painting a guessed color first
+    // would flash and then swap once the real theme arrives.
+    expect(divider.borderColor.toInts()[3]).toBe(0)
+
+    // A palette without usable colors still reveals the fallback.
+    multiplexer.setHostPalette(hostPalette({}))
     expect(rgb(divider.borderColor)).toEqual([76, 86, 106])
 
     // Detected foreground + background: a faint blend 20% toward the foreground.
