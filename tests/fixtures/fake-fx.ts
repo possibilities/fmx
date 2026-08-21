@@ -98,6 +98,7 @@ process.stdin.on("data", (chunk: Buffer) => {
 
 if (waitingForBackgroundReport) process.stdout.write("\u001b]11;?\u001b\\")
 if (waitingForPrivateCursorReport) process.stdout.write("\u001b[?6n")
+recordLifecycle("ready")
 
 function finishGracefulExit(): never {
   recordLifecycle("graceful")

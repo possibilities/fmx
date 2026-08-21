@@ -12,7 +12,7 @@ const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 const PTY_TEST_ENABLED = process.env.FMX_RUN_PTY_TESTS === "1" && typeof Bun.Terminal === "function"
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "multiplexer suspends, creates tabs, and gracefully closes every PTY",
+  "multiplexer suspends, creates sessions, and gracefully closes every PTY",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-e2e-"))
@@ -65,7 +65,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => output,
       )
 
-      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;2M\u001b[<32;4;2M\u001b[<0;4;2m"))
+      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;1M\u001b[<32;4;1M\u001b[<0;4;1m"))
       await waitUntil(() => output.includes("ZmFrZQ=="), 5_000, () => output)
 
       child.terminal?.write(Uint8Array.of(control("c")))
@@ -83,10 +83,16 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await Bun.sleep(100)
       expect(await readLifecycle(lifecycleLog)).not.toContain("start 2")
 
+      const activeFakeTitleCount = countOccurrences(output, "\u001b]0;fmx · fake session\u0007")
       child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
-      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("start 2"), 5_000, () => output)
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
+      await waitUntil(
+        () => countOccurrences(output, "\u001b]0;fmx · fake session\u0007") > activeFakeTitleCount,
+        5_000,
+        () => output,
+      )
       const copiedFakeCount = countOccurrences(output, "ZmFrZQ==")
-      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;2M\u001b[<32;4;2M\u001b[<0;4;2m"))
+      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;1M\u001b[<32;4;1M\u001b[<0;4;1m"))
       await waitUntil(() => countOccurrences(output, "ZmFrZQ==") > copiedFakeCount, 5_000, () => output)
 
       if (process.platform !== "win32") {
@@ -278,7 +284,7 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
     })
 
     try {
-      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("start 1"), 8_000, () => output)
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       process.kill(child.pid, "SIGQUIT")
       const code = await withTimeout(child.exited, 6_000, "fmx did not exit after SIGQUIT")
       const lifecycle = await readLifecycle(lifecycleLog)

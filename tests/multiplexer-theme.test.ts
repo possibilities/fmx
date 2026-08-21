@@ -3,7 +3,7 @@ import { BoxRenderable, type RGBA, type TerminalColors, TextRenderable } from "@
 import { createTestRenderer } from "@opentui/core/testing"
 import { Multiplexer } from "../src/multiplexer.ts"
 
-test("themes only the help modal from startup and refreshed host palettes", async () => {
+test("renders no persistent chrome and themes keyboard-opened help", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "fx",
@@ -13,21 +13,30 @@ test("themes only the help modal from startup and refreshed host palettes", asyn
     hostPalette: hostPalette("#102030", "#f1f2f3", "#00aabb"),
   })
 
+  const stage = setup.renderer.root.findDescendantById("fmx-stage")
   const helpModal = setup.renderer.root.findDescendantById("fmx-help")
   const helpText = setup.renderer.root.findDescendantById("fmx-help-text")
-  const header = setup.renderer.root.findDescendantById("fmx-header")
-  const stage = setup.renderer.root.findDescendantById("fmx-stage")
-  const footer = setup.renderer.root.findDescendantById("fmx-footer")
 
+  expect(stage).toBeInstanceOf(BoxRenderable)
   expect(helpModal).toBeInstanceOf(BoxRenderable)
   expect(helpText).toBeInstanceOf(TextRenderable)
-  expect(header).toBeInstanceOf(BoxRenderable)
-  expect(stage).toBeInstanceOf(BoxRenderable)
-  expect(footer).toBeInstanceOf(BoxRenderable)
+  expect(setup.renderer.root.findDescendantById("fmx-header")).toBeUndefined()
+  expect(setup.renderer.root.findDescendantById("fmx-footer")).toBeUndefined()
+  if (!(stage instanceof BoxRenderable)) return
   if (!(helpModal instanceof BoxRenderable) || !(helpText instanceof TextRenderable)) return
-  if (!(header instanceof BoxRenderable) || !(stage instanceof BoxRenderable) || !(footer instanceof BoxRenderable)) return
 
   try {
+    await setup.renderOnce()
+    expect([stage.x, stage.y, stage.width, stage.height]).toEqual([0, 0, 80, 24])
+    expect(helpModal.visible).toBe(false)
+    expect(setup.captureCharFrame()).not.toContain("fmx commands")
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("?")
+    await setup.renderOnce()
+
+    expect(helpModal.visible).toBe(true)
+    expect(setup.captureCharFrame()).toContain("fmx commands")
     expect(rgb(helpModal.backgroundColor)).toEqual([241, 242, 243])
     expect(rgb(helpModal.borderColor)).toEqual([0, 170, 187])
     expect(rgb(helpModal.titleColor)).toEqual([0, 170, 187])
@@ -42,9 +51,10 @@ test("themes only the help modal from startup and refreshed host palettes", asyn
     expect(rgb(helpText.fg)).toEqual([232, 233, 234])
     expect(rgb(helpText.bg)).toEqual([17, 18, 19])
 
-    expect(rgb(header.backgroundColor)).toEqual([35, 41, 56])
-    expect(rgb(stage.backgroundColor)).toEqual([9, 11, 16])
-    expect(rgb(footer.backgroundColor)).toEqual([23, 26, 35])
+    setup.mockInput.pressKey("?")
+    await setup.renderOnce()
+    expect(helpModal.visible).toBe(false)
+    expect(setup.captureCharFrame()).not.toContain("fmx commands")
   } finally {
     await multiplexer.shutdown()
   }

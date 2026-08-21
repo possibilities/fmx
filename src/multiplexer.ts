@@ -17,15 +17,10 @@ import { detectedTerminalColor, hasDetectedBackground, themeModeReport } from ".
 import { commandKeyName, hasCommandModifier, isPrefixKey, isSuspendKey, keyIdentity } from "./keys.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
-const COLORS = {
-  background: "#090b10",
-  chrome: "#171a23",
-  chromeStrong: "#232938",
-  text: "#d8dee9",
-  muted: "#87909f",
+const HELP_FALLBACK_COLORS = {
+  background: "#232938",
+  foreground: "#d8dee9",
   accent: "#7dd3fc",
-  warning: "#fbbf24",
-  error: "#fb7185",
 }
 
 const CTRL_B = new Uint8Array([0x02])
@@ -46,19 +41,14 @@ type InstanceStatus = "starting" | "running" | "closing" | "exited" | "failed"
 type FxProcess = ReturnType<typeof Bun.spawn>
 
 type InstanceEvents = {
-  isActive: (instance: FxInstance) => boolean
-  onChange: () => void
+  onTitleChange: (instance: FxInstance) => void
 }
 
 class FxInstance {
   readonly terminal: FxTerminalRenderable
-  readonly fallbackLabel: string
+  private readonly fallbackLabel: string
   label: string
   status: InstanceStatus = "starting"
-  exitCode: number | null = null
-  signalCode: string | null = null
-  unread = false
-  attention = false
 
   private processHandle: FxProcess | null = null
   private ptyClosed = false
@@ -84,10 +74,7 @@ class FxInstance {
     this.titleParser = new OscTitleParser({
       onTitle: (title) => {
         this.label = title || this.fallbackLabel
-        this.events.onChange()
-      },
-      onBell: () => {
-        if (!this.events.isActive(this)) this.attention = true
+        this.events.onTitleChange(this)
       },
     })
 
@@ -96,7 +83,7 @@ class FxInstance {
       cols: 80,
       rows: 24,
       width: "100%",
-      flexGrow: 1,
+      height: "100%",
       visible: false,
       maxScrollback,
       onData: (data, source) => this.writeInput(data, source),
@@ -121,12 +108,10 @@ class FxInstance {
       this.processHandle = processHandle
       this.status = "running"
       this.flushPendingInput()
-      void processHandle.exited.then((code) => this.recordExit(processHandle, code))
+      void processHandle.exited.then(() => this.recordExit(processHandle))
     } catch (error) {
       this.status = "failed"
-      this.exitCode = 1
       this.terminal.write(`\r\nfmx: failed to start fx: ${errorMessage(error)}\r\n`)
-      this.events.onChange()
     }
   }
 
@@ -171,30 +156,10 @@ class FxInstance {
     this.terminal.destroy()
   }
 
-  statusLabel(): string {
-    switch (this.status) {
-      case "starting":
-        return "starting"
-      case "running":
-        return "running"
-      case "closing":
-        return "closing"
-      case "failed":
-        return "failed"
-      case "exited":
-        if (this.signalCode) return `signal ${this.signalCode}`
-        return `exit ${this.exitCode ?? "?"}`
-    }
-  }
-
   private acceptOutput(data: Uint8Array): void {
-    const unreadBefore = this.unread
-    const attentionBefore = this.attention
     this.titleParser.push(data)
     const terminalData = this.cursorReportAdapter.toTerminal(data)
     if (terminalData.byteLength > 0) this.terminal.write(terminalData)
-    if (!this.events.isActive(this)) this.unread = true
-    if (this.unread !== unreadBefore || this.attention !== attentionBefore) this.events.onChange()
   }
 
   private writeInput(data: Uint8Array, source: EmbeddedTerminalDataSource): void {
@@ -228,15 +193,12 @@ class FxInstance {
     }
   }
 
-  private recordExit(processHandle: FxProcess, code: number): void {
+  private recordExit(processHandle: FxProcess): void {
     if (this.processHandle !== processHandle) return
     const trailingTerminalData = this.cursorReportAdapter.flushTerminalBytes()
     if (trailingTerminalData.byteLength > 0) this.terminal.write(trailingTerminalData)
-    this.exitCode = code
-    this.signalCode = processHandle.signalCode
     if (this.status !== "failed") this.status = "exited"
     this.closePty()
-    this.events.onChange()
   }
 
   private async stopImpl(): Promise<void> {
@@ -247,7 +209,6 @@ class FxInstance {
     }
 
     this.status = "closing"
-    this.events.onChange()
 
     // fx owns raw input and treats a second semantic Ctrl-C as a graceful exit,
     // including persistence finalization and its resume handoff. Extra presses
@@ -291,10 +252,7 @@ class FxInstance {
 }
 
 export class Multiplexer {
-  private readonly root: BoxRenderable
-  private readonly headerText: TextRenderable
   private readonly stage: BoxRenderable
-  private readonly footerText: TextRenderable
   private readonly helpModal: BoxRenderable
   private readonly helpText: TextRenderable
   private readonly instances: FxInstance[] = []
@@ -302,8 +260,6 @@ export class Multiplexer {
   private nextId = 1
   private prefixArmed = false
   private prefixTimer: ReturnType<typeof setTimeout> | null = null
-  private messageTimer: ReturnType<typeof setTimeout> | null = null
-  private transientMessage: string | null = null
   private helpVisible = false
   private hostPalette: TerminalColors | null = null
   private suspending = false
@@ -325,60 +281,11 @@ export class Multiplexer {
     })
     this.hostPalette = options.hostPalette ?? null
 
-    this.root = new BoxRenderable(renderer, {
-      id: "fmx-root",
-      width: "100%",
-      height: "100%",
-      flexDirection: "column",
-      backgroundColor: COLORS.background,
-    })
-
-    const header = new BoxRenderable(renderer, {
-      id: "fmx-header",
-      width: "100%",
-      height: 1,
-      flexShrink: 0,
-      backgroundColor: COLORS.chromeStrong,
-    })
-    this.headerText = new TextRenderable(renderer, {
-      id: "fmx-header-text",
-      width: "100%",
-      height: 1,
-      content: " fmx",
-      fg: COLORS.text,
-      bg: COLORS.chromeStrong,
-      wrapMode: "none",
-      truncate: true,
-      selectable: false,
-    })
-    header.add(this.headerText)
-
     this.stage = new BoxRenderable(renderer, {
       id: "fmx-stage",
       width: "100%",
-      flexGrow: 1,
-      backgroundColor: COLORS.background,
+      height: "100%",
     })
-
-    const footer = new BoxRenderable(renderer, {
-      id: "fmx-footer",
-      width: "100%",
-      height: 1,
-      flexShrink: 0,
-      backgroundColor: COLORS.chrome,
-    })
-    this.footerText = new TextRenderable(renderer, {
-      id: "fmx-footer-text",
-      width: "100%",
-      height: 1,
-      content: "",
-      fg: COLORS.muted,
-      bg: COLORS.chrome,
-      wrapMode: "none",
-      truncate: true,
-      selectable: false,
-    })
-    footer.add(this.footerText)
 
     this.helpModal = new BoxRenderable(renderer, {
       id: "fmx-help",
@@ -392,8 +299,8 @@ export class Multiplexer {
       padding: 1,
       border: true,
       borderStyle: "double",
-      borderColor: COLORS.accent,
-      backgroundColor: COLORS.chromeStrong,
+      borderColor: HELP_FALLBACK_COLORS.accent,
+      backgroundColor: HELP_FALLBACK_COLORS.background,
       title: "fmx commands",
       titleAlignment: "center",
       zIndex: 100,
@@ -417,24 +324,20 @@ export class Multiplexer {
         "Shift-drag always uses the outer terminal's selection.",
         "Press Escape or ? to close this help.",
       ].join("\n"),
-      fg: COLORS.text,
-      bg: COLORS.chromeStrong,
+      fg: HELP_FALLBACK_COLORS.foreground,
+      bg: HELP_FALLBACK_COLORS.background,
       selectable: false,
     })
     this.helpModal.add(this.helpText)
     this.applyHelpPalette(this.hostPalette)
 
-    this.root.add(header)
-    this.root.add(this.stage)
-    this.root.add(footer)
-    this.renderer.root.add(this.root)
+    this.renderer.root.add(this.stage)
     this.renderer.root.add(this.helpModal)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
-    this.renderer.setBackgroundColor(COLORS.background)
-    this.refreshChrome()
+    this.refreshTerminalTitle()
   }
 
   start(): void {
@@ -454,7 +357,6 @@ export class Multiplexer {
     this.shuttingDown = true
     this.cancelPrefix()
     this.hideHelp()
-    this.showMessage("shutting down fx instances…", 0)
 
     try {
       await Promise.allSettled(this.instances.map((instance) => instance.stop()))
@@ -483,21 +385,20 @@ export class Multiplexer {
       this.options.maxScrollback,
       this.hostPalette,
       {
-        isActive: (candidate) => this.activeInstance() === candidate,
-        onChange: () => this.refreshChrome(),
+        onTitleChange: (candidate) => {
+          if (this.activeInstance() === candidate) this.refreshTerminalTitle()
+        },
       },
     )
     this.instances.push(instance)
     this.stage.add(instance.terminal)
     this.switchTo(this.instances.length - 1)
     instance.start()
-    this.refreshChrome()
   }
 
   private async closeActive(): Promise<void> {
     const instance = this.activeInstance()
     if (!instance || this.shuttingDown || instance.status === "closing") return
-    this.showMessage(`closing ${instance.label}…`, 0)
 
     try {
       await instance.stop()
@@ -509,20 +410,18 @@ export class Multiplexer {
       this.stage.remove(instance.terminal)
       instance.destroy()
       this.instances.splice(index, 1)
-      this.transientMessage = null
 
       if (this.instances.length === 0) {
         this.activeIndex = -1
-        this.refreshChrome()
+        this.refreshTerminalTitle()
       } else if (wasActive) {
         this.activeIndex = -1
         this.switchTo(Math.min(index, this.instances.length - 1))
-      } else {
-        if (index < this.activeIndex) this.activeIndex -= 1
-        this.refreshChrome()
+      } else if (index < this.activeIndex) {
+        this.activeIndex -= 1
       }
-    } catch (error) {
-      if (!this.shuttingDown) this.showMessage(`failed to close ${instance.label}: ${errorMessage(error)}`)
+    } catch {
+      // Keep the session visible if its shutdown sequence fails unexpectedly.
     }
   }
 
@@ -530,7 +429,7 @@ export class Multiplexer {
     this.renderer.clearSelection()
     if (this.instances.length === 0) {
       this.activeIndex = -1
-      this.refreshChrome()
+      this.refreshTerminalTitle()
       return
     }
     const normalized = ((index % this.instances.length) + this.instances.length) % this.instances.length
@@ -543,12 +442,10 @@ export class Multiplexer {
 
     this.activeIndex = normalized
     const active = this.instances[normalized]!
-    active.unread = false
-    active.attention = false
     active.terminal.visible = true
     active.terminal.setHostSelectionEnabled(true)
     active.terminal.focus()
-    this.refreshChrome()
+    this.refreshTerminalTitle()
   }
 
   private activeInstance(): FxInstance | null {
@@ -566,12 +463,12 @@ export class Multiplexer {
     const foreground = detectedTerminalColor(colors?.defaultForeground)
     const background = detectedTerminalColor(colors?.defaultBackground)
     if (!foreground || !background) {
-      this.helpModal.backgroundColor = COLORS.chromeStrong
-      this.helpModal.borderColor = COLORS.accent
-      this.helpModal.focusedBorderColor = COLORS.accent
-      this.helpModal.titleColor = COLORS.accent
-      this.helpText.fg = COLORS.text
-      this.helpText.bg = COLORS.chromeStrong
+      this.helpModal.backgroundColor = HELP_FALLBACK_COLORS.background
+      this.helpModal.borderColor = HELP_FALLBACK_COLORS.accent
+      this.helpModal.focusedBorderColor = HELP_FALLBACK_COLORS.accent
+      this.helpModal.titleColor = HELP_FALLBACK_COLORS.accent
+      this.helpText.fg = HELP_FALLBACK_COLORS.foreground
+      this.helpText.bg = HELP_FALLBACK_COLORS.background
       return
     }
 
@@ -595,11 +492,7 @@ export class Multiplexer {
 
     const text = selection.getSelectedText()
     if (!text) return
-    const lineCount = text.split("\n").length
-    const summary = lineCount > 1 ? `${lineCount} lines` : `${[...text].length} chars`
-    const copied = this.renderer.copyToClipboardOSC52(text)
-    if (copied) this.renderer.clearSelection()
-    this.showMessage(copied ? `copied selection (${summary})` : `selected ${summary}; clipboard unavailable`)
+    if (this.renderer.copyToClipboardOSC52(text)) this.renderer.clearSelection()
   }
 
   private onKeyPress(key: KeyEvent): void {
@@ -650,34 +543,29 @@ export class Multiplexer {
     for (const instance of instances) instance.pauseForJobControl()
 
     let rendererSuspended = false
-    let failure: unknown = null
     try {
       this.renderer.suspend()
       rendererSuspended = true
       // fmx can itself run in an orphaned PTY process group, where SIGTSTP is
       // ignored. SIGSTOP still produces a normal shell-resumable stopped job.
       process.kill(process.pid, "SIGSTOP")
-    } catch (error) {
-      failure = error
+    } catch {
+      // Terminal ownership is restored below; fmx has no persistent status UI.
     } finally {
       try {
         if (rendererSuspended) this.renderer.resume()
-      } catch (error) {
-        failure ??= error
+      } catch {
+        // Child PTYs still need to be resumed even if renderer recovery fails.
       }
       for (const instance of instances) instance.resumeFromJobControl()
       this.suspending = false
       if (!this.helpVisible && !this.shuttingDown) active?.terminal.focus()
-      this.refreshChrome()
     }
-
-    if (failure) this.showMessage(`failed to suspend: ${errorMessage(failure)}`)
   }
 
   private runCommand(key: KeyEvent): void {
     if (hasCommandModifier(key)) {
       if (isPrefixKey(key)) this.activeInstance()?.sendLiteralPrefix()
-      else this.showMessage("command keys cannot use Ctrl, Alt, or Meta")
       return
     }
     const name = commandKeyName(key)
@@ -710,17 +598,13 @@ export class Multiplexer {
         this.showHelp()
         return
       case "escape":
-        this.refreshChrome()
         return
     }
 
     if (/^[1-9]$/u.test(name)) {
       const index = Number(name) - 1
       if (index < this.instances.length) this.switchTo(index)
-      else this.showMessage(`instance ${name} does not exist`)
-      return
     }
-    this.showMessage(`unknown command: ${printableKey(key)}`)
   }
 
   private armPrefix(): void {
@@ -729,23 +613,19 @@ export class Multiplexer {
     this.prefixTimer = setTimeout(() => {
       this.prefixTimer = null
       this.prefixArmed = false
-      this.refreshChrome()
     }, PREFIX_TIMEOUT_MS)
-    this.refreshChrome()
   }
 
   private cancelPrefix(): void {
     this.prefixArmed = false
     if (this.prefixTimer) clearTimeout(this.prefixTimer)
     this.prefixTimer = null
-    this.refreshChrome()
   }
 
   private showHelp(): void {
     this.helpVisible = true
     this.helpModal.visible = true
     this.activeInstance()?.terminal.blur()
-    this.refreshChrome()
   }
 
   private hideHelp(): void {
@@ -753,7 +633,6 @@ export class Multiplexer {
     this.helpVisible = false
     this.helpModal.visible = false
     if (!this.shuttingDown) this.activeInstance()?.terminal.focus()
-    this.refreshChrome()
   }
 
   private swallow(key: KeyEvent): void {
@@ -762,55 +641,11 @@ export class Multiplexer {
     this.swallowedReleases.add(keyIdentity(key))
   }
 
-  private showMessage(message: string, durationMs = 2_000): void {
-    this.transientMessage = message
-    if (this.messageTimer) clearTimeout(this.messageTimer)
-    this.messageTimer = null
-    if (durationMs > 0) {
-      this.messageTimer = setTimeout(() => {
-        this.messageTimer = null
-        this.transientMessage = null
-        this.refreshChrome()
-      }, durationMs)
-    }
-    this.refreshChrome()
-  }
-
-  private refreshChrome(): void {
+  private refreshTerminalTitle(): void {
     if (this.shuttingDown && this.renderer.isDestroyed) return
-    const tabs = this.instances.map((instance, index) => {
-      const marker = instance.attention ? "!" : instance.unread ? "*" : instance.status === "exited" ? "x" : ""
-      const label = truncate(instance.label, 24)
-      return index === this.activeIndex ? `[${index + 1}:${label}${marker}]` : `${index + 1}:${label}${marker}`
-    })
-    this.headerText.content = tabs.length > 0 ? ` fmx  ${tabs.join("  ")}` : " fmx  no instances"
-
     const active = this.activeInstance()
-    const outerTitle = active ? `fmx · ${active.label}` : "fmx"
-    this.renderer.setTerminalTitle(outerTitle)
-
-    if (this.helpVisible) {
-      this.footerText.content = " help open — Escape or ? closes"
-      this.footerText.fg = COLORS.accent
-    } else if (this.prefixArmed) {
-      this.footerText.content = " command: c new | r picker | R last | n/p switch | 1-9 select | x close | q quit | b literal | ? help"
-      this.footerText.fg = COLORS.accent
-    } else if (this.transientMessage) {
-      this.footerText.content = ` ${this.transientMessage}`
-      this.footerText.fg = COLORS.warning
-    } else if (active) {
-      this.footerText.content = ` ${active.statusLabel()}  |  Ctrl-B command  |  Ctrl-B ? help`
-      this.footerText.fg = active.status === "failed" ? COLORS.error : COLORS.muted
-    } else {
-      this.footerText.content = " Ctrl-B c new fx  |  Ctrl-B r resume  |  Ctrl-B q quit"
-      this.footerText.fg = COLORS.muted
-    }
+    this.renderer.setTerminalTitle(active ? `fmx · ${active.label}` : "fmx")
   }
-}
-
-function printableKey(key: KeyEvent): string {
-  if (key.sequence) return JSON.stringify(key.sequence)
-  return key.name || "unknown"
 }
 
 function launchLabel(argv: string[]): string {
@@ -818,12 +653,6 @@ function launchLabel(argv: string[]): string {
   if (argv[0] === "--resume-last" || argv[0] === "-c") return "resume last"
   if (argv[0] === "--resume") return argv[1] ? `resume ${argv[1].slice(0, 8)}` : "resume last"
   return argv.join(" ")
-}
-
-function truncate(value: string, maxLength: number): string {
-  const characters = Array.from(value)
-  if (characters.length <= maxLength) return value
-  return `${characters.slice(0, Math.max(0, maxLength - 1)).join("")}…`
 }
 
 function errorMessage(error: unknown): string {
