@@ -28,6 +28,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
         COLORTERM: "truecolor",
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_HEARTBEAT: "1",
+        FMX_TEST_KEYBOARD_MODE: "1",
+        FMX_TEST_PASSTHROUGH_KEYS: "1",
+        FMX_TEST_PRIVATE_CURSOR_QUERY: "1",
         FMX_TEST_QUERY_ON_EXIT: "1",
       },
       terminal: {
@@ -41,6 +44,33 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     try {
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("start 1"), 8_000, () => output)
+      await waitUntil(
+        async () => (await readLifecycle(lifecycleLog)).includes("private-terminal-response 1"),
+        5_000,
+        () => output,
+      )
+
+      child.terminal?.write(new TextEncoder().encode("\u0015\u001b\u007f\u001b[127;3u\u001b[127;9u"))
+      await waitUntil(
+        async () => {
+          const lifecycle = await readLifecycle(lifecycleLog)
+          return (
+            lifecycle.includes("ctrl-u 1") &&
+            lifecycle.includes("legacy-alt-backspace 1") &&
+            lifecycle.includes("kitty-alt-backspace 1") &&
+            lifecycle.includes("kitty-super-backspace 1")
+          )
+        },
+        5_000,
+        () => output,
+      )
+
+      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;2M\u001b[<32;4;2M\u001b[<0;4;2m"))
+      await waitUntil(() => output.includes("ZmFrZQ=="), 5_000, () => output)
+
+      child.terminal?.write(Uint8Array.of(control("c")))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ctrl-c 1"), 5_000, () => output)
+      expect(child.exitCode).toBeNull()
 
       child.terminal?.write(Uint8Array.of(control("b"), control("b")))
       await waitUntil(
@@ -55,6 +85,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
       child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("start 2"), 5_000, () => output)
+      const copiedFakeCount = countOccurrences(output, "ZmFrZQ==")
+      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;2M\u001b[<32;4;2M\u001b[<0;4;2m"))
+      await waitUntil(() => countOccurrences(output, "ZmFrZQ==") > copiedFakeCount, 5_000, () => output)
 
       if (process.platform !== "win32") {
         await waitUntil(
@@ -124,6 +157,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(lifecycle).toContain("terminal-response 3")
       expect(lifecycle).toContain("terminal-response 4")
       expect(output).toContain("fake session")
+      expect(output).not.toContain("invalid device status report command")
     } finally {
       if (child.exitCode === null) {
         if (process.platform !== "win32") {
@@ -141,6 +175,79 @@ test.skipIf(!PTY_TEST_ENABLED)(
     }
   },
   25_000,
+)
+
+test.skipIf(!PTY_TEST_ENABLED)(
+  "mirrors the outer terminal background before fx starts",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-palette-e2e-"))
+    const lifecycleLog = join(tempDirectory, "lifecycle.log")
+
+    let output = ""
+    const decoder = new TextDecoder()
+    const encoder = new TextEncoder()
+    const pendingReplies: string[] = []
+    let hostBackground = "#123456"
+    let sendHostReply: (reply: string) => void = (reply) => {
+      pendingReplies.push(reply)
+    }
+    const respondToPaletteQueries = createHostPaletteResponder(
+      (reply) => sendHostReply(reply),
+      () => hostBackground,
+    )
+    const child = Bun.spawn([process.execPath, "src/index.ts", "--fx", FAKE_FX], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        FMX_TEST_LOG: lifecycleLog,
+        FMX_TEST_BACKGROUND_QUERY: "1",
+        FMX_TEST_THEME_UPDATES: "1",
+      },
+      terminal: {
+        cols: 100,
+        rows: 24,
+        data: (_terminal, bytes) => {
+          const text = decoder.decode(bytes, { stream: true })
+          output += text
+          respondToPaletteQueries(text)
+        },
+      },
+    })
+    sendHostReply = (reply) => child.terminal?.write(encoder.encode(reply))
+    for (const reply of pendingReplies) sendHostReply(reply)
+
+    try {
+      await waitUntil(
+        async () => (await readLifecycle(lifecycleLog)).includes("background-response 1"),
+        8_000,
+        () => output,
+      )
+      const lifecycle = await readLifecycle(lifecycleLog)
+      expect(lifecycle).toContain("rgb:1212/3434/5656")
+
+      hostBackground = "#eeeeee"
+      child.terminal?.write(encoder.encode("\u001b[?997;2n"))
+      await waitUntil(
+        async () => countOccurrences(await readLifecycle(lifecycleLog), "background-response 1") >= 2,
+        8_000,
+        () => output,
+      )
+      const updatedLifecycle = await readLifecycle(lifecycleLog)
+      expect(updatedLifecycle).toContain("theme-notification 1")
+      expect(updatedLifecycle).toContain("rgb:eeee/eeee/eeee")
+
+      child.terminal?.write(Uint8Array.of(control("b"), "q".charCodeAt(0)))
+      expect(await withTimeout(child.exited, 6_000, "fmx did not exit")).toBe(0)
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL")
+      child.terminal?.close()
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  15_000,
 )
 
 test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
@@ -186,6 +293,60 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
   },
   15_000,
 )
+
+function createHostPaletteResponder(
+  send: (reply: string) => void,
+  defaultBackground: () => string = () => "#123456",
+): (output: string) => void {
+  const ansi = [
+    "#010203",
+    "#cc241d",
+    "#98971a",
+    "#d79921",
+    "#458588",
+    "#b16286",
+    "#689d6a",
+    "#a89984",
+    "#928374",
+    "#fb4934",
+    "#b8bb26",
+    "#fabd2f",
+    "#83a598",
+    "#d3869b",
+    "#8ec07c",
+    "#ebdbb2",
+  ]
+  const special = new Map<number, string>([
+    [10, "#102030"],
+    [11, "#123456"],
+    [12, "#abcdef"],
+    [13, "#102030"],
+    [14, "#123456"],
+    [15, "#102030"],
+    [16, "#123456"],
+    [17, "#345678"],
+    [19, "#f0f1f2"],
+  ])
+  let buffer = ""
+
+  return (output) => {
+    buffer += output
+    let match: RegExpExecArray | null
+    const query = /\u001b\](?:4;(\d+)|(\d+));\?(?:\u0007|\u001b\\)/u
+    while ((match = query.exec(buffer))) {
+      buffer = buffer.slice(match.index + match[0].length)
+      if (match[1] !== undefined) {
+        const index = Number(match[1])
+        send(`\u001b]4;${index};${ansi[index] ?? "#000000"}\u0007`)
+      } else {
+        const index = Number(match[2])
+        const color = index === 11 ? defaultBackground() : (special.get(index) ?? "#000000")
+        send(`\u001b]${index};${color}\u0007`)
+      }
+    }
+    if (buffer.length > 4_096) buffer = buffer.slice(-4_096)
+  }
+}
 
 async function waitUntil(
   predicate: () => boolean | Promise<boolean>,

@@ -1,0 +1,205 @@
+import { expect, test } from "bun:test"
+import { buildKittyKeyboardFlags, type TerminalColors } from "@opentui/core"
+import { createTestRenderer } from "@opentui/core/testing"
+import { FX_KEYBOARD_PROTOCOL, FxTerminalRenderable } from "../src/fx-terminal.ts"
+
+test("matches fx's host Kitty keyboard protocol", () => {
+  expect(buildKittyKeyboardFlags(FX_KEYBOARD_PROTOCOL)).toBe(1)
+})
+
+test("mirrors the host palette into the embedded terminal", async () => {
+  const setup = await createTestRenderer({ width: 20, height: 6 })
+  const responses: string[] = []
+
+  try {
+    const terminal = new FxTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data, source) => {
+        if (source === "response") responses.push(new TextDecoder().decode(data))
+      },
+    })
+    setup.renderer.root.add(terminal)
+
+    expect(
+      terminal.applyHostPalette({
+        palette: ["#010203", "#aabbcc"],
+        defaultForeground: "#102030",
+        defaultBackground: "#123456",
+        cursorColor: "#abcdef",
+        mouseForeground: null,
+        mouseBackground: null,
+        tekForeground: null,
+        tekBackground: null,
+        highlightBackground: null,
+        highlightForeground: null,
+      } satisfies TerminalColors),
+    ).toBe(true)
+
+    terminal.write("\x1b]4;0;?\x1b\\\x1b]10;?;?;?\x1b\\")
+
+    expect(responses.join("")).toContain("\x1b]4;0;rgb:0101/0202/0303\x1b\\")
+    expect(responses.join("")).toContain("\x1b]10;rgb:1010/2020/3030\x1b\\")
+    expect(responses.join("")).toContain("\x1b]11;rgb:1212/3434/5656\x1b\\")
+    expect(responses.join("")).toContain("\x1b]12;rgb:abab/cdcd/efef\x1b\\")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("forwards host key bytes without re-encoding them", async () => {
+  const setup = await createTestRenderer({
+    width: 20,
+    height: 6,
+    exitOnCtrlC: false,
+    useKittyKeyboard: FX_KEYBOARD_PROTOCOL,
+  })
+  const sent: Uint8Array[] = []
+
+  try {
+    const terminal = new FxTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data, source) => {
+        if (source === "input") sent.push(data)
+      },
+    })
+    setup.renderer.root.add(terminal)
+    terminal.focus()
+
+    for (const key of [
+      {
+        name: "c",
+        ctrl: true,
+        meta: false,
+        shift: false,
+        option: false,
+        sequence: "c",
+        raw: "\u001b[99;5u",
+        number: false,
+        eventType: "press" as const,
+        source: "kitty" as const,
+        baseCode: 99,
+      },
+      {
+        name: "u",
+        ctrl: true,
+        meta: false,
+        shift: false,
+        option: false,
+        sequence: "\u0015",
+        raw: "\u0015",
+        number: false,
+        eventType: "press" as const,
+        source: "raw" as const,
+      },
+      {
+        name: "backspace",
+        ctrl: false,
+        meta: true,
+        shift: false,
+        option: false,
+        sequence: "\u001b\u007f",
+        raw: "\u001b\u007f",
+        number: false,
+        eventType: "press" as const,
+        source: "raw" as const,
+      },
+      {
+        name: "backspace",
+        ctrl: false,
+        meta: true,
+        shift: false,
+        option: true,
+        super: false,
+        sequence: "\u001b[127;3u",
+        raw: "\u001b[127;3u",
+        code: "[127u",
+        number: false,
+        eventType: "press" as const,
+        source: "kitty" as const,
+      },
+      {
+        name: "backspace",
+        ctrl: false,
+        meta: false,
+        shift: false,
+        option: false,
+        super: true,
+        sequence: "\u001b[127;9u",
+        raw: "\u001b[127;9u",
+        code: "[127u",
+        number: false,
+        eventType: "press" as const,
+        source: "kitty" as const,
+      },
+    ]) {
+      setup.renderer.keyInput.processParsedKey(key)
+    }
+
+    expect(sent.map((data) => new TextDecoder().decode(data))).toEqual([
+      "\u001b[99;5u",
+      "\u0015",
+      "\u001b\u007f",
+      "\u001b[127;3u",
+      "\u001b[127;9u",
+    ])
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("ordinary drags select embedded text when fx has not requested mouse input", async () => {
+  const setup = await createTestRenderer({ width: 20, height: 6 })
+  const sent: string[] = []
+
+  try {
+    const terminal = new FxTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data, source) => {
+        if (source === "input") sent.push(new TextDecoder().decode(data))
+      },
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("select this text\r\n")
+    await setup.renderOnce()
+
+    await setup.mockMouse.drag(0, 0, 5, 0)
+
+    expect(terminal.selectable).toBe(true)
+    expect(terminal.hasSelection()).toBe(true)
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("select")
+    expect(sent).toEqual([])
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("fx mouse reporting cancels OpenTUI's provisional selection", async () => {
+  const setup = await createTestRenderer({ width: 20, height: 6 })
+  const sent: string[] = []
+  const decoder = new TextDecoder()
+
+  try {
+    const terminal = new FxTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: (data, source) => {
+        if (source === "input") sent.push(decoder.decode(data))
+      },
+    })
+    setup.renderer.root.add(terminal)
+    terminal.write("fx owns this screen\r\n\u001b[?1002h\u001b[?1006h")
+    await setup.renderOnce()
+
+    await setup.mockMouse.drag(1, 1, 8, 1)
+
+    expect(terminal.selectable).toBe(true)
+    expect(terminal.hasSelection()).toBe(false)
+    expect(setup.renderer.hasSelection).toBe(false)
+    expect(sent.join("")).toMatch(/\u001b\[<\d+;\d+;\d+[Mm]/u)
+  } finally {
+    setup.renderer.destroy()
+  }
+})

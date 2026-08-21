@@ -1,13 +1,19 @@
 import {
   BoxRenderable,
   type CliRenderer,
+  CliRenderEvents,
   type EmbeddedTerminalDataSource,
-  EmbeddedTerminalRenderable,
   type KeyEvent,
+  type Selection,
+  type TerminalColors,
   TextRenderable,
+  type ThemeMode,
 } from "@opentui/core"
 import { basename } from "node:path"
+import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { createFxEnvironment } from "./fx-environment.ts"
+import { FxTerminalRenderable } from "./fx-terminal.ts"
+import { detectedTerminalColor, hasDetectedBackground, themeModeReport } from "./host-palette.ts"
 import { commandKeyName, hasCommandModifier, isPrefixKey, isSuspendKey, keyIdentity } from "./keys.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
@@ -33,6 +39,7 @@ export type MultiplexerOptions = {
   cwd: string
   initialFxArgs: string[]
   maxScrollback: number
+  hostPalette?: TerminalColors | null
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited" | "failed"
@@ -44,7 +51,7 @@ type InstanceEvents = {
 }
 
 class FxInstance {
-  readonly terminal: EmbeddedTerminalRenderable
+  readonly terminal: FxTerminalRenderable
   readonly fallbackLabel: string
   label: string
   status: InstanceStatus = "starting"
@@ -57,6 +64,7 @@ class FxInstance {
   private ptyClosed = false
   private stopPromise: Promise<void> | null = null
   private pendingInput: Array<{ data: Uint8Array; source: EmbeddedTerminalDataSource }> = []
+  private readonly cursorReportAdapter = new CursorReportAdapter()
   private readonly titleParser: OscTitleParser
 
   constructor(
@@ -66,6 +74,7 @@ class FxInstance {
     private readonly argv: string[],
     private readonly fxPath: string,
     maxScrollback: number,
+    hostPalette: TerminalColors | null,
     private readonly events: InstanceEvents,
   ) {
     const workspace = basename(cwd) || "workspace"
@@ -82,7 +91,7 @@ class FxInstance {
       },
     })
 
-    this.terminal = new EmbeddedTerminalRenderable(renderer, {
+    this.terminal = new FxTerminalRenderable(renderer, {
       id: `fx-${id}`,
       cols: 80,
       rows: 24,
@@ -90,10 +99,10 @@ class FxInstance {
       flexGrow: 1,
       visible: false,
       maxScrollback,
-      selectable: true,
       onData: (data, source) => this.writeInput(data, source),
       onTerminalResize: (cols, rows) => this.resizePty(cols, rows),
     })
+    if (hostPalette) this.terminal.applyHostPalette(hostPalette)
   }
 
   start(): void {
@@ -123,6 +132,11 @@ class FxInstance {
 
   sendLiteralPrefix(): void {
     this.writeInput(CTRL_B, "input")
+  }
+
+  updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
+    if (!this.terminal.applyHostPalette(colors)) return
+    if (themeMode && hasDetectedBackground(colors)) this.writeInput(themeModeReport(themeMode), "response")
   }
 
   pauseForJobControl(): void {
@@ -177,7 +191,8 @@ class FxInstance {
     const unreadBefore = this.unread
     const attentionBefore = this.attention
     this.titleParser.push(data)
-    this.terminal.write(data)
+    const terminalData = this.cursorReportAdapter.toTerminal(data)
+    if (terminalData.byteLength > 0) this.terminal.write(terminalData)
     if (!this.events.isActive(this)) this.unread = true
     if (this.unread !== unreadBefore || this.attention !== attentionBefore) this.events.onChange()
   }
@@ -191,8 +206,9 @@ class FxInstance {
     // Stop accepting user input once shutdown begins, but keep terminal-query
     // responses flowing so fx can restore and finalize its terminal cleanly.
     if (this.status === "closing" && source === "input") return
+    const ptyData = source === "response" ? this.cursorReportAdapter.toPty(data) : data
     try {
-      pty.write(data)
+      pty.write(ptyData)
     } catch {
       // Exit reconciliation owns the final state; stale input can be dropped.
     }
@@ -214,6 +230,8 @@ class FxInstance {
 
   private recordExit(processHandle: FxProcess, code: number): void {
     if (this.processHandle !== processHandle) return
+    const trailingTerminalData = this.cursorReportAdapter.flushTerminalBytes()
+    if (trailingTerminalData.byteLength > 0) this.terminal.write(trailingTerminalData)
     this.exitCode = code
     this.signalCode = processHandle.signalCode
     if (this.status !== "failed") this.status = "exited"
@@ -278,6 +296,7 @@ export class Multiplexer {
   private readonly stage: BoxRenderable
   private readonly footerText: TextRenderable
   private readonly helpModal: BoxRenderable
+  private readonly helpText: TextRenderable
   private readonly instances: FxInstance[] = []
   private activeIndex = -1
   private nextId = 1
@@ -286,6 +305,7 @@ export class Multiplexer {
   private messageTimer: ReturnType<typeof setTimeout> | null = null
   private transientMessage: string | null = null
   private helpVisible = false
+  private hostPalette: TerminalColors | null = null
   private suspending = false
   private shuttingDown = false
   private readonly swallowedReleases = new Set<string>()
@@ -293,6 +313,8 @@ export class Multiplexer {
   private resolveDone!: () => void
   private readonly keypressHandler = (key: KeyEvent) => this.onKeyPress(key)
   private readonly keyreleaseHandler = (key: KeyEvent) => this.onKeyRelease(key)
+  private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
+  private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -301,6 +323,7 @@ export class Multiplexer {
     this.donePromise = new Promise((resolveDone) => {
       this.resolveDone = resolveDone
     })
+    this.hostPalette = options.hostPalette ?? null
 
     this.root = new BoxRenderable(renderer, {
       id: "fmx-root",
@@ -326,6 +349,7 @@ export class Multiplexer {
       bg: COLORS.chromeStrong,
       wrapMode: "none",
       truncate: true,
+      selectable: false,
     })
     header.add(this.headerText)
 
@@ -352,6 +376,7 @@ export class Multiplexer {
       bg: COLORS.chrome,
       wrapMode: "none",
       truncate: true,
+      selectable: false,
     })
     footer.add(this.footerText)
 
@@ -361,9 +386,9 @@ export class Multiplexer {
       left: "50%",
       top: "50%",
       width: 56,
-      height: 17,
+      height: 18,
       marginLeft: -28,
-      marginTop: -8,
+      marginTop: -9,
       padding: 1,
       border: true,
       borderStyle: "double",
@@ -374,27 +399,30 @@ export class Multiplexer {
       zIndex: 100,
       visible: false,
     })
-    this.helpModal.add(
-      new TextRenderable(renderer, {
-        id: "fmx-help-text",
-        content: [
-          "Ctrl-B c       new fx session",
-          "Ctrl-B r       open fx session picker",
-          "Ctrl-B R       resume latest session",
-          "Ctrl-B n / p   next / previous instance",
-          "Ctrl-B 1..9    select instance",
-          "Ctrl-B x       gracefully close active instance",
-          "Ctrl-B q       gracefully quit fmx",
-          "Ctrl-B b       send literal Ctrl-B to fx",
-          "Ctrl-B ?       toggle this help",
-          "Ctrl-Z         suspend fmx and fx sessions (Unix)",
-          "",
-          "Ctrl-C, paste, mouse, and all other input go to fx.",
-          "Press Escape or ? to close this help.",
-        ].join("\n"),
-        fg: COLORS.text,
-      }),
-    )
+    this.helpText = new TextRenderable(renderer, {
+      id: "fmx-help-text",
+      content: [
+        "Ctrl-B c       new fx session",
+        "Ctrl-B r       open fx session picker",
+        "Ctrl-B R       resume latest session",
+        "Ctrl-B n / p   next / previous instance",
+        "Ctrl-B 1..9    select instance",
+        "Ctrl-B x       gracefully close active instance",
+        "Ctrl-B q       gracefully quit fmx",
+        "Ctrl-B b       send literal Ctrl-B to fx",
+        "Ctrl-B ?       toggle this help",
+        "Ctrl-Z         suspend fmx and fx sessions (Unix)",
+        "",
+        "Drag selects and copies; fx-owned mouse screens get drag.",
+        "Shift-drag always uses the outer terminal's selection.",
+        "Press Escape or ? to close this help.",
+      ].join("\n"),
+      fg: COLORS.text,
+      bg: COLORS.chromeStrong,
+      selectable: false,
+    })
+    this.helpModal.add(this.helpText)
+    this.applyHelpPalette(this.hostPalette)
 
     this.root.add(header)
     this.root.add(this.stage)
@@ -403,12 +431,18 @@ export class Multiplexer {
     this.renderer.root.add(this.helpModal)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
+    this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
+    this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.setBackgroundColor(COLORS.background)
     this.refreshChrome()
   }
 
   start(): void {
     this.createInstance(this.options.initialFxArgs)
+  }
+
+  setHostPalette(colors: TerminalColors): void {
+    this.onPalette(colors)
   }
 
   waitUntilDone(): Promise<void> {
@@ -426,6 +460,9 @@ export class Multiplexer {
       await Promise.allSettled(this.instances.map((instance) => instance.stop()))
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
+      this.renderer.off(CliRenderEvents.SELECTION, this.selectionHandler)
+      this.renderer.off(CliRenderEvents.PALETTE, this.paletteHandler)
+      this.renderer.clearSelection()
       for (const instance of this.instances) instance.destroy()
     } finally {
       this.instances.length = 0
@@ -444,6 +481,7 @@ export class Multiplexer {
       argv,
       this.options.fxPath,
       this.options.maxScrollback,
+      this.hostPalette,
       {
         isActive: (candidate) => this.activeInstance() === candidate,
         onChange: () => this.refreshChrome(),
@@ -489,6 +527,7 @@ export class Multiplexer {
   }
 
   private switchTo(index: number): void {
+    this.renderer.clearSelection()
     if (this.instances.length === 0) {
       this.activeIndex = -1
       this.refreshChrome()
@@ -497,6 +536,7 @@ export class Multiplexer {
     const normalized = ((index % this.instances.length) + this.instances.length) % this.instances.length
     const previous = this.activeInstance()
     if (previous) {
+      previous.terminal.setHostSelectionEnabled(false)
       previous.terminal.blur()
       previous.terminal.visible = false
     }
@@ -506,6 +546,7 @@ export class Multiplexer {
     active.unread = false
     active.attention = false
     active.terminal.visible = true
+    active.terminal.setHostSelectionEnabled(true)
     active.terminal.focus()
     this.refreshChrome()
   }
@@ -514,7 +555,55 @@ export class Multiplexer {
     return this.instances[this.activeIndex] ?? null
   }
 
+  private onPalette(colors: TerminalColors): void {
+    this.hostPalette = colors
+    this.applyHelpPalette(colors)
+    const themeMode = this.renderer.themeMode
+    for (const instance of this.instances) instance.updateHostPalette(colors, themeMode)
+  }
+
+  private applyHelpPalette(colors: TerminalColors | null): void {
+    const foreground = detectedTerminalColor(colors?.defaultForeground)
+    const background = detectedTerminalColor(colors?.defaultBackground)
+    if (!foreground || !background) {
+      this.helpModal.backgroundColor = COLORS.chromeStrong
+      this.helpModal.borderColor = COLORS.accent
+      this.helpModal.focusedBorderColor = COLORS.accent
+      this.helpModal.titleColor = COLORS.accent
+      this.helpText.fg = COLORS.text
+      this.helpText.bg = COLORS.chromeStrong
+      return
+    }
+
+    const accent =
+      detectedTerminalColor(colors?.palette[14]) ?? detectedTerminalColor(colors?.palette[6]) ?? foreground
+    this.helpModal.backgroundColor = background
+    this.helpModal.borderColor = accent
+    this.helpModal.focusedBorderColor = accent
+    this.helpModal.titleColor = accent
+    this.helpText.fg = foreground
+    this.helpText.bg = background
+  }
+
+  private onSelection(selection: Selection): void {
+    // A plain click creates a provisional one-cell OpenTUI selection. Treat it
+    // as focus, not a clipboard mutation; real drags clear isStart on movement.
+    if (selection.isStart) {
+      this.renderer.clearSelection()
+      return
+    }
+
+    const text = selection.getSelectedText()
+    if (!text) return
+    const lineCount = text.split("\n").length
+    const summary = lineCount > 1 ? `${lineCount} lines` : `${[...text].length} chars`
+    const copied = this.renderer.copyToClipboardOSC52(text)
+    if (copied) this.renderer.clearSelection()
+    this.showMessage(copied ? `copied selection (${summary})` : `selected ${summary}; clipboard unavailable`)
+  }
+
   private onKeyPress(key: KeyEvent): void {
+    if (this.renderer.hasSelection) this.renderer.clearSelection()
     if (this.shuttingDown || this.suspending) {
       this.swallow(key)
       return

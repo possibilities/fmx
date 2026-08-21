@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 
-import { createCliRenderer, type CliRenderer } from "@opentui/core"
+import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opentui/core"
 import { access, constants, realpath, stat } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { parseArgs, usage, VERSION } from "./cli.ts"
+import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 
 async function main(): Promise<void> {
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: [],
-      useKittyKeyboard: { events: true },
+      useKittyKeyboard: FX_KEYBOARD_PROTOCOL,
     })
     renderer.start()
     app = new Multiplexer(renderer, {
@@ -64,6 +65,8 @@ async function main(): Promise<void> {
       process.once(signal, handler)
     }
 
+    const hostPalette = await detectHostPalette(renderer)
+    if (hostPalette) app.setHostPalette(hostPalette)
     app.start()
     await app.waitUntilDone()
   } catch (error) {
@@ -72,6 +75,16 @@ async function main(): Promise<void> {
     throw error
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+  }
+}
+
+async function detectHostPalette(renderer: CliRenderer): Promise<TerminalColors | null> {
+  try {
+    return await renderer.getPalette({ size: 16 })
+  } catch {
+    // Palette mirroring is an enhancement; keep fmx usable when a terminal
+    // cannot answer OSC color queries.
+    return null
   }
 }
 
