@@ -75,8 +75,7 @@ chmod 0755 "$candidate"
 
 stripped=false
 if [[ "$expected_os" == "Darwin" ]]; then
-  if codesign --remove-signature "$candidate" >/dev/null 2>&1 \
-    && strip -x "$candidate" \
+  if strip -x "$candidate" \
     && codesign --force --sign - "$candidate" >/dev/null 2>&1; then
     stripped=true
   fi
@@ -95,6 +94,10 @@ if [[ "$stripped" == true \
 else
   printf 'fmx release: retained compiler output (%s bytes); stripped candidate was not smaller and healthy\n' \
     "$original_size"
+fi
+
+if [[ "$expected_os" == "Darwin" ]]; then
+  codesign --force --sign - "$binary" >/dev/null
 fi
 
 if [[ "$($binary --version)" != "$version" ]]; then
