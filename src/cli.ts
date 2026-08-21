@@ -82,6 +82,10 @@ Options:
   -h, --help            show this help
   -v, --version         show the version
 
-Inside fmx, Ctrl-B enters command mode. Press Ctrl-B ? for bindings.
+Configuration:
+  ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)
+  [keys] is a strict subset of Herdr's keybinding schema.
+
+Inside fmx, Ctrl-B enters prefix mode by default. Press Ctrl-B ? for bindings.
 `
 }
