@@ -15,21 +15,25 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
   multiplexer.setHostPalette(hostPalette("#102030", "#f1f2f3", "#00aabb", "#778899"))
 
   const stage = setup.renderer.root.findDescendantById("fmx-stage")
-  const helpModal = setup.renderer.root.findDescendantById("fmx-help")
-  const helpText = setup.renderer.root.findDescendantById("fmx-help-text")
+  const modalBackdrop = setup.renderer.root.findDescendantById("fmx-modal-backdrop")
+  const modal = setup.renderer.root.findDescendantById("fmx-modal")
+  const modalText = setup.renderer.root.findDescendantById("fmx-modal-text")
 
   expect(stage).toBeInstanceOf(BoxRenderable)
-  expect(helpModal).toBeInstanceOf(BoxRenderable)
-  expect(helpText).toBeInstanceOf(TextRenderable)
+  expect(modalBackdrop).toBeInstanceOf(BoxRenderable)
+  expect(modal).toBeInstanceOf(BoxRenderable)
+  expect(modalText).toBeInstanceOf(TextRenderable)
   expect(setup.renderer.root.findDescendantById("fmx-header")).toBeUndefined()
   expect(setup.renderer.root.findDescendantById("fmx-footer")).toBeUndefined()
   if (!(stage instanceof BoxRenderable)) return
-  if (!(helpModal instanceof BoxRenderable) || !(helpText instanceof TextRenderable)) return
+  if (!(modalBackdrop instanceof BoxRenderable)) return
+  if (!(modal instanceof BoxRenderable) || !(modalText instanceof TextRenderable)) return
 
   try {
     await setup.renderOnce()
     expect([stage.x, stage.y, stage.width, stage.height]).toEqual([0, 0, 80, 24])
-    expect(helpModal.visible).toBe(false)
+    expect(modalBackdrop.visible).toBe(false)
+    expect(modal.visible).toBe(false)
     expect(setup.captureCharFrame()).not.toContain("prefix+c")
 
     setup.mockInput.pressKey("b", { ctrl: true })
@@ -37,37 +41,46 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
     await setup.renderOnce()
 
     const helpFrame = setup.captureCharFrame()
-    expect(helpModal.visible).toBe(true)
-    expect(helpModal.borderStyle).toBe("single")
-    expect(helpModal.title).toBeUndefined()
+    expect(modalBackdrop.visible).toBe(true)
+    expect(modal.visible).toBe(true)
+    expect([modalBackdrop.x, modalBackdrop.y, modalBackdrop.width, modalBackdrop.height]).toEqual([0, 0, 80, 24])
+    expect(modal.borderStyle).toBe("single")
+    expect(modal.title).toBeUndefined()
     expect(helpFrame).toContain("keybinds")
     expect(helpFrame).toContain("prefix+c")
-    expect([helpText.x - helpModal.x, helpText.y - helpModal.y]).toEqual([2, 1])
+    expect([modalText.x - modal.x, modalText.y - modal.y]).toEqual([2, 1])
     expect([
-      helpModal.width - (helpText.x - helpModal.x) - helpText.width,
-      helpModal.height - (helpText.y - helpModal.y) - helpText.height,
+      modal.width - (modalText.x - modal.x) - modalText.width,
+      modal.height - (modalText.y - modal.y) - modalText.height,
     ]).toEqual([2, 1])
-    expect(rgb(helpModal.backgroundColor)).toEqual([241, 242, 243])
-    expect(rgb(helpModal.borderColor)).toEqual([0, 170, 187])
-    expect(rgb(helpText.fg)).toEqual([16, 32, 48])
-    expect(rgb(helpText.bg)).toEqual([241, 242, 243])
-    const keyChunk = helpText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))
-    const labelChunk = helpText.chunks.find((chunk) => chunk.text === "new agent")
+    expect(rgba(modalBackdrop.backgroundColor)).toEqual([16, 32, 48, 38])
+    expect(rgb(modal.backgroundColor)).toEqual([241, 242, 243])
+    expect(rgb(modal.borderColor)).toEqual([0, 170, 187])
+    expect(rgb(modalText.fg)).toEqual([16, 32, 48])
+    expect(rgb(modalText.bg)).toEqual([241, 242, 243])
+    const keyChunk = modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))
+    const labelChunk = modalText.chunks.find((chunk) => chunk.text === "new agent")
     expect(rgb(keyChunk?.fg)).toEqual([119, 136, 153])
     expect((keyChunk?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
     expect(rgb(labelChunk?.fg)).toEqual([16, 32, 48])
 
     multiplexer.setHostPalette(hostPalette("#e8e9ea", "#111213", "#33ccdd", "#8899aa"))
 
-    expect(rgb(helpModal.backgroundColor)).toEqual([17, 18, 19])
-    expect(rgb(helpModal.borderColor)).toEqual([51, 204, 221])
-    expect(rgb(helpText.fg)).toEqual([232, 233, 234])
-    expect(rgb(helpText.bg)).toEqual([17, 18, 19])
-    expect(rgb(helpText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))?.fg)).toEqual([136, 153, 170])
+    expect(rgba(modalBackdrop.backgroundColor)).toEqual([232, 233, 234, 38])
+    expect(rgb(modal.backgroundColor)).toEqual([17, 18, 19])
+    expect(rgb(modal.borderColor)).toEqual([51, 204, 221])
+    expect(rgb(modalText.fg)).toEqual([232, 233, 234])
+    expect(rgb(modalText.bg)).toEqual([17, 18, 19])
+    expect(rgb(modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))?.fg)).toEqual([136, 153, 170])
 
-    setup.mockInput.pressKey("?")
+    await setup.mockMouse.click(modal.x + 1, modal.y + 1)
     await setup.renderOnce()
-    expect(helpModal.visible).toBe(false)
+    expect(modalBackdrop.visible).toBe(true)
+
+    await setup.mockMouse.click(0, 0)
+    await setup.renderOnce()
+    expect(modalBackdrop.visible).toBe(false)
+    expect(modal.visible).toBe(false)
     expect(setup.captureCharFrame()).not.toContain("prefix+c")
   } finally {
     await multiplexer.shutdown()
@@ -94,4 +107,8 @@ function hostPalette(foreground: string, background: string, accent: string, key
 
 function rgb(color: RGBA | undefined): number[] | undefined {
   return color?.toInts().slice(0, 3)
+}
+
+function rgba(color: RGBA | undefined): number[] | undefined {
+  return color?.toInts()
 }

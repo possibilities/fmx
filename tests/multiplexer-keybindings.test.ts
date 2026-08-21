@@ -13,7 +13,7 @@ test("uses the configured prefix and renders configured bindings", async () => {
     initialFxArgs: [],
     keybindings,
   })
-  const helpModal = setup.renderer.root.findDescendantById("fmx-help")
+  const helpModal = setup.renderer.root.findDescendantById("fmx-modal")
   expect(helpModal).toBeInstanceOf(BoxRenderable)
   if (!(helpModal instanceof BoxRenderable)) return
 

@@ -29,10 +29,12 @@ import {
 } from "./keybindings.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
-const HELP_FALLBACK_COLORS = {
+const MODAL_FALLBACK_COLORS = {
   background: "#232938",
   foreground: "#d8dee9",
   accent: "#7dd3fc",
+  backdrop: "#d8dee926",
+  error: "#f87171",
   key: "#a3a3a3",
 }
 
@@ -67,6 +69,7 @@ type MultiplexerOptions = {
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited"
 type FxProcess = ReturnType<typeof Bun.spawn>
+type ModalKind = "help" | "spawn-error"
 
 type InstanceEvents = {
   onTitleChange: (instance: FxInstance) => void
@@ -119,22 +122,18 @@ class FxInstance {
   }
 
   start(): void {
-    try {
-      const processHandle = Bun.spawn([this.fxPath, ...this.argv], {
-        cwd: this.cwd,
-        env: createFxEnvironment(process.env, this.id, this.cwd),
-        terminal: {
-          cols: Math.max(1, this.terminal.width || 80),
-          rows: Math.max(1, this.terminal.height || 24),
-          data: (_pty, data) => this.acceptOutput(data),
-        },
-      })
-      this.processHandle = processHandle
-      this.status = "running"
-      void processHandle.exited.then((exitCode) => this.recordExit(exitCode))
-    } catch (error) {
-      this.terminal.write(`\r\nfmx: failed to start fx: ${errorMessage(error)}\r\n`)
-    }
+    const processHandle = Bun.spawn([this.fxPath, ...this.argv], {
+      cwd: this.cwd,
+      env: createFxEnvironment(process.env, this.id, this.cwd),
+      terminal: {
+        cols: Math.max(1, this.terminal.width || 80),
+        rows: Math.max(1, this.terminal.height || 24),
+        data: (_pty, data) => this.acceptOutput(data),
+      },
+    })
+    this.processHandle = processHandle
+    this.status = "running"
+    void processHandle.exited.then((exitCode) => this.recordExit(exitCode))
   }
 
   updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
@@ -236,14 +235,16 @@ class FxInstance {
 
 export class Multiplexer {
   private readonly stage: BoxRenderable
-  private readonly helpModal: BoxRenderable
-  private readonly helpText: TextRenderable
+  private readonly modalBackdrop: BoxRenderable
+  private readonly modal: BoxRenderable
+  private readonly modalText: TextRenderable
   private readonly keybindings: Keybindings
   private readonly instances: FxInstance[] = []
   private activeIndex = -1
   private nextId = 1
   private prefixArmed = false
-  private helpVisible = false
+  private modalKind: ModalKind | null = null
+  private spawnErrorLines: string[] = []
   private hostPalette: TerminalColors | null = null
   private shuttingDown = false
   private readonly swallowedReleases = new Set<string>()
@@ -273,8 +274,20 @@ export class Multiplexer {
       height: "100%",
     })
 
-    this.helpModal = new BoxRenderable(renderer, {
-      id: "fmx-help",
+    this.modalBackdrop = new BoxRenderable(renderer, {
+      id: "fmx-modal-backdrop",
+      position: "absolute",
+      top: 0,
+      left: 0,
+      width: "100%",
+      height: "100%",
+      backgroundColor: MODAL_FALLBACK_COLORS.backdrop,
+      zIndex: 100,
+      visible: false,
+      onMouseDown: () => this.hideModal(),
+    })
+    this.modal = new BoxRenderable(renderer, {
+      id: "fmx-modal",
       position: "absolute",
       left: "50%",
       top: "50%",
@@ -285,23 +298,24 @@ export class Multiplexer {
       paddingX: 1,
       border: true,
       borderStyle: "single",
-      borderColor: HELP_FALLBACK_COLORS.accent,
-      backgroundColor: HELP_FALLBACK_COLORS.background,
-      zIndex: 100,
+      borderColor: MODAL_FALLBACK_COLORS.accent,
+      backgroundColor: MODAL_FALLBACK_COLORS.background,
       visible: false,
+      onMouseDown: (event) => event.stopPropagation(),
     })
-    this.helpText = new TextRenderable(renderer, {
-      id: "fmx-help-text",
-      content: styledHelpContent(this.keybindings, helpColors(this.hostPalette)),
-      fg: HELP_FALLBACK_COLORS.foreground,
-      bg: HELP_FALLBACK_COLORS.background,
+    this.modalText = new TextRenderable(renderer, {
+      id: "fmx-modal-text",
+      content: styledHelpContent(this.keybindings, modalColors(this.hostPalette)),
+      fg: MODAL_FALLBACK_COLORS.foreground,
+      bg: MODAL_FALLBACK_COLORS.background,
       selectable: false,
     })
-    this.helpModal.add(this.helpText)
-    this.applyHelpPalette(this.hostPalette)
+    this.modal.add(this.modalText)
+    this.modalBackdrop.add(this.modal)
+    this.applyModalPalette(this.hostPalette)
 
     this.renderer.root.add(this.stage)
-    this.renderer.root.add(this.helpModal)
+    this.renderer.root.add(this.modalBackdrop)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
@@ -310,7 +324,11 @@ export class Multiplexer {
   }
 
   start(): void {
-    this.createInstance(this.options.initialFxArgs)
+    try {
+      this.createInstance(this.options.initialFxArgs)
+    } catch (error) {
+      throw new Error(`failed to start fx: ${errorMessage(error)}`)
+    }
   }
 
   setHostPalette(colors: TerminalColors): void {
@@ -325,7 +343,7 @@ export class Multiplexer {
     if (this.shuttingDown) return this.donePromise
     this.shuttingDown = true
     this.cancelPrefix()
-    this.hideHelp()
+    this.hideModal()
 
     try {
       await Promise.allSettled(this.instances.map((instance) => instance.stop()))
@@ -362,7 +380,12 @@ export class Multiplexer {
     this.instances.push(instance)
     this.stage.add(instance.terminal)
     this.switchTo(this.instances.length - 1)
-    instance.start()
+    try {
+      instance.start()
+    } catch (error) {
+      this.removeInstance(instance)
+      throw error
+    }
   }
 
   private handleInstanceExit(instance: FxInstance, exitCode: number): void {
@@ -419,19 +442,24 @@ export class Multiplexer {
 
   private onPalette(colors: TerminalColors): void {
     this.hostPalette = colors
-    this.applyHelpPalette(colors)
+    this.applyModalPalette(colors)
     const themeMode = this.renderer.themeMode
     for (const instance of this.instances) instance.updateHostPalette(colors, themeMode)
   }
 
-  private applyHelpPalette(colors: TerminalColors | null): void {
-    const palette = helpColors(colors)
-    this.helpModal.backgroundColor = palette.background
-    this.helpModal.borderColor = palette.accent
-    this.helpModal.focusedBorderColor = palette.accent
-    this.helpText.fg = palette.foreground
-    this.helpText.bg = palette.background
-    this.helpText.content = styledHelpContent(this.keybindings, palette)
+  private applyModalPalette(colors: TerminalColors | null): void {
+    const palette = modalColors(colors)
+    const borderColor = this.modalKind === "spawn-error" ? palette.error : palette.accent
+    this.modalBackdrop.backgroundColor = palette.backdrop
+    this.modal.backgroundColor = palette.background
+    this.modal.borderColor = borderColor
+    this.modal.focusedBorderColor = borderColor
+    this.modalText.fg = palette.foreground
+    this.modalText.bg = palette.background
+    this.modalText.content =
+      this.modalKind === "spawn-error"
+        ? styledSpawnErrorContent(this.spawnErrorLines, palette)
+        : styledHelpContent(this.keybindings, palette)
   }
 
   private onSelection(selection: Selection): void {
@@ -454,9 +482,14 @@ export class Multiplexer {
       return
     }
 
-    if (this.helpVisible) {
+    if (this.modalKind) {
       this.swallow(key)
-      if (key.name === "escape" || keyMatchesCombo(key, HELP_CLOSE_KEY)) this.hideHelp()
+      if (
+        key.name === "escape" ||
+        (this.modalKind === "help" && keyMatchesCombo(key, HELP_CLOSE_KEY))
+      ) {
+        this.hideModal()
+      }
       return
     }
 
@@ -493,7 +526,11 @@ export class Multiplexer {
   private executeAction(action: KeyAction): void {
     switch (action.name) {
       case "new_tab":
-        this.createInstance()
+        try {
+          this.createInstance()
+        } catch (error) {
+          this.showSpawnError(error)
+        }
         return
       case "previous_tab":
         this.switchTo(this.activeIndex - 1)
@@ -512,15 +549,50 @@ export class Multiplexer {
   }
 
   private showHelp(): void {
-    this.helpVisible = true
-    this.helpModal.visible = true
+    const helpLines = helpPlainText(this.keybindings).split("\n")
+    this.showModal(
+      "help",
+      Math.max(...helpLines.map((line) => line.length)) + 5,
+      helpLines.length + 2,
+    )
+  }
+
+  private showSpawnError(error: unknown): void {
+    const message = sanitizeTitle(errorMessage(error)) || "unknown error"
+    const lineWidth = Math.max(1, Math.min(68, this.renderer.width - 5))
+    this.spawnErrorLines = wrapText(message, lineWidth)
+    const contentWidth = Math.max(
+      "fx did not start".length,
+      ...this.spawnErrorLines.map((line) => line.length),
+    )
+    this.showModal(
+      "spawn-error",
+      Math.min(this.renderer.width, contentWidth + 6),
+      this.spawnErrorLines.length + 4,
+    )
+  }
+
+  private showModal(kind: ModalKind, width: number, height: number): void {
+    this.modalKind = kind
+    this.resizeModal(width, height)
+    this.applyModalPalette(this.hostPalette)
+    this.modalBackdrop.visible = true
+    this.modal.visible = true
     this.activeInstance()?.terminal.blur()
   }
 
-  private hideHelp(): void {
-    if (!this.helpVisible) return
-    this.helpVisible = false
-    this.helpModal.visible = false
+  private resizeModal(width: number, height: number): void {
+    this.modal.width = width
+    this.modal.height = height
+    this.modal.marginLeft = -Math.floor(width / 2)
+    this.modal.marginTop = -Math.floor(height / 2)
+  }
+
+  private hideModal(): void {
+    if (!this.modalKind) return
+    this.modalKind = null
+    this.modal.visible = false
+    this.modalBackdrop.visible = false
     if (!this.shuttingDown) this.activeInstance()?.terminal.focus()
   }
 
@@ -537,18 +609,23 @@ export class Multiplexer {
   }
 }
 
-type HelpColors = typeof HELP_FALLBACK_COLORS
+type ModalColors = typeof MODAL_FALLBACK_COLORS
 type HelpEntry = readonly [key: string, description: string]
 
-function helpColors(colors: TerminalColors | null): HelpColors {
-  const foreground = detectedTerminalColor(colors?.defaultForeground) ?? HELP_FALLBACK_COLORS.foreground
+function modalColors(colors: TerminalColors | null): ModalColors {
+  const foreground = detectedTerminalColor(colors?.defaultForeground) ?? MODAL_FALLBACK_COLORS.foreground
   return {
     foreground,
-    background: detectedTerminalColor(colors?.defaultBackground) ?? HELP_FALLBACK_COLORS.background,
+    background: detectedTerminalColor(colors?.defaultBackground) ?? MODAL_FALLBACK_COLORS.background,
     accent:
       detectedTerminalColor(colors?.palette[4]) ??
       detectedTerminalColor(colors?.palette[12]) ??
-      HELP_FALLBACK_COLORS.accent,
+      MODAL_FALLBACK_COLORS.accent,
+    backdrop: `${foreground}26`,
+    error:
+      detectedTerminalColor(colors?.palette[1]) ??
+      detectedTerminalColor(colors?.palette[9]) ??
+      MODAL_FALLBACK_COLORS.error,
     key:
       detectedTerminalColor(colors?.palette[7]) ?? detectedTerminalColor(colors?.palette[8]) ?? foreground,
   }
@@ -570,7 +647,7 @@ function helpPlainText(keybindings: Keybindings): string {
   return entries.map(([key, description]) => ` ${key.padEnd(keyColumn)}${description}`).join("\n")
 }
 
-function styledHelpContent(keybindings: Keybindings, colors: HelpColors): StyledText {
+function styledHelpContent(keybindings: Keybindings, colors: ModalColors): StyledText {
   const entries = helpEntries(keybindings)
   const keyColumn = helpKeyColumn(entries)
   const chunks: TextChunk[] = []
@@ -582,12 +659,27 @@ function styledHelpContent(keybindings: Keybindings, colors: HelpColors): Styled
   return new StyledText(chunks)
 }
 
+function styledSpawnErrorContent(lines: string[], colors: ModalColors): StyledText {
+  const chunks: TextChunk[] = [bold(fg(colors.error)(" fx did not start")), fg(colors.foreground)("\n\n ")]
+  chunks.push(fg(colors.foreground)(lines.join("\n ")))
+  return new StyledText(chunks)
+}
+
 function helpKeyColumn(entries: HelpEntry[]): number {
   return Math.max(...entries.map(([key]) => key.length)) + 2
 }
 
 function bindingLabel(bindings: ResolvedBinding[]): string {
   return bindings.map((binding) => binding.label).join(" / ") || "unset"
+}
+
+function wrapText(value: string, width: number): string[] {
+  const characters = [...value]
+  const lines: string[] = []
+  for (let offset = 0; offset < characters.length; offset += width) {
+    lines.push(characters.slice(offset, offset + width).join(""))
+  }
+  return lines.length > 0 ? lines : [""]
 }
 
 function errorMessage(error: unknown): string {
