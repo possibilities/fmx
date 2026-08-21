@@ -4,12 +4,19 @@
 
 ## Install
 
-Requires Bun 1.4+ and `fx` on `PATH`.
+Install the native binary from the public Vercel Blob store:
 
 ```sh
-bun install
-bun run src/index.ts
+curl -fsSL https://<store-id>.public.blob.vercel-storage.com/fmx/setup.sh | bash
 ```
+
+Replace `<store-id>` with the Blob store identifier until the final public URL
+is configured in this repository. The installer selects Linux or macOS and
+x86_64 or arm64, verifies the archive's SHA-256 checksum, and installs to
+`~/.local/bin/fmx`. Set `FMX_INSTALL_DIR` to use another directory, or
+`FMX_VERSION` to install a specific release.
+
+`fx` must also be on `PATH`; install it from [fx.sh](https://fx.sh/).
 
 ## Usage
 
@@ -17,7 +24,12 @@ bun run src/index.ts
 
 ## Development
 
+Development and machine provisioning should use an editable checkout, never
+the platform release above:
+
 ```sh
+bun install --frozen-lockfile
+bun link  # ~/.bun/bin/fmx runs this checkout's src/index.ts
 bun test
 bun run typecheck
 bun run test:pty  # requires a host that permits PTY allocation

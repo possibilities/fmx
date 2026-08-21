@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: "1.4.0"
+
+jobs:
+  test:
+    name: Test source and release scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck and test
+        run: |
+          bun run typecheck
+          bun test
+
+      - name: Check release scripts
+        run: |
+          bash -n setup.sh scripts/build-release.sh
+          shellcheck setup.sh scripts/build-release.sh
+
+  native:
+    needs: test
+    name: Native ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: macos-x86_64
+            runner: macos-15-intel
+          - platform: macos-aarch64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install xz
+        run: |
+          if command -v xz >/dev/null 2>&1; then
+            exit 0
+          fi
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y xz-utils
+          else
+            brew install xz
+          fi
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile, minimize, and package
+        run: ./scripts/build-release.sh "${{ matrix.platform }}"
+
+      - name: Test compiled binary in a PTY
+        env:
+          FMX_BINARY_PATH: dist/fmx
+          FMX_RUN_PTY_TESTS: "1"
+        run: bun test tests/multiplexer.e2e.test.ts
+
+      - name: Upload native archives
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fmx-${{ matrix.platform }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/release/fmx-${{ matrix.platform }}.tar.xz
+            dist/release/fmx-${{ matrix.platform }}.tar.xz.sha256
+            dist/release/fmx-${{ matrix.platform }}.tar.gz
+            dist/release/fmx-${{ matrix.platform }}.tar.gz.sha256

@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FAKE_FX = resolve(ROOT, "tests/fixtures/fake-fx.ts")
+const FMX_COMMAND = process.env.FMX_BINARY_PATH
+  ? [resolve(ROOT, process.env.FMX_BINARY_PATH)]
+  : [process.execPath, "src/index.ts"]
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
@@ -22,7 +25,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([process.execPath, "src/index.ts"], {
+    const child = Bun.spawn(FMX_COMMAND, {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -144,7 +147,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([process.execPath, "src/index.ts"], {
+    const child = Bun.spawn(FMX_COMMAND, {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -216,7 +219,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       (reply) => sendHostReply(reply),
       () => hostBackground,
     )
-    const child = Bun.spawn([process.execPath, "src/index.ts"], {
+    const child = Bun.spawn(FMX_COMMAND, {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -282,7 +285,7 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([process.execPath, "src/index.ts"], {
+    const child = Bun.spawn(FMX_COMMAND, {
       cwd: ROOT,
       env: {
         ...process.env,

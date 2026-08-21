@@ -1,12 +1,14 @@
 {
   "name": "fmx",
   "version": "0.1.0",
+  "packageManager": "bun@1.4.0",
   "description": "A lightweight terminal multiplexer for fx sessions",
   "type": "module",
   "bin": {
     "fmx": "./src/index.ts"
   },
   "scripts": {
+    "release:build": "scripts/build-release.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:pty": "FMX_RUN_PTY_TESTS=1 bun test tests/multiplexer.e2e.test.ts"

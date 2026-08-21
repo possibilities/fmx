@@ -1,4 +1,6 @@
-export const VERSION = "0.1.0"
+import packageMetadata from "../package.json" with { type: "json" }
+
+export const VERSION = packageMetadata.version
 
 type CliOptions = {
   initialFxArgs: string[]
