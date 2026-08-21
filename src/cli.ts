@@ -11,7 +11,7 @@ export type CliOptions = {
   version: boolean
 }
 
-const DEFAULT_SCROLLBACK = 1_000_000
+const DEFAULT_SCROLLBACK = 10_000_000
 const MAX_SCROLLBACK = 0xffff_ffff
 
 export function parseArgs(args: string[], currentDirectory = process.cwd()): CliOptions {

@@ -6,7 +6,7 @@ describe("parseArgs", () => {
     expect(parseArgs([], "/tmp/work")).toMatchObject({
       cwd: "/tmp/work",
       initialFxArgs: [],
-      maxScrollback: 1_000_000,
+      maxScrollback: 10_000_000,
     })
   })
 
