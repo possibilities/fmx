@@ -33,7 +33,7 @@ const MODAL_FALLBACK_COLORS = {
   background: "#232938",
   foreground: "#d8dee9",
   accent: "#7dd3fc",
-  backdrop: "#d8dee926",
+  backdrop: "#00000026",
   error: "#f87171",
   key: "#a3a3a3",
 }
@@ -621,7 +621,7 @@ function modalColors(colors: TerminalColors | null): ModalColors {
       detectedTerminalColor(colors?.palette[4]) ??
       detectedTerminalColor(colors?.palette[12]) ??
       MODAL_FALLBACK_COLORS.accent,
-    backdrop: `${foreground}26`,
+    backdrop: MODAL_FALLBACK_COLORS.backdrop,
     error:
       detectedTerminalColor(colors?.palette[1]) ??
       detectedTerminalColor(colors?.palette[9]) ??
