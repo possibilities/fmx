@@ -1,0 +1,109 @@
+import { resolve } from "node:path"
+
+export const VERSION = "0.1.0"
+
+export type CliOptions = {
+  cwd: string
+  fxPath?: string
+  initialFxArgs: string[]
+  maxScrollback: number
+  help: boolean
+  version: boolean
+}
+
+const DEFAULT_SCROLLBACK = 1_000_000
+const MAX_SCROLLBACK = 0xffff_ffff
+
+export function parseArgs(args: string[], currentDirectory = process.cwd()): CliOptions {
+  const options: CliOptions = {
+    cwd: resolve(currentDirectory),
+    initialFxArgs: [],
+    maxScrollback: DEFAULT_SCROLLBACK,
+    help: false,
+    version: false,
+  }
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!
+    if (arg === "--") {
+      options.initialFxArgs = args.slice(index + 1)
+      return options
+    }
+
+    switch (arg) {
+      case "-h":
+      case "--help":
+        options.help = true
+        break
+      case "-v":
+      case "--version":
+        options.version = true
+        break
+      case "--fx":
+        options.fxPath = requiredValue(args, ++index, arg)
+        break
+      case "-C":
+      case "--cwd":
+        options.cwd = resolve(currentDirectory, requiredValue(args, ++index, arg))
+        break
+      case "-r":
+      case "--resume-picker":
+        ensureNoInitialLaunch(options, arg)
+        options.initialFxArgs = ["-r"]
+        break
+      case "--resume-last":
+        ensureNoInitialLaunch(options, arg)
+        options.initialFxArgs = ["--resume-last"]
+        break
+      case "--resume":
+        ensureNoInitialLaunch(options, arg)
+        options.initialFxArgs = ["--resume", requiredValue(args, ++index, arg)]
+        break
+      case "--scrollback": {
+        const raw = requiredValue(args, ++index, arg)
+        const value = Number(raw)
+        if (!Number.isSafeInteger(value) || value < 0 || value > MAX_SCROLLBACK) {
+          throw new Error(`${arg} must be an integer between 0 and ${MAX_SCROLLBACK}`)
+        }
+        options.maxScrollback = value
+        break
+      }
+      default:
+        throw new Error(`unknown option: ${arg}\nPass fx arguments after --.`)
+    }
+  }
+
+  return options
+}
+
+function requiredValue(args: string[], index: number, option: string): string {
+  const value = args[index]
+  if (!value) throw new Error(`${option} requires a value`)
+  return value
+}
+
+function ensureNoInitialLaunch(options: CliOptions, option: string): void {
+  if (options.initialFxArgs.length > 0) {
+    throw new Error(`${option} conflicts with another resume option`)
+  }
+}
+
+export function usage(): string {
+  return `fmx ${VERSION} — run multiple fx sessions in one terminal
+
+Usage:
+  fmx [options] [-- <fx arguments>]
+
+Options:
+  --fx PATH             fx executable (or FMX_FX_PATH)
+  -C, --cwd PATH        workspace for new instances
+  -r, --resume-picker   open fx's saved-session picker
+  --resume-last         resume the latest workspace session
+  --resume ID           resume an exact session
+  --scrollback BYTES     scrollback retained per instance (default: ${DEFAULT_SCROLLBACK})
+  -h, --help            show this help
+  -v, --version         show the version
+
+Inside fmx, Ctrl-B enters command mode. Press Ctrl-B ? for bindings.
+`
+}
