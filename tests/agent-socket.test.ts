@@ -77,25 +77,23 @@ async function withSocket(
   }
 }
 
-test("answers every fx startup message and records both directions", async () => {
+test("answers every fx startup message and records each request", async () => {
   await withSocket("startup", async (socket, frames) => {
     for (const payload of FX_STARTUP_PAYLOADS) {
       const reply = await exchange(socket.path, payload)
       expect(JSON.parse(reply)).toEqual({ id: JSON.parse(payload).id, result: {} })
     }
 
-    expect(frames).toHaveLength(FX_STARTUP_PAYLOADS.length * 2)
-    expect(frames.map((frame) => frame.direction)).toEqual(["in", "out", "in", "out", "in", "out", "in", "out"])
-    expect(frames.filter((frame) => frame.direction === "in").map((frame) => frame.method)).toEqual([
+    // One frame per request: the replies are fmx's own and are not reported.
+    expect(frames).toHaveLength(FX_STARTUP_PAYLOADS.length)
+    expect(frames.map((frame) => frame.method)).toEqual([
       "pane.report_agent_session",
       "pane.report_agent",
       "pane.rename",
       "agent.rename",
     ])
     // agent.rename addresses the pane through `target`, not `pane_id`.
-    for (const frame of frames.filter((frame) => frame.direction === "in")) {
-      expect(frame.paneId).toBe("p_1")
-    }
+    for (const frame of frames) expect(frame.paneId).toBe("p_1")
     expect(frames.every((frame) => !frame.malformed)).toBe(true)
   })
 })
@@ -103,7 +101,7 @@ test("answers every fx startup message and records both directions", async () =>
 test("keeps the attention label fx sends but herdr discards", async () => {
   await withSocket("blocked", async (socket, frames) => {
     await exchange(socket.path, FX_BLOCKED_PAYLOAD)
-    const request = frames.find((frame) => frame.direction === "in")
+    const request = frames[0]
     expect(request?.method).toBe("pane.report_agent")
     expect(JSON.parse(request!.payload).params.custom_status).toBe("permission")
   })
@@ -112,7 +110,7 @@ test("keeps the attention label fx sends but herdr discards", async () => {
 test("answers the three-message release fx sends on exit", async () => {
   await withSocket("release", async (socket, frames) => {
     for (const payload of FX_RELEASE_PAYLOADS) await exchange(socket.path, payload)
-    expect(frames.filter((frame) => frame.direction === "in").map((frame) => frame.method)).toEqual([
+    expect(frames.map((frame) => frame.method)).toEqual([
       "agent.rename",
       "pane.clear_agent_authority",
       "pane.rename",

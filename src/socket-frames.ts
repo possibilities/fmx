@@ -4,15 +4,13 @@
  *
  * fx opens a fresh connection per message, writes one newline-terminated
  * request, waits up to 250ms for one newline-terminated reply, then closes.
- * The frame types here describe both halves of that exchange.
+ * A frame is one of fx's requests. Replies are fmx's own and are not frames:
+ * they are generated here, identical every time, and say nothing about fx.
  */
-
-export type FrameDirection = "in" | "out"
 
 export type SocketFrame = {
   seq: number
   at: number
-  direction: FrameDirection
   paneId: string | null
   method: string | null
   requestId: string | null
@@ -58,12 +56,11 @@ export class LineAssembler {
   }
 }
 
-export function decodeFrame(seq: number, at: number, direction: FrameDirection, line: string): SocketFrame {
+export function decodeFrame(seq: number, at: number, line: string): SocketFrame {
   const payload = truncatePayload(line.trim())
   const frame: SocketFrame = {
     seq,
     at,
-    direction,
     paneId: null,
     method: null,
     requestId: null,
@@ -118,6 +115,21 @@ export function errorReply(requestId: string | null, code: string, message: stri
   return `${JSON.stringify({ id: requestId ?? "", error: { code, message } })}\n`
 }
 
+/**
+ * The payload as the panel shows it: re-indented for reading, two spaces per
+ * level. `payload` stays the raw wire line, so a frame that will not parse —
+ * malformed, or truncated past its closing brace — is shown exactly as it
+ * arrived rather than not at all.
+ */
+export function formatPayload(frame: SocketFrame): string {
+  if (frame.malformed) return frame.payload
+  try {
+    return JSON.stringify(JSON.parse(frame.payload), null, 2)
+  } catch {
+    return frame.payload
+  }
+}
+
 export function formatFrameTime(at: number): string {
   const time = new Date(at)
   const hours = String(time.getHours()).padStart(2, "0")
@@ -127,13 +139,9 @@ export function formatFrameTime(at: number): string {
   return `${hours}:${minutes}:${seconds}.${millis}`
 }
 
-export function frameArrow(direction: FrameDirection): string {
-  return direction === "in" ? "◀" : "▶"
-}
-
-/** Header line for the debug panel: when, which way, which pane, what. */
+/** Header line for the debug panel: when, which pane, what. */
 export function describeFrame(frame: SocketFrame): string {
   const pane = frame.paneId ?? "—"
-  const method = frame.malformed ? "malformed" : (frame.method ?? "reply")
-  return `${formatFrameTime(frame.at)} ${frameArrow(frame.direction)} ${pane} ${method}`
+  const method = frame.malformed ? "malformed" : (frame.method ?? "—")
+  return `${formatFrameTime(frame.at)} ${pane} ${method}`
 }

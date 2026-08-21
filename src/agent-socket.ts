@@ -80,13 +80,13 @@ export class AgentSocket {
     // A peer that closed mid-record leaves bytes worth showing, but there is
     // no longer a connection to answer on.
     for (const line of assembler.flush()) {
-      this.emit(decodeFrame(this.seq++, Date.now(), "in", line))
+      this.emit(decodeFrame(this.seq++, Date.now(), line))
     }
     this.assemblers.delete(socket as object)
   }
 
   private acceptLine(socket: SocketConnection, line: string): void {
-    const request = decodeFrame(this.seq++, Date.now(), "in", line)
+    const request = decodeFrame(this.seq++, Date.now(), line)
     const reply = request.malformed
       ? errorReply(request.requestId, "invalid_request", "expected one JSON object per line")
       : successReply(request.requestId)
@@ -100,8 +100,9 @@ export class AgentSocket {
       // failures on its side too.
     }
 
+    // The reply is fmx's own and identical every time; only fx's request is
+    // worth reporting.
     this.emit(request)
-    this.emit(decodeFrame(this.seq++, Date.now(), "out", reply))
   }
 
   private emit(frame: SocketFrame): void {

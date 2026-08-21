@@ -10,7 +10,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import { detectedTerminalColor } from "./host-palette.ts"
-import { describeFrame, type SocketFrame } from "./socket-frames.ts"
+import { describeFrame, formatPayload, type SocketFrame } from "./socket-frames.ts"
 
 export const DEBUG_PANEL_ENV_VAR = "FMX_DEBUG_PANEL"
 export const DEBUG_PANEL_SCREEN_FRACTION = 1 / 3
@@ -20,8 +20,7 @@ const CLEAR_LABEL = "[clear]"
 
 const FALLBACK_COLORS = {
   foreground: "#d8dee9",
-  incoming: "#7dd3fc",
-  outgoing: "#a3e635",
+  header: "#7dd3fc",
   payload: "#9aa5b1",
   malformed: "#f87171",
   heading: "#a3a3a3",
@@ -44,8 +43,8 @@ export function debugPanelWidth(screenWidth: number): number {
 }
 
 /**
- * A scrollable tail of every frame crossing the agent socket, pinned to the
- * bottom so the newest exchange stays visible while scrollback stays reachable.
+ * A scrollable tail of what fx reports over the agent socket, pinned to the
+ * bottom so the newest frame stays visible while scrollback stays reachable.
  */
 export class DebugPanel {
   readonly root: BoxRenderable
@@ -168,14 +167,10 @@ export class DebugPanel {
   }
 
   private styleFrame(frame: SocketFrame): StyledText {
-    const directionColor = frame.malformed
-      ? this.colors.malformed
-      : frame.direction === "in"
-        ? this.colors.incoming
-        : this.colors.outgoing
+    const headerColor = frame.malformed ? this.colors.malformed : this.colors.header
     const chunks: TextChunk[] = [
-      bold(fg(directionColor)(describeFrame(frame))),
-      fg(this.colors.payload)(`\n${frame.payload}\n`),
+      bold(fg(headerColor)(describeFrame(frame))),
+      fg(this.colors.payload)(`\n${formatPayload(frame)}\n`),
     ]
     return new StyledText(chunks)
   }
@@ -185,14 +180,10 @@ function panelColors(colors: TerminalColors | null): PanelColors {
   const foreground = detectedTerminalColor(colors?.defaultForeground) ?? FALLBACK_COLORS.foreground
   return {
     foreground,
-    incoming:
+    header:
       detectedTerminalColor(colors?.palette[6]) ??
       detectedTerminalColor(colors?.palette[14]) ??
-      FALLBACK_COLORS.incoming,
-    outgoing:
-      detectedTerminalColor(colors?.palette[2]) ??
-      detectedTerminalColor(colors?.palette[10]) ??
-      FALLBACK_COLORS.outgoing,
+      FALLBACK_COLORS.header,
     payload: detectedTerminalColor(colors?.palette[7]) ?? foreground,
     malformed:
       detectedTerminalColor(colors?.palette[1]) ??

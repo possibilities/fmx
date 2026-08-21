@@ -105,9 +105,11 @@ test("appends a scrollable entry per frame crossing the socket", async () => {
     // The panel is narrow, so entries wrap mid-token; compare without the
     // whitespace and divider glyphs the surrounding layout introduces.
     const rendered = setup.captureCharFrame().replace(/[\s│]+/gu, "")
-    expect(rendered).toContain("◀p_1pane.report_agent")
+    expect(rendered).toContain("p_1pane.report_agent")
+    // Re-indented, so the payload reads as nested JSON rather than one line.
     expect(rendered).toContain('"state":"working"')
-    expect(rendered).toContain('▶—reply{"id":"1","result":{}}')
+    // fmx's replies are not shown; only what fx sent.
+    expect(rendered).not.toContain('"result":{}')
   } finally {
     agentSocket.close()
     await multiplexer.shutdown()
