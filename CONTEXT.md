@@ -47,10 +47,23 @@ nothing.
 _Avoid_: workspace root, search path, scan directory.
 
 **Launch dialog** — the modal that gathers what an instance is started with
-before fx runs. Today that is one choice, the project, drawn as a row: a
-letter cycles it to the next project starting with that letter, and space
-opens the project picker. Further choices join as further rows.
+before fx runs: a prompt, a project, and whether to cut a worktree, one row
+each. `tab` moves between rows; a chooser row answers a letter by cycling to
+the next value starting with it, and space opens its picker.
 _Avoid_: new tab modal, launcher, form.
+
+**Launch prompt** — the text an instance starts working on. fx takes no prompt
+on its command line, so fmx types it into the terminal and sends it once fx
+has reported itself over the agent socket. An instance launched with one is
+therefore already working when it is first looked at.
+_Avoid_: intent, initial message, seed.
+
+**Worktree** — a checkout fmx cuts for a launch, branched from what the chosen
+project has checked out. Its branch and its directory share one name,
+`<project>-<ordinal>`, and the ordinal counts against the main repository, so
+launching from inside `fmx-1` produces `fmx-2` rather than `fmx-1-1`. A
+project with no commit to branch from cannot offer one.
+_Avoid_: branch, checkout, clone.
 
 **Project picker** — the filterable list the launch dialog opens on space.
 Typing filters by subsequence, so `agl` finds `agentlaunch`; enter applies the

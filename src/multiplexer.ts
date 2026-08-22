@@ -18,12 +18,12 @@ import { homedir } from "node:os"
 import { basename } from "node:path"
 import { AgentRegistry, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
-import { defaultSlugSettings, type SlugSettings } from "./config.ts"
+import { DEFAULT_WORKTREE_ROOT, defaultSlugSettings, type SlugSettings } from "./config.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
-import { LaunchDialog } from "./launch-dialog.ts"
+import { LaunchDialog, type LaunchRequest } from "./launch-dialog.ts"
 import { SlugNamer } from "./slug-namer.ts"
 import {
   detectedTerminalColor,
@@ -45,11 +45,12 @@ import {
   type ResolvedBinding,
 } from "./keybindings.ts"
 import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
-import { orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
+import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
 import { SessionList } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
+import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
 
 const SIDEBAR_DEFAULT_WIDTH = 26
 const SIDEBAR_MIN_WIDTH = 16
@@ -84,6 +85,8 @@ const MODIFIER_ONLY_KEYS = new Set([
   "iso_level3_shift",
   "iso_level5_shift",
 ])
+/** How long after fx first reports itself the launch prompt is typed in. */
+const PROMPT_SETTLE_MS = 250
 const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
 const FORCED_EXIT_TIMEOUT_MS = 500
 const MAX_SCROLLBACK_BYTES = 10_000_000
@@ -99,6 +102,8 @@ type MultiplexerOptions = {
   onSidebarWidthChange?: (width: number) => void
   /** Directories the launch dialog scans one level deep for projects. */
   projectRoots?: string[]
+  /** Where a launch's new worktree is checked out. */
+  worktreeRoot?: string
   home?: string
   /** Instances started per directory so far, which orders the picker. */
   initialProjectLaunches?: Record<string, number>
@@ -124,6 +129,9 @@ class FxInstance {
 
   private processHandle: FxProcess | null = null
   private ptyClosed = false
+  /** A launch prompt waiting for fx to be ready to be typed into. */
+  private pendingPrompt: string | null = null
+  private promptTimer: ReturnType<typeof setTimeout> | null = null
   private readonly cursorReportAdapter = new CursorReportAdapter()
   private readonly titleParser: OscTitleParser
 
@@ -162,6 +170,28 @@ class FxInstance {
     if (hostPalette) this.terminal.applyHostPalette(hostPalette)
   }
 
+  /** fx takes no prompt on its command line, so a launch prompt is typed in
+   * once fx is running — see `armPrompt`. */
+  setPendingPrompt(prompt: string): void {
+    if (prompt !== "") this.pendingPrompt = prompt
+  }
+
+  /**
+   * Type the launch prompt and send it. The pane's first report over the agent
+   * socket is fx saying it is up, but its input is drawn a beat later, so the
+   * text goes in after a short settle rather than the instant fx speaks.
+   */
+  armPrompt(): void {
+    if (this.pendingPrompt === null || this.promptTimer !== null) return
+    this.promptTimer = setTimeout(() => {
+      this.promptTimer = null
+      const prompt = this.pendingPrompt
+      this.pendingPrompt = null
+      if (prompt === null || this.status !== "running") return
+      this.writeInput(new TextEncoder().encode(`${prompt}\r`), "input")
+    }, PROMPT_SETTLE_MS)
+  }
+
   start(): void {
     const processHandle = Bun.spawn([this.fxPath, ...this.argv], {
       cwd: this.cwd,
@@ -183,6 +213,8 @@ class FxInstance {
   }
 
   destroy(): void {
+    if (this.promptTimer !== null) clearTimeout(this.promptTimer)
+    this.promptTimer = null
     this.terminal.blur()
     this.closePty()
     this.terminal.destroy()
@@ -305,6 +337,7 @@ export class Multiplexer {
   private prefixArmed = false
   private modalKind: ModalKind | null = null
   private spawnErrorLines: string[] = []
+  private spawnErrorHeading = "fx did not start"
   private hostPalette: TerminalColors | null = null
   private shuttingDown = false
   private readonly swallowedReleases = new Set<string>()
@@ -325,6 +358,9 @@ export class Multiplexer {
     if (frame.paneId) {
       const sessionId = this.registry.get(frame.paneId)?.sessionId
       if (sessionId) this.slugNamer.note(sessionId)
+      // fx reporting itself is the only signal fmx has that it is ready to be
+      // typed into.
+      this.instanceForPane(frame.paneId)?.armPrompt()
     }
     // A pane the human is already watching is seen the moment it reports, so
     // finishing in the foreground never shows as an unacknowledged `done`.
@@ -450,10 +486,11 @@ export class Multiplexer {
 
     this.projectLaunches = new Map(Object.entries(options.initialProjectLaunches ?? {}))
     this.launchDialog = new LaunchDialog(renderer, {
-      onLaunch: (directory) => this.startInProject(directory),
+      onLaunch: (request) => void this.startLaunch(request),
       onClose: () => {
         if (!this.shuttingDown) this.activeInstance()?.terminal.focus()
       },
+      onProjectChange: (directory) => this.answerWorktreeAvailability(directory),
     })
 
     this.renderer.root.add(this.stage)
@@ -514,7 +551,7 @@ export class Multiplexer {
     }
   }
 
-  private createInstance(argv: string[] = [], cwd: string = this.options.cwd): void {
+  private createInstance(argv: string[] = [], cwd: string = this.options.cwd, prompt = ""): void {
     if (this.shuttingDown) return
     const instanceId = this.nextId++
     const instance = new FxInstance(
@@ -532,6 +569,7 @@ export class Multiplexer {
         onExit: (candidate, exitCode) => this.handleInstanceExit(candidate, exitCode),
       },
     )
+    instance.setPendingPrompt(prompt)
     this.instances.push(instance)
     this.content.add(instance.terminal)
     this.switchTo(this.instances.length - 1)
@@ -654,6 +692,14 @@ export class Multiplexer {
     this.switchTo(index)
   }
 
+  private instanceForPane(paneId: string): FxInstance | null {
+    return this.instances.find((instance) => this.paneIdFor(instance) === paneId) ?? null
+  }
+
+  private home(): string {
+    return this.options.home ?? homedir()
+  }
+
   private paneIdFor(instance: FxInstance): string {
     return this.agentSocket?.paneIdFor(instance.id) ?? `p_${instance.id}`
   }
@@ -763,7 +809,7 @@ export class Multiplexer {
     this.modalText.bg = palette.background
     this.modalText.content =
       this.modalKind === "spawn-error"
-        ? styledSpawnErrorContent(this.spawnErrorLines, palette)
+        ? styledSpawnErrorContent(this.spawnErrorHeading, this.spawnErrorLines, palette)
         : styledHelpContent(this.keybindings, palette)
   }
 
@@ -847,7 +893,7 @@ export class Multiplexer {
         try {
           this.createInstance()
         } catch (error) {
-          this.showSpawnError(error)
+          this.showError("fx did not start", error)
         }
         return
       case "launch":
@@ -891,12 +937,49 @@ export class Multiplexer {
     active?.terminal.blur()
   }
 
-  private startInProject(directory: string): void {
-    try {
-      this.createInstance([], directory)
-    } catch (error) {
-      this.showSpawnError(error)
+  private async startLaunch(request: LaunchRequest): Promise<void> {
+    let directory = request.directory
+    if (request.worktree) {
+      try {
+        directory = await this.cutWorktree(request.directory)
+      } catch (error) {
+        this.showError("worktree not created", error)
+        return
+      }
+      if (this.shuttingDown) return
     }
+    try {
+      this.createInstance([], directory, request.prompt)
+    } catch (error) {
+      this.showError("fx did not start", error)
+    }
+  }
+
+  /** Branch from what the launch was looking at and check it out under the
+   * worktree root, returning where the instance should start. */
+  private async cutWorktree(directory: string): Promise<string> {
+    const context = await readWorktreeContext(directory)
+    if (!context) throw new Error(`${directory} is not a git repository`)
+    const base = await readHeadCommit(directory)
+    const root = expandTilde(this.options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT, this.home())
+    const plan = planWorktree(context, root)
+    await createWorktree(context, plan, base)
+    return plan.checkout
+  }
+
+  /** Whether a worktree can be cut in `directory`, answered from the git
+   * contexts the session list already keeps. */
+  private answerWorktreeAvailability(directory: string): void {
+    const known = this.gitContexts.get(directory)
+    if (known) {
+      this.launchDialog.setWorktreeAvailability(directory, true)
+      return
+    }
+    void readGitContext(directory).then((context) => {
+      if (this.shuttingDown) return
+      if (context) this.gitContexts.set(directory, context)
+      this.launchDialog.setWorktreeAvailability(directory, context !== null)
+    })
   }
 
   /** Every start counts, whichever key opened it, so the picker's order
@@ -915,12 +998,13 @@ export class Multiplexer {
     )
   }
 
-  private showSpawnError(error: unknown): void {
+  private showError(heading: string, error: unknown): void {
     const message = sanitizeTitle(errorMessage(error)) || "unknown error"
     const lineWidth = Math.max(1, Math.min(68, this.renderer.width - 5))
+    this.spawnErrorHeading = heading
     this.spawnErrorLines = wrapText(message, lineWidth)
     const contentWidth = Math.max(
-      "fx did not start".length,
+      heading.length,
       ...this.spawnErrorLines.map((line) => line.length),
     )
     this.showModal(
@@ -1009,8 +1093,8 @@ function styledHelpContent(keybindings: Keybindings, colors: ModalColors): Style
   return new StyledText(chunks)
 }
 
-function styledSpawnErrorContent(lines: string[], colors: ModalColors): StyledText {
-  const chunks: TextChunk[] = [bold(fg(colors.error)(" fx did not start")), fg(colors.foreground)("\n\n ")]
+function styledSpawnErrorContent(heading: string, lines: string[], colors: ModalColors): StyledText {
+  const chunks: TextChunk[] = [bold(fg(colors.error)(` ${heading}`)), fg(colors.foreground)("\n\n ")]
   chunks.push(fg(colors.foreground)(lines.join("\n ")))
   return new StyledText(chunks)
 }

@@ -22,10 +22,23 @@ specific release.
 `ctrl-b` is the prefix key; `ctrl-b ?` lists the bindings. Rebind them in `~/.config/fmx/config.toml` in the `[keys]` table.
 
 `ctrl-b c` starts an agent where fmx is running. `ctrl-b l` opens the launch
-dialog instead, which asks where to start it: a letter cycles the project row
-to the next project whose name begins with it, space opens a picker that
-filters as you type, and enter starts the agent there. Projects are listed
-most-recently-worked-in first.
+dialog instead, which asks what to start it with: a prompt, a project, and
+whether to cut a fresh worktree for it. `tab` moves between the rows and enter
+starts the agent.
+
+On the project row a letter cycles to the next project whose name begins with
+it, and space opens a picker that filters as you type. Projects are listed
+most-recently-worked-in first. On the worktree row space toggles, and `y` and
+`n` say it outright.
+
+A prompt is typed into the agent once it is up, so the session starts already
+working on it. A worktree is branched from whatever the project has checked
+out, named `<project>-<ordinal>` — `fmx-1`, `fmx-2` — and checked out under
+`worktree_root`:
+
+```toml
+worktree_root = "~/.fmx/worktrees"
+```
 
 The dialog offers each directory named by `project_roots` and the directories
 one level under it:

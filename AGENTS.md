@@ -11,6 +11,10 @@
 - `project_roots` is deliberately empty by default. Personal roots belong in
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.
+- fx has no flag for an interactive prompt — `fx ask` is noninteractive and a
+  bare positional is an unknown subcommand. A launch prompt is therefore typed
+  into the PTY and submitted, once the pane's first agent-socket frame says fx
+  is up. Do not look for a flag; there isn't one.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
 - fmx has no quit/close/detach keys: fx exits govern the lifecycle. A tab

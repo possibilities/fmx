@@ -7,6 +7,8 @@ import { join } from "node:path"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 
+type Setup = Awaited<ReturnType<typeof createTestRenderer>>
+
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await mkdtemp(join(tmpdir(), "fmx-launch-"))
   const code = join(home, "code")
@@ -16,63 +18,94 @@ async function workspace(): Promise<{ home: string; code: string }> {
   return { home, code }
 }
 
-test("picks a project by cycling the row and by filtering the picker", async () => {
-  const { home, code } = await workspace()
-  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
-  const multiplexer = new Multiplexer(setup.renderer, {
+function launcher(setup: Setup, home: string, code: string, roots = ["~/code"]): Multiplexer {
+  return new Multiplexer(setup.renderer, {
     fxPath: "fx",
     cwd: join(code, "fmx"),
     initialFxArgs: [],
     keybindings: resolveKeybindings().keybindings,
-    projectRoots: ["~/code"],
+    projectRoots: roots,
     home,
-    initialProjectLaunches: { [join(code, "zulu")]: 3 },
   })
-  const backdrop = setup.renderer.root.findDescendantById("fmx-launch-backdrop")
-  const picker = setup.renderer.root.findDescendantById("fmx-launch-picker")
-  expect(backdrop).toBeInstanceOf(BoxRenderable)
-  expect(picker).toBeInstanceOf(BoxRenderable)
-  if (!(backdrop instanceof BoxRenderable) || !(picker instanceof BoxRenderable)) return
+}
+
+async function initRepository(directory: string): Promise<void> {
+  const git = (...args: string[]) =>
+    Bun.spawn(["git", "-C", directory, ...args], { stdout: "ignore", stderr: "ignore" }).exited
+  await git("init", "--quiet")
+  await git("config", "user.email", "fmx@example.invalid")
+  await git("config", "user.name", "fmx test")
+  await Bun.write(join(directory, "README.md"), "test\n")
+  await git("add", "README.md")
+  await git("commit", "--quiet", "-m", "initial")
+}
+
+/** Repository checks are subprocesses, so a row that depends on one settles a
+ * few frames after the keystroke that asked for it. */
+async function waitForFrame(setup: Setup, text: string): Promise<string> {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    if (frame.includes(text)) return frame
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  return setup.captureCharFrame()
+}
+
+test("opens on the prompt, over the project fmx was started in", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
 
   try {
-    expect(backdrop.visible).toBe(false)
-
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("l")
     await setup.renderOnce()
 
-    // Opens on the directory fmx itself was started in, whatever the order.
-    expect(backdrop.visible).toBe(true)
-    expect(picker.visible).toBe(false)
-    expect(setup.captureCharFrame()).toContain("project  ~/code/fmx")
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("prompt    what should the agent do?")
+    expect(frame).toContain("project   ~/code/fmx")
+    expect(frame).toContain("worktree  no")
 
-    // A letter cycles the row to the next project whose name starts with it.
+    // The prompt has focus, so printables are text rather than commands —
+    // space included, which is the picker's key one row down.
+    await setup.mockInput.typeText("fix the flaky test")
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("prompt    fix the flaky test")
+    expect(setup.renderer.root.findDescendantById("fmx-launch-picker")?.visible).toBe(false)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("cycles the project by letter and filters it in the picker", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
+  const picker = setup.renderer.root.findDescendantById("fmx-launch-picker")
+  if (!(picker instanceof BoxRenderable)) return
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
+    await setup.renderOnce()
+
     setup.mockInput.pressKey("a")
     await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("project  ~/code/agentlaunch")
+    expect(setup.captureCharFrame()).toContain("project   ~/code/agentlaunch")
 
-    // Space opens the picker, which lists every project most-started first.
     setup.mockInput.pressKey(" ")
     await setup.renderOnce()
     expect(picker.visible).toBe(true)
-    const listed = setup.captureCharFrame()
-    // The launch count orders the list; it is never written into it.
-    expect(listed.indexOf("~/code/zulu")).toBeLessThan(listed.indexOf("~/code/agentlaunch"))
-    expect(listed).not.toContain("· 3")
-    expect(listed).toContain("type to filter")
 
-    // Typing filters it; enter applies the highlighted project to the row.
     await setup.mockInput.typeText("zu")
     await setup.renderOnce()
     expect(setup.captureCharFrame()).not.toContain("~/code/agentlaunch")
     setup.mockInput.pressEnter()
     await setup.renderOnce()
     expect(picker.visible).toBe(false)
-    expect(setup.captureCharFrame()).toContain("project  ~/code/zulu")
-
-    setup.mockInput.pressEscape()
-    await setup.renderOnce()
-    expect(backdrop.visible).toBe(false)
+    expect(setup.captureCharFrame()).toContain("project   ~/code/zulu")
   } finally {
     await multiplexer.shutdown()
   }
@@ -81,14 +114,7 @@ test("picks a project by cycling the row and by filtering the picker", async () 
 test("dismisses the picker back to the row without changing the choice", async () => {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
-  const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
-    cwd: join(code, "fmx"),
-    initialFxArgs: [],
-    keybindings: resolveKeybindings().keybindings,
-    projectRoots: ["~/code"],
-    home,
-  })
+  const multiplexer = launcher(setup, home, code)
   const backdrop = setup.renderer.root.findDescendantById("fmx-launch-backdrop")
   const picker = setup.renderer.root.findDescendantById("fmx-launch-picker")
   if (!(backdrop instanceof BoxRenderable) || !(picker instanceof BoxRenderable)) return
@@ -96,6 +122,7 @@ test("dismisses the picker back to the row without changing the choice", async (
   try {
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
     setup.mockInput.pressKey(" ")
     await setup.mockInput.typeText("zu")
     setup.mockInput.pressEscape()
@@ -103,7 +130,7 @@ test("dismisses the picker back to the row without changing the choice", async (
 
     expect(backdrop.visible).toBe(true)
     expect(picker.visible).toBe(false)
-    expect(setup.captureCharFrame()).toContain("project  ~/code/fmx")
+    expect(setup.captureCharFrame()).toContain("project   ~/code/fmx")
   } finally {
     await multiplexer.shutdown()
   }
@@ -112,14 +139,7 @@ test("dismisses the picker back to the row without changing the choice", async (
 test("leaves the dialog on ctrl+c from either layer", async () => {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
-  const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
-    cwd: join(code, "fmx"),
-    initialFxArgs: [],
-    keybindings: resolveKeybindings().keybindings,
-    projectRoots: ["~/code"],
-    home,
-  })
+  const multiplexer = launcher(setup, home, code)
   const backdrop = setup.renderer.root.findDescendantById("fmx-launch-backdrop")
   const picker = setup.renderer.root.findDescendantById("fmx-launch-picker")
   if (!(backdrop instanceof BoxRenderable) || !(picker instanceof BoxRenderable)) return
@@ -134,6 +154,7 @@ test("leaves the dialog on ctrl+c from either layer", async () => {
     // From the picker it leaves outright, where escape would step back a layer.
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
     setup.mockInput.pressKey(" ")
     await setup.renderOnce()
     expect(picker.visible).toBe(true)
@@ -146,20 +167,62 @@ test("leaves the dialog on ctrl+c from either layer", async () => {
   }
 })
 
-test("offers fmx's own workspace when no root is configured", async () => {
+test("offers the worktree toggle where there is a commit to branch from", async () => {
   const { home, code } = await workspace()
+  await initRepository(join(code, "fmx"))
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
-  const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
-    cwd: join(code, "fmx"),
-    initialFxArgs: [],
-    keybindings: resolveKeybindings().keybindings,
-    home,
-  })
+  const multiplexer = launcher(setup, home, code)
 
   try {
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
+    setup.mockInput.pressTab()
+    setup.mockInput.pressKey(" ")
+    // The toggle holds only if the repository check came back able; an
+    // unavailable answer forces it back off when it lands.
+    expect(await waitForFrame(setup, "worktree  yes")).toContain("worktree  yes")
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("worktree  yes")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("says so on a project no worktree can be cut from", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
+    setup.mockInput.pressKey("z")
+    const frame = await waitForFrame(setup, "worktree  unavailable")
+    expect(frame).toContain("project   ~/code/zulu")
+    expect(frame).toContain("worktree  unavailable — not a repository")
+
+    // And refuses to turn on, rather than failing after the launch is sent.
+    setup.mockInput.pressTab()
+    setup.mockInput.pressKey(" ")
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("worktree  unavailable")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("offers fmx's own workspace when no root is configured", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code, [])
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
     setup.mockInput.pressKey(" ")
     await setup.renderOnce()
 

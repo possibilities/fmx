@@ -76,6 +76,28 @@ test("loads project roots and diagnoses entries it cannot use", async () => {
   }
 })
 
+test("loads a worktree root and falls back on one it cannot use", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-config-worktree-"))
+  const good = join(directory, "worktree.toml")
+  const bad = join(directory, "bad-worktree.toml")
+  await writeFile(good, `worktree_root = "~/trees"\n`)
+  await writeFile(bad, `worktree_root = 7\n`)
+
+  try {
+    expect((await loadConfig(good)).worktreeRoot).toBe("~/trees")
+    const rejected = await loadConfig(bad)
+    expect(rejected.worktreeRoot).toBe("~/.fmx/worktrees")
+    expect(rejected.diagnostics).toEqual([
+      "invalid worktree_root: must be a directory; using the default",
+    ])
+    expect((await loadConfig("/definitely/missing/fmx-config.toml")).worktreeRoot).toBe(
+      "~/.fmx/worktrees",
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test("falls back on malformed TOML and diagnoses unknown keys", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-config-errors-"))
   const malformed = join(directory, "malformed.toml")

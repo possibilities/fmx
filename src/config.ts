@@ -9,6 +9,8 @@ type LoadedConfig = {
   keybindings: Keybindings
   /** Directories whose children the launch dialog offers as projects. */
   projectRoots: string[]
+  /** Where a launch's new worktree is checked out. */
+  worktreeRoot: string
   slug: SlugSettings
   diagnostics: string[]
 }
@@ -27,7 +29,11 @@ export type SlugSettings = {
   models: Record<string, string>
 }
 
-const KNOWN_SECTIONS = new Set(["keys", "project_roots", "slug"])
+const KNOWN_SECTIONS = new Set(["keys", "project_roots", "worktree_root", "slug"])
+
+/** Unlike the project roots, this one has a usable default: it names fmx's
+ * own directory rather than guessing where anybody keeps their work. */
+export const DEFAULT_WORKTREE_ROOT = "~/.fmx/worktrees"
 
 /**
  * Naming asks for very little — a title of a few words — so it should ask the
@@ -80,6 +86,7 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
   return {
     keybindings: resolved.keybindings,
     projectRoots: resolveProjectRoots(document.project_roots, diagnostics),
+    worktreeRoot: resolveWorktreeRoot(document.worktree_root, diagnostics),
     slug: resolveSlugSettings(document.slug, diagnostics),
     diagnostics,
   }
@@ -170,10 +177,20 @@ function resolveProjectRoots(raw: unknown, diagnostics: string[]): string[] {
   return roots
 }
 
+function resolveWorktreeRoot(raw: unknown, diagnostics: string[]): string {
+  if (raw === undefined) return DEFAULT_WORKTREE_ROOT
+  if (typeof raw !== "string" || raw.trim() === "") {
+    diagnostics.push("invalid worktree_root: must be a directory; using the default")
+    return DEFAULT_WORKTREE_ROOT
+  }
+  return raw
+}
+
 function defaultConfig(...diagnostics: string[]): LoadedConfig {
   return {
     keybindings: resolveKeybindings().keybindings,
     projectRoots: [],
+    worktreeRoot: DEFAULT_WORKTREE_ROOT,
     slug: defaultSlugSettings(),
     diagnostics,
   }

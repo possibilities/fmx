@@ -6,6 +6,7 @@ import {
   type KeyEvent,
   StyledText,
   type TerminalColors,
+  type TextChunk,
   TextRenderable,
 } from "@opentui/core"
 import { MODAL_FALLBACK_COLORS, type ModalColors, modalColors } from "./host-palette.ts"
@@ -14,44 +15,72 @@ import { cycleByLetter, matchProjects, type ProjectChoice } from "./projects.ts"
 
 /**
  * The launch dialog: what an instance is started with, gathered before fx
- * runs. Today that is one choice — the project — so the dialog is one row, but
- * it is a row rather than a bare list on purpose. A row answers a letter by
- * cycling to the next project starting with it, which is the fastest way to
- * reach a project whose name you know; the project picker it opens on space
- * answers a filter instead, which is the way to reach one you only half
- * remember. Further choices join as further rows.
+ * runs. Three rows — the prompt to start on, the project to start in, and
+ * whether to cut a fresh worktree for it.
+ *
+ * The chooser rows are rows rather than a bare list on purpose. A row answers
+ * a letter by cycling to the next project starting with it, which is the
+ * fastest way to reach a project whose name you know; the project picker it
+ * opens on space answers a filter instead, which is the way to reach one you
+ * only half remember.
  */
 
 const DIALOG_TITLE = " launch "
 const PICKER_TITLE = " project "
 const DIALOG_MAX_WIDTH = 56
 const DIALOG_MIN_WIDTH = 32
-/** Border, the row, a blank line, and the hint. */
-const DIALOG_HEIGHT = 5
 const PICKER_MAX_ROWS = 10
-const ROW_LABEL = "project"
-const HINT = "space pick · ←→ cycle · ⏎ start · esc cancel"
+/** Wide enough for the longest label, plus the gap to its value. */
+const LABEL_COLUMN = 10
+
+const ROWS = ["prompt", "project", "worktree"] as const
+type Row = (typeof ROWS)[number]
+
+/** Border, the three rows, a blank line, and the hint. */
+const DIALOG_HEIGHT = ROWS.length + 4
+
+const HINTS: Readonly<Record<Row, string>> = {
+  prompt: "⏎ next · tab move · esc cancel",
+  project: "space pick · ←→ cycle · ⏎ start · esc cancel",
+  worktree: "space toggle · ⏎ start · esc cancel",
+}
+const PROMPT_PLACEHOLDER = "what should the agent do?"
 const PICKER_HINT = "type to filter"
 const EMPTY = "no projects found — set project_roots in the config"
+const WORKTREE_UNAVAILABLE = "unavailable — not a repository"
+
+export type LaunchRequest = {
+  directory: string
+  /** Empty when none was given; fx then opens on nothing, as it always has. */
+  prompt: string
+  worktree: boolean
+}
 
 type LaunchDialogEvents = {
-  onLaunch: (directory: string) => void
+  onLaunch: (request: LaunchRequest) => void
   onClose: () => void
+  /** Asks whether a worktree can be cut here; answered by
+   * `setWorktreeAvailability`, possibly after several more selections. */
+  onProjectChange: (directory: string) => void
 }
 
 export class LaunchDialog {
   readonly root: BoxRenderable
   private readonly dialog: BoxRenderable
-  private readonly rowText: TextRenderable
+  private readonly rowTexts = new Map<Row, TextRenderable>()
   private readonly hintText: TextRenderable
   private readonly picker: BoxRenderable
   private readonly filterText: TextRenderable
   private readonly pickerRows: BoxRenderable
-  private rows: BoxRenderable[] = []
 
   private colors: ModalColors = MODAL_FALLBACK_COLORS
   private projects: ProjectChoice[] = []
   private selected = 0
+  private focus = 0
+  private prompt = ""
+  private worktree = false
+  /** Null until the answer for the selected project arrives. */
+  private worktreeAvailable: boolean | null = null
   private open = false
   private picking = false
   private filter = ""
@@ -89,16 +118,29 @@ export class LaunchDialog {
       titleAlignment: "left",
       onMouseDown: (event) => event.stopPropagation(),
     })
-    this.rowText = new TextRenderable(renderer, {
-      id: "fmx-launch-row",
-      content: "",
-      height: 1,
-      selectable: false,
-    })
-    // A blank line separates the hint from the choice, not a rule: on a
+    for (const [index, row] of ROWS.entries()) {
+      const text = new TextRenderable(renderer, {
+        id: `fmx-launch-row-${row}`,
+        content: "",
+        height: 1,
+        selectable: false,
+        onMouseDown: (event) => {
+          // A press on a row is its primary action: focus it, and act where
+          // the row has an action of its own.
+          event.preventDefault()
+          event.stopPropagation()
+          this.focus = index
+          if (row === "worktree") this.toggleWorktree()
+          else if (row === "project") this.openPicker()
+          else this.layout()
+        },
+      })
+      this.rowTexts.set(row, text)
+      this.dialog.add(text)
+    }
+    // A blank line separates the hint from the choices, not a rule: on a
     // character grid a rule can only sit mid-cell or at the cell's floor, and
-    // neither lands between the two rows — it reads as underlining one of
-    // them.
+    // neither lands between two rows — it reads as underlining one of them.
     this.hintText = new TextRenderable(renderer, {
       id: "fmx-launch-hint",
       content: "",
@@ -106,7 +148,6 @@ export class LaunchDialog {
       marginTop: 1,
       selectable: false,
     })
-    this.dialog.add(this.rowText)
     this.dialog.add(this.hintText)
 
     this.picker = new BoxRenderable(renderer, {
@@ -161,10 +202,15 @@ export class LaunchDialog {
     this.projects = [...projects]
     const at = this.projects.findIndex((project) => project.directory === preselect)
     this.selected = at === -1 ? 0 : at
+    this.prompt = ""
+    this.worktree = false
+    this.worktreeAvailable = null
+    this.focus = 0
     this.open = true
     this.picking = false
     this.root.visible = true
     this.picker.visible = false
+    this.askAboutWorktree()
     this.layout()
   }
 
@@ -179,6 +225,15 @@ export class LaunchDialog {
     this.renderer.requestRender()
   }
 
+  /** The answer to an earlier `onProjectChange`. A stale answer is dropped, so
+   * a slow repository check cannot overwrite a newer selection. */
+  setWorktreeAvailability(directory: string, available: boolean): void {
+    if (this.projects[this.selected]?.directory !== directory) return
+    this.worktreeAvailable = available
+    if (!available) this.worktree = false
+    if (this.open) this.layout()
+  }
+
   applyPalette(colors: TerminalColors | null): void {
     this.colors = modalColors(colors)
     this.root.backgroundColor = this.colors.backdrop
@@ -188,7 +243,7 @@ export class LaunchDialog {
       box.focusedBorderColor = this.colors.accent
       box.titleColor = this.colors.key
     }
-    for (const text of [this.rowText, this.hintText, this.filterText]) {
+    for (const text of [...this.rowTexts.values(), this.hintText, this.filterText]) {
       text.fg = this.colors.foreground
       text.bg = this.colors.background
     }
@@ -211,14 +266,15 @@ export class LaunchDialog {
 
   layout(): void {
     if (!this.open) return
-    const width = Math.max(
-      DIALOG_MIN_WIDTH,
-      Math.min(DIALOG_MAX_WIDTH, this.renderer.width - 8),
-    )
+    const width = Math.max(DIALOG_MIN_WIDTH, Math.min(DIALOG_MAX_WIDTH, this.renderer.width - 8))
     center(this.dialog, width, DIALOG_HEIGHT)
-    this.paintRow(width - 4)
+    this.paintRows(width - 4)
     if (this.picking) this.paintPicker(width)
     this.renderer.requestRender()
+  }
+
+  private currentRow(): Row {
+    return ROWS[this.focus] ?? "prompt"
   }
 
   private handleRowKey(key: KeyEvent): void {
@@ -226,17 +282,57 @@ export class LaunchDialog {
       this.close()
       return
     }
-    if (key.name === "enter" || key.name === "return") {
-      this.launch(this.projects[this.selected])
+    if (key.name === "tab" || key.name === "down") {
+      this.moveFocus(1)
       return
     }
-    // One row, so every arrow steps its value. A second row would give the
-    // vertical pair to row movement and leave stepping to left and right.
-    if (key.name === "left" || key.name === "up") {
+    if (key.name === "backtab" || key.name === "up") {
+      this.moveFocus(-1)
+      return
+    }
+    if (key.name === "enter" || key.name === "return") {
+      // Enter on the prompt commits the text and moves on, the way it does in
+      // any form; from a chooser there is nothing left to confirm, so it goes.
+      if (this.currentRow() === "prompt") this.moveFocus(1)
+      else this.launch()
+      return
+    }
+    switch (this.currentRow()) {
+      case "prompt":
+        this.handlePromptKey(key)
+        return
+      case "project":
+        this.handleProjectKey(key)
+        return
+      case "worktree":
+        this.handleWorktreeKey(key)
+        return
+    }
+  }
+
+  private handlePromptKey(key: KeyEvent): void {
+    if (key.name === "backspace") {
+      this.prompt = [...this.prompt].slice(0, -1).join("")
+      this.layout()
+      return
+    }
+    if (key.ctrl && key.name.toLowerCase() === "u") {
+      this.prompt = ""
+      this.layout()
+      return
+    }
+    const character = printableFrom(key)
+    if (character === null) return
+    this.prompt += character
+    this.layout()
+  }
+
+  private handleProjectKey(key: KeyEvent): void {
+    if (key.name === "left") {
       this.step(-1)
       return
     }
-    if (key.name === "right" || key.name === "down") {
+    if (key.name === "right") {
       this.step(1)
       return
     }
@@ -245,10 +341,22 @@ export class LaunchDialog {
       return
     }
     const letter = printableFrom(key)
-    if (letter) {
-      this.selected = cycleByLetter(this.projects, this.selected, letter)
-      this.layout()
+    if (letter === null) return
+    const next = cycleByLetter(this.projects, this.selected, letter)
+    if (next === this.selected) this.layout()
+    else this.selectProject(next)
+  }
+
+  private handleWorktreeKey(key: KeyEvent): void {
+    if (key.name === "space" || key.sequence === " " || key.name === "left" || key.name === "right") {
+      this.toggleWorktree()
+      return
     }
+    // y and n say it outright, for a hand that would rather not count presses.
+    const letter = printableFrom(key)?.toLowerCase()
+    if (letter !== "y" && letter !== "n") return
+    this.worktree = letter === "y" && this.worktreeAvailable !== false
+    this.layout()
   }
 
   private handlePickerKey(key: KeyEvent): void {
@@ -259,7 +367,7 @@ export class LaunchDialog {
     if (key.name === "enter" || key.name === "return") {
       const chosen = this.matches()[this.highlighted]
       if (!chosen) return
-      this.selected = this.projects.indexOf(chosen)
+      this.selectProject(this.projects.indexOf(chosen))
       this.closePicker()
       return
     }
@@ -279,8 +387,32 @@ export class LaunchDialog {
     if (character) this.setFilter(this.filter + character)
   }
 
+  private moveFocus(delta: number): void {
+    this.focus = (((this.focus + delta) % ROWS.length) + ROWS.length) % ROWS.length
+    this.layout()
+  }
+
+  private toggleWorktree(): void {
+    if (this.worktreeAvailable === false) return
+    this.worktree = !this.worktree
+    this.layout()
+  }
+
+  private selectProject(index: number): void {
+    this.selected = index
+    this.worktreeAvailable = null
+    this.askAboutWorktree()
+    this.layout()
+  }
+
+  private askAboutWorktree(): void {
+    const directory = this.projects[this.selected]?.directory
+    if (directory) this.events.onProjectChange(directory)
+  }
+
   private openPicker(): void {
     if (this.projects.length === 0) return
+    this.focus = ROWS.indexOf("project")
     this.picking = true
     this.filter = ""
     // The picker opens on the row's own choice, so dismissing it changes
@@ -298,18 +430,22 @@ export class LaunchDialog {
     this.layout()
   }
 
-  private launch(project: ProjectChoice | undefined): void {
+  private launch(): void {
+    const project = this.projects[this.selected]
     if (!project) return
-    const { directory } = project
+    const request: LaunchRequest = {
+      directory: project.directory,
+      prompt: this.prompt.trim(),
+      worktree: this.worktree,
+    }
     this.close()
-    this.events.onLaunch(directory)
+    this.events.onLaunch(request)
   }
 
   private step(delta: number): void {
     const count = this.projects.length
     if (count === 0) return
-    this.selected = (((this.selected + delta) % count) + count) % count
-    this.layout()
+    this.selectProject((((this.selected + delta) % count) + count) % count)
   }
 
   private moveHighlight(delta: number, wrap: boolean): void {
@@ -332,21 +468,42 @@ export class LaunchDialog {
     return matchProjects(this.projects, this.filter)
   }
 
-  private paintRow(inner: number): void {
+  private paintRows(inner: number): void {
     const project = this.projects[this.selected]
-    if (!project) {
-      this.rowText.content = new StyledText([fg(this.colors.key)(EMPTY)])
-      this.hintText.content = new StyledText([fg(this.colors.dim)("esc cancel")])
-      return
+    const available = Math.max(4, inner - 2 - LABEL_COLUMN)
+    for (const [index, row] of ROWS.entries()) {
+      const text = this.rowTexts.get(row)
+      if (!text) continue
+      text.content = new StyledText([
+        index === this.focus ? bold(fg(this.colors.accent)("▎ ")) : fg(this.colors.background)("  "),
+        fg(this.colors.key)(row.padEnd(LABEL_COLUMN)),
+        ...this.rowValue(row, project, available),
+      ])
     }
-    const label = `${ROW_LABEL}  `
-    const available = Math.max(4, inner - 2 - label.length)
-    this.rowText.content = new StyledText([
-      bold(fg(this.colors.accent)("▎ ")),
-      fg(this.colors.key)(label),
-      fg(this.colors.foreground)(truncate(project.display, available)),
+    this.hintText.content = new StyledText([
+      fg(this.colors.dim)(truncate(HINTS[this.currentRow()], inner)),
     ])
-    this.hintText.content = new StyledText([fg(this.colors.dim)(truncate(HINT, inner))])
+  }
+
+  private rowValue(row: Row, project: ProjectChoice | undefined, width: number): TextChunk[] {
+    switch (row) {
+      case "prompt":
+        // A prompt longer than the row is cut at its head, so what stays on
+        // screen is what was typed last — where the cursor would be.
+        return this.prompt === ""
+          ? [fg(this.colors.dim)(truncate(PROMPT_PLACEHOLDER, width))]
+          : [fg(this.colors.foreground)(truncateHead(this.prompt, width))]
+      case "project":
+        return [
+          project
+            ? fg(this.colors.foreground)(truncate(project.display, width))
+            : fg(this.colors.key)(truncate(EMPTY, width)),
+        ]
+      case "worktree":
+        return this.worktreeAvailable === false
+          ? [fg(this.colors.dim)(truncate(WORKTREE_UNAVAILABLE, width))]
+          : [fg(this.colors.foreground)(this.worktree ? "yes" : "no")]
+    }
   }
 
   private paintPicker(width: number): void {
@@ -393,7 +550,7 @@ export class LaunchDialog {
         onMouseDown: (event) => {
           event.preventDefault()
           event.stopPropagation()
-          this.selected = this.projects.indexOf(project)
+          this.selectProject(this.projects.indexOf(project))
           this.closePicker()
         },
       })
@@ -413,7 +570,6 @@ export class LaunchDialog {
         }),
       )
       this.pickerRows.add(row)
-      this.rows.push(row)
     }
   }
 
@@ -422,7 +578,6 @@ export class LaunchDialog {
       this.pickerRows.remove(child)
       child.destroyRecursively()
     }
-    this.rows = []
   }
 }
 
@@ -451,4 +606,12 @@ function truncate(value: string, width: number): string {
   if (characters.length <= width) return value
   if (width === 1) return "…"
   return `${characters.slice(0, width - 1).join("")}…`
+}
+
+function truncateHead(value: string, width: number): string {
+  if (width <= 0) return ""
+  const characters = [...value]
+  if (characters.length <= width) return value
+  if (width === 1) return "…"
+  return `…${characters.slice(characters.length - width + 1).join("")}`
 }
