@@ -56,10 +56,16 @@ nothing.
 _Avoid_: workspace root, search path, scan directory.
 
 **Launch dialog** — the modal that gathers what an instance is started with
-before fx runs: a prompt, a project, and whether to cut a worktree, one row
-each. `tab` moves between rows; a chooser row answers a letter by cycling to
-the next value starting with it, and space opens its picker.
+before fx runs: a prompt, a project, whether to cut a worktree, and the launch
+level, one row each. `tab` moves between rows; a chooser row answers a letter
+by cycling to the next value starting with it, and space opens its picker.
 _Avoid_: new tab modal, launcher, form.
+
+**Launch level** — the Codex model and reasoning effort a new instance starts
+with, passed to that fx alone through `FX_MODEL` and `FX_EFFORT`. Its allowed
+pairs come from fmx's small local catalog because fx does not expose the effort
+metadata from its provider catalog through `fx models --json`.
+_Avoid_: profile, preset, provider setting.
 
 **Launch prompt** — the text an instance starts working on. fx takes no prompt
 on its command line, so fmx pastes it into the terminal and sends it once fx

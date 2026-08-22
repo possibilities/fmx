@@ -110,6 +110,8 @@ export type LaunchFields = {
   worktree: boolean
   /** null while the repository check for `directory` is still running. */
   worktree_available: boolean | null
+  model: string
+  effort: string
 }
 
 export type DraftStatus = "open" | "submitted" | "cancelled" | "failed"

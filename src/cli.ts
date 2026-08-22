@@ -10,6 +10,8 @@ export type LaunchFieldArgs = {
   directory?: string
   worktree?: boolean
   prompt?: TextSource
+  model?: string
+  effort?: string
 }
 
 export type Command =
@@ -197,6 +199,8 @@ function parseLaunch(args: string[], fxArgs: string[]): Command {
       "prompt-file": "value",
       worktree: "switch",
       "no-worktree": "switch",
+      model: "value",
+      effort: "value",
       focus: "switch",
       editable: "switch",
       wait: "switch",
@@ -242,6 +246,8 @@ function parseDraft(args: string[]): Command {
           "prompt-file": "value",
           worktree: "switch",
           "no-worktree": "switch",
+          model: "value",
+          effort: "value",
         },
         "draft",
       )
@@ -279,6 +285,8 @@ function launchFields(flags: ParsedFlags, topic: string): LaunchFieldArgs {
   }
   if (flags.switches.has("worktree")) fields.worktree = true
   if (flags.switches.has("no-worktree")) fields.worktree = false
+  if (flags.values.model !== undefined) fields.model = flags.values.model
+  if (flags.values.effort !== undefined) fields.effort = flags.values.effort
   const prompt = textSource(flags.values.prompt ?? flags.positional[0], flags.values["prompt-file"], topic)
   if (prompt) fields.prompt = prompt
   return fields
@@ -406,6 +414,8 @@ const LAUNCH_USAGE = `Usage: fmx control launch [prompt] [flags] [-- <fx argumen
 
   --project DIR        directory to start in (default: your own)
   --worktree           cut a fresh worktree of the project first
+  --model ID           Codex model for this instance
+  --effort LEVEL       reasoning effort for this instance
   --prompt TEXT        the prompt to start on; a bare positional works too
   --prompt-file PATH   read the prompt from a file; --prompt - reads stdin
   --focus              switch the screen to the new instance
@@ -419,7 +429,7 @@ const DRAFT_USAGE = `Usage: fmx control draft <verb> [id] [flags]
 
   show [id]            fields and status (default: the open draft)
   set <id> [flags]     change fields: --prompt, --prompt-file, --project,
-                       --worktree, --no-worktree
+                       --worktree, --no-worktree, --model, --effort
   submit <id>          launch it; prints the instance started
   cancel <id>          close it without launching
   wait [id] [--timeout MS]

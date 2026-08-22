@@ -9,6 +9,7 @@ import {
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
+import { CODEX_MODELS, DEFAULT_CODEX_MODEL, type CodexModel } from "./codex-catalog.ts"
 import { MODAL_FALLBACK_COLORS, type ModalColors, modalColors } from "./host-palette.ts"
 import { isCancelKey } from "./keybindings.ts"
 import { cycleByLetter, matchProjects, type ProjectChoice } from "./projects.ts"
@@ -16,8 +17,7 @@ import { isStructuralKey, PromptEditor } from "./prompt-editor.ts"
 
 /**
  * The launch dialog: what an instance is started with, gathered before fx
- * runs. Three rows — the prompt to start on, the project to start in, and
- * whether to cut a fresh worktree for it.
+ * runs. Five rows — prompt, project, worktree, model, and effort.
  *
  * The chooser rows are rows rather than a bare list on purpose. A row answers
  * a letter by cycling to the next project starting with it, which is the
@@ -27,15 +27,22 @@ import { isStructuralKey, PromptEditor } from "./prompt-editor.ts"
  */
 
 const DIALOG_TITLE = " launch "
-const PICKER_TITLE = " project "
 const DIALOG_MAX_WIDTH = 56
 const DIALOG_MIN_WIDTH = 32
 const PICKER_MAX_ROWS = 10
 /** Wide enough for the longest label, plus the gap to its value. */
 const LABEL_COLUMN = 10
 
-const ROWS = ["prompt", "project", "worktree"] as const
+const ROWS = ["prompt", "project", "worktree", "model", "effort"] as const
 type Row = (typeof ROWS)[number]
+type PickerKind = Extract<Row, "project" | "model" | "effort">
+
+type PickerChoice = {
+  kind: PickerKind
+  index: number
+  label: string
+  meta?: string
+}
 
 /** Border and the chooser rows — everything but the prompt, which is as tall
  * as what has been written in it. */
@@ -50,6 +57,8 @@ export type LaunchRequest = {
   /** Empty when none was given; fx then opens on nothing, as it always has. */
   prompt: string
   worktree: boolean
+  model: string
+  effort: string
 }
 
 /** What the dialog opens with, or is changed to, beyond its defaults. A field
@@ -59,6 +68,8 @@ export type LaunchPrefill = {
   prompt?: string
   directory?: string
   worktree?: boolean
+  model?: string
+  effort?: string
 }
 
 /** The rows as they stand, for a reader that is not looking at the screen. */
@@ -67,6 +78,8 @@ export type LaunchDialogFields = {
   directory: string
   worktree: boolean
   worktree_available: boolean | null
+  model: string
+  effort: string
 }
 
 export type LaunchDialogOutcome = "submitted" | "cancelled"
@@ -95,10 +108,13 @@ export class LaunchDialog {
   private selected = 0
   private focus = 0
   private worktree = false
+  private modelIndex = 0
+  private effort = DEFAULT_CODEX_MODEL.defaultEffort
   /** Null until the answer for the selected project arrives. */
   private worktreeAvailable: boolean | null = null
   private open = false
   private picking = false
+  private pickerKind: PickerKind = "project"
   private filter = ""
   private highlighted = 0
   private scroll = 0
@@ -151,7 +167,7 @@ export class LaunchDialog {
           event.stopPropagation()
           this.setFocus(index)
           if (row === "worktree") this.toggleWorktree()
-          else if (row === "project") this.openPicker()
+          else if (row !== "prompt") this.openPicker(row)
         },
       })
       this.rowTexts.set(row, text)
@@ -186,7 +202,7 @@ export class LaunchDialog {
       borderStyle: "single",
       borderColor: MODAL_FALLBACK_COLORS.accent,
       backgroundColor: MODAL_FALLBACK_COLORS.background,
-      title: PICKER_TITLE,
+      title: " project ",
       titleAlignment: "left",
       onMouseDown: (event) => event.stopPropagation(),
       onMouseScroll: (event) => {
@@ -232,6 +248,8 @@ export class LaunchDialog {
     this.selected = at === -1 ? 0 : at
     this.editor.reset()
     this.worktree = false
+    this.modelIndex = 0
+    this.effort = DEFAULT_CODEX_MODEL.defaultEffort
     this.worktreeAvailable = null
     this.focus = 0
     this.open = true
@@ -265,6 +283,13 @@ export class LaunchDialog {
     }
     if (fields.prompt !== undefined) this.editor.setText(fields.prompt)
     if (fields.worktree !== undefined) this.worktree = fields.worktree && this.worktreeAvailable !== false
+    if (fields.model !== undefined) {
+      const at = CODEX_MODELS.findIndex((model) => model.id === fields.model)
+      if (at !== -1) this.selectModel(at)
+    }
+    if (fields.effort !== undefined && this.currentModel().efforts.includes(fields.effort)) {
+      this.effort = fields.effort
+    }
     if (this.open) this.layout()
   }
 
@@ -274,6 +299,8 @@ export class LaunchDialog {
       directory: this.projects[this.selected]?.directory ?? "",
       worktree: this.worktree,
       worktree_available: this.worktreeAvailable,
+      model: this.currentModel().id,
+      effort: this.effort,
     }
   }
 
@@ -406,6 +433,12 @@ export class LaunchDialog {
       case "worktree":
         this.handleWorktreeKey(key)
         return
+      case "model":
+        this.handleCatalogKey("model", key)
+        return
+      case "effort":
+        this.handleCatalogKey("effort", key)
+        return
     }
   }
 
@@ -426,7 +459,7 @@ export class LaunchDialog {
       return
     }
     if (key.name === "space" || key.sequence === " ") {
-      this.openPicker()
+      this.openPicker("project")
       return
     }
     const letter = printableFrom(key)
@@ -448,6 +481,28 @@ export class LaunchDialog {
     this.layout()
   }
 
+  private handleCatalogKey(row: "model" | "effort", key: KeyEvent): void {
+    if (key.name === "left") {
+      this.stepCatalog(row, -1)
+      return
+    }
+    if (key.name === "right") {
+      this.stepCatalog(row, 1)
+      return
+    }
+    if (key.name === "space" || key.sequence === " ") {
+      this.openPicker(row)
+      return
+    }
+    const letter = printableFrom(key)
+    if (letter === null) return
+    const choices = this.catalogChoices(row)
+    const current = this.catalogIndex(row)
+    const next = cycleChoiceByLetter(choices, current, letter)
+    if (next === current) this.layout()
+    else this.selectCatalog(row, next)
+  }
+
   private handlePickerKey(key: KeyEvent): void {
     if (key.name === "escape") {
       this.closePicker()
@@ -456,7 +511,7 @@ export class LaunchDialog {
     if (key.name === "enter" || key.name === "return") {
       const chosen = this.matches()[this.highlighted]
       if (!chosen) return
-      this.selectProject(this.projects.indexOf(chosen))
+      this.selectPickerChoice(chosen)
       this.closePicker()
       return
     }
@@ -513,15 +568,17 @@ export class LaunchDialog {
     if (directory) this.events.onProjectChange(directory)
   }
 
-  private openPicker(): void {
-    if (this.projects.length === 0) return
-    this.setFocusQuietly(ROWS.indexOf("project"))
+  private openPicker(kind: PickerKind): void {
+    if (kind === "project" && this.projects.length === 0) return
+    this.setFocusQuietly(ROWS.indexOf(kind))
     this.picking = true
+    this.pickerKind = kind
     this.filter = ""
     // The picker opens on the row's own choice, so dismissing it changes
     // nothing and choosing from where you already are is one keystroke.
-    this.highlighted = this.selected
+    this.highlighted = kind === "project" ? this.selected : this.catalogIndex(kind)
     this.scroll = 0
+    this.picker.title = ` ${kind} `
     this.picker.visible = true
     this.layout()
   }
@@ -540,6 +597,8 @@ export class LaunchDialog {
       directory: project.directory,
       prompt: this.editor.text.trim(),
       worktree: this.worktree,
+      model: this.currentModel().id,
+      effort: this.effort,
     }
     this.dismiss("submitted")
     this.events.onLaunch(request)
@@ -567,8 +626,18 @@ export class LaunchDialog {
     this.layout()
   }
 
-  private matches(): ProjectChoice[] {
-    return matchProjects(this.projects, this.filter)
+  private matches(): PickerChoice[] {
+    if (this.pickerKind === "project") {
+      return matchProjects(this.projects, this.filter).map((project) => ({
+        kind: "project",
+        index: this.projects.indexOf(project),
+        label: project.display,
+      }))
+    }
+    return matchPickerChoices(this.catalogChoices(this.pickerKind), this.filter).map((choice) => ({
+      kind: this.pickerKind,
+      ...choice,
+    }))
   }
 
   private paintRows(inner: number): void {
@@ -601,6 +670,10 @@ export class LaunchDialog {
         return this.worktreeAvailable === false
           ? [fg(this.colors.dim)(truncate(WORKTREE_UNAVAILABLE, width))]
           : [fg(this.colors.foreground)(this.worktree ? "yes" : "no")]
+      case "model":
+        return [fg(this.colors.foreground)(truncate(this.currentModel().id, width))]
+      case "effort":
+        return [fg(this.colors.foreground)(this.effort)]
     }
   }
 
@@ -637,7 +710,7 @@ export class LaunchDialog {
       )
       return
     }
-    for (const [offset, project] of visible.slice(this.scroll, this.scroll + rowCount).entries()) {
+    for (const [offset, choice] of visible.slice(this.scroll, this.scroll + rowCount).entries()) {
       const index = this.scroll + offset
       const row = new BoxRenderable(this.renderer, {
         id: `fmx-launch-picker-row-${index}`,
@@ -648,20 +721,19 @@ export class LaunchDialog {
         onMouseDown: (event) => {
           event.preventDefault()
           event.stopPropagation()
-          this.selectProject(this.projects.indexOf(project))
+          this.selectPickerChoice(choice)
           this.closePicker()
         },
       })
       const isHighlighted = index === this.highlighted
-      // The launch count orders the list and nothing more: a tally beside
-      // every project is noise in a list already sorted by it.
+      const meta = choice.meta ? `  ${choice.meta}` : ""
       row.add(
         new TextRenderable(this.renderer, {
           id: `fmx-launch-picker-text-${index}`,
           content: new StyledText([
             isHighlighted ? bold(fg(this.colors.accent)("▎ ")) : fg(this.colors.background)("  "),
             fg(isHighlighted ? this.colors.foreground : this.colors.key)(
-              truncate(project.display, Math.max(4, inner - 2)),
+              truncate(`${choice.label}${meta}`, Math.max(4, inner - 2)),
             ),
           ]),
           selectable: false,
@@ -669,6 +741,49 @@ export class LaunchDialog {
       )
       this.pickerRows.add(row)
     }
+  }
+
+  private currentModel(): CodexModel {
+    return CODEX_MODELS[this.modelIndex] ?? DEFAULT_CODEX_MODEL
+  }
+
+  private catalogChoices(row: "model" | "effort"): Array<{ index: number; label: string; meta?: string }> {
+    if (row === "model") {
+      return CODEX_MODELS.map((model, index) => ({
+        index,
+        label: model.id,
+        meta: model.efforts.join("/"),
+      }))
+    }
+    return this.currentModel().efforts.map((effort, index) => ({ index, label: effort }))
+  }
+
+  private catalogIndex(row: "model" | "effort"): number {
+    return row === "model" ? this.modelIndex : Math.max(0, this.currentModel().efforts.indexOf(this.effort))
+  }
+
+  private stepCatalog(row: "model" | "effort", delta: number): void {
+    const count = this.catalogChoices(row).length
+    if (count === 0) return
+    this.selectCatalog(row, (((this.catalogIndex(row) + delta) % count) + count) % count)
+  }
+
+  private selectCatalog(row: "model" | "effort", index: number): void {
+    if (row === "model") this.selectModel(index)
+    else this.effort = this.currentModel().efforts[index] ?? this.effort
+    this.layout()
+  }
+
+  private selectModel(index: number): void {
+    const model = CODEX_MODELS[index]
+    if (!model) return
+    this.modelIndex = index
+    if (!model.efforts.includes(this.effort)) this.effort = model.defaultEffort
+  }
+
+  private selectPickerChoice(choice: PickerChoice): void {
+    if (choice.kind === "project") this.selectProject(choice.index)
+    else this.selectCatalog(choice.kind, choice.index)
   }
 
   private clearRows(): void {
@@ -684,6 +799,40 @@ function center(box: BoxRenderable, width: number, height: number): void {
   box.height = height
   box.marginLeft = -Math.floor(width / 2)
   box.marginTop = -Math.floor(height / 2)
+}
+
+function cycleChoiceByLetter(
+  choices: readonly { label: string }[],
+  index: number,
+  letter: string,
+): number {
+  const needle = letter.toLowerCase()
+  const matches = choices
+    .map((choice, at) => ({ at, label: choice.label.toLowerCase() }))
+    .filter((candidate) => candidate.label.startsWith(needle))
+  if (matches.length === 0) return index
+  return (matches.find((candidate) => candidate.at > index) ?? matches[0]!).at
+}
+
+function matchPickerChoices<T extends { label: string }>(choices: readonly T[], filter: string): T[] {
+  const needle = filter.trim().toLowerCase()
+  if (needle === "") return [...choices]
+  return choices
+    .map((choice, at) => ({ choice, at, rank: rankChoice(choice.label.toLowerCase(), needle) }))
+    .filter((candidate) => candidate.rank !== null)
+    .sort((left, right) => left.rank! - right.rank! || left.at - right.at)
+    .map((candidate) => candidate.choice)
+}
+
+function rankChoice(label: string, needle: string): number | null {
+  if (label.startsWith(needle)) return 0
+  if (label.includes(needle)) return 1
+  let at = 0
+  for (const character of label) {
+    if (character === needle[at]) at += 1
+    if (at === needle.length) return 2
+  }
+  return null
 }
 
 /** The one printable character a key event carries, or null for anything

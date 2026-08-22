@@ -29,10 +29,28 @@ describe("commands", () => {
   })
 
   test("reads launch fields, with a positional prompt", () => {
-    const options = parseArgs(["control", "launch", "fix the tests", "--project", "~/code/fmx", "--worktree", "--focus"])
+    const options = parseArgs([
+      "control",
+      "launch",
+      "fix the tests",
+      "--project",
+      "~/code/fmx",
+      "--worktree",
+      "--model",
+      "gpt-5.6-luna",
+      "--effort",
+      "max",
+      "--focus",
+    ])
     expect(options.command).toEqual({
       name: "launch",
-      fields: { directory: "~/code/fmx", worktree: true, prompt: { inline: "fix the tests" } },
+      fields: {
+        directory: "~/code/fmx",
+        worktree: true,
+        prompt: { inline: "fix the tests" },
+        model: "gpt-5.6-luna",
+        effort: "max",
+      },
       focus: true,
       editable: false,
       wait: false,
@@ -62,11 +80,23 @@ describe("commands", () => {
 
   test("draft verbs take an id where they change something", () => {
     expect(parseArgs(["control", "draft", "show"]).command).toEqual({ name: "draft", verb: "show" })
-    expect(parseArgs(["control", "draft", "set", "d1", "--no-worktree", "--prompt", "x"]).command).toEqual({
+    expect(parseArgs([
+      "control",
+      "draft",
+      "set",
+      "d1",
+      "--no-worktree",
+      "--prompt",
+      "x",
+      "--model",
+      "gpt-5.5",
+      "--effort",
+      "xhigh",
+    ]).command).toEqual({
       name: "draft",
       verb: "set",
       draft: "d1",
-      fields: { worktree: false, prompt: { inline: "x" } },
+      fields: { worktree: false, prompt: { inline: "x" }, model: "gpt-5.5", effort: "xhigh" },
     })
     expect(parseArgs(["control", "draft", "submit", "d1"]).command).toEqual({ name: "draft", verb: "submit", draft: "d1" })
     expect(() => parseArgs(["control", "draft", "submit"])).toThrow("needs a draft id")

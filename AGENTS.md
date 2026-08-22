@@ -46,13 +46,13 @@
   OAuth transport, so a Codex or Grok subscription cannot reach it at all;
   the fx binary fmx already resolved answers on whatever provider the human
   is signed in to and keeps every credential out of fmx.
-- fx takes a model override from `FX_MODEL` but has no equivalent for
-  reasoning effort, and it rejects both `effort` and `codex_model` from a
-  workspace's own `.fx.json` as user-only settings. The one place effort can
-  be set per directory is `workspaces["<abs path>"]` in the human's
-  `~/.fx/settings.json`, which is why naming runs in its own workspace and
-  why fmx writes that single entry. Never widen that write: read, add the one
-  key, and abandon the write if the file changed underneath.
+- fx takes per-process launch overrides from `FX_MODEL` and `FX_EFFORT`; the
+  launch dialog passes both to the one instance it starts. fx rejects both
+  `effort` and `codex_model` from a workspace's own `.fx.json` as user-only
+  settings. Slug naming still keeps its effort in the fmx-owned inference
+  workspace through `workspaces["<abs path>"]` in the human's
+  `~/.fx/settings.json`. Never widen that write: read, add the one key, and
+  abandon the write if the file changed underneath.
 - Slug models ship a default for codex alone, for the same reason
   `project_roots` ships empty: a guess at another provider's catalog is a
   model id that does not exist there. A provider with no default names at

@@ -210,19 +210,27 @@ test("opens a draft prefilled, lets it be read, changed, and cancelled", async (
     await h.launch()
     const opened = (await h.control("draft.open", {
       caller: 1,
-      fields: { prompt: "fix the flaky test" },
+      fields: { prompt: "fix the flaky test", model: "gpt-5.6-luna", effort: "max" },
     })) as DraftInfo
     expect(opened).toMatchObject({
       draft: "d1",
       kind: "launch",
       status: "open",
       opened_by: "agent",
-      fields: { prompt: "fix the flaky test", directory: join(h.code, "alpha"), worktree: false },
+      fields: {
+        prompt: "fix the flaky test",
+        directory: join(h.code, "alpha"),
+        worktree: false,
+        model: "gpt-5.6-luna",
+        effort: "max",
+      },
     })
     await h.setup.renderOnce()
     const frame = h.setup.captureCharFrame()
     expect(frame).toContain("prompt    fix the flaky test")
     expect(frame).toContain("project   ~/code/alpha")
+    expect(frame).toContain("model     gpt-5.6-luna")
+    expect(frame).toContain("effort    max")
 
     const snapshot = (await h.control("orient")) as Snapshot
     expect(snapshot.surface).toMatchObject({ kind: "launch", draft: { draft: "d1" } })
@@ -240,6 +248,14 @@ test("opens a draft prefilled, lets it be read, changed, and cancelled", async (
     expect(changed.fields).toMatchObject({ directory: join(h.code, "beta"), prompt: "write tests" })
     await h.setup.renderOnce()
     expect(h.setup.captureCharFrame()).toContain("project   ~/code/beta")
+
+    const narrowed = (await h.control("draft.set", {
+      draft: "d1",
+      fields: { model: "gpt-5.4" },
+    })) as DraftInfo
+    expect(narrowed.fields).toMatchObject({ model: "gpt-5.4", effort: "high" })
+    const invalid = await failure(h.control("draft.set", { draft: "d1", fields: { effort: "max" } }))
+    expect(invalid.code).toBe("invalid_params")
 
     const cancelled = (await h.control("draft.cancel", { draft: "d1" })) as DraftInfo
     expect(cancelled.status).toBe("cancelled")
