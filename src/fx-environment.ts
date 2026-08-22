@@ -1,3 +1,5 @@
+import { CONTROL_SOCKET_ENV_VAR } from "./control-protocol.ts"
+
 /**
  * An fx reads the agent socket it reports to out of its environment. Any of
  * these inherited from fmx's own parent name a surface that is not this one,
@@ -48,6 +50,7 @@ export function createFxEnvironment(
   instanceId: number,
   cwd: string,
   agentSocket: FxAgentSocketBinding | null = null,
+  controlSocketPath: string | null = null,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...parent,
@@ -67,5 +70,9 @@ export function createFxEnvironment(
     env.HERDR_SOCKET_PATH = agentSocket.socketPath
     env.HERDR_PANE_ID = agentSocket.paneId
   }
+  // The control socket is fmx's own: an agent inside the instance drives
+  // this fmx through it, and `FMX_INSTANCE_ID` says which instance it is.
+  if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
+  else delete env[CONTROL_SOCKET_ENV_VAR]
   return env
 }

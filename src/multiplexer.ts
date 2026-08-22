@@ -14,16 +14,37 @@ import {
   TextRenderable,
   type ThemeMode,
 } from "@opentui/core"
+import { realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename } from "node:path"
-import { AgentRegistry, displayStateFor, shortSessionId } from "./agent-registry.ts"
+import { AgentRegistry, type DisplayState, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
+import { VERSION } from "./cli.ts"
 import { DEFAULT_WORKTREE_ROOT, defaultSlugSettings, type SlugSettings } from "./config.ts"
+import {
+  ControlFailure,
+  type ControlMethod,
+  type DraftInfo,
+  type InstanceInfo,
+  type KeysInfo,
+  optionalBoolean,
+  optionalInteger,
+  optionalString,
+  optionalStringList,
+  parseTarget,
+  requiredString,
+  isRecord,
+  type SidebarRow,
+  type Snapshot,
+  type Surface,
+  type Target,
+} from "./control-protocol.ts"
+import type { ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
-import { LaunchDialog, type LaunchRequest } from "./launch-dialog.ts"
+import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
 import { type KnownPrompt, SlugNamer } from "./slug-namer.ts"
 import {
   detectedTerminalColor,
@@ -46,7 +67,7 @@ import {
 } from "./keybindings.ts"
 import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
 import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
-import { SessionList } from "./session-list.ts"
+import { SessionList, stateIcon } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
 import { bracketedPaste } from "./prompt-editor.ts"
@@ -118,6 +139,25 @@ type MultiplexerOptions = {
   onProjectLaunch?: (launches: Record<string, number>) => void
   /** How instances earn a name from their first prompt. */
   slug?: SlugSettings
+  /** Where `fmx <command>` reaches this fmx; handed to every instance. */
+  controlSocketPath?: string
+}
+
+/** Default states `instance wait` waits for: any that needs someone. */
+const WAIT_DEFAULT_STATES: readonly DisplayState[] = ["idle", "done", "blocked"]
+const DISPLAY_STATES: readonly string[] = ["blocked", "working", "done", "idle", "unknown"]
+/** How many resolved drafts stay readable after they close. */
+const DRAFT_HISTORY = 32
+
+type Draft = {
+  info: DraftInfo
+  waiters: Set<(info: DraftInfo) => void>
+}
+
+type InstanceWaiter = {
+  instanceId: number
+  states: readonly DisplayState[]
+  settle: (state: DisplayState | null) => void
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited"
@@ -142,6 +182,8 @@ class FxInstance {
   launchPrompt: string | null = null
   /** A launch prompt waiting for fx to be ready to be typed into. */
   private pendingPrompt: string | null = null
+  /** A prompt has gone in and fx has not yet said it is working on it. */
+  awaitingWork = false
   private promptTimer: ReturnType<typeof setTimeout> | null = null
   private readonly cursorReportAdapter = new CursorReportAdapter()
   private readonly titleParser: OscTitleParser
@@ -153,6 +195,7 @@ class FxInstance {
     private readonly argv: string[],
     private readonly fxPath: string,
     private readonly agentSocket: FxAgentSocketBinding | null,
+    private readonly controlSocketPath: string | null,
     hostPalette: TerminalColors | null,
     private readonly events: InstanceEvents,
   ) {
@@ -187,6 +230,28 @@ class FxInstance {
     if (prompt === "") return
     this.pendingPrompt = prompt
     this.launchPrompt = prompt
+    this.awaitingWork = true
+  }
+
+  /** Whether a launch prompt is still waiting for fx to be ready. */
+  get promptPending(): boolean {
+    return this.pendingPrompt !== null
+  }
+
+  /** Paste `text` into a running fx and send it, the way a launch prompt
+   * goes in — the two writes a beat apart, for the same reason. */
+  send(text: string): void {
+    if (this.status !== "running") throw new ControlFailure("busy", "the instance is not running")
+    if (this.pendingPrompt !== null || this.promptTimer !== null) {
+      throw new ControlFailure("busy", "the launch prompt has not been sent yet")
+    }
+    this.awaitingWork = true
+    const encoder = new TextEncoder()
+    this.writeInput(encoder.encode(bracketedPaste(text)), "input")
+    this.promptTimer = setTimeout(() => {
+      this.promptTimer = null
+      if (this.status === "running") this.writeInput(encoder.encode("\r"), "input")
+    }, PROMPT_SUBMIT_MS)
   }
 
   /**
@@ -217,7 +282,7 @@ class FxInstance {
   start(): void {
     const processHandle = Bun.spawn([this.fxPath, ...this.argv], {
       cwd: this.cwd,
-      env: createFxEnvironment(process.env, this.id, this.cwd, this.agentSocket),
+      env: createFxEnvironment(process.env, this.id, this.cwd, this.agentSocket, this.controlSocketPath),
       terminal: {
         cols: Math.max(1, this.terminal.width || 80),
         rows: Math.max(1, this.terminal.height || 24),
@@ -363,6 +428,17 @@ export class Multiplexer {
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private readonly swallowedReleases = new Set<string>()
   private readonly slugNamer: SlugNamer
+  /** Every launch dialog opening, by id, the open one included. */
+  private readonly drafts = new Map<string, Draft>()
+  private openDraft: Draft | null = null
+  /** Handed from the dialog's close to the launch that follows it. */
+  private submittedDraft: Draft | null = null
+  private nextDraftId = 1
+  private readonly instanceWaiters = new Set<InstanceWaiter>()
+  /** What `fmx <command>` drives. */
+  readonly control: ControlSurface = {
+    handle: (method, params, signal) => this.handleControl(method, params, signal),
+  }
   private readonly donePromise: Promise<void>
   private resolveDone!: () => void
   private readonly keypressHandler = (key: KeyEvent) => this.onKeyPress(key)
@@ -382,13 +458,16 @@ export class Multiplexer {
       if (sessionId) this.slugNamer.note(sessionId, this.launchPromptFor(frame.paneId))
       // fx reporting itself is the only signal fmx has that it is ready to be
       // typed into.
-      this.instanceForPane(frame.paneId)?.armPrompt()
+      const instance = this.instanceForPane(frame.paneId)
+      instance?.armPrompt()
+      if (instance && this.registry.get(frame.paneId)?.state === "working") instance.awaitingWork = false
     }
     // A pane the human is already watching is seen the moment it reports, so
     // finishing in the foreground never shows as an unacknowledged `done`.
     const active = this.activeInstance()
     if (active) this.markSeen(active)
     this.refreshSessionList()
+    this.settleInstanceWaiters()
   }
 
   constructor(
@@ -520,8 +599,9 @@ export class Multiplexer {
     this.projectLaunches = new Map(Object.entries(options.initialProjectLaunches ?? {}))
     this.launchDialog = new LaunchDialog(renderer, {
       onLaunch: (request) => void this.startLaunch(request),
-      onClose: () => {
+      onClose: (outcome) => {
         if (!this.shuttingDown) this.activeInstance()?.terminal.focus()
+        this.closeDraft(outcome)
       },
       onProjectChange: (directory) => this.answerWorktreeAvailability(directory),
     })
@@ -571,6 +651,8 @@ export class Multiplexer {
     this.launchDialog.close()
     this.hideModal()
     this.slugNamer.stop()
+    for (const waiter of this.instanceWaiters) waiter.settle(null)
+    this.instanceWaiters.clear()
 
     try {
       await Promise.allSettled(this.instances.map((instance) => instance.stop()))
@@ -590,8 +672,18 @@ export class Multiplexer {
     }
   }
 
-  private createInstance(argv: string[] = [], cwd: string = this.options.cwd, prompt = ""): void {
-    if (this.shuttingDown) return
+  /**
+   * Start an fx. `focus` false leaves the screen where it is — an agent
+   * starting workers should not keep taking the human's view — unless nothing
+   * is on it yet, when the new instance is the only thing to show.
+   */
+  private createInstance(
+    argv: string[] = [],
+    cwd: string = this.options.cwd,
+    prompt = "",
+    focus = true,
+  ): FxInstance | null {
+    if (this.shuttingDown) return null
     this.cancelExitConfirmation()
     const instanceId = this.nextId++
     const instance = new FxInstance(
@@ -601,6 +693,7 @@ export class Multiplexer {
       argv,
       this.options.fxPath,
       this.agentSocketBinding(instanceId),
+      this.options.controlSocketPath ?? null,
       this.hostPalette,
       {
         onTitleChange: (candidate) => {
@@ -613,7 +706,7 @@ export class Multiplexer {
     this.instances.push(instance)
     this.content.add(instance.terminal)
     this.refreshInstanceChrome()
-    this.switchTo(this.instances.length - 1)
+    if (focus || this.activeIndex === -1) this.switchTo(this.instances.length - 1)
     this.loadGitContext(cwd)
     this.countLaunch(cwd)
     this.refreshSessionList()
@@ -623,6 +716,7 @@ export class Multiplexer {
       this.removeInstance(instance)
       throw error
     }
+    return instance
   }
 
   private handleInstanceExit(instance: FxInstance): void {
@@ -640,6 +734,11 @@ export class Multiplexer {
     this.registry.forget(this.paneIdFor(instance))
     this.seenSeq.delete(instance.id)
     this.refreshInstanceChrome()
+    for (const waiter of this.instanceWaiters) {
+      if (waiter.instanceId !== instance.id) continue
+      this.instanceWaiters.delete(waiter)
+      waiter.settle(null)
+    }
 
     if (this.instances.length === 0) {
       this.activeIndex = -1
@@ -673,7 +772,9 @@ export class Multiplexer {
     const active = this.instances[normalized]!
     active.terminal.visible = true
     active.terminal.setHostSelectionEnabled(true)
-    active.terminal.focus()
+    // A surface drawn over fx keeps the keys; it hands them back when it
+    // closes, so an instance shown behind it must not take them now.
+    if (!this.launchDialog.isOpen() && !this.modalKind) active.terminal.focus()
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
@@ -997,7 +1098,11 @@ export class Multiplexer {
         }
         return
       case "launch":
-        this.showLaunchDialog()
+        try {
+          this.showLaunchDialog()
+        } catch (error) {
+          if (!(error instanceof ControlFailure)) throw error
+        }
         return
       case "previous_tab":
         this.switchTo(this.activeIndex - 1)
@@ -1029,30 +1134,91 @@ export class Multiplexer {
     return orderProjects(directories, this.projectLaunches, home)
   }
 
-  private showLaunchDialog(): void {
-    if (this.shuttingDown || this.modalKind) return
+  private showLaunchDialog(openedBy: "keys" | "agent" = "keys", prefill: LaunchPrefill = {}): Draft {
+    if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
+    if (this.modalKind || this.launchDialog.isOpen()) {
+      throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
+    }
     const active = this.activeInstance()
     this.launchDialog.applyPalette(this.hostPalette)
-    this.launchDialog.show(this.projectChoices(), active?.cwd ?? this.options.cwd)
+    const projects = this.projectChoices()
+    if (prefill.directory !== undefined) {
+      projects.push(...orderProjects([prefill.directory], this.projectLaunches, this.home()))
+    }
+    const draft: Draft = {
+      info: {
+        draft: `d${this.nextDraftId++}`,
+        kind: "launch",
+        status: "open",
+        opened_by: openedBy,
+        fields: { prompt: "", directory: "", worktree: false, worktree_available: null },
+        outcome: null,
+      },
+      waiters: new Set(),
+    }
+    this.drafts.set(draft.info.draft, draft)
+    this.openDraft = draft
+    this.forgetOldDrafts()
+    this.launchDialog.show(projects, prefill.directory ?? active?.cwd ?? this.options.cwd, prefill)
     active?.terminal.blur()
+    return draft
   }
 
+  /** The dialog has left the screen. A submitted draft stays open until its
+   * launch has answered; a cancelled one is resolved here. */
+  private closeDraft(outcome: LaunchDialogOutcome): void {
+    const draft = this.openDraft
+    if (!draft) return
+    draft.info.fields = this.launchDialog.fields()
+    this.openDraft = null
+    if (outcome === "cancelled") this.resolveDraft(draft, "cancelled", null)
+    else this.submittedDraft = draft
+  }
+
+  private resolveDraft(draft: Draft, status: DraftInfo["status"], outcome: DraftInfo["outcome"]): void {
+    draft.info.status = status
+    draft.info.outcome = outcome
+    for (const waiter of draft.waiters) waiter(draft.info)
+    draft.waiters.clear()
+  }
+
+  private forgetOldDrafts(): void {
+    for (const [id, draft] of this.drafts) {
+      if (this.drafts.size <= DRAFT_HISTORY) return
+      if (draft.info.status === "open") continue
+      this.drafts.delete(id)
+    }
+  }
+
+  /** The dialog's path: what goes wrong is shown, since there is no caller
+   * to answer. */
   private async startLaunch(request: LaunchRequest): Promise<void> {
+    const draft = this.submittedDraft
+    this.submittedDraft = null
+    try {
+      const instance = await this.performLaunch(request, [], true)
+      if (draft) this.resolveDraft(draft, "submitted", { instance: instance.id })
+    } catch (error) {
+      if (draft) this.resolveDraft(draft, "failed", { error: errorMessage(error) })
+      if (error instanceof ControlFailure && error.code === "shutting_down") return
+      this.showError(launchErrorHeading(error), error)
+    }
+  }
+
+  /** Cut the worktree if asked, then start fx; throws with the reason. */
+  private async performLaunch(request: LaunchRequest, argv: string[], focus: boolean): Promise<FxInstance> {
     let directory = request.directory
     if (request.worktree) {
       try {
         directory = await this.cutWorktree(request.directory)
       } catch (error) {
-        this.showError("worktree not created", error)
-        return
+        throw new WorktreeError(errorMessage(error))
       }
-      if (this.shuttingDown) return
     }
-    try {
-      this.createInstance([], directory, request.prompt)
-    } catch (error) {
-      this.showError("fx did not start", error)
-    }
+    if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
+    const instance = this.createInstance(argv, directory, request.prompt, focus)
+    if (!instance) throw new ControlFailure("shutting_down", "fmx is shutting down")
+    return instance
   }
 
   /** Branch from what the launch was looking at and check it out under the
@@ -1144,6 +1310,383 @@ export class Multiplexer {
     this.swallowedReleases.add(keyIdentity(key))
   }
 
+  /* ------------------------------------------------------------ control */
+
+  /**
+   * One method per `fmx <command>`. Reads answer from what the screen already
+   * knows; writes go through the same paths the keys and mouse take, so an
+   * agent can do nothing a hand could not.
+   */
+  private async handleControl(
+    method: ControlMethod,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
+    const caller = optionalInteger(params, "caller") ?? null
+    switch (method) {
+      case "orient":
+        return this.snapshot(caller)
+      case "instance.list":
+        return { instances: this.instances.map((instance) => this.instanceInfo(instance)) }
+      case "instance.wait":
+        return this.waitForInstance(
+          this.resolveTarget(parseTarget(optionalString(params, "target") ?? "current"), caller),
+          waitStates(optionalStringList(params, "states")),
+          optionalInteger(params, "timeout_ms") ?? null,
+          signal,
+        )
+      case "instance.send": {
+        const instance = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
+        const text = requiredString(params, "text").trim()
+        if (text === "") throw new ControlFailure("invalid_params", "text is empty")
+        instance.send(text)
+        return { instance: this.instanceInfo(instance) }
+      }
+      case "launch": {
+        const request = this.launchRequestFrom(params, caller)
+        const focus = optionalBoolean(params, "focus") ?? false
+        if (focus) this.refuseIfBusy()
+        const instance = await this.performLaunch(request, optionalStringList(params, "fx_args") ?? [], focus)
+        return { instance: this.instanceInfo(instance) }
+      }
+      case "focus": {
+        const instance = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
+        this.refuseIfBusy()
+        this.selectInstance(instance.id)
+        return { instance: this.instanceInfo(instance) }
+      }
+      case "draft.open": {
+        const kind = optionalString(params, "kind") ?? "launch"
+        if (kind !== "launch") throw new ControlFailure("invalid_params", `unknown draft kind: ${kind}`)
+        const fields = isRecord(params.fields) ? params.fields : {}
+        const draft = this.showLaunchDialog("agent", this.prefillFrom(fields))
+        return this.draftInfo(draft)
+      }
+      case "draft.show":
+        return this.draftInfo(this.draftFor(optionalString(params, "draft")))
+      case "draft.set": {
+        const draft = this.openDraftFor(requiredString(params, "draft"))
+        const fields = isRecord(params.fields) ? params.fields : {}
+        const prefill = this.prefillFrom(fields)
+        if (prefill.directory !== undefined) {
+          const [choice] = orderProjects([prefill.directory], this.projectLaunches, this.home())
+          if (choice) this.launchDialog.offerProject(choice)
+        }
+        this.launchDialog.apply(prefill)
+        return this.draftInfo(draft)
+      }
+      case "draft.submit": {
+        const draft = this.openDraftFor(requiredString(params, "draft"))
+        const resolved = this.waitForDraft(draft, null, signal)
+        this.launchDialog.submit()
+        const info = await resolved
+        if (info.status === "failed") {
+          throw new ControlFailure("failed", info.outcome && "error" in info.outcome ? info.outcome.error : "launch failed")
+        }
+        return info
+      }
+      case "draft.cancel": {
+        const draft = this.openDraftFor(requiredString(params, "draft"))
+        this.launchDialog.close()
+        return this.draftInfo(draft)
+      }
+      case "draft.wait":
+        return this.waitForDraft(
+          this.draftFor(optionalString(params, "draft")),
+          optionalInteger(params, "timeout_ms") ?? null,
+          signal,
+        )
+      case "sidebar": {
+        const width = optionalInteger(params, "width")
+        if (width !== undefined) {
+          if (width < 1) throw new ControlFailure("invalid_params", "width must be at least 1")
+          this.applySidebarWidth(width)
+          this.options.onSidebarWidthChange?.(this.sidebarWidth)
+        }
+        return { visible: this.sidebar.visible, width: this.sidebarWidth }
+      }
+      case "keys": {
+        if (optionalBoolean(params, "show")) {
+          this.refuseIfBusy()
+          this.showHelp()
+        }
+        return this.keysInfo()
+      }
+    }
+  }
+
+  /** Something drawn over fx takes the keys; a command that would fight it
+   * for the screen is refused rather than silently stealing focus. */
+  private refuseIfBusy(): void {
+    if (this.modalKind || this.launchDialog.isOpen()) {
+      throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
+    }
+  }
+
+  private resolveTarget(target: Target, caller: number | null): FxInstance {
+    switch (target.kind) {
+      case "id":
+        return this.instanceById(target.id)
+      case "current":
+        if (caller === null) {
+          throw new ControlFailure("invalid_params", "current needs a caller inside an instance (FMX_INSTANCE_ID)")
+        }
+        return this.instanceById(caller)
+      case "active": {
+        const active = this.activeInstance()
+        if (!active) throw new ControlFailure("not_found", "no instance is active")
+        return active
+      }
+      case "next":
+      case "previous": {
+        if (this.instances.length === 0) throw new ControlFailure("not_found", "no instances")
+        const count = this.instances.length
+        const step = target.kind === "next" ? 1 : -1
+        return this.instances[(((this.activeIndex + step) % count) + count) % count]!
+      }
+      case "name": {
+        const bySlug = this.instances.filter((instance) => this.slugOf(instance) === target.name)
+        if (bySlug.length === 1) return bySlug[0]!
+        const bySession = this.instances.filter((instance) =>
+          this.registry.get(this.paneIdFor(instance))?.sessionId?.startsWith(target.name),
+        )
+        if (bySession.length === 1) return bySession[0]!
+        if (bySession.length > 1 || bySlug.length > 1) {
+          throw new ControlFailure("ambiguous", `${target.name} names more than one instance`, {
+            instances: [...bySlug, ...bySession].map((instance) => instance.id),
+          })
+        }
+        throw new ControlFailure("not_found", `no instance named ${target.name}`)
+      }
+    }
+  }
+
+  private instanceById(id: number): FxInstance {
+    const instance = this.instances.find((candidate) => candidate.id === id)
+    if (!instance) throw new ControlFailure("not_found", `no instance ${id}`)
+    return instance
+  }
+
+  private launchRequestFrom(params: Record<string, unknown>, caller: number | null): LaunchRequest {
+    const prefill = this.prefillFrom(params)
+    const callerInstance = caller === null ? null : (this.instances.find((instance) => instance.id === caller) ?? null)
+    return {
+      directory: prefill.directory ?? callerInstance?.cwd ?? this.options.cwd,
+      prompt: prefill.prompt ?? "",
+      worktree: prefill.worktree ?? false,
+    }
+  }
+
+  /** Fields an agent gave, checked; a directory must exist to be offered. */
+  private prefillFrom(fields: Record<string, unknown>): LaunchPrefill {
+    const prefill: LaunchPrefill = {}
+    const directory = optionalString(fields, "directory")
+    if (directory !== undefined) {
+      let resolved: string
+      try {
+        resolved = realpathSync(expandTilde(directory, this.home()))
+        if (!statSync(resolved).isDirectory()) throw new Error("not a directory")
+      } catch {
+        throw new ControlFailure("invalid_params", `${directory} is not a directory`)
+      }
+      prefill.directory = resolved
+    }
+    const prompt = optionalString(fields, "prompt")
+    if (prompt !== undefined) prefill.prompt = prompt
+    const worktree = optionalBoolean(fields, "worktree")
+    if (worktree !== undefined) prefill.worktree = worktree
+    return prefill
+  }
+
+  private draftFor(id: string | undefined): Draft {
+    if (id === undefined) {
+      if (!this.openDraft) throw new ControlFailure("not_found", "no draft is open")
+      return this.openDraft
+    }
+    const draft = this.drafts.get(id)
+    if (!draft) throw new ControlFailure("not_found", `no draft ${id}`)
+    return draft
+  }
+
+  /** A draft a command may change: the one on screen, named by its own id. */
+  private openDraftFor(id: string): Draft {
+    const draft = this.draftFor(id)
+    if (draft !== this.openDraft || !this.launchDialog.isOpen()) {
+      throw new ControlFailure("busy", `draft ${id} is ${draft.info.status}`, { draft: this.draftInfo(draft) })
+    }
+    return draft
+  }
+
+  private draftInfo(draft: Draft): DraftInfo {
+    if (draft === this.openDraft && this.launchDialog.isOpen()) draft.info.fields = this.launchDialog.fields()
+    return { ...draft.info, fields: { ...draft.info.fields } }
+  }
+
+  private waitForDraft(draft: Draft, timeoutMs: number | null, signal: AbortSignal): Promise<DraftInfo> {
+    if (draft.info.status !== "open") return Promise.resolve(this.draftInfo(draft))
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const waiter = (info: DraftInfo) => {
+        cleanup()
+        resolve({ ...info, fields: { ...info.fields } })
+      }
+      const cleanup = () => {
+        draft.waiters.delete(waiter)
+        if (timer) clearTimeout(timer)
+        signal.removeEventListener("abort", cleanup)
+      }
+      draft.waiters.add(waiter)
+      signal.addEventListener("abort", cleanup)
+      if (timeoutMs !== null) {
+        timer = setTimeout(() => {
+          cleanup()
+          reject(new ControlFailure("timeout", `draft ${draft.info.draft} is still open after ${timeoutMs}ms`))
+        }, timeoutMs)
+      }
+    })
+  }
+
+  private waitForInstance(
+    instance: FxInstance,
+    states: readonly DisplayState[],
+    timeoutMs: number | null,
+    signal: AbortSignal,
+  ): Promise<{ instance: InstanceInfo; state: DisplayState }> {
+    const settled = this.waitedState(instance, states)
+    if (settled) return Promise.resolve({ instance: this.instanceInfo(instance), state: settled })
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const waiter: InstanceWaiter = {
+        instanceId: instance.id,
+        states,
+        settle: (state) => {
+          cleanup()
+          if (state === null) reject(new ControlFailure("not_found", `instance ${instance.id} exited`))
+          else resolve({ instance: this.instanceInfo(instance), state })
+        },
+      }
+      const cleanup = () => {
+        this.instanceWaiters.delete(waiter)
+        if (timer) clearTimeout(timer)
+        signal.removeEventListener("abort", cleanup)
+      }
+      this.instanceWaiters.add(waiter)
+      signal.addEventListener("abort", cleanup)
+      if (timeoutMs !== null) {
+        timer = setTimeout(() => {
+          cleanup()
+          reject(
+            new ControlFailure("timeout", `instance ${instance.id} is ${this.displayStateOf(instance)} after ${timeoutMs}ms`),
+          )
+        }, timeoutMs)
+      }
+    })
+  }
+
+  /** The state a wait resolves on, or null while it should keep waiting. A
+   * prompt that has gone in but not yet been picked up holds the wait: the
+   * idle fx reports at startup is not the idle that means it has finished. */
+  private waitedState(instance: FxInstance, states: readonly DisplayState[]): DisplayState | null {
+    if (instance.awaitingWork) return null
+    const state = this.displayStateOf(instance)
+    return states.includes(state) ? state : null
+  }
+
+  private settleInstanceWaiters(): void {
+    for (const waiter of this.instanceWaiters) {
+      const instance = this.instances.find((candidate) => candidate.id === waiter.instanceId)
+      if (!instance) {
+        waiter.settle(null)
+        continue
+      }
+      const state = this.waitedState(instance, waiter.states)
+      if (state) waiter.settle(state)
+    }
+  }
+
+  private displayStateOf(instance: FxInstance): DisplayState {
+    return displayStateFor(this.registry.get(this.paneIdFor(instance)), this.seenSeq.get(instance.id) ?? 0)
+  }
+
+  private slugOf(instance: FxInstance): string | null {
+    const sessionId = this.registry.get(this.paneIdFor(instance))?.sessionId
+    return sessionId ? this.slugNamer.slugFor(sessionId) : null
+  }
+
+  private instanceInfo(instance: FxInstance): InstanceInfo {
+    const record = this.registry.get(this.paneIdFor(instance))
+    const git = this.gitContexts.get(instance.cwd) ?? null
+    return {
+      id: instance.id,
+      pane_id: this.paneIdFor(instance),
+      cwd: instance.cwd,
+      project: projectNameFor(git, instance.cwd),
+      branch: git?.branch ?? null,
+      worktree: git ? git.root !== git.mainRoot : null,
+      slug: this.slugOf(instance),
+      session_id: record?.sessionId ?? null,
+      label: instance.label,
+      state: this.displayStateOf(instance),
+      attention: record?.attention ?? null,
+      active: this.activeInstance() === instance,
+      awaiting_work: instance.awaitingWork,
+    }
+  }
+
+  private surface(): Surface {
+    if (this.launchDialog.isOpen() && this.openDraft) return { kind: "launch", draft: this.draftInfo(this.openDraft) }
+    if (this.modalKind === "help") return { kind: "help" }
+    if (this.modalKind === "spawn-error") {
+      return { kind: "error", heading: this.spawnErrorHeading, message: this.spawnErrorLines.join("") }
+    }
+    return { kind: "none" }
+  }
+
+  private snapshot(caller: number | null): Snapshot {
+    const you = caller === null ? null : (this.instances.find((instance) => instance.id === caller) ?? null)
+    const rows: SidebarRow[] = buildTree(this.sessionEntries()).map((row) => ({
+      kind: row.kind,
+      depth: row.depth,
+      text: row.kind === "agent" ? `${stateIcon(row.state, row.attention)} ${row.label || "—"}` : row.label,
+      instance: row.instanceId,
+      active: row.active,
+    }))
+    return {
+      fmx: {
+        pid: process.pid,
+        version: VERSION,
+        cwd: this.options.cwd,
+        socket: this.options.controlSocketPath ?? "",
+        cols: this.renderer.width,
+        rows: this.renderer.height,
+      },
+      you: you ? this.instanceInfo(you) : null,
+      active: this.activeInstance()?.id ?? null,
+      instances: this.instances.map((instance) => this.instanceInfo(instance)),
+      sidebar: { visible: this.sidebar.visible, width: this.sidebarWidth, rows },
+      surface: this.surface(),
+    }
+  }
+
+  private keysInfo(): KeysInfo {
+    const commands: Record<string, string> = {
+      help: "fmx keys --show",
+      new_tab: "fmx launch",
+      launch: "fmx launch --editable",
+      previous_tab: "fmx focus previous",
+      next_tab: "fmx focus next",
+    }
+    const bindings: KeysInfo["bindings"] = {}
+    for (const action of ["help", "new_tab", "launch", "previous_tab", "next_tab"] as const) {
+      bindings[action] = {
+        keys: this.keybindings[action].map((binding) => binding.label),
+        command: commands[action]!,
+      }
+    }
+    return { prefix: this.keybindings.prefixLabel, bindings }
+  }
+
   private refreshTerminalTitle(): void {
     if (this.shuttingDown && this.renderer.isDestroyed) return
     const active = this.activeInstance()
@@ -1218,6 +1761,29 @@ function wrapText(value: string, width: number): string[] {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function waitStates(raw: string[] | undefined): readonly DisplayState[] {
+  if (!raw || raw.length === 0) return WAIT_DEFAULT_STATES
+  for (const state of raw) {
+    if (!DISPLAY_STATES.includes(state)) {
+      throw new ControlFailure("invalid_params", `unknown state: ${state}`, { states: DISPLAY_STATES })
+    }
+  }
+  return raw as DisplayState[]
+}
+
+/** A launch that failed before fx ran: the error modal names the worktree
+ * rather than fx, and a caller sees it as a plain failure. */
+class WorktreeError extends ControlFailure {
+  constructor(message: string) {
+    super("failed", message)
+    this.name = "WorktreeError"
+  }
+}
+
+function launchErrorHeading(error: unknown): string {
+  return error instanceof WorktreeError ? "worktree not created" : "fx did not start"
 }
 
 async function exitsWithin(processHandle: FxProcess, timeoutMs: number): Promise<boolean> {

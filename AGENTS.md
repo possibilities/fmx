@@ -73,3 +73,25 @@
   `history_turn_committed`), with fx's `display.json` sidecar as a late,
   240-byte fallback. Only a prefix of the log is read: it grows into
   megabytes, and the prompt is in the opening events.
+- The control socket (`src/control-socket.ts`) is a second socket, not a
+  second protocol on the agent socket. The agent socket must reply before it
+  acts (see above), and a command that needs its result cannot. The two share
+  nothing but the `LineAssembler`. Keep `FMX_SOCKET_PATH` beside
+  `FMX_INSTANCE_ID` in `src/fx-environment.ts`: the client reads both, and
+  `current` as a target is meaningless without the id.
+- Every `fmx <command>` goes through `Multiplexer.handleControl`, and every
+  write there takes the path the keys take (`showLaunchDialog`, `switchTo`,
+  `applySidebarWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
+  command that does something a hand cannot; add the key first.
+- A launch from the CLI is background by default: `createInstance` only
+  switches when asked or when nothing is on screen. `switchTo` never focuses a
+  terminal while the launch dialog or a modal is up — those hand focus back
+  when they close — which is what lets a background launch land under an open
+  draft without stealing its keys.
+- `awaiting_work` is why `instance wait` is trustworthy right after `launch`
+  or `send`: fx reports idle at startup before the pasted prompt reaches it.
+  The flag is set when a prompt is queued and cleared by the first `working`
+  frame; clear it nowhere else.
+- The two `tests/git-context.test.ts` cases that read `process.cwd()` assume a
+  main checkout and fail in a linked worktree. That is the test's assumption,
+  not a regression.

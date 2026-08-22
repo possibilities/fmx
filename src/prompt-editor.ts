@@ -154,6 +154,15 @@ export class PromptEditor {
     this.shadow = { text: "", cursor: 0 }
   }
 
+  /** Replace the text outright, cursor at the end, as an external edit does. */
+  setText(text: string): void {
+    this.root.setText(normalizeEditedPrompt(text))
+    this.root.cursorOffset = this.text.length
+    this.lastEdit = null
+    this.yankRegion = null
+    this.settle()
+  }
+
   focus(): void {
     this.root.focus()
   }

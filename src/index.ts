@@ -4,8 +4,10 @@ import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opent
 import { access, constants, realpath } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { AgentSocket } from "./agent-socket.ts"
-import { parseArgs, usage, VERSION } from "./cli.ts"
+import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { loadConfig } from "./config.ts"
+import { EXIT_USAGE, runCommand } from "./control-client.ts"
+import { ControlSocket } from "./control-socket.ts"
 import { debugPanelRequested } from "./debug-panel.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
@@ -16,17 +18,29 @@ async function main(): Promise<void> {
   try {
     options = parseArgs(Bun.argv.slice(2))
   } catch (error) {
-    process.stderr.write(`fmx: ${errorMessage(error)}\n\n${usage()}`)
-    process.exitCode = 2
+    const topic = error instanceof UsageError ? error.topic : null
+    process.stderr.write(`fmx: ${errorMessage(error)}\n\n${usage(topic)}`)
+    process.exitCode = EXIT_USAGE
     return
   }
 
   if (options.help) {
-    process.stdout.write(usage())
+    process.stdout.write(usage(options.command?.name ?? null))
     return
   }
   if (options.version) {
     process.stdout.write(`${VERSION}\n`)
+    return
+  }
+  if (options.command) {
+    const outcome = await runCommand(options.command, options.socket, {
+      env: process.env,
+      cwd: process.cwd(),
+      readStdin: () => Bun.stdin.text(),
+    })
+    if (outcome.error) process.stderr.write(`${JSON.stringify({ error: outcome.error })}\n`)
+    else process.stdout.write(`${JSON.stringify(outcome.result ?? null, null, 2)}\n`)
+    process.exitCode = outcome.exitCode
     return
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -47,6 +61,7 @@ async function main(): Promise<void> {
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const debugPanel = debugPanelRequested()
   const agentSocket = new AgentSocket()
+  let controlSocket: ControlSocket | null = null
 
   try {
     agentSocket.start()
@@ -66,6 +81,7 @@ async function main(): Promise<void> {
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
       slug: loadedConfig.slug,
+      controlSocketPath: ControlSocket.pathFor(process.pid),
       initialSidebarWidth: persistedState.sidebarWidth,
       initialProjectLaunches: persistedState.projectLaunches,
       onProjectLaunch: (launches) => {
@@ -91,6 +107,9 @@ async function main(): Promise<void> {
       process.once(signal, handler)
     }
 
+    controlSocket = new ControlSocket(app.control)
+    controlSocket.start()
+
     const hostPalette = await detectHostPalette(renderer)
     if (hostPalette) app.setHostPalette(hostPalette)
     app.start()
@@ -101,6 +120,7 @@ async function main(): Promise<void> {
     throw error
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+    controlSocket?.close()
     agentSocket.close()
   }
 }

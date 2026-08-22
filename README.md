@@ -84,6 +84,51 @@ completions in `~/.config/fmx/inference` and adds one entry for that path to
 Set `manage_effort = false` to leave it alone, and naming inherits your own
 configured effort.
 
+## Agents
+
+Every key and click has a command, so an agent running inside fmx can do what
+a hand can — and read what a hand can see. `fmx <command>` talks to the fmx it
+is running in (over `FMX_SOCKET_PATH`, which every instance is started with)
+and prints one JSON object; from outside, `--socket PATH` names one, or the
+only fmx running is used. Exit status: `0` ok, `1` refused, `2` usage, `3` no
+fmx reachable, `4` timed out.
+
+```sh
+fmx orient                      # where you are and what the interface shows
+fmx launch "write the tests"    # start an agent here, in the background
+fmx launch --project ~/code/x --worktree --focus
+fmx launch --editable --project ~/code/x --worktree   # open the dialog, prefilled
+fmx draft show|set|submit|cancel|wait [id]
+fmx focus next|previous|3|<slug>
+fmx instance list
+fmx instance wait 3 --state done,blocked --timeout 600000
+fmx instance send 3 "now run them"
+fmx sidebar --width 30
+fmx keys                        # every binding and the command it stands for
+```
+
+`orient` answers with `you` — the caller's own instance: directory, project,
+branch, slug, state, and whether it is the one on screen — alongside every
+instance, the sidebar's rows as they are drawn, and whatever surface is open.
+Reading never marks an instance seen; `focus` does, as clicking its row does.
+
+`launch` without `--editable` starts the agent and answers with its instance.
+It does not take the screen unless `--focus` is given: an agent starting
+workers should not keep stealing the human's view. With `--editable` it opens
+the launch dialog instead, prefilled with whatever was given — a project but no
+prompt, say — and answers with a **draft** id. Fields left out keep the
+dialog's defaults. The human finishes it as usual, or the agent reads it back
+with `draft show`, amends it with `draft set`, and closes it with `draft
+submit` or `draft cancel`; `draft wait` (or `launch --editable --wait`) blocks
+until either has happened and says what came of it. A dialog the human opened
+is a draft too, so an agent can finish one as well as start one.
+
+`instance wait` blocks until an instance reaches a state — by default any that
+needs someone: `idle`, `done`, or `blocked`. A prompt that has gone in but not
+yet been picked up holds the wait, so waiting right after `launch` or `send`
+means waiting for the work, not for the startup idle. `done` is `idle` that
+nobody has looked at since; an instance on screen is always seen.
+
 ## Development
 
 Development and machine provisioning should use an editable checkout, never

@@ -135,3 +135,32 @@ a first prompt, claim the session, ask, store. It expires quietly when the
 wait runs long, and the next thing fx reports arms another. A conversation
 nobody has started has no name, which is an answer and not a failure.
 _Avoid_: job, task, naming run.
+
+**Control socket** — the Unix socket `fmx <command>` drives a running fmx
+through, bound beside the agent socket as `/tmp/fmx-<pid>.ctl` and handed to
+every instance as `FMX_SOCKET_PATH`. Its own wire, not the agent socket's: that
+one speaks fx's protocol and answers before it acts, where a command needs its
+result. One request per connection; a waiting method holds the connection.
+_Avoid_: command socket, API socket, RPC.
+
+**Orientation** — what `fmx orient` answers: the caller's own instance as
+`you`, every instance, the sidebar's rows as drawn, and whatever surface is
+open. A read, which never marks anything seen.
+_Avoid_: status, state dump, introspection.
+
+**Draft** — one opening of the launch dialog, addressable by id from the
+moment it opens until it is submitted or cancelled, and readable after. Every
+opening is one, whether a key or an agent opened it, so an agent can finish a
+dialog the human started and a human can finish one an agent prefilled. Ids
+exist so an agent can never submit a draft it did not mean to.
+_Avoid_: pending launch, form state, staged launch.
+
+**Target** — how a command names an instance: its id, `current` for the
+caller's own, `active` for the one on screen, `next` or `previous` relative to
+it, or a slug, with a session-id prefix as the fallback.
+_Avoid_: selector, handle, address.
+
+**Awaiting work** — an instance whose prompt has gone in, by launch or by
+`instance send`, and which fx has not yet reported working on. A wait holds
+through it: the idle fx reports at startup is not the idle that means finished.
+_Avoid_: busy, pending, queued.
