@@ -56,6 +56,7 @@ export const CONTROL_METHODS = [
   "draft.wait",
   "sidebar",
   "keys",
+  "catalog",
 ] as const
 
 export type ControlMethod = (typeof CONTROL_METHODS)[number]
@@ -116,12 +117,21 @@ export type LaunchFields = {
 
 export type DraftStatus = "open" | "submitted" | "cancelled" | "failed"
 
+/** What the model and effort pickers offer: every model, and the efforts of
+ * the one selected, so an agent amending a draft sees what the rows show. */
+export type LaunchChoices = {
+  models: string[]
+  efforts: string[]
+}
+
 export type DraftInfo = {
   draft: string
   kind: "launch"
   status: DraftStatus
   opened_by: "keys" | "agent"
   fields: LaunchFields
+  /** Added when the draft is read; what the model and effort rows offer. */
+  choices?: LaunchChoices
   /** The instance a submitted draft started, or why a failed one did not. */
   outcome: { instance: number } | { error: string } | null
 }
@@ -147,6 +157,12 @@ export type Snapshot = {
   instances: InstanceInfo[]
   sidebar: { visible: boolean; hidden: boolean; width: number; rows: SidebarRow[] }
   surface: Surface
+}
+
+/** The model catalog the launch dialog offers, in picker order. */
+export type CatalogInfo = {
+  default: { model: string; effort: string }
+  models: { id: string; efforts: string[]; default_effort: string }[]
 }
 
 export type KeysInfo = {

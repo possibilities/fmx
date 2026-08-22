@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
-import { ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
+import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
@@ -361,6 +361,35 @@ test("sends text into a running instance and holds a wait until it is picked up"
     await h.report("p_1", "idle")
     expect((await waiting).state).toBe("idle")
     expect((await failure(h.control("instance.send", { target: "1", text: "  " }))).code).toBe("invalid_params")
+  } finally {
+    await h.close()
+  }
+})
+
+test("offers the catalog the pickers draw from, and a draft's choices follow its model", async () => {
+  const h = await harness("catalog")
+  try {
+    const catalog = (await h.control("catalog")) as CatalogInfo
+    expect(catalog.default).toEqual({ model: "gpt-5.6-sol", effort: "high" })
+    expect(catalog.models[0]).toEqual({
+      id: "gpt-5.6-sol",
+      efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      default_effort: "high",
+    })
+    expect(catalog.models.map((model) => model.id)).toContain("gpt-5.4-mini")
+
+    const opened = (await h.control("draft.open", { fields: { model: "gpt-5.4-mini" } })) as DraftInfo
+    expect(opened.choices).toEqual({
+      models: catalog.models.map((model) => model.id),
+      efforts: ["low", "medium", "high", "xhigh"],
+    })
+    const changed = (await h.control("draft.set", { draft: opened.draft, fields: { model: "gpt-5.6-sol" } })) as DraftInfo
+    expect(changed.choices?.efforts).toContain("ultra")
+    expect(((await h.control("orient")) as Snapshot).surface).toMatchObject({
+      kind: "launch",
+      draft: { choices: { efforts: expect.arrayContaining(["ultra"]) } },
+    })
+    await h.control("draft.cancel", { draft: opened.draft })
   } finally {
     await h.close()
   }

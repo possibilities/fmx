@@ -107,6 +107,7 @@ fmx control instance wait 3 --state done,blocked --timeout 600000
 fmx control instance send 3 "now run them"
 fmx control sidebar --width 30 --hide       # or --show, --toggle
 fmx control keys                        # every binding and the command it stands for
+fmx control catalog                     # the models and efforts the dialog offers
 ```
 
 `orient` answers with `you` — the caller's own instance: directory, project,

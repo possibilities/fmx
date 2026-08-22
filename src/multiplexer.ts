@@ -20,14 +20,16 @@ import { basename } from "node:path"
 import { AgentRegistry, type DisplayState, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
 import { VERSION } from "./cli.ts"
-import { codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
+import { CODEX_MODELS, codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
 import { DEFAULT_WORKTREE_ROOT, defaultSlugSettings, type SlugSettings } from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
   type DraftInfo,
   type InstanceInfo,
+  type CatalogInfo,
   type KeysInfo,
+  type LaunchChoices,
   optionalBoolean,
   optionalInteger,
   optionalString,
@@ -1424,6 +1426,8 @@ export class Multiplexer {
           optionalInteger(params, "timeout_ms") ?? null,
           signal,
         )
+      case "catalog":
+        return catalogInfo()
       case "sidebar": {
         const width = optionalInteger(params, "width")
         if (width !== undefined) {
@@ -1566,7 +1570,7 @@ export class Multiplexer {
 
   private draftInfo(draft: Draft): DraftInfo {
     if (draft === this.openDraft && this.launchDialog.isOpen()) draft.info.fields = this.launchDialog.fields()
-    return { ...draft.info, fields: { ...draft.info.fields } }
+    return { ...draft.info, fields: { ...draft.info.fields }, choices: launchChoices(draft.info.fields.model) }
   }
 
   private waitForDraft(draft: Draft, timeoutMs: number | null, signal: AbortSignal): Promise<DraftInfo> {
@@ -1815,6 +1819,22 @@ function wrapText(value: string, width: number): string[] {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function launchChoices(modelId: string): LaunchChoices {
+  const model = codexModel(modelId) ?? DEFAULT_CODEX_MODEL
+  return { models: CODEX_MODELS.map((candidate) => candidate.id), efforts: [...model.efforts] }
+}
+
+function catalogInfo(): CatalogInfo {
+  return {
+    default: { model: DEFAULT_CODEX_MODEL.id, effort: DEFAULT_CODEX_MODEL.defaultEffort },
+    models: CODEX_MODELS.map((model) => ({
+      id: model.id,
+      efforts: [...model.efforts],
+      default_effort: model.defaultEffort,
+    })),
+  }
 }
 
 function waitStates(raw: string[] | undefined): readonly DisplayState[] {

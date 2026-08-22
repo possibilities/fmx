@@ -123,6 +123,7 @@ describe("commands", () => {
 
   test("keys, focus, and sidebar", () => {
     expect(parseArgs(["control", "keys", "--show"]).command).toEqual({ name: "keys", show: true })
+    expect(parseArgs(["control", "catalog"]).command).toEqual({ name: "catalog" })
     expect(parseArgs(["control", "focus", "next"]).command).toEqual({ name: "focus", target: "next" })
     expect(parseArgs(["control", "sidebar", "--width", "30"]).command).toEqual({ name: "sidebar", width: 30 })
     expect(parseArgs(["control", "sidebar", "--hide"]).command).toEqual({ name: "sidebar", hidden: true })

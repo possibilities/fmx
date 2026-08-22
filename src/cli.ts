@@ -35,6 +35,7 @@ export type Command =
   | { name: "focus"; target: string }
   | { name: "sidebar"; width?: number; hidden?: boolean; toggle?: boolean }
   | { name: "keys"; show: boolean }
+  | { name: "catalog" }
 
 export type CliOptions = {
   help: boolean
@@ -48,7 +49,7 @@ export type CliOptions = {
 /** Every control command lives under `fmx control`, leaving the top level
  * free for concerns that are not about driving a running fmx. */
 const CONTROL_GROUP = "control"
-const COMMAND_NAMES = ["orient", "instance", "launch", "draft", "focus", "sidebar", "keys"] as const
+const COMMAND_NAMES = ["orient", "instance", "launch", "draft", "focus", "sidebar", "keys", "catalog"] as const
 const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
 const INSTANCE_VERBS = ["list", "wait", "send"] as const
 
@@ -148,6 +149,9 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
       rejectExtra(flags.positional, "keys")
       return { name: "keys", show: flags.switches.has("show") }
     }
+    case "catalog":
+      rejectExtra(args, "catalog")
+      return { name: "catalog" }
   }
 }
 
@@ -394,6 +398,7 @@ Each command prints one JSON object.
   sidebar [--width N] [--show|--hide|--toggle]
                                the session list's width and visibility
   keys [--show]                the keybindings and their command equivalents
+  catalog                      the models and efforts the launch dialog offers
 
   --socket PATH                talk to a specific fmx (default: FMX_SOCKET_PATH)
   fmx control <command> with no arguments prints that command's usage.

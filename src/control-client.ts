@@ -205,6 +205,8 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
       ]
     case "keys":
       return [{ method: "keys", params: { show: command.show }, timeoutMs: REPLY_TIMEOUT_MS }]
+    case "catalog":
+      return [{ method: "catalog", params: {}, timeoutMs: REPLY_TIMEOUT_MS }]
   }
 }
 
