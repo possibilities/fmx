@@ -51,7 +51,15 @@ const zmx = async (...args: string[]) => {
   return { code: proc.exitCode, stdout, stderr }
 }
 
-/** Start a session through `attach` under pipes (creation is tranche 3's `create`), then drop that client. */
+/**
+ * Start a session through `attach` under pipes (creation is tranche 3's
+ * `create`), then drop that client.
+ *
+ * Readiness is the session appearing in `list`, not anything the starting
+ * client printed: whether that client sees the child's first output at all is
+ * a timing race in the daemon today (see the reattach note below), and this
+ * harness must not depend on which way it falls.
+ */
 const startSession = async (name: string) => {
   sessions.push(name)
   const attach = Bun.spawn([ZMX!, "attach", name, "sh", "-c", CHILD_SCRIPT], {
@@ -60,15 +68,9 @@ const startSession = async (name: string) => {
     stdout: "pipe",
     stderr: "pipe",
   })
-  let seen = ""
-  const reader = attach.stdout.getReader()
-  const deadline = Date.now() + 5000
-  while (!seen.includes("READY") && Date.now() < deadline) {
-    const { value, done } = await reader.read()
-    if (done) break
-    seen += decoder.decode(value)
-  }
-  expect(seen).toContain("READY")
+  expect(await waitFor(async () => (await sessionPid(name)) !== null)).toBe(true)
+  // Let the child reach its read loop before the only client goes away.
+  await sleep(200)
   attach.kill("SIGKILL")
   await attach.exited
   return join(dir, name)
@@ -138,12 +140,11 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   expect(pid).not.toBeNull()
   expect(alive(pid!)).toBe(true)
 
-  // Negotiate and attach: the restore carries what the child already printed.
+  // Negotiate and attach.
   const first = await ZmxConnection.connect(socket, { client: "fmx-test" })
   expect(first.welcome.version).toBe(PROTOCOL_VERSION)
   const output = new Capture(first)
   first.attach({ rows: 30, cols: 100 })
-  await output.until("READY")
 
   // Input goes to the child and its output comes back.
   let mark = output.length
@@ -166,6 +167,8 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   expect(await sessionPid("s1")).toBe(pid)
 
   // Reattach: the restore replays the screen, and the session is live again.
+  // (The restore covers everything since a client last attached. Output from
+  // before the FIRST attach can be lost — an upstream gap tranche 2 closes.)
   const second = await ZmxConnection.connect(socket, { client: "fmx-test" })
   const replay = new Capture(second)
   second.attach({ rows: 20, cols: 60 })
@@ -189,18 +192,20 @@ test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach
   const leader = await ZmxConnection.connect(socket)
   const leaderOut = new Capture(leader)
   leader.attach({ rows: 24, cols: 80 })
-  await leaderOut.until("READY")
+  let mark = leaderOut.length
+  leader.write("awake\r")
+  await leaderOut.until("got:awake", mark)
 
   // A second client negotiates but does not attach while the child prints.
   const watcher = await ZmxConnection.connect(socket, { client: "watcher" })
   const watched = new Capture(watcher)
-  let mark = leaderOut.length
+  mark = leaderOut.length
   leader.write("later\r")
   await leaderOut.until("LATER", mark)
-  await sleep(100)
+  await sleep(150)
   expect(watched.length).toBe(0)
 
-  // Once attached, the restore is the first thing it sees and it carries what it missed.
+  // Once attached, what it missed arrives before any live byte does.
   watcher.attach({ rows: 24, cols: 80 })
   await watched.until("LATER")
   mark = watched.length
