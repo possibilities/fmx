@@ -29,3 +29,25 @@
 - fx sends `custom_status` on `pane.report_agent` (`permission`, `question`,
   `recovery`). Herdr has no such field and drops it; fmx keeps it. Do not
   "fix" it to `message` to match Herdr.
+- Naming a session runs `fx ask --no-save --json`, deliberately, not libfx.
+  libfx's native backend requires an `apiKey` and installs an unavailable
+  OAuth transport, so a Codex or Grok subscription cannot reach it at all;
+  the fx binary fmx already resolved answers on whatever provider the human
+  is signed in to and keeps every credential out of fmx.
+- fx takes a model override from `FX_MODEL` but has no equivalent for
+  reasoning effort, and it rejects both `effort` and `codex_model` from a
+  workspace's own `.fx.json` as user-only settings. The one place effort can
+  be set per directory is `workspaces["<abs path>"]` in the human's
+  `~/.fx/settings.json`, which is why naming runs in its own workspace and
+  why fmx writes that single entry. Never widen that write: read, add the one
+  key, and abandon the write if the file changed underneath.
+- Slug models ship a default for codex alone, for the same reason
+  `project_roots` ships empty: a guess at another provider's catalog is a
+  model id that does not exist there. A provider with no default names at
+  whatever model fx is configured for, which always works.
+- fx never reports a prompt over the agent socket, only a session id. The
+  first prompt is read from fx's own session log at
+  `~/.fx/sessions/<id>/events.jsonl` (`recovery_checkpoint_set`, then
+  `history_turn_committed`), with fx's `display.json` sidecar as a late,
+  240-byte fallback. Only a prefix of the log is read: it grows into
+  megabytes, and the prompt is in the opening events.

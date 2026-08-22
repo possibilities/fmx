@@ -15,6 +15,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     project: "fmx",
     branch: "main",
     sessionId: SESSION_ID,
+    slug: null,
     state: "idle",
     attention: null,
     active: false,

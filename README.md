@@ -36,6 +36,37 @@ project_roots = ["~/code", "~/src"]
 
 With no roots configured it offers the directory fmx itself was started in.
 
+### Session names
+
+An agent is listed by its session id until it is given something to do. As
+soon as its first prompt is submitted, fmx asks a small model for a three-to-
+six-word title, turns it into a slug, and lists the agent under that name
+instead. The name is kept in `~/.config/fmx/slugs`, so a resumed session is
+recognised without asking again, and it is unique — a name that is already
+taken picks up a `-2`.
+
+The completion runs through `fx ask`, so it uses whatever provider fx is
+already signed in to and needs no credentials of its own. Defaults suit codex;
+name a model for any other provider, or turn naming off entirely:
+
+```toml
+[slug]
+enabled = true      # set false to keep listing agents by session id
+effort = "low"      # reasoning effort the naming completion runs at
+timeout_ms = 60000
+
+[slug.models]
+codex = "gpt-5.4-mini"
+gateway = "openai/gpt-5-mini"
+```
+
+A provider with no model named here is asked at whatever model fx is
+configured for. Reasoning effort cannot be set per command, so fmx runs these
+completions in `~/.config/fmx/inference` and adds one entry for that path to
+`workspaces` in `~/.fx/settings.json` — nothing else in that file is touched.
+Set `manage_effort = false` to leave it alone, and naming inherits your own
+configured effort.
+
 ## Development
 
 Development and machine provisioning should use an editable checkout, never

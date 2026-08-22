@@ -18,11 +18,13 @@ import { homedir } from "node:os"
 import { basename } from "node:path"
 import { AgentRegistry, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
+import { defaultSlugSettings, type SlugSettings } from "./config.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog } from "./launch-dialog.ts"
+import { SlugNamer } from "./slug-namer.ts"
 import {
   detectedTerminalColor,
   hasDetectedBackground,
@@ -101,6 +103,8 @@ type MultiplexerOptions = {
   /** Instances started per directory so far, which orders the picker. */
   initialProjectLaunches?: Record<string, number>
   onProjectLaunch?: (launches: Record<string, number>) => void
+  /** How instances earn a name from their first prompt. */
+  slug?: SlugSettings
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited"
@@ -304,6 +308,7 @@ export class Multiplexer {
   private hostPalette: TerminalColors | null = null
   private shuttingDown = false
   private readonly swallowedReleases = new Set<string>()
+  private readonly slugNamer: SlugNamer
   private readonly donePromise: Promise<void>
   private resolveDone!: () => void
   private readonly keypressHandler = (key: KeyEvent) => this.onKeyPress(key)
@@ -314,6 +319,13 @@ export class Multiplexer {
   private readonly frameHandler = (frame: SocketFrame) => this.debugPanel?.append(frame)
   private readonly registryHandler = (frame: SocketFrame) => {
     this.registry.apply(frame)
+    // A session id is the first thing fx reports that naming can act on, and
+    // every later frame is a chance to notice one that arrived while an
+    // attempt was cooling down.
+    if (frame.paneId) {
+      const sessionId = this.registry.get(frame.paneId)?.sessionId
+      if (sessionId) this.slugNamer.note(sessionId)
+    }
     // A pane the human is already watching is seen the moment it reports, so
     // finishing in the foreground never shows as an unacknowledged `done`.
     const active = this.activeInstance()
@@ -330,6 +342,12 @@ export class Multiplexer {
     })
     this.keybindings = options.keybindings
     this.sidebarWidth = options.initialSidebarWidth ?? SIDEBAR_DEFAULT_WIDTH
+    this.slugNamer = new SlugNamer({
+      fxPath: options.fxPath,
+      settings: options.slug ?? defaultSlugSettings(),
+      home: options.home,
+      onSlug: () => this.refreshSessionList(),
+    })
     const help = helpPlainText(this.keybindings)
     const helpLines = help.split("\n")
     const helpWidth = Math.max(...helpLines.map((line) => line.length)) + 5
@@ -477,6 +495,7 @@ export class Multiplexer {
     this.cancelPrefix()
     this.launchDialog.close()
     this.hideModal()
+    this.slugNamer.stop()
 
     try {
       await Promise.allSettled(this.instances.map((instance) => instance.stop()))
@@ -597,6 +616,7 @@ export class Multiplexer {
         project: projectNameFor(git, instance.cwd),
         branch: git?.branch ?? null,
         sessionId: shortSessionId(record?.sessionId ?? null),
+        slug: record?.sessionId ? this.slugNamer.slugFor(record.sessionId) : null,
         state: displayStateFor(record, this.seenSeq.get(instance.id) ?? 0),
         attention: record?.attention ?? null,
         active: index === this.activeIndex,

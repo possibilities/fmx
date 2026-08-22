@@ -28,7 +28,8 @@ frames still arrive.
 _Avoid_: log pane, console, inspector.
 
 **Session list** — the sidebar's tree of running instances: project, then
-branch, then one row per agent carrying its status icon and short session id.
+branch, then one row per agent carrying its status icon and its name — the
+slug once naming lands, the short session id until then.
 Depth is carried by indentation alone, with no connecting glyphs.
 Clicking an agent row switches to that instance; project and branch rows are
 not selectable.
@@ -77,3 +78,29 @@ state last changed, tracked as a frame sequence per instance rather than a
 flag. An idle instance that is not seen is **done** — finished and
 unacknowledged — which is the only difference between the `✓` and `○` icons.
 _Avoid_: read, acknowledged, unread.
+
+**Slug** — the name an instance earns from its first prompt: `[a-z0-9-]+`,
+three to six words, minted once by a metadata completion and kept. It stands
+in for the session id wherever one is accepted, which is why it is unique
+across the store and why a collision is suffixed rather than shared. An
+instance nobody has prompted has none, and shows its session id instead.
+_Avoid_: title, label (that is what fx calls a pane through `pane.rename`),
+name.
+
+**Slug store** — `~/.config/fmx/slugs`, one file per fx session holding its
+slug. A file each rather than a table, because a slug outlives the fmx that
+paid for it and two fmx processes name sessions at the same time. It is also
+the index that resolves a slug back to a session.
+_Avoid_: cache, database, registry.
+
+**Inference workspace** — `~/.config/fmx/inference`, the empty directory slug
+completions run in. Empty so an agent asked for a title has nothing to wander
+into, and separate so fx's own settings can give that one path a cheaper
+reasoning effort than the human works at.
+_Avoid_: scratch directory, sandbox, temp dir.
+
+**Naming attempt** — one bounded run at naming a session: watch its fx log for
+a first prompt, claim the session, ask, store. It expires quietly when the
+wait runs long, and the next thing fx reports arms another. A conversation
+nobody has started has no name, which is an answer and not a failure.
+_Avoid_: job, task, naming run.

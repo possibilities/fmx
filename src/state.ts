@@ -11,13 +11,23 @@ export type PersistedState = {
   projectLaunches?: Record<string, number>
 }
 
+/** Everything fmx keeps for itself lives here, alongside the config file the
+ * human edits: state.json, the slug store, and the workspace slug completions
+ * are run in. */
+export function fmxDirectory(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDirectory: string = homedir(),
+): string {
+  const configHome = env.XDG_CONFIG_HOME || join(homeDirectory, ".config")
+  return join(configHome, "fmx")
+}
+
 export function statePath(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
 ): string {
   if (env[STATE_PATH_ENV_VAR]) return env[STATE_PATH_ENV_VAR]
-  const configHome = env.XDG_CONFIG_HOME || join(homeDirectory, ".config")
-  return join(configHome, "fmx", "state.json")
+  return join(fmxDirectory(env, homeDirectory), "state.json")
 }
 
 export async function loadState(path = statePath()): Promise<PersistedState> {

@@ -7,6 +7,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     project: "fmx",
     branch: "main",
     sessionId: "909bc46b64721838",
+    slug: null,
     state: "idle",
     attention: null,
     active: false,
@@ -80,4 +81,13 @@ test("indents two columns per level, with nothing that can render wide", () => {
   expect(indentFor(0)).toBe("")
   expect(indentFor(1)).toBe("  ")
   expect(indentFor(2)).toBe("    ")
+})
+
+test("a named session shows its slug in place of its id", () => {
+  expect(
+    shape([
+      entry({ instanceId: 1, slug: "name-every-instance" }),
+      entry({ instanceId: 2, sessionId: "5a75126ce54edb04" }),
+    ]),
+  ).toEqual(["fmx", "  main", "    name-every-instance", "    5a75126ce54edb04"])
 })

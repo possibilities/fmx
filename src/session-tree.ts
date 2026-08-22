@@ -12,6 +12,9 @@ export type SessionEntry = {
   /** null when the instance is not in a git worktree. */
   branch: string | null
   sessionId: string | null
+  /** The name minted from the instance's first prompt, once it has one. It
+   * stands in for the session id, which is what a row shows until then. */
+  slug: string | null
   state: DisplayState
   attention: AgentAttention | null
   active: boolean
@@ -69,7 +72,7 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
         rows.push({
           kind: "agent",
           depth,
-          label: entry.sessionId ?? "",
+          label: entry.slug ?? entry.sessionId ?? "",
           instanceId: entry.instanceId,
           state: entry.state,
           attention: entry.attention,

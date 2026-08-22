@@ -1,10 +1,10 @@
-const OUTER_MULTIPLEXER_VARIABLES = [
-  "TMUX",
-  "TMUX_PANE",
-  "STY",
-  "ZELLIJ",
-  "ZELLIJ_SESSION_NAME",
-  "ZELLIJ_PANE_ID",
+/**
+ * An fx reads the agent socket it reports to out of its environment. Any of
+ * these inherited from fmx's own parent name a surface that is not this one,
+ * so every fx fmx starts — the instances it renders and the short-lived one
+ * that names them — is started without them.
+ */
+export const INHERITED_AGENT_SOCKET_VARIABLES = [
   "HERDR_ENV",
   "HERDR_SOCKET_PATH",
   "HERDR_CLIENT_SOCKET_PATH",
@@ -12,6 +12,16 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   "HERDR_TAB_ID",
   "HERDR_WORKSPACE_ID",
   "HERDR_BIN_PATH",
+] as const
+
+const OUTER_MULTIPLEXER_VARIABLES = [
+  "TMUX",
+  "TMUX_PANE",
+  "STY",
+  "ZELLIJ",
+  "ZELLIJ_SESSION_NAME",
+  "ZELLIJ_PANE_ID",
+  ...INHERITED_AGENT_SOCKET_VARIABLES,
 ] as const
 
 /**

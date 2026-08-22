@@ -64,6 +64,7 @@ async function main(): Promise<void> {
       agentSocket,
       debugPanel,
       projectRoots: loadedConfig.projectRoots,
+      slug: loadedConfig.slug,
       initialSidebarWidth: persistedState.sidebarWidth,
       initialProjectLaunches: persistedState.projectLaunches,
       onProjectLaunch: (launches) => {
