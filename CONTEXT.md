@@ -9,7 +9,9 @@ fx process and its PTY so both survive fmx closing. fmx drives one over a
 versioned Unix socket instead of owning the PTY itself, and never through the
 `zmx` a human may have installed — a Companion keeps its own sessions in its
 own directory.
-_Avoid_: backend, host, server, zmx (the upstream project, not what fmx ships).
+_Avoid_: backend, host, server, zmx for the thing itself — though zmx is
+still the right word for the wire protocol it speaks and the environment
+variables that protocol defines, the way `HERDR_*` names fx's.
 
 **Agent socket** — the Unix socket fmx binds and points every instance at, and
 over which fx reports its own lifecycle. One socket serves all instances.

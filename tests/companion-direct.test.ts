@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { join } from "node:path"
-import { ZmxConnection } from "../src/zmx-client.ts"
+import { CompanionConnection } from "../src/companion-client.ts"
 import { decodeWelcome, encodeFrame, encodeHello, FrameReader, PROTOCOL_VERSION, Tag } from "../src/zmx-protocol.ts"
 
 /**
@@ -68,11 +68,16 @@ const startSession = async (name: string) => {
     stdout: "pipe",
     stderr: "pipe",
   })
-  expect(await waitFor(async () => (await sessionPid(name)) !== null)).toBe(true)
-  // Let the child reach its read loop before the only client goes away.
-  await sleep(200)
-  attach.kill("SIGKILL")
-  await attach.exited
+  try {
+    const started = await waitFor(async () => (await sessionPid(name)) !== null)
+    // Let the child reach its read loop before the only client goes away.
+    if (started) await sleep(200)
+    expect(started).toBe(true)
+  } finally {
+    // Killed on the failing path too, or it outlives the test run.
+    attach.kill("SIGKILL")
+    await attach.exited
+  }
   return join(dir, name)
 }
 
@@ -81,6 +86,12 @@ const sessionPid = async (name: string): Promise<number | null> => {
   const line = stdout.split("\n").map((l) => l.trim()).find((l) => l.startsWith(`name=${name}\t`))
   const pid = line?.match(/\tpid=(\d+)\t/)?.[1]
   return pid ? Number(pid) : null
+}
+
+/** What the daemon wrote about this session, for asserting on its side of an exchange. */
+const daemonLog = async (name: string): Promise<string> => {
+  const file = Bun.file(join(dir, "logs", `${name}.log`))
+  return (await file.exists()) ? file.text() : ""
 }
 
 const alive = (pid: number) => {
@@ -96,7 +107,7 @@ const alive = (pid: number) => {
 class Capture {
   text = ""
   private waiters: { needle: string; from: number; resolve: () => void }[] = []
-  constructor(connection: ZmxConnection) {
+  constructor(connection: CompanionConnection) {
     connection.onOutput((bytes) => {
       this.text += decoder.decode(bytes, { stream: true })
       this.waiters = this.waiters.filter((w) => {
@@ -126,12 +137,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!ENABLED) return
-  // Kill only what this run started, then prove the private directory is empty of sessions.
+  // Kill only what this run started, and clean up BEFORE asserting: a failed
+  // check must not be what leaves a daemon and a socket directory behind.
   for (const name of sessions) await zmx("kill", name)
   const { stdout, stderr } = await zmx("list")
+  await rm(dir, { recursive: true, force: true })
   expect(stdout).toBe("")
   expect(stderr.toLowerCase()).toContain("no sessions found")
-  await rm(dir, { recursive: true, force: true })
 })
 
 test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattaches to a zmx-owned child", async () => {
@@ -141,7 +153,7 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   expect(alive(pid!)).toBe(true)
 
   // Negotiate and attach.
-  const first = await ZmxConnection.connect(socket, { client: "fmx-test" })
+  const first = await CompanionConnection.connect(socket, { client: "fmx-test" })
   expect(first.welcome.version).toBe(PROTOCOL_VERSION)
   const output = new Capture(first)
   first.attach({ rows: 30, cols: 100 })
@@ -157,19 +169,18 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   first.write("size\r")
   await output.until("20 60", mark)
 
-  // Detach: the socket closes, the daemon and child stay.
-  const closed = new Promise<void>((resolve) => first.onClose(() => resolve()))
+  // Detach: the socket closes, the daemon and child stay. The daemon logging
+  // the detach is the proof the frame arrived — isClosed alone is set locally.
   first.detach()
-  await closed
   expect(first.isClosed).toBe(true)
-  await sleep(200)
+  expect(await waitFor(async () => (await daemonLog("s1")).includes("client detach"))).toBe(true)
   expect(alive(pid!)).toBe(true)
   expect(await sessionPid("s1")).toBe(pid)
 
   // Reattach: the restore replays the screen, and the session is live again.
   // (The restore covers everything since a client last attached. Output from
   // before the FIRST attach can be lost — an upstream gap tranche 2 closes.)
-  const second = await ZmxConnection.connect(socket, { client: "fmx-test" })
+  const second = await CompanionConnection.connect(socket, { client: "fmx-test" })
   const replay = new Capture(second)
   second.attach({ rows: 20, cols: 60 })
   await replay.until("got:hello-from-bun")
@@ -189,7 +200,7 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
 
 test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach", async () => {
   const socket = await startSession("s2")
-  const leader = await ZmxConnection.connect(socket)
+  const leader = await CompanionConnection.connect(socket)
   const leaderOut = new Capture(leader)
   leader.attach({ rows: 24, cols: 80 })
   let mark = leaderOut.length
@@ -197,7 +208,7 @@ test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach
   await leaderOut.until("got:awake", mark)
 
   // A second client negotiates but does not attach while the child prints.
-  const watcher = await ZmxConnection.connect(socket, { client: "watcher" })
+  const watcher = await CompanionConnection.connect(socket, { client: "watcher" })
   const watched = new Capture(watcher)
   mark = leaderOut.length
   leader.write("later\r")
@@ -244,7 +255,7 @@ test.skipIf(!ENABLED)("a client the daemon cannot serve is told the daemon's ran
   expect(decodeWelcome(frames[0]!.payload)).toEqual({ version: 0, minVersion: 1, maxVersion: PROTOCOL_VERSION, capabilities: 0 })
 
   // Nothing a refused client sends is acted on, even bundled with its Hello.
-  const legit = await ZmxConnection.connect(socket, { client: "legit" })
+  const legit = await CompanionConnection.connect(socket, { client: "legit" })
   const seen = new Capture(legit)
   legit.attach({ rows: 24, cols: 80 })
   let mark = seen.length
@@ -275,7 +286,7 @@ test.skipIf(!ENABLED)("a client the daemon cannot serve is told the daemon's ran
   legit.detach()
 
   // The typed client turns that refusal into an error naming both ranges.
-  await expect(ZmxConnection.connect(socket, { versions: { min: 99, max: 100 } })).rejects.toThrow(/daemon speaks protocol 1\.\.1; this client speaks 99\.\.100/)
+  await expect(CompanionConnection.connect(socket, { versions: { min: 99, max: 100 } })).rejects.toThrow(/daemon speaks protocol 1\.\.1; this client speaks 99\.\.100/)
 
   // Refused clients leave the session untouched.
   expect(await sessionPid("s3")).not.toBeNull()

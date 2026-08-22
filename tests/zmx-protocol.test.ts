@@ -14,6 +14,7 @@ import {
   HEADER_LEN,
   MAX_CLIENT_NAME_LEN,
   MAX_PAYLOAD_LEN,
+  MIN_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
   ProtocolError,
   Tag,
@@ -27,8 +28,10 @@ const tagOf = (name: string | number) => (typeof name === "number" ? name : Tag[
 describe("golden wire bytes match the pinned Companion fork", () => {
   test("constants", () => {
     expect(PROTOCOL_VERSION).toBe(fixture.protocolVersion)
+    expect(MIN_PROTOCOL_VERSION).toBe(fixture.minProtocolVersion)
     expect(HEADER_LEN).toBe(fixture.headerLen)
     expect(MAX_PAYLOAD_LEN).toBe(fixture.maxPayloadLen)
+    expect(MAX_CLIENT_NAME_LEN).toBe(fixture.maxClientNameLen)
     expect<Record<string, number>>(Tag).toEqual(fixture.tags)
   })
 
@@ -139,11 +142,35 @@ describe("FrameReader", () => {
   })
 
   test("fails as soon as a header announces an oversized payload", () => {
+    // At the cap: fine. Split across pushes: fails on the byte that completes it.
     const reader = new FrameReader()
     reader.push(encodeHeader(Tag.Output, MAX_PAYLOAD_LEN))
     const over = encodeHeader(Tag.Output, MAX_PAYLOAD_LEN + 1)
-    const second = new FrameReader()
-    second.push(over.subarray(0, 4))
-    expect(() => second.push(over.subarray(4))).toThrow(ProtocolError)
+    const split = new FrameReader()
+    split.push(over.subarray(0, 4))
+    expect(() => split.push(over.subarray(4))).toThrow(ProtocolError)
+
+    // Behind a complete frame in the same push: also caught now, rather than
+    // waiting for a later push that a quiet peer may never send.
+    const behind = new FrameReader()
+    expect(() => behind.push(Buffer.concat([encodeFrame(Tag.Output, text("ok")), over]))).toThrow(ProtocolError)
+
+    // And behind two frames.
+    const deeper = new FrameReader()
+    expect(() =>
+      deeper.push(Buffer.concat([encodeFrame(Tag.Output, text("a")), encodeFrame(Tag.Detach), over])),
+    ).toThrow(ProtocolError)
+  })
+
+  test("gives back the buffer grown for one huge frame", () => {
+    const reader = new FrameReader()
+    const big = new Uint8Array(2 * 1024 * 1024)
+    reader.push(encodeFrame(Tag.Output, big))
+    expect(reader.next()?.payload.byteLength).toBe(big.byteLength)
+    expect(reader.pending).toBe(0)
+    // Drained: the next small frame must not still be sitting in a 4MB buffer.
+    reader.push(encodeFrame(Tag.Output, text("small")))
+    expect(reader.bufferBytes).toBeLessThanOrEqual(8192)
+    expect(new TextDecoder().decode(reader.next()!.payload)).toBe("small")
   })
 })

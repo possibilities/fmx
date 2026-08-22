@@ -1,0 +1,169 @@
+import { afterEach, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { join } from "node:path"
+import { setListenerErrorHandler, CompanionConnection } from "../src/companion-client.ts"
+import {
+  decodeHello,
+  encodeFrame,
+  encodeWelcome,
+  HEADER_LEN,
+  PROTOCOL_VERSION,
+  ProtocolError,
+  Tag,
+} from "../src/zmx-protocol.ts"
+
+/**
+ * The client against a stub daemon: a Unix socket that speaks the frames a
+ * Companion would, so the handshake and delivery are testable without a
+ * binary, at byte granularity a real daemon would not let us choose.
+ */
+type Stub = {
+  path: string
+  /** Frames the client has sent us. */
+  received: { tag: number; payload: Uint8Array }[]
+  /** Push bytes to the connected client. */
+  push: (bytes: Uint8Array) => void
+  /** Drop the connection from this side. */
+  stop: () => void
+}
+
+const cleanups: (() => void | Promise<void>)[] = []
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup()
+})
+
+const startStub = async (replyToHello: () => Uint8Array | null): Promise<Stub> => {
+  const dir = await mkdtemp("/tmp/fmxz-stub-")
+  const path = join(dir, "sock")
+  const received: Stub["received"] = []
+  let client: { write: (bytes: Uint8Array) => number } | null = null
+  const server = Bun.listen({
+    unix: path,
+    socket: {
+      open: (socket) => {
+        client = socket
+      },
+      data: (socket, data) => {
+        const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        // Frames from the client are small and unfragmented in these tests.
+        let offset = 0
+        while (offset + HEADER_LEN <= bytes.byteLength) {
+          const len = new DataView(bytes.buffer, bytes.byteOffset + offset).getUint32(1, true)
+          const tag = bytes[offset]!
+          received.push({ tag, payload: bytes.slice(offset + HEADER_LEN, offset + HEADER_LEN + len) })
+          if (tag === Tag.Hello) {
+            const reply = replyToHello()
+            if (reply) socket.write(reply)
+          }
+          offset += HEADER_LEN + len
+        }
+      },
+    },
+  })
+  const stub: Stub = {
+    path,
+    received,
+    push: (bytes) => {
+      client?.write(bytes)
+    },
+    stop: () => server.stop(true),
+  }
+  cleanups.push(async () => {
+    server.stop(true)
+    await rm(dir, { recursive: true, force: true })
+  })
+  return stub
+}
+
+const accept = encodeFrame(
+  Tag.Welcome,
+  encodeWelcome({ version: PROTOCOL_VERSION, minVersion: 1, maxVersion: PROTOCOL_VERSION, capabilities: 0 }),
+)
+const refuse = encodeFrame(Tag.Welcome, encodeWelcome({ version: 0, minVersion: 1, maxVersion: PROTOCOL_VERSION, capabilities: 0 }))
+const output = (text: string) => encodeFrame(Tag.Output, new TextEncoder().encode(text))
+const settle = () => new Promise((resolve) => setTimeout(resolve, 30))
+
+test("connect resolves on an accepting Welcome and names the client", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path, { client: "fmx-test" })
+  expect(connection.welcome.version).toBe(PROTOCOL_VERSION)
+  expect(decodeHello(stub.received[0]!.payload).client).toBe("fmx-test")
+  connection.close()
+})
+
+test("a refused Welcome rejects with both version ranges", async () => {
+  const stub = await startStub(() => refuse)
+  await expect(CompanionConnection.connect(stub.path, { versions: { min: 42, max: 43 } })).rejects.toThrow(
+    /daemon speaks protocol 1\.\.1; this client speaks 42\.\.43/,
+  )
+})
+
+test("a daemon that never answers Hello fails instead of hanging", async () => {
+  const stub = await startStub(() => null)
+  await expect(CompanionConnection.connect(stub.path, { helloTimeoutMs: 150 })).rejects.toThrow(/no Welcome from daemon within 150ms/)
+})
+
+test("output coalesced with the Welcome reaches a listener registered afterwards", async () => {
+  // One write carrying the handshake reply and a frame behind it, which is
+  // what a busy daemon does. Nothing is listening until connect() returns.
+  const stub = await startStub(() => Buffer.concat([accept, output("COALESCED")]))
+  const connection = await CompanionConnection.connect(stub.path)
+  let seen = ""
+  connection.onOutput((bytes) => {
+    seen += new TextDecoder().decode(bytes)
+  })
+  await settle()
+  expect(seen).toBe("COALESCED")
+  connection.close()
+})
+
+test("a listener that throws neither skips the others nor stalls the stream", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const failures: string[] = []
+  setListenerErrorHandler((error) => failures.push(String(error)))
+  cleanups.push(() => setListenerErrorHandler((error) => console.error("companion listener failed:", error)))
+  const seen: string[] = []
+  connection.onOutput(() => {
+    throw new Error("listener blew up")
+  })
+  connection.onOutput((bytes) => seen.push(new TextDecoder().decode(bytes)))
+  // Two frames in one packet: the second must still arrive, and so must a
+  // frame sent after the throwing listener has already thrown once.
+  stub.push(Buffer.concat([output("one"), output("two")]))
+  await settle()
+  stub.push(output("three"))
+  await settle()
+  expect(seen).toEqual(["one", "two", "three"])
+  // Reported, not swallowed: once per frame the throwing listener saw.
+  expect(failures).toEqual(["Error: listener blew up", "Error: listener blew up", "Error: listener blew up"])
+  connection.close()
+})
+
+test("flushed rejects when the connection dies with bytes still queued", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  // More than the socket takes at once, so the queue is non-empty when it dies.
+  connection.write(new Uint8Array(16 * 1024 * 1024))
+  const settled = connection.flushed().then(
+    () => "resolved",
+    (error) => (error instanceof ProtocolError ? "rejected" : `other: ${error}`),
+  )
+  stub.stop()
+  expect(await settled).toBe("rejected")
+})
+
+test("an oversized frame from the daemon fails the connection", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const reason = new Promise<string>((resolve) =>
+    connection.onClose((r) => resolve(r.kind === "error" ? r.error.message : r.kind)),
+  )
+  // A valid frame followed by a header announcing far too much: the reader
+  // must fail on this packet, not wait for one that may never come.
+  const bad = new Uint8Array(HEADER_LEN)
+  bad[0] = Tag.Output
+  new DataView(bad.buffer).setUint32(1, 0xffffffff, true)
+  stub.push(Buffer.concat([output("fine"), bad]))
+  expect(await reason).toMatch(/announced a 4294967295-byte payload/)
+})

@@ -35,9 +35,6 @@ export const Tag = {
   Welcome: 20,
 } as const
 
-export type TagName = keyof typeof Tag
-export type TagValue = (typeof Tag)[TagName]
-
 export const PROTOCOL_VERSION = 1
 export const MIN_PROTOCOL_VERSION = 1
 
@@ -177,19 +174,29 @@ export const clientHello = (client: string): Hello => ({
  * when the consumed prefix is the larger part, so a long session does not
  * accumulate what it has already read.
  */
+const INITIAL_BUFFER_BYTES = 4096
+
 export class FrameReader {
-  private buffer = new Uint8Array(4096)
+  private buffer = new Uint8Array(INITIAL_BUFFER_BYTES)
   private head = 0
   private tail = 0
 
-  /** Appends bytes; throws ProtocolError once a header announces too large a payload. */
+  /**
+   * Appends bytes, throwing ProtocolError as soon as any header now in the
+   * buffer announces too large a payload — not only the frame at the front.
+   * One read can carry several frames, and a violating header sitting behind
+   * a valid one would otherwise wait for a later push that may never come.
+   */
   push(chunk: Uint8Array): void {
     this.reserve(chunk.byteLength)
     this.buffer.set(chunk, this.tail)
     this.tail += chunk.byteLength
-    if (this.tail - this.head >= HEADER_LEN) {
-      const { len } = decodeHeader(this.buffer.subarray(this.head, this.head + HEADER_LEN))
+    let offset = this.head
+    while (this.tail - offset >= HEADER_LEN) {
+      const { len } = decodeHeader(this.buffer.subarray(offset, offset + HEADER_LEN))
       if (len > MAX_PAYLOAD_LEN) throw new ProtocolError(`peer announced a ${len}-byte payload, over ${MAX_PAYLOAD_LEN}`)
+      if (this.tail - offset < HEADER_LEN + len) return
+      offset += HEADER_LEN + len
     }
   }
 
@@ -201,13 +208,23 @@ export class FrameReader {
     if (available < HEADER_LEN + len) return null
     const payload = this.buffer.slice(this.head + HEADER_LEN, this.head + HEADER_LEN + len)
     this.head += HEADER_LEN + len
-    if (this.head === this.tail) this.head = this.tail = 0
+    if (this.head === this.tail) {
+      this.head = this.tail = 0
+      // One restore-sized frame would otherwise hold its buffer for the life
+      // of the connection, and there is one connection per Instance.
+      if (this.buffer.byteLength > INITIAL_BUFFER_BYTES) this.buffer = new Uint8Array(INITIAL_BUFFER_BYTES)
+    }
     return { tag, payload }
   }
 
   /** Bytes received but not yet returned as a frame. */
   get pending(): number {
     return this.tail - this.head
+  }
+
+  /** How much this reader is holding, so a test can prove it lets go. */
+  get bufferBytes(): number {
+    return this.buffer.byteLength
   }
 
   private reserve(extra: number): void {

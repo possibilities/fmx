@@ -10,7 +10,7 @@
  * killed at the end and the directory removed.
  */
 import { mkdtemp, rm } from "node:fs/promises"
-import { ZmxConnection } from "../src/zmx-client.ts"
+import { CompanionConnection } from "../src/companion-client.ts"
 
 const ZMX = process.env.FMX_ZMX_PATH
 if (!ZMX) {
@@ -44,7 +44,7 @@ try {
   console.log((await zmx("list")).stdout.toString().trimEnd())
 
   step("Bun connects directly to the socket and negotiates")
-  const first = await ZmxConnection.connect(socket, { client: "demo" })
+  const first = await CompanionConnection.connect(socket, { client: "demo" })
   console.log(`  Welcome: protocol v${first.welcome.version} (daemon speaks ${first.welcome.minVersion}..${first.welcome.maxVersion})`)
   first.onOutput((bytes) => show("output", bytes))
 
@@ -62,7 +62,7 @@ try {
   console.log((await zmx("list")).stdout.toString().trimEnd())
 
   step("reconnect and attach again: the screen is restored, the session is live")
-  const second = await ZmxConnection.connect(socket, { client: "demo-again" })
+  const second = await CompanionConnection.connect(socket, { client: "demo-again" })
   second.onOutput((bytes) => show("output", bytes))
   second.attach({ rows: 24, cols: 80 })
   await sleep(300)
@@ -72,7 +72,7 @@ try {
 
   step("a client claiming protocol 99..100 is refused with the daemon's range")
   try {
-    await ZmxConnection.connect(socket, { versions: { min: 99, max: 100 } })
+    await CompanionConnection.connect(socket, { versions: { min: 99, max: 100 } })
   } catch (error) {
     console.log(`  ${(error as Error).message}`)
   }

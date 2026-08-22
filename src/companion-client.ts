@@ -15,7 +15,29 @@ import {
 
 type Socket = Awaited<ReturnType<typeof Bun.connect>>
 
-export type ZmxConnectionOptions = {
+/**
+ * Where a listener's failure goes. It cannot be returned to a caller — we are
+ * inside a socket callback — and it must not take the read loop with it, so
+ * it is reported here instead. The default writes to stderr; a program that
+ * owns the screen should point this somewhere that does not corrupt it.
+ */
+let listenerErrorHandler: (error: unknown) => void = (error) => {
+  console.error("companion listener failed:", error)
+}
+
+export function setListenerErrorHandler(handler: (error: unknown) => void): void {
+  listenerErrorHandler = handler
+}
+
+const safely = (run: () => void): void => {
+  try {
+    run()
+  } catch (error) {
+    listenerErrorHandler(error)
+  }
+}
+
+export type CompanionConnectionOptions = {
   /** Name the daemon logs for this client. */
   client?: string
   /** How long to wait for the daemon's Welcome before giving up. */
@@ -41,7 +63,7 @@ export type FrameListener = (frame: Frame) => void
  * Closing the socket is a detach, never a kill: the daemon and its child
  * outlive every connection.
  */
-export class ZmxConnection {
+export class CompanionConnection {
   readonly welcome: Welcome
   private readonly outputListeners = new Set<OutputListener>()
   private readonly closeListeners = new Set<CloseListener>()
@@ -56,7 +78,17 @@ export class ZmxConnection {
     )
   }
 
-  static async connect(socketPath: string, options: ZmxConnectionOptions = {}): Promise<ZmxConnection> {
+  /**
+   * Frames that arrived before anyone was listening — the daemon can put its
+   * Welcome and the frames after it in one packet, and `connect` has not
+   * returned yet, so no caller can have registered. They are held until the
+   * first listener appears rather than dropped on the floor.
+   */
+  private backlog: Frame[] = []
+  private backlogBytes = 0
+  private static readonly BACKLOG_MAX_BYTES = 1024 * 1024
+
+  static async connect(socketPath: string, options: CompanionConnectionOptions = {}): Promise<CompanionConnection> {
     const transport = new Transport()
     const socket = await Bun.connect({
       unix: socketPath,
@@ -76,7 +108,7 @@ export class ZmxConnection {
     }
     transport.send(encodeFrame(Tag.Hello, encodeHello(hello)))
     const welcome = await transport.awaitWelcome(options.helloTimeoutMs ?? 5000, hello)
-    return new ZmxConnection(welcome, transport)
+    return new CompanionConnection(welcome, transport)
   }
 
   /** Attach as a terminal of this size. The daemon replies with its restore, if any, then live output. */
@@ -108,18 +140,20 @@ export class ZmxConnection {
 
   onOutput(listener: OutputListener): () => void {
     this.outputListeners.add(listener)
+    this.flushBacklog()
     return () => this.outputListeners.delete(listener)
   }
 
   onClose(listener: CloseListener): () => void {
     this.closeListeners.add(listener)
-    if (this.closed) listener(this.closed)
+    if (this.closed) safely(() => listener(this.closed!))
     return () => this.closeListeners.delete(listener)
   }
 
   /** Every frame that is not Output, for callers that want the rest of the contract. */
   onFrame(listener: FrameListener): () => void {
     this.frameListeners.add(listener)
+    this.flushBacklog()
     return () => this.frameListeners.delete(listener)
   }
 
@@ -138,17 +172,41 @@ export class ZmxConnection {
   }
 
   private dispatch(frame: Frame): void {
-    if (frame.tag === Tag.Output) {
-      for (const listener of this.outputListeners) listener(frame.payload)
+    if (this.outputListeners.size === 0 && this.frameListeners.size === 0) {
+      if (this.backlogBytes + frame.payload.byteLength <= CompanionConnection.BACKLOG_MAX_BYTES) {
+        this.backlog.push(frame)
+        this.backlogBytes += frame.payload.byteLength
+      }
       return
     }
-    for (const listener of this.frameListeners) listener(frame)
+    this.deliver(frame)
+  }
+
+  private flushBacklog(): void {
+    if (this.backlog.length === 0) return
+    const held = this.backlog
+    this.backlog = []
+    this.backlogBytes = 0
+    for (const frame of held) this.deliver(frame)
+  }
+
+  /**
+   * One listener's failure is its own: it must not skip the listeners after
+   * it, and it must not escape into the socket's data callback, where it
+   * would abort the read loop and strand frames already in the reader.
+   */
+  private deliver(frame: Frame): void {
+    if (frame.tag === Tag.Output) {
+      for (const listener of this.outputListeners) safely(() => listener(frame.payload))
+      return
+    }
+    for (const listener of this.frameListeners) safely(() => listener(frame))
   }
 
   private finish(reason: CloseReason): void {
     if (this.closed) return
     this.closed = reason
-    for (const listener of this.closeListeners) listener(reason)
+    for (const listener of this.closeListeners) safely(() => listener(reason))
   }
 }
 
@@ -164,8 +222,8 @@ class Transport {
   private socket: Socket | null = null
   private readonly reader = new FrameReader()
   private queue: Uint8Array[] = []
-  private queued = 0
-  private drained: (() => void)[] = []
+  private drained: { resolve: () => void; reject: (error: Error) => void }[] = []
+  private endWhenDrained = false
   private welcomeWaiter: { resolve: (w: Welcome) => void; reject: (e: Error) => void } | null = null
   private closeReason: CloseReason | null = null
   private ended = false
@@ -189,7 +247,6 @@ class Transport {
   send(bytes: Uint8Array): void {
     if (this.ended) return
     this.queue.push(bytes)
-    this.queued += bytes.byteLength
     this.flush()
   }
 
@@ -201,7 +258,6 @@ class Transport {
       const head = this.queue[0]!
       const written = socket.write(head)
       if (written < 0) return
-      this.queued -= written
       if (written < head.byteLength) {
         this.queue[0] = head.subarray(written)
         return
@@ -210,12 +266,22 @@ class Transport {
     }
     const waiters = this.drained
     this.drained = []
-    for (const resolve of waiters) resolve()
+    for (const waiter of waiters) waiter.resolve()
+    if (this.endWhenDrained) {
+      this.endWhenDrained = false
+      socket.end()
+    }
   }
 
+  /** Rejects rather than resolves if the connection dies with bytes still queued. */
   flushed(): Promise<void> {
-    if (this.queue.length === 0 || this.closeReason) return Promise.resolve()
-    return new Promise((resolve) => this.drained.push(resolve))
+    if (this.closeReason) {
+      return this.queue.length === 0
+        ? Promise.resolve()
+        : Promise.reject(new ProtocolError("connection closed with unsent bytes still queued"))
+    }
+    if (this.queue.length === 0) return Promise.resolve()
+    return new Promise((resolve, reject) => this.drained.push({ resolve, reject }))
   }
 
   end(): void {
@@ -224,7 +290,7 @@ class Transport {
     const socket = this.socket
     if (!socket) return
     if (this.queue.length === 0) socket.end()
-    else this.drained.push(() => socket.end())
+    else this.endWhenDrained = true
   }
 
   receive(bytes: Uint8Array): void {
@@ -267,11 +333,14 @@ class Transport {
     if (this.closeReason) return
     this.closeReason = reason
     this.ended = true
+    const dropped = this.queue.length > 0
     this.queue = []
-    this.queued = 0
     const waiters = this.drained
     this.drained = []
-    for (const resolve of waiters) resolve()
+    for (const waiter of waiters) {
+      if (dropped) waiter.reject(new ProtocolError("connection closed with unsent bytes still queued"))
+      else waiter.resolve()
+    }
     if (this.welcomeWaiter) {
       const waiter = this.welcomeWaiter
       this.welcomeWaiter = null
