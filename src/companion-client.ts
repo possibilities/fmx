@@ -94,6 +94,8 @@ export class CompanionConnection {
    */
   private backlog: Frame[] = []
   private backlogBytes = 0
+  /** Cleared once the caller has had its synchronous turn to subscribe. */
+  private holding = true
   private static readonly BACKLOG_MAX_BYTES = 1024 * 1024
 
   static async connect(socketPath: string, options: CompanionConnectionOptions = {}): Promise<CompanionConnection> {
@@ -116,7 +118,12 @@ export class CompanionConnection {
     }
     transport.send(encodeFrame(Tag.Hello, encodeHello(hello)))
     const welcome = await transport.awaitWelcome(options.helloTimeoutMs ?? 5000, hello)
-    return new CompanionConnection(welcome, transport)
+    const connection = new CompanionConnection(welcome, transport)
+    // A task, not a microtask: the caller's `await` resumes as a microtask and
+    // subscribes there, so anything queued sooner would run before it had the
+    // chance. After this, delivery is live and nothing is held.
+    setTimeout(() => connection.releaseBacklog(), 0)
+    return connection
   }
 
   /** Attach as a terminal of this size. The daemon replies with its restore, if any, then live output. */
@@ -193,7 +200,7 @@ export class CompanionConnection {
     return () => this.closeListeners.delete(listener)
   }
 
-  /** Every frame that is not Output, for callers that want the rest of the contract. */
+  /** Frames this client has no dedicated listener for: not Output, and not the lifecycle ones. */
   onFrame(listener: FrameListener): () => void {
     this.frameListeners.add(listener)
     this.flushBacklog()
@@ -225,7 +232,7 @@ export class CompanionConnection {
   }
 
   private dispatch(frame: Frame): void {
-    if (!this.hasListeners) {
+    if (this.holding && (!this.hasListeners || this.backlog.length > 0)) {
       if (this.backlogBytes + frame.payload.byteLength <= CompanionConnection.BACKLOG_MAX_BYTES) {
         this.backlog.push(frame)
         this.backlogBytes += frame.payload.byteLength
@@ -235,11 +242,52 @@ export class CompanionConnection {
     this.deliver(frame)
   }
 
+  /** Whether this frame has somewhere to go right now. */
+  private canDeliver(frame: Frame): boolean {
+    switch (frame.tag) {
+      case Tag.Output:
+        return this.outputListeners.size > 0
+      case Tag.RestoreBegin:
+        return this.restoreBeginListeners.size > 0
+      case Tag.Ready:
+        return this.readyListeners.size > 0
+      case Tag.Exit:
+        return this.exitListeners.size > 0
+      default:
+        return this.frameListeners.size > 0
+    }
+  }
+
+  /**
+   * Deliver as much of the backlog as can be delivered *in order*, and stop
+   * at the first frame whose kind nobody is listening for.
+   *
+   * Order is the reason for the stop. Callers register one kind at a time, so
+   * draining everything on the first registration would hand a listener the
+   * output frames while the RestoreBegin ahead of them was still waiting —
+   * restored bytes arriving before the boundary that explains them, which is
+   * worse than late. What cannot go yet waits for `releaseBacklog`.
+   */
   private flushBacklog(): void {
-    if (this.backlog.length === 0) return
+    while (this.backlog.length > 0 && this.canDeliver(this.backlog[0]!)) {
+      const frame = this.backlog.shift()!
+      this.backlogBytes -= frame.payload.byteLength
+      this.deliver(frame)
+    }
+  }
+
+  /**
+   * The caller has had its turn to subscribe. Whatever is still held goes out
+   * now, and frames nobody wants are dropped exactly as a live frame with no
+   * listener would be — the backlog must not become a leak, and a consumer
+   * that only wants output must not be starved by a boundary frame it never
+   * asked about.
+   */
+  private releaseBacklog(): void {
     const held = this.backlog
     this.backlog = []
     this.backlogBytes = 0
+    this.holding = false
     for (const frame of held) this.deliver(frame)
   }
 

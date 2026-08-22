@@ -106,5 +106,11 @@
   "zmxIpcBlob": "28941d3e69bcf9bd44a30121f03933ae68d3c075",
   "minProtocolVersion": 1,
   "maxClientNameLen": 64,
-  "exitLen": 8
+  "exitLen": 8,
+  "exitReasons": {
+    "natural": 0,
+    "requested": 1,
+    "daemonFailure": 2,
+    "execFailure": 3
+  }
 }

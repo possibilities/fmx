@@ -128,8 +128,8 @@ class Capture {
       this.events.push("exit")
     })
     connection.onOutput((bytes) => {
-      this.events.push("out")
-      this.text += decoder.decode(bytes, { stream: true })
+      this.events.push(`out:${decoder.decode(bytes, { stream: true })}`)
+      this.text += this.events[this.events.length - 1]!.slice(4)
       this.waiters = this.waiters.filter((w) => {
         if (!this.text.slice(w.from).includes(w.needle)) return true
         w.resolve()
@@ -212,7 +212,7 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   // Reconnect is bracketed too, and every restored byte falls inside it.
   expect(replay.events[0]).toBe("restore-begin")
   expect(await waitFor(() => replay.events.includes("ready"))).toBe(true)
-  expect(replay.events.indexOf("out")).toBeLessThan(replay.events.indexOf("ready"))
+  expect(replay.events.findIndex((e) => e.startsWith("out:"))).toBeLessThan(replay.events.indexOf("ready"))
   mark = replay.length
   second.write("again\r")
   await replay.until("got:again", mark)
@@ -225,8 +225,8 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   expect(replay.exit).toEqual({ code: 7, signal: 0, reason: ExitReason.natural })
   expect(replay.events.at(-1)).toBe("exit")
   expect(await waitFor(() => !alive(pid!))).toBe(true)
-  expect(await sessionPid("s1")).toBeNull()
   sessions = sessions.filter((s) => s !== "s1")
+  expect(await sessionPid("s1")).toBeNull()
 })
 
 test.skipIf(!ENABLED)("a child killed by a signal reports that signal, not an exit code", async () => {
@@ -241,8 +241,8 @@ test.skipIf(!ENABLED)("a child killed by a signal reports that signal, not an ex
   const closed = new Promise<void>((resolve) => connection.onClose(() => resolve()))
   connection.write("crash\r")
   await closed
-  expect(seen.exit).toEqual({ code: 0, signal: 9, reason: ExitReason.natural })
   sessions = sessions.filter((s) => s !== "s4")
+  expect(seen.exit).toEqual({ code: 0, signal: 9, reason: ExitReason.natural })
 })
 
 test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach", async () => {
@@ -270,12 +270,16 @@ test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach
   expect(await waitFor(() => watched.events.includes("ready"))).toBe(true)
   const readyAt = watched.events.indexOf("ready")
   expect(watched.events[0]).toBe("restore-begin")
-  expect(watched.events.slice(0, readyAt).filter((e) => e === "out").length).toBeGreaterThan(0)
+  // What arrived before Ready is the replay, and it contains what was missed.
+  const restored = watched.events.slice(0, readyAt).filter((e) => e.startsWith("out:"))
+  expect(restored.length).toBeGreaterThan(0)
+  expect(restored.join("")).toContain("LATER")
   mark = watched.length
   leader.write("live\r")
   await watched.until("got:live", mark)
-  // The live byte landed after Ready, not among the restored ones.
-  expect(watched.events.lastIndexOf("out")).toBeGreaterThan(readyAt)
+  // And this byte is live: it appears only after Ready, in no restored frame.
+  expect(restored.join("")).not.toContain("got:live")
+  expect(watched.events.slice(readyAt).some((e) => e.includes("got:live"))).toBe(true)
 
   watcher.detach()
   leader.detach()

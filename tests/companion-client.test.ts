@@ -119,6 +119,42 @@ test("output coalesced with the Welcome reaches a listener registered afterwards
   connection.close()
 })
 
+test("a restore burst coalesced with the Welcome survives listeners registered one at a time", async () => {
+  // The whole boundary in the packet that answers Hello, which is what a busy
+  // daemon does — and the caller subscribes in the order the API invites.
+  const stub = await startStub(() =>
+    Buffer.concat([
+      accept,
+      encodeFrame(Tag.RestoreBegin),
+      output("RESTORED"),
+      encodeFrame(Tag.Ready),
+      output("LIVE"),
+    ]),
+  )
+  const connection = await CompanionConnection.connect(stub.path)
+  const events: string[] = []
+  connection.onRestoreBegin(() => events.push("restore-begin"))
+  connection.onOutput((bytes) => events.push(`out:${new TextDecoder().decode(bytes)}`))
+  connection.onReady(() => events.push("ready"))
+  await settle()
+  expect(events).toEqual(["restore-begin", "out:RESTORED", "ready", "out:LIVE"])
+  connection.close()
+})
+
+test("held frames nobody wants are dropped rather than blocking the ones that follow", async () => {
+  // A caller that only wants output: the boundary frames it never subscribed
+  // to must not dam the stream behind them.
+  const stub = await startStub(() =>
+    Buffer.concat([accept, encodeFrame(Tag.RestoreBegin), output("RESTORED"), encodeFrame(Tag.Ready)]),
+  )
+  const connection = await CompanionConnection.connect(stub.path)
+  const seen: string[] = []
+  connection.onOutput((bytes) => seen.push(new TextDecoder().decode(bytes)))
+  await settle()
+  expect(seen).toEqual(["RESTORED"])
+  connection.close()
+})
+
 test("a listener that throws neither skips the others nor stalls the stream", async () => {
   const stub = await startStub(() => accept)
   const connection = await CompanionConnection.connect(stub.path)
