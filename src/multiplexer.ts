@@ -53,7 +53,9 @@ import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
 
-const SIDEBAR_DEFAULT_WIDTH = 26
+/** The sidebar the embedded terminal sits beside; exported so tests can
+ * address the terminal by its real screen column rather than a guess. */
+export const SIDEBAR_DEFAULT_WIDTH = 26
 const SIDEBAR_MIN_WIDTH = 16
 const SIDEBAR_MAX_SCREEN_FRACTION = 1 / 3
 // Blending the background slightly toward the foreground keeps the divider a

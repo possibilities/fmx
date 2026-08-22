@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { SIDEBAR_DEFAULT_WIDTH } from "../src/multiplexer.ts"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FAKE_FX = resolve(ROOT, "tests/fixtures/fake-fx.ts")
@@ -11,6 +12,17 @@ const FMX_COMMAND = process.env.FMX_BINARY_PATH
   : [process.execPath, "src/index.ts"]
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
+
+// The embedded terminal starts past the sidebar and its one-column divider, so
+// a drag aimed at fx must be addressed there rather than at the screen origin.
+const TERMINAL_ORIGIN_COLUMN = SIDEBAR_DEFAULT_WIDTH + 2
+
+/** An SGR press, drag, and release across one row, as a human's swipe. */
+const dragAcross = (columns: number, row = 1) => {
+  const from = TERMINAL_ORIGIN_COLUMN
+  const to = TERMINAL_ORIGIN_COLUMN + columns
+  return `\u001b[<0;${from};${row}M\u001b[<32;${to};${row}M\u001b[<0;${to};${row}m`
+}
 
 const PTY_TEST_ENABLED = process.env.FMX_RUN_PTY_TESTS === "1" && typeof Bun.Terminal === "function"
 
@@ -33,6 +45,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
+        // Machine state stays in the temp directory: a sidebar width persisted
+        // by a real session would move the layout out from under these tests.
+        FMX_STATE_PATH: join(tempDirectory, "state.json"),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_HEARTBEAT: "1",
         FMX_TEST_KEYBOARD_MODE: "1",
@@ -73,7 +88,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => output,
       )
 
-      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;1M\u001b[<32;4;1M\u001b[<0;4;1m"))
+      child.terminal?.write(new TextEncoder().encode(dragAcross(3)))
       await waitUntil(() => output.includes("ZmFrZQ=="), 5_000, () => output)
 
       child.terminal?.write(Uint8Array.of(control("c")))
@@ -101,7 +116,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       // readiness in adjacent event-loop turns.
       await Bun.sleep(250)
       const copiedFakeCount = countOccurrences(output, "ZmFrZQ==")
-      child.terminal?.write(new TextEncoder().encode("\u001b[<0;1;1M\u001b[<32;4;1M\u001b[<0;4;1m"))
+      child.terminal?.write(new TextEncoder().encode(dragAcross(3)))
       await waitUntil(() => countOccurrences(output, "ZmFrZQ==") > copiedFakeCount, 5_000, () => output)
 
       child.terminal?.write(Uint8Array.of(control("z")))
@@ -159,6 +174,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
+        // Machine state stays in the temp directory: a sidebar width persisted
+        // by a real session would move the layout out from under these tests.
+        FMX_STATE_PATH: join(tempDirectory, "state.json"),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_PASSTHROUGH_KEYS: "1",
       },
@@ -231,6 +249,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
+        // Machine state stays in the temp directory: a sidebar width persisted
+        // by a real session would move the layout out from under these tests.
+        FMX_STATE_PATH: join(tempDirectory, "state.json"),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_BACKGROUND_QUERY: "1",
         FMX_TEST_THEME_UPDATES: "1",
@@ -297,6 +318,9 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
+        // Machine state stays in the temp directory: a sidebar width persisted
+        // by a real session would move the layout out from under these tests.
+        FMX_STATE_PATH: join(tempDirectory, "state.json"),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_QUERY_ON_EXIT: "1",
       },
