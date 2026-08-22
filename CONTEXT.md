@@ -4,6 +4,13 @@
 it in. Instances are numbered by fmx and disappear when their fx exits.
 _Avoid_: pane, tab, window, session.
 
+**Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns an
+fx process and its PTY so both survive fmx closing. fmx drives one over a
+versioned Unix socket instead of owning the PTY itself, and never through the
+`zmx` a human may have installed — a Companion keeps its own sessions in its
+own directory.
+_Avoid_: backend, host, server, zmx (the upstream project, not what fmx ships).
+
 **Agent socket** — the Unix socket fmx binds and points every instance at, and
 over which fx reports its own lifecycle. One socket serves all instances.
 _Avoid_: status socket, control socket, IPC socket.
@@ -86,7 +93,8 @@ _Avoid_: frecency, history, usage.
 
 **Git context** — the worktree root and branch fmx reads for an instance's
 directory, because fx never reports where it is working. An instance outside a
-repository has none and nests directly under its project.
+repository has none and nests under a virtual `(untracked)` branch in the
+session list.
 _Avoid_: repo info, workspace.
 
 **Agent record** — what fx has reported about one pane, folded from frames:
