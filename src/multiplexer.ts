@@ -15,12 +15,18 @@ import {
   type ThemeMode,
 } from "@opentui/core"
 import { basename } from "node:path"
+import { AgentRegistry, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
-import { detectedTerminalColor, hasDetectedBackground, themeModeReport } from "./host-palette.ts"
+import {
+  detectedTerminalColor,
+  hasDetectedBackground,
+  mixHexColors,
+  themeModeReport,
+} from "./host-palette.ts"
 import {
   actionForKey,
   keyIdentity,
@@ -30,6 +36,7 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
+import { SessionList, type SessionRow } from "./session-list.ts"
 import type { SocketFrame } from "./socket-frames.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
@@ -109,7 +116,7 @@ class FxInstance {
 
   constructor(
     renderer: CliRenderer,
-    private readonly id: number,
+    readonly id: number,
     private readonly cwd: string,
     private readonly argv: string[],
     private readonly fxPath: string,
@@ -265,6 +272,9 @@ export class Multiplexer {
   private readonly debugDivider: BoxRenderable | null = null
   private readonly debugPanel: DebugPanel | null = null
   private readonly agentSocket: AgentSocket | null
+  private readonly registry = new AgentRegistry()
+  private readonly sessionList: SessionList
+  private readonly seenSeq = new Map<number, number>()
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   private dividerDragging = false
   private dragStartWidth = SIDEBAR_DEFAULT_WIDTH
@@ -289,6 +299,14 @@ export class Multiplexer {
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
   private readonly resizeHandler = () => this.applyLayout()
   private readonly frameHandler = (frame: SocketFrame) => this.debugPanel?.append(frame)
+  private readonly registryHandler = (frame: SocketFrame) => {
+    this.registry.apply(frame)
+    // A pane the human is already watching is seen the moment it reports, so
+    // finishing in the foreground never shows as an unacknowledged `done`.
+    const active = this.activeInstance()
+    if (active) this.markSeen(active)
+    this.refreshSessionList()
+  }
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -340,6 +358,8 @@ export class Multiplexer {
     this.stage.add(this.content)
 
     this.agentSocket = options.agentSocket ?? null
+    this.sessionList = new SessionList(renderer, (instanceId) => this.selectInstance(instanceId))
+    this.sidebar.add(this.sessionList.root)
     if (options.debugPanel && this.agentSocket) {
       this.debugDivider = new BoxRenderable(renderer, {
         id: "fmx-debug-divider",
@@ -403,6 +423,7 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
     if (this.debugPanel) this.agentSocket?.addFrameListener(this.frameHandler)
+    this.agentSocket?.addFrameListener(this.registryHandler)
     this.applyLayout()
     this.refreshTerminalTitle()
   }
@@ -470,6 +491,7 @@ export class Multiplexer {
     this.instances.push(instance)
     this.content.add(instance.terminal)
     this.switchTo(this.instances.length - 1)
+    this.refreshSessionList()
     try {
       instance.start()
     } catch (error) {
@@ -490,10 +512,13 @@ export class Multiplexer {
     this.content.remove(instance.terminal)
     instance.destroy()
     this.instances.splice(index, 1)
+    this.registry.forget(this.paneIdFor(instance))
+    this.seenSeq.delete(instance.id)
 
     if (this.instances.length === 0) {
       this.activeIndex = -1
       this.refreshTerminalTitle()
+      this.refreshSessionList()
     } else if (wasActive) {
       this.activeIndex = -1
       this.switchTo(Math.min(index, this.instances.length - 1))
@@ -523,11 +548,51 @@ export class Multiplexer {
     active.terminal.visible = true
     active.terminal.setHostSelectionEnabled(true)
     active.terminal.focus()
+    this.markSeen(active)
     this.refreshTerminalTitle()
+    this.refreshSessionList()
   }
 
   private activeInstance(): FxInstance | null {
     return this.instances[this.activeIndex] ?? null
+  }
+
+  private refreshSessionList(): void {
+    this.sessionList.render(this.sessionRows(), this.sidebarWidth)
+  }
+
+  private sessionRows(): SessionRow[] {
+    const project = basename(this.options.cwd) || "workspace"
+    return this.instances.map((instance, index) => {
+      const record = this.registry.get(this.paneIdFor(instance))
+      return {
+        instanceId: instance.id,
+        project,
+        sessionId: shortSessionId(record?.sessionId ?? null),
+        state: displayStateFor(record, this.seenSeq.get(instance.id) ?? 0),
+        attention: record?.attention ?? null,
+        active: index === this.activeIndex,
+      }
+    })
+  }
+
+  /**
+   * Mark an instance acknowledged: its current state is now one the human has
+   * looked at, so a finished turn stops reading as `done`.
+   */
+  private markSeen(instance: FxInstance): void {
+    const record = this.registry.get(this.paneIdFor(instance))
+    this.seenSeq.set(instance.id, record?.stateSeq ?? 0)
+  }
+
+  private selectInstance(instanceId: number): void {
+    const index = this.instances.findIndex((instance) => instance.id === instanceId)
+    if (index === -1 || index === this.activeIndex) return
+    this.switchTo(index)
+  }
+
+  private paneIdFor(instance: FxInstance): string {
+    return this.agentSocket?.paneIdFor(instance.id) ?? `p_${instance.id}`
   }
 
   private agentSocketBinding(instanceId: number): FxAgentSocketBinding | null {
@@ -588,6 +653,7 @@ export class Multiplexer {
     const min = Math.min(SIDEBAR_MIN_WIDTH, max)
     this.sidebarWidth = Math.max(min, Math.min(max, requested))
     this.sidebar.width = this.sidebarWidth
+    this.refreshSessionList()
   }
 
   private reservedDebugWidth(): number {
@@ -612,6 +678,8 @@ export class Multiplexer {
       this.debugDivider.focusedBorderColor = color
     }
     this.debugPanel?.applyPalette(colors)
+    this.sessionList.applyPalette(colors)
+    this.refreshSessionList()
   }
 
   private applyModalPalette(colors: TerminalColors | null): void {
@@ -788,17 +856,6 @@ function dividerColor(colors: TerminalColors | null): string {
     detectedTerminalColor(colors?.palette[7]) ??
     DIVIDER_FALLBACK_COLOR
   )
-}
-
-function mixHexColors(base: string, tint: string, amount: number): string {
-  const channel = (offset: number) => {
-    const from = parseInt(base.slice(offset, offset + 2), 16)
-    const to = parseInt(tint.slice(offset, offset + 2), 16)
-    return Math.round(from + (to - from) * amount)
-      .toString(16)
-      .padStart(2, "0")
-  }
-  return `#${channel(1)}${channel(3)}${channel(5)}`
 }
 
 function modalColors(colors: TerminalColors | null): ModalColors {

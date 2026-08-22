@@ -26,3 +26,19 @@ observation surface: it reads frames and never writes to the socket or to fx.
 Its `[clear]` button empties the view alone; the socket keeps running and later
 frames still arrive.
 _Avoid_: log pane, console, inspector.
+
+**Session list** — the sidebar's one-line-per-instance list: status icon,
+project, and short session id, with the active row shaded and a click switching
+to that instance.
+_Avoid_: agent panel, tab bar, session picker.
+
+**Agent record** — what fx has reported about one pane, folded from frames:
+state, attention, session id, label. It holds socket truth only — which pane a
+human is looking at is fmx's own knowledge and lives in the multiplexer.
+_Avoid_: session state, pane state.
+
+**Seen** — whether the human has had an instance in front of them since its
+state last changed, tracked as a frame sequence per instance rather than a
+flag. An idle instance that is not seen is **done** — finished and
+unacknowledged — which is the only difference between the `✓` and `○` icons.
+_Avoid_: read, acknowledged, unread.

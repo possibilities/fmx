@@ -49,6 +49,23 @@ export function themeModeReport(mode: ThemeMode): Uint8Array {
   return mode === "light" ? LIGHT_THEME_REPORT : DARK_THEME_REPORT
 }
 
+/**
+ * Blend `base` toward `tint` by `amount` (0..1). Both must be `#rrggbb`, which
+ * is what `detectedTerminalColor` guarantees. Used for surfaces that should sit
+ * a measured distance from the terminal's own background rather than at a fixed
+ * grey the theme never chose.
+ */
+export function mixHexColors(base: string, tint: string, amount: number): string {
+  const channel = (offset: number) => {
+    const from = parseInt(base.slice(offset, offset + 2), 16)
+    const to = parseInt(tint.slice(offset, offset + 2), 16)
+    return Math.round(from + (to - from) * amount)
+      .toString(16)
+      .padStart(2, "0")
+  }
+  return `#${channel(1)}${channel(3)}${channel(5)}`
+}
+
 export function detectedTerminalColor(color: string | null | undefined): string | null {
   if (!color || !/^#[0-9a-f]{6}$/iu.test(color)) return null
   return color.toLowerCase()
