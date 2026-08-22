@@ -131,18 +131,26 @@ export class SessionList {
       // rails, so two faint backgrounds never have to be told apart.
       backgroundColor: row.active ? this.colors.activeBackground : undefined,
       onMouseDown: (event) => {
-        // The press selects a pane; it must not start a drag selection or
-        // reach the embedded terminal underneath.
+        // Keep the press local to the sidebar while its text child starts an
+        // ordinary host selection.
         event.preventDefault()
         event.stopPropagation()
-        if (row.instanceId !== null) this.onSelect(row.instanceId)
+      },
+      onMouseUp: (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        // OpenTUI marks a gesture as no longer at its start once it has become
+        // a drag. Navigate only for a click so selecting an inactive row does
+        // not rebuild the list in the middle of the selection gesture.
+        const selection = this.renderer.getSelection()
+        if (row.instanceId !== null && (!selection || selection.isStart)) this.onSelect(row.instanceId)
       },
     })
     container.add(
       new TextRenderable(this.renderer, {
         id: `fmx-session-row-text-${id}`,
         content: this.styleRow(row, width),
-        selectable: false,
+        selectable: true,
       }),
     )
     return container

@@ -92,6 +92,26 @@ test("draws the tree and reports clicks on agent rows", async () => {
   }
 })
 
+test("ordinary drags select sidebar text without navigating", async () => {
+  const { setup, list, selected } = await createList(30, 10)
+  try {
+    list.render(buildTree([entry()]), 26)
+    await setup.renderOnce()
+
+    const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-1") as BoxRenderable
+    await setup.mockMouse.drag(row.x + 7, row.y, row.x + 12, row.y)
+
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("909bc")
+    expect(selected).toEqual([])
+
+    await setup.mockMouse.click(row.x + 7, row.y)
+    expect(selected).toEqual([1])
+  } finally {
+    list.root.destroy()
+    setup.renderer.destroy()
+  }
+})
+
 test("a click on a project or branch row selects nothing", async () => {
   const { setup, list, selected } = await createList(30, 10)
   try {
