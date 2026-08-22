@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { buildTree, railsFor, type SessionEntry } from "../src/session-tree.ts"
+import { buildTree, indentFor, type SessionEntry } from "../src/session-tree.ts"
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
@@ -15,7 +15,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
 }
 
 function shape(entries: SessionEntry[]): string[] {
-  return buildTree(entries).map((row) => `${railsFor(row.depth)}${row.label}`)
+  return buildTree(entries).map((row) => `${indentFor(row.depth)}${row.label}`)
 }
 
 test("nests agents under their branch and project", () => {
@@ -27,22 +27,22 @@ test("nests agents under their branch and project", () => {
     ]),
   ).toEqual([
     "fmx",
-    "│ main",
-    "│ ╎ 909bc46b64721838",
-    "│ ╎ 5a75126ce54edb04",
-    "│ feat/list",
-    "│ ╎ 84af73d3e9e42cb1",
+    "  main",
+    "    909bc46b64721838",
+    "    5a75126ce54edb04",
+    "  feat/list",
+    "    84af73d3e9e42cb1",
   ])
 })
 
 test("keeps several projects apart", () => {
   expect(
     shape([entry({ instanceId: 1 }), entry({ instanceId: 2, project: "fx", branch: "integration" })]),
-  ).toEqual(["fmx", "│ main", "│ ╎ 909bc46b64721838", "fx", "│ integration", "│ ╎ 909bc46b64721838"])
+  ).toEqual(["fmx", "  main", "    909bc46b64721838", "fx", "  integration", "    909bc46b64721838"])
 })
 
 test("drops the branch rung outside a repository", () => {
-  expect(shape([entry({ branch: null })])).toEqual(["fmx", "│ 909bc46b64721838"])
+  expect(shape([entry({ branch: null })])).toEqual(["fmx", "  909bc46b64721838"])
 })
 
 test("marks the active agent and every ancestor of it", () => {
@@ -76,8 +76,8 @@ test("preserves the order instances were created in", () => {
   expect(rows.filter((row) => row.kind === "agent").map((row) => row.label)).toEqual(["aaa", "bbb"])
 })
 
-test("rails carry a solid project rung and dashed branch rungs", () => {
-  expect(railsFor(0)).toBe("")
-  expect(railsFor(1)).toBe("│ ")
-  expect(railsFor(2)).toBe("│ ╎ ")
+test("indents two columns per level, with nothing that can render wide", () => {
+  expect(indentFor(0)).toBe("")
+  expect(indentFor(1)).toBe("  ")
+  expect(indentFor(2)).toBe("    ")
 })

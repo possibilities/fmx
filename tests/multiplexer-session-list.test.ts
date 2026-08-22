@@ -38,7 +38,7 @@ test("varies the blocked icon by what fx is waiting for", () => {
 
 test("fits an agent row inside the default sidebar", () => {
   const [, , agent] = buildTree([entry()])
-  // inset 1 + rails 4 + icon 2 + id 16 = 23 of 26.
+  // inset 1 + indent 4 + icon 2 + id 16 = 23 of 26.
   expect(rowText(agent!, 26)).toBe(SESSION_ID)
 })
 
@@ -77,11 +77,11 @@ test("draws the tree and reports clicks on agent rows", async () => {
 
     const frame = setup.captureCharFrame().split("\n")
     expect(frame[0]).toStartWith(" fmx")
-    expect(frame[1]).toStartWith(" │ main")
-    expect(frame[2]).toStartWith(` │ ╎ ? ${SESSION_ID}`)
-    expect(frame[3]).toStartWith(" │ ╎ ◐ 5a75126ce54edb04")
-    expect(frame[4]).toStartWith(" │ feat/list")
-    expect(frame[5]).toStartWith(" │ ╎ ✓ 84af73d3e9e42cb1")
+    expect(frame[1]).toStartWith("   main")
+    expect(frame[2]).toStartWith(`     ? ${SESSION_ID}`)
+    expect(frame[3]).toStartWith("     ◐ 5a75126ce54edb04")
+    expect(frame[4]).toStartWith("   feat/list")
+    expect(frame[5]).toStartWith("     ✓ 84af73d3e9e42cb1")
 
     const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-3") as BoxRenderable
     await setup.mockMouse.click(row.x + 6, row.y)
@@ -128,7 +128,7 @@ test("fills the active row and nothing else", async () => {
   }
 })
 
-test("the rails keep every row's text aligned", async () => {
+test("the indent keeps every row's text aligned", async () => {
   const { setup, list } = await createList(30, 10)
   try {
     list.render(
@@ -141,7 +141,7 @@ test("the rails keep every row's text aligned", async () => {
     )
     await setup.renderOnce()
 
-    // A wide-rendered rail or icon would shift that row's id alone.
+    // A wide-rendered icon would shift that row's id alone.
     for (const line of setup.captureCharFrame().split("\n").slice(2, 7)) {
       expect(line.slice(7, 23)).toBe(SESSION_ID)
     }

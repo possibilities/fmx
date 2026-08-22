@@ -84,14 +84,12 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
 }
 
 /**
- * The rails standing to the left of a row. A solid rail carries the project's
- * children, a dashed one a branch's, so depth reads by texture as well as
- * indentation — and the dashed glyph is one of the few tree characters that is
- * not East-Asian-ambiguous.
+ * The blank space standing to the left of a row. Depth is carried by
+ * indentation alone — no connecting glyphs — which costs the same columns as
+ * rails did and leaves nothing that can render double-width.
  */
-export function railsFor(depth: number): string {
-  if (depth <= 0) return ""
-  return depth === 1 ? "│ " : `│ ${"╎ ".repeat(depth - 1)}`
+export function indentFor(depth: number): string {
+  return "  ".repeat(Math.max(0, depth))
 }
 
 function groupBy<T, K>(items: T[], key: (item: T) => K): Map<K, T[]> {

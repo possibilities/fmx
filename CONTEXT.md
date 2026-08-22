@@ -29,19 +29,14 @@ _Avoid_: log pane, console, inspector.
 
 **Session list** — the sidebar's tree of running instances: project, then
 branch, then one row per agent carrying its status icon and short session id.
+Depth is carried by indentation alone, with no connecting glyphs.
 Clicking an agent row switches to that instance; project and branch rows are
 not selectable.
 _Avoid_: agent panel, tab bar, session picker.
 
-**Rails** — the guide characters standing left of a row. A solid `│` carries a
-project's children and a dashed `╎` a branch's, so depth reads by texture as
-well as indentation. Rails on the path to the active agent are drawn in the
-foreground; every other rail stays dim.
-_Avoid_: tree lines, connectors, indent guides.
-
-**Path** — the active agent and its ancestors. Only the active row takes a
-background fill; its ancestors are marked by bright rails alone, so two faint
-backgrounds never have to be told apart.
+**Path** — the active agent and its ancestors. The active row takes a
+background fill and its ancestors are set in bold; nothing else marks them, so
+two faint backgrounds never have to be told apart.
 _Avoid_: selection, breadcrumb.
 
 **Git context** — the worktree root and branch fmx reads for an instance's

@@ -1,4 +1,5 @@
 import {
+  bold,
   BoxRenderable,
   type CliRenderer,
   fg,
@@ -9,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
 import { detectedTerminalColor, mixHexColors } from "./host-palette.ts"
-import { railsFor, type TreeRow } from "./session-tree.ts"
+import { indentFor, type TreeRow } from "./session-tree.ts"
 
 /** How far the active row's background sits from the terminal's own. */
 const ACTIVE_ROW_BLEND = 0.12
@@ -26,7 +27,6 @@ const FALLBACK_COLORS = {
   idle: "#4ade80",
   unknown: "#6b7280",
   session: "#9aa5b1",
-  rail: "#4c566a",
   activeBackground: "#2a2f3a",
 }
 
@@ -73,7 +73,7 @@ export function truncate(value: string, width: number): string {
 
 /** What a row's text is, once its rails and icon have taken their columns. */
 export function rowText(row: TreeRow, width: number): string {
-  const available = width - ROW_PADDING_LEFT - railsFor(row.depth).length
+  const available = width - ROW_PADDING_LEFT - indentFor(row.depth).length
   if (row.kind !== "agent") return truncate(row.label, available)
   return truncate(row.label || MISSING_SESSION, available - ICON_COLUMN)
 }
@@ -149,15 +149,16 @@ export class SessionList {
   }
 
   private styleRow(row: TreeRow, width: number): StyledText {
-    const rails = railsFor(row.depth)
-    const chunks: TextChunk[] = []
-    if (rails) chunks.push(fg(row.onPath ? this.colors.foreground : this.colors.rail)(rails))
+    const chunks: TextChunk[] = [fg(this.colors.foreground)(indentFor(row.depth))]
     if (row.kind === "agent") {
       chunks.push(fg(this.colors[row.state])(`${stateIcon(row.state, row.attention)} `))
       chunks.push(fg(this.colors.session)(rowText(row, width)))
-    } else {
-      chunks.push(fg(this.colors.foreground)(rowText(row, width)))
+      return new StyledText(chunks)
     }
+    // With no rails to brighten, an ancestor of the active agent is marked by
+    // weight instead: the path still reads without costing a column.
+    const label = fg(this.colors.foreground)(rowText(row, width))
+    chunks.push(row.onPath ? bold(label) : label)
     return new StyledText(chunks)
   }
 }
@@ -173,7 +174,6 @@ function listColors(colors: TerminalColors | null): ListColors {
     idle: ansi(colors, 2, 10) ?? FALLBACK_COLORS.idle,
     unknown: ansi(colors, 8, 7) ?? FALLBACK_COLORS.unknown,
     session: ansi(colors, 8, 7) ?? FALLBACK_COLORS.session,
-    rail: ansi(colors, 8, 7) ?? FALLBACK_COLORS.rail,
     activeBackground:
       background && foreground
         ? mixHexColors(background, foreground, ACTIVE_ROW_BLEND)
