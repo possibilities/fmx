@@ -31,12 +31,14 @@ export type TreeRow = {
   active: boolean
   /** The active agent and every ancestor of it: the path through the tree. */
   onPath: boolean
+  /** True only for a synthetic grouping row rather than repository data. */
+  virtual: boolean
 }
 
 /**
  * Group entries into rows, preserving the order instances were created in.
- * A branch level only appears when git gave us one, so an instance outside a
- * repository nests directly under its project rather than under an empty rung.
+ * Instances outside a repository keep the same project → branch → agent shape
+ * through a virtual `(untracked)` branch.
  */
 export function buildTree(entries: SessionEntry[]): TreeRow[] {
   const rows: TreeRow[] = []
@@ -52,32 +54,32 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
       attention: null,
       active: false,
       onPath: active?.project === project,
+      virtual: false,
     })
 
-    for (const [branch, branchEntries] of groupBy(projectEntries, (entry) => entry.branch ?? "")) {
-      const depth = branch ? 2 : 1
-      if (branch) {
-        rows.push({
-          kind: "branch",
-          depth: 1,
-          label: branch,
-          instanceId: null,
-          state: "unknown",
-          attention: null,
-          active: false,
-          onPath: active?.project === project && active.branch === branch,
-        })
-      }
+    for (const [branch, branchEntries] of groupBy(projectEntries, (entry) => entry.branch)) {
+      rows.push({
+        kind: "branch",
+        depth: 1,
+        label: branch ?? "(untracked)",
+        instanceId: null,
+        state: "unknown",
+        attention: null,
+        active: false,
+        onPath: active?.project === project && active.branch === branch,
+        virtual: branch === null,
+      })
       for (const entry of branchEntries) {
         rows.push({
           kind: "agent",
-          depth,
+          depth: 2,
           label: entry.slug ?? entry.sessionId ?? "",
           instanceId: entry.instanceId,
           state: entry.state,
           attention: entry.attention,
           active: entry.active,
           onPath: entry.active,
+          virtual: false,
         })
       }
     }

@@ -3,6 +3,7 @@ import {
   BoxRenderable,
   type CliRenderer,
   fg,
+  italic,
   StyledText,
   type TerminalColors,
   type TextChunk,
@@ -14,6 +15,8 @@ import { indentFor, type TreeRow } from "./session-tree.ts"
 
 /** How far the active row's background sits from the terminal's own. */
 const ACTIVE_ROW_BLEND = 0.12
+/** Pull synthetic labels slightly toward a dark background so they read light gray. */
+const VIRTUAL_LABEL_BACKGROUND_BLEND = 0.22
 /** Inset the text; the row's shading still spans the full sidebar width. */
 const ROW_PADDING_LEFT = 1
 const ICON_COLUMN = 2
@@ -27,6 +30,7 @@ const FALLBACK_COLORS = {
   idle: "#4ade80",
   unknown: "#6b7280",
   session: "#9aa5b1",
+  virtual: "#b0b6c2",
   activeBackground: "#2a2f3a",
 }
 
@@ -164,9 +168,10 @@ export class SessionList {
       return new StyledText(chunks)
     }
     // With no rails to brighten, an ancestor of the active agent is marked by
-    // weight instead: the path still reads without costing a column.
-    const label = fg(this.colors.foreground)(rowText(row, width))
-    chunks.push(row.onPath ? bold(label) : label)
+    // weight instead: the path still reads without costing a column. Virtual
+    // branches stay light gray, italic, and unbolded even on that path.
+    const label = fg(row.virtual ? this.colors.virtual : this.colors.foreground)(rowText(row, width))
+    chunks.push(row.virtual ? italic(label) : row.onPath ? bold(label) : label)
     return new StyledText(chunks)
   }
 }
@@ -182,11 +187,25 @@ function listColors(colors: TerminalColors | null): ListColors {
     idle: ansi(colors, 2, 10) ?? FALLBACK_COLORS.idle,
     unknown: ansi(colors, 8, 7) ?? FALLBACK_COLORS.unknown,
     session: ansi(colors, 8, 7) ?? FALLBACK_COLORS.session,
+    virtual:
+      background && colorBrightness(background) < colorBrightness(foreground)
+        ? mixHexColors(foreground, background, VIRTUAL_LABEL_BACKGROUND_BLEND)
+        : background
+          ? foreground
+          : FALLBACK_COLORS.virtual,
     activeBackground:
       background && foreground
         ? mixHexColors(background, foreground, ACTIVE_ROW_BLEND)
         : FALLBACK_COLORS.activeBackground,
   }
+}
+
+/** Weighted channel brightness is enough to tell a dark palette from a light one. */
+function colorBrightness(color: string): number {
+  const red = parseInt(color.slice(1, 3), 16)
+  const green = parseInt(color.slice(3, 5), 16)
+  const blue = parseInt(color.slice(5, 7), 16)
+  return red * 0.299 + green * 0.587 + blue * 0.114
 }
 
 /** Prefer the normal ANSI slot, fall back to its bright twin. */

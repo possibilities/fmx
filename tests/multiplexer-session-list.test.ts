@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
+import { BoxRenderable, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
@@ -89,6 +89,28 @@ test("draws the tree and reports clicks on agent rows", async () => {
     const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-3") as BoxRenderable
     await setup.mockMouse.click(row.x + 6, row.y)
     expect(selected).toEqual([3])
+  } finally {
+    list.root.destroy()
+    setup.renderer.destroy()
+  }
+})
+
+test("draws an untracked branch between a plain directory and its agent", async () => {
+  const { setup, list } = await createList(30, 10)
+  try {
+    list.render(buildTree([entry({ project: "arthack", branch: null, active: true })]), 26)
+    await setup.renderOnce()
+
+    const frame = setup.captureCharFrame().split("\n")
+    expect(frame[0]).toStartWith(" arthack")
+    expect(frame[1]).toStartWith("   (untracked)")
+    expect(frame[2]).toStartWith(`     ○ ${SESSION_ID}`)
+
+    const label = setup.renderer.root.findDescendantById("fmx-session-row-text-branch-1") as TextRenderable
+    const untracked = label.chunks.find((chunk) => chunk.text === "(untracked)")!
+    expect(untracked.attributes! & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
+    expect(untracked.attributes! & TextAttributes.BOLD).toBe(0)
+    expect(untracked.fg?.toInts().slice(0, 3)).toEqual([176, 182, 194])
   } finally {
     list.root.destroy()
     setup.renderer.destroy()

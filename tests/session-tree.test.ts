@@ -42,8 +42,8 @@ test("keeps several projects apart", () => {
   ).toEqual(["fmx", "  main", "    909bc46b64721838", "fx", "  integration", "    909bc46b64721838"])
 })
 
-test("drops the branch rung outside a repository", () => {
-  expect(shape([entry({ branch: null })])).toEqual(["fmx", "  909bc46b64721838"])
+test("nests agents outside a repository under an untracked branch", () => {
+  expect(shape([entry({ branch: null })])).toEqual(["fmx", "  (untracked)", "    909bc46b64721838"])
 })
 
 test("marks the active agent and every ancestor of it", () => {
@@ -57,6 +57,15 @@ test("marks the active agent and every ancestor of it", () => {
     ["agent", false],
     ["branch", true],
     ["agent", true],
+  ])
+})
+
+test("marks the untracked branch as part of the active path", () => {
+  const rows = buildTree([entry({ branch: null, active: true })])
+  expect(rows.map((row) => [row.label, row.onPath])).toEqual([
+    ["fmx", true],
+    ["(untracked)", true],
+    ["909bc46b64721838", true],
   ])
 })
 

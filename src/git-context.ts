@@ -72,8 +72,8 @@ async function runGit(cwd: string, args: string[]): Promise<string[] | null> {
       clearTimeout(timeout)
     }
   } catch {
-    // No git, not a repository, or the directory went away. The list falls
-    // back to nesting agents directly under their project.
+    // No git, not a repository, or the directory went away. The session list
+    // presents the missing branch as its virtual `(untracked)` rung.
     return null
   }
 }
