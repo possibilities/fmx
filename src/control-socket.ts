@@ -26,7 +26,7 @@ type Connection = {
 }
 
 /**
- * The Unix socket `fmx <command>` talks to. Separate from the agent socket on
+ * The Unix socket `fmx control <command>` talks to. Separate from the agent socket on
  * purpose: that one speaks fx's protocol and answers before it acts, which
  * is right for a reporter and wrong for a command that needs a result.
  *

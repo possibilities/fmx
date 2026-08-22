@@ -79,7 +79,7 @@
   nothing but the `LineAssembler`. Keep `FMX_SOCKET_PATH` beside
   `FMX_INSTANCE_ID` in `src/fx-environment.ts`: the client reads both, and
   `current` as a target is meaningless without the id.
-- Every `fmx <command>` goes through `Multiplexer.handleControl`, and every
+- Every `fmx control <command>` goes through `Multiplexer.handleControl`, and every
   write there takes the path the keys take (`showLaunchDialog`, `switchTo`,
   `applySidebarWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
   command that does something a hand cannot; add the key first.

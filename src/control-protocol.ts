@@ -1,7 +1,7 @@
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
 
 /**
- * The control socket's wire: what `fmx <command>` sends and what the running
+ * The control socket's wire: what `fmx control <command>` sends and what the running
  * fmx answers. Pure — no I/O, no renderer, no process state — so the client
  * and the server encode and decode through the same functions.
  *

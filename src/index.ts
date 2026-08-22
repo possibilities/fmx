@@ -25,7 +25,7 @@ async function main(): Promise<void> {
   }
 
   if (options.help) {
-    process.stdout.write(usage(options.command?.name ?? null))
+    process.stdout.write(usage(options.command ? "control" : null))
     return
   }
   if (options.version) {

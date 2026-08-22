@@ -139,7 +139,7 @@ type MultiplexerOptions = {
   onProjectLaunch?: (launches: Record<string, number>) => void
   /** How instances earn a name from their first prompt. */
   slug?: SlugSettings
-  /** Where `fmx <command>` reaches this fmx; handed to every instance. */
+  /** Where `fmx control <command>` reaches this fmx; handed to every instance. */
   controlSocketPath?: string
 }
 
@@ -435,7 +435,7 @@ export class Multiplexer {
   private submittedDraft: Draft | null = null
   private nextDraftId = 1
   private readonly instanceWaiters = new Set<InstanceWaiter>()
-  /** What `fmx <command>` drives. */
+  /** What `fmx control <command>` drives. */
   readonly control: ControlSurface = {
     handle: (method, params, signal) => this.handleControl(method, params, signal),
   }
@@ -1313,7 +1313,7 @@ export class Multiplexer {
   /* ------------------------------------------------------------ control */
 
   /**
-   * One method per `fmx <command>`. Reads answer from what the screen already
+   * One method per `fmx control <command>`. Reads answer from what the screen already
    * knows; writes go through the same paths the keys and mouse take, so an
    * agent can do nothing a hand could not.
    */
@@ -1671,11 +1671,11 @@ export class Multiplexer {
 
   private keysInfo(): KeysInfo {
     const commands: Record<string, string> = {
-      help: "fmx keys --show",
-      new_tab: "fmx launch",
-      launch: "fmx launch --editable",
-      previous_tab: "fmx focus previous",
-      next_tab: "fmx focus next",
+      help: "fmx control keys --show",
+      new_tab: "fmx control launch",
+      launch: "fmx control launch --editable",
+      previous_tab: "fmx control focus previous",
+      next_tab: "fmx control focus next",
     }
     const bindings: KeysInfo["bindings"] = {}
     for (const action of ["help", "new_tab", "launch", "previous_tab", "next_tab"] as const) {

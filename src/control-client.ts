@@ -13,7 +13,7 @@ import {
 import { LineAssembler } from "./socket-frames.ts"
 
 /**
- * The client side of the control socket: `fmx <command>` resolved to one or
+ * The client side of the control socket: `fmx control <command>` resolved to one or
  * two requests, sent to the fmx the caller is running inside, and answered
  * as one JSON object on stdout.
  *

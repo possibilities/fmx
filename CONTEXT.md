@@ -136,14 +136,14 @@ wait runs long, and the next thing fx reports arms another. A conversation
 nobody has started has no name, which is an answer and not a failure.
 _Avoid_: job, task, naming run.
 
-**Control socket** — the Unix socket `fmx <command>` drives a running fmx
+**Control socket** — the Unix socket `fmx control <command>` drives a running fmx
 through, bound beside the agent socket as `/tmp/fmx-<pid>.ctl` and handed to
 every instance as `FMX_SOCKET_PATH`. Its own wire, not the agent socket's: that
 one speaks fx's protocol and answers before it acts, where a command needs its
 result. One request per connection; a waiting method holds the connection.
 _Avoid_: command socket, API socket, RPC.
 
-**Orientation** — what `fmx orient` answers: the caller's own instance as
+**Orientation** — what `fmx control orient` answers: the caller's own instance as
 `you`, every instance, the sidebar's rows as drawn, and whatever surface is
 open. A read, which never marks anything seen.
 _Avoid_: status, state dump, introspection.

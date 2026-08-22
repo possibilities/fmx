@@ -87,24 +87,24 @@ configured effort.
 ## Agents
 
 Every key and click has a command, so an agent running inside fmx can do what
-a hand can — and read what a hand can see. `fmx <command>` talks to the fmx it
-is running in (over `FMX_SOCKET_PATH`, which every instance is started with)
+a hand can — and read what a hand can see. `fmx control <command>` talks to
+the fmx it is running in (over `FMX_SOCKET_PATH`, which every instance is started with)
 and prints one JSON object; from outside, `--socket PATH` names one, or the
 only fmx running is used. Exit status: `0` ok, `1` refused, `2` usage, `3` no
 fmx reachable, `4` timed out.
 
 ```sh
-fmx orient                      # where you are and what the interface shows
-fmx launch "write the tests"    # start an agent here, in the background
-fmx launch --project ~/code/x --worktree --focus
-fmx launch --editable --project ~/code/x --worktree   # open the dialog, prefilled
-fmx draft show|set|submit|cancel|wait [id]
-fmx focus next|previous|3|<slug>
-fmx instance list
-fmx instance wait 3 --state done,blocked --timeout 600000
-fmx instance send 3 "now run them"
-fmx sidebar --width 30
-fmx keys                        # every binding and the command it stands for
+fmx control orient                      # where you are and what the interface shows
+fmx control launch "write the tests"    # start an agent here, in the background
+fmx control launch --project ~/code/x --worktree --focus
+fmx control launch --editable --project ~/code/x --worktree   # open the dialog, prefilled
+fmx control draft show|set|submit|cancel|wait [id]
+fmx control focus next|previous|3|<slug>
+fmx control instance list
+fmx control instance wait 3 --state done,blocked --timeout 600000
+fmx control instance send 3 "now run them"
+fmx control sidebar --width 30
+fmx control keys                        # every binding and the command it stands for
 ```
 
 `orient` answers with `you` — the caller's own instance: directory, project,

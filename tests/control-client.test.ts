@@ -88,12 +88,12 @@ test("resolves prompt text from a file or stdin before sending", async () => {
   const { socket, calls } = await server(async () => ({ instance: { id: 2 } }), "text")
   try {
     await runCommand(
-      parseArgs(["launch", "--prompt-file", "brief.md", "--project", "proj"]).command!,
+      parseArgs(["control", "launch", "--prompt-file", "brief.md", "--project", "proj"]).command!,
       socket.path,
       environment({ cwd: directory }),
     )
     await runCommand(
-      parseArgs(["instance", "send", "2", "-"]).command!,
+      parseArgs(["control", "instance", "send", "2", "-"]).command!,
       socket.path,
       environment({ readStdin: async () => "from stdin" }),
     )
@@ -117,7 +117,7 @@ test("an editable launch that waits opens the draft, then waits on the id it was
   )
   try {
     const outcome = await runCommand(
-      parseArgs(["launch", "--editable", "--wait", "--timeout", "900", "--worktree"]).command!,
+      parseArgs(["control", "launch", "--editable", "--wait", "--timeout", "900", "--worktree"]).command!,
       socket.path,
       environment(),
     )
@@ -160,19 +160,22 @@ test("the fmx binary itself is the client: JSON out, exit status in", async () =
       stderr: "pipe",
     })
   try {
-    const orient = cli("orient")
+    const orient = cli("control", "orient")
     expect(await orient.exited).toBe(EXIT_OK)
     expect(JSON.parse(await new Response(orient.stdout).text())).toEqual({ you: null })
 
-    const focus = cli("focus", "9")
+    const focus = cli("control", "focus", "9")
     expect(await focus.exited).toBe(EXIT_REFUSED)
     expect(JSON.parse(await new Response(focus.stderr).text())).toEqual({
       error: { code: "not_found", message: "no instance 9" },
     })
 
-    const usage = cli("draft")
+    const usage = cli("control", "draft")
     expect(await usage.exited).toBe(EXIT_USAGE)
-    expect(await new Response(usage.stderr).text()).toContain("Usage: fmx draft")
+    expect(await new Response(usage.stderr).text()).toContain("Usage: fmx control draft")
+    const group = cli("control")
+    expect(await group.exited).toBe(EXIT_USAGE)
+    expect(await new Response(group.stderr).text()).toContain("Usage: fmx control <command>")
   } finally {
     socket.close()
   }

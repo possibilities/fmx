@@ -45,6 +45,9 @@ export type CliOptions = {
   socket: string | null
 }
 
+/** Every control command lives under `fmx control`, leaving the top level
+ * free for concerns that are not about driving a running fmx. */
+const CONTROL_GROUP = "control"
 const COMMAND_NAMES = ["orient", "instance", "launch", "draft", "focus", "sidebar", "keys"] as const
 const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
 const INSTANCE_VERBS = ["list", "wait", "send"] as const
@@ -103,11 +106,15 @@ export function parseArgs(args: string[]): CliOptions {
   }
 
   if (rest.length === 0) return options
-  const name = rest[0]!
-  if (!isCommandName(name)) {
-    throw new UsageError(`unknown command: ${name}\nCommands: ${COMMAND_NAMES.join(", ")}. Pass fx arguments after --.`)
+  if (rest[0] !== CONTROL_GROUP) {
+    throw new UsageError(`unknown command: ${rest[0]}\nCommands: ${CONTROL_GROUP}. Pass fx arguments after --.`)
   }
-  options.command = parseCommand(name, rest.slice(1), options.initialFxArgs)
+  const name = rest[1]
+  if (name === undefined) throw new UsageError("control needs a command", CONTROL_GROUP)
+  if (!isCommandName(name)) {
+    throw new UsageError(`unknown control command: ${name}\nCommands: ${COMMAND_NAMES.join(", ")}.`, CONTROL_GROUP)
+  }
+  options.command = parseCommand(name, rest.slice(2), options.initialFxArgs)
   if (name !== "launch") options.initialFxArgs = []
   return options
 }
@@ -336,6 +343,8 @@ function isCommandName(value: string): value is (typeof COMMAND_NAMES)[number] {
 
 export function usage(topic: string | null = null): string {
   switch (topic) {
+    case "control":
+      return CONTROL_USAGE
     case "launch":
       return LAUNCH_USAGE
     case "draft":
@@ -343,23 +352,34 @@ export function usage(topic: string | null = null): string {
     case "instance":
       return INSTANCE_USAGE
     case "focus":
-      return "Usage: fmx focus <target>\n\n  target: instance id, slug, session-id prefix, next, previous, current\n"
+      return "Usage: fmx control focus <target>\n\n  target: instance id, slug, session-id prefix, next, previous, current\n"
     case "sidebar":
-      return "Usage: fmx sidebar [--width N]\n"
+      return "Usage: fmx control sidebar [--width N]\n"
     case "keys":
-      return "Usage: fmx keys [--show]\n\n  --show  open the keys modal in the running fmx as well\n"
+      return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running fmx as well\n"
   }
   return `fmx ${VERSION} — run multiple fx sessions in one terminal
 
 Usage:
   fmx [options] [-- <fx arguments>]      start fmx
-  fmx <command> [args]                   drive a running fmx from inside it
+  fmx control <command> [args]           drive a running fmx from inside it
 
 Options:
   -h, --help     show this help
   -v, --version  show the version
 
-Commands (each prints one JSON object):
+Commands:
+  control        every key and click as a command, for agents; see fmx control
+
+Configuration:
+  ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)
+`
+}
+
+const CONTROL_USAGE = `Usage: fmx control <command> [args]
+
+Each command prints one JSON object.
+
   orient                       where you are and what the interface shows
   launch [prompt] [flags]      start an agent; --editable opens the dialog instead
   draft show|set|submit|cancel|wait [id]
@@ -370,16 +390,12 @@ Commands (each prints one JSON object):
   keys [--show]                the keybindings and their command equivalents
 
   --socket PATH                talk to a specific fmx (default: FMX_SOCKET_PATH)
-  fmx <command> with no args prints that command's usage.
+  fmx control <command> with no arguments prints that command's usage.
 
 Exit status: 0 ok · 1 refused · 2 usage · 3 no fmx reachable · 4 timed out
-
-Configuration:
-  ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)
 `
-}
 
-const LAUNCH_USAGE = `Usage: fmx launch [prompt] [flags] [-- <fx arguments>]
+const LAUNCH_USAGE = `Usage: fmx control launch [prompt] [flags] [-- <fx arguments>]
 
   --project DIR        directory to start in (default: your own)
   --worktree           cut a fresh worktree of the project first
@@ -392,7 +408,7 @@ const LAUNCH_USAGE = `Usage: fmx launch [prompt] [flags] [-- <fx arguments>]
   --timeout MS         with --wait, give up after MS (exit 4)
 `
 
-const DRAFT_USAGE = `Usage: fmx draft <verb> [id] [flags]
+const DRAFT_USAGE = `Usage: fmx control draft <verb> [id] [flags]
 
   show [id]            fields and status (default: the open draft)
   set <id> [flags]     change fields: --prompt, --prompt-file, --project,
@@ -403,7 +419,7 @@ const DRAFT_USAGE = `Usage: fmx draft <verb> [id] [flags]
                        block until a human or agent resolves it
 `
 
-const INSTANCE_USAGE = `Usage: fmx instance <verb> [args]
+const INSTANCE_USAGE = `Usage: fmx control instance <verb> [args]
 
   list                             every instance, as the sidebar knows it
   wait [target] [--state S,...] [--timeout MS]

@@ -357,11 +357,11 @@ test("lists the keys with their command equivalents, and resizes the sidebar", a
     expect(await h.control("keys")).toEqual({
       prefix: "ctrl+b",
       bindings: {
-        help: { keys: ["prefix+?"], command: "fmx keys --show" },
-        new_tab: { keys: ["prefix+c"], command: "fmx launch" },
-        launch: { keys: ["prefix+l"], command: "fmx launch --editable" },
-        previous_tab: { keys: ["prefix+p"], command: "fmx focus previous" },
-        next_tab: { keys: ["prefix+n"], command: "fmx focus next" },
+        help: { keys: ["prefix+?"], command: "fmx control keys --show" },
+        new_tab: { keys: ["prefix+c"], command: "fmx control launch" },
+        launch: { keys: ["prefix+l"], command: "fmx control launch --editable" },
+        previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
+        next_tab: { keys: ["prefix+n"], command: "fmx control focus next" },
       },
     })
     await h.launch()
