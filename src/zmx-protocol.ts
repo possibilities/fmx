@@ -94,6 +94,15 @@ export const ExitReason = {
 export type ExitReason = number
 
 export function encodeExit(status: Exit): Uint8Array {
+  // Each field is a byte on the wire; silently truncating would encode a
+  // different exit than the caller described.
+  for (const [name, value] of [
+    ["code", status.code],
+    ["signal", status.signal],
+    ["reason", status.reason],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 0 || value > 255) throw new ProtocolError(`Exit ${name} must be a byte, got ${value}`)
+  }
   const out = new Uint8Array(EXIT_LEN)
   out[0] = status.code
   out[1] = status.signal

@@ -9,6 +9,7 @@ type KeysConfig = {
   launch: BindingConfig
   previous_tab: BindingConfig
   next_tab: BindingConfig
+  toggle_sidebar: BindingConfig
 }
 
 const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
@@ -18,6 +19,7 @@ const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   launch: "prefix+l",
   previous_tab: "prefix+p",
   next_tab: "prefix+n",
+  toggle_sidebar: "prefix+b",
 }
 
 const KEY_CONFIG_FIELDS = [
@@ -27,6 +29,7 @@ const KEY_CONFIG_FIELDS = [
   "launch",
   "previous_tab",
   "next_tab",
+  "toggle_sidebar",
 ] as const
 
 type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
@@ -58,6 +61,7 @@ export type Keybindings = {
   launch: ResolvedBinding[]
   previous_tab: ResolvedBinding[]
   next_tab: ResolvedBinding[]
+  toggle_sidebar: ResolvedBinding[]
 }
 
 export type KeyAction = { name: KeyActionName }
@@ -169,6 +173,7 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
     launch: [],
     previous_tab: [],
     next_tab: [],
+    toggle_sidebar: [],
   }
 
   const registry = new Map<string, RegisteredBinding>()

@@ -13,6 +13,7 @@ import {
   encodeResize,
   encodeWelcome,
   EXIT_LEN,
+  ExitReason,
   FrameReader,
   HEADER_LEN,
   MAX_CLIENT_NAME_LEN,
@@ -77,6 +78,11 @@ describe("golden wire bytes match the pinned Companion fork", () => {
       expect(decodeExit(hex(c.hex))).toEqual({ code: c.code, signal: c.signal, reason: c.reason })
     }
     expect(EXIT_LEN).toBe(fixture.exitLen)
+    // Pinned against the wire, not against itself: renumbering a reason on
+    // the Companion side has to fail here.
+    expect<Record<string, number>>(ExitReason).toEqual(fixture.exitReasons)
+    expect(() => encodeExit({ code: 256, signal: 0, reason: 0 })).toThrow(ProtocolError)
+    expect(() => encodeExit({ code: 0, signal: -1, reason: 0 })).toThrow(ProtocolError)
     // A reason this client does not know decodes as its integer.
     expect(decodeExit(hex("0000c80000000000")).reason).toBe(200)
     expect(() => decodeExit(hex("000000"))).toThrow(ProtocolError)

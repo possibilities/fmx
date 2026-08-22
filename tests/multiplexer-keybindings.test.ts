@@ -41,14 +41,15 @@ test("uses the configured prefix and renders configured bindings", async () => {
     expect(helpModal.visible).toBe(true)
     const frame = setup.captureCharFrame()
     for (const line of [
-      "┌─ keys ─────────────────────┐",
-      "│  ctrl+space  prefix mode   │",
-      "│  prefix+?    keybinds      │",
-      "│  prefix+c    new agent     │",
-      "│  prefix+l    launch agent  │",
-      "│  prefix+p    prev agent    │",
-      "│  prefix+n    next agent    │",
-      "└────────────────────────────┘",
+      "┌─ keys ───────────────────────┐",
+      "│  ctrl+space  prefix mode     │",
+      "│  prefix+?    keybinds        │",
+      "│  prefix+c    new agent       │",
+      "│  prefix+l    launch agent    │",
+      "│  prefix+p    prev agent      │",
+      "│  prefix+n    next agent      │",
+      "│  prefix+b    toggle sidebar  │",
+      "└──────────────────────────────┘",
     ]) {
       expect(frame).toContain(line)
     }

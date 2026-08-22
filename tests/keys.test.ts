@@ -29,6 +29,8 @@ describe("keybindings", () => {
     expect(keybindings.prefixLabel).toBe("ctrl+b")
     expect(keybindings.new_tab.map((binding) => binding.label)).toEqual(["prefix+c"])
     expect(keybindings.launch.map((binding) => binding.label)).toEqual(["prefix+l"])
+    expect(keybindings.toggle_sidebar.map((binding) => binding.label)).toEqual(["prefix+b"])
+    expect(actionForKey(keybindings, key({ name: "b" }), "prefix")).toEqual({ name: "toggle_sidebar" })
   })
 
   test("resolves the launch action from its own binding", () => {

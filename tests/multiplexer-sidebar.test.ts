@@ -134,6 +134,68 @@ test("lays out sidebar, divider line, and content row", async () => {
   }
 })
 
+test("toggles the sidebar with prefix+b and keeps it hidden across a new agent", async () => {
+  const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
+  try {
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(true)
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(false)
+    expect(divider.visible).toBe(false)
+    expect([content.x, content.width]).toEqual([0, 90])
+
+    // A second instance does not bring the sidebar back on its own.
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("c")
+    await setup.renderOnce()
+    expect(setup.renderer.root.findDescendantById("fx-2")).toBeDefined()
+    expect(sidebar.visible).toBe(false)
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(true)
+    expect(divider.visible).toBe(true)
+    expect([sidebar.width, content.x, content.width]).toEqual([26, 27, 63])
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("restores a persisted hidden sidebar and reports each toggle", async () => {
+  const hiddenChanges: boolean[] = []
+  const setup = await createTestRenderer({ width: 90, height: 24 })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: process.execPath,
+    cwd: process.cwd(),
+    initialFxArgs: [FAKE_FX],
+    keybindings: resolveKeybindings().keybindings,
+    initialSidebarHidden: true,
+    onSidebarHiddenChange: (hidden) => hiddenChanges.push(hidden),
+  })
+  multiplexer.start()
+  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  try {
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(false)
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(true)
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(false)
+    expect(hiddenChanges).toEqual([false, true])
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("resizes the sidebar by dragging the divider, clamped to 16..width/3", async () => {
   const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
   try {
