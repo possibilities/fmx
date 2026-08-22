@@ -3,7 +3,9 @@ import {
   buildInstruction,
   centerTruncate,
   excerptFrom,
+  expandFileMentions,
   slugFromAnswer,
+  EXCERPT_BUDGET,
   slugify,
   SLUG_MAX_LENGTH,
   stripSlashCommand,
@@ -77,10 +79,33 @@ describe("stripUnsafeText", () => {
   })
 })
 
+describe("expandFileMentions", () => {
+  const reader = (path: string) => (path === "notes/plan.md" ? "ship the naming work" : null)
+
+  test("reads a mentioned file in where it was named", () => {
+    expect(expandFileMentions("do @notes/plan.md today", reader)).toBe(
+      "do ship the naming work today",
+    )
+  })
+
+  test("leaves a mention it cannot read as it was typed", () => {
+    expect(expandFileMentions("do @notes/missing.md today", reader)).toBe(
+      "do @notes/missing.md today",
+    )
+    expect(expandFileMentions("mail me@example.com", reader)).toBe("mail me@example.com")
+  })
+})
+
 describe("excerptFrom and buildInstruction", () => {
   test("the instruction carries the stripped, bounded prompt", () => {
     const instruction = buildInstruction(excerptFrom("/collab name the tabs"))
     expect(instruction).toContain("<prompt>\nname the tabs\n</prompt>")
     expect(instruction).toContain("3-6 words")
+  })
+
+  test("strips the command, reads mentions in, then bounds the whole", () => {
+    const excerpt = excerptFrom("/collab --deep @plan.md", () => "a".repeat(EXCERPT_BUDGET * 2))
+    expect(excerpt.length).toBe(EXCERPT_BUDGET)
+    expect(excerpt).toContain("…")
   })
 })

@@ -46,9 +46,29 @@ export function centerTruncate(text: string, budget: number = EXCERPT_BUDGET): s
   return text.slice(0, head) + TRUNCATION_MARK + text.slice(text.length - (keep - head))
 }
 
-/** A recorded prompt as the completion sees it. */
-export function excerptFrom(prompt: string): string {
-  return centerTruncate(stripSlashCommand(prompt))
+/**
+ * Replace each @-prefixed path with what the file holds, so a prompt naming a
+ * file is named for what the file is about rather than for where it lives — a
+ * prompt that is little more than `@notes/plan.md do this` has no other subject
+ * matter in it. A mention the reader cannot resolve stays as it was typed.
+ */
+export function expandFileMentions(
+  text: string,
+  readMention: (path: string) => string | null,
+): string {
+  return text.replace(/(^|\s)@([A-Za-z0-9._~/-]+)/g, (whole, lead: string, path: string) => {
+    const content = readMention(path)
+    return content === null ? whole : `${lead}${content}`
+  })
+}
+
+/** A recorded prompt as the completion sees it: the command stripped, its
+ * mentions read in, and the whole bounded. */
+export function excerptFrom(
+  prompt: string,
+  readMention: (path: string) => string | null = () => null,
+): string {
+  return centerTruncate(expandFileMentions(stripSlashCommand(prompt), readMention))
 }
 
 /** What fmx asks for. Only the title text comes back, so the answer needs no

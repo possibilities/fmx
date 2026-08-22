@@ -15,6 +15,8 @@ const SESSION = "1787362101388-1787362101388156000-2897385323da2683"
  */
 const FAKE_FX = `#!/bin/sh
 printf '%s|%s\\n' "$FX_MODEL" "$PWD" >> "$FMX_TEST_RECORD"
+for argument in "$@"; do asked="$argument"; done
+printf '%s' "$asked" > "$FMX_TEST_ASKED"
 printf '{"output":"Name Every Instance","exit_code":0}\\n'
 `
 
@@ -23,17 +25,18 @@ type Harness = {
   env: NodeJS.ProcessEnv
   home: string
   recordPath: string
+  askedPath: string
   settingsPath: string
 }
 
-async function harness(): Promise<Harness> {
+async function harness(options: { prompted?: boolean } = {}): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), "fmx-namer-"))
   const home = join(root, "home")
   const sessionDirectory = join(home, ".fx", "sessions", SESSION)
   await mkdir(sessionDirectory, { recursive: true })
   await mkdir(join(root, "bin"), { recursive: true })
 
-  await writeFile(
+  if (options.prompted !== false) await writeFile(
     join(sessionDirectory, "events.jsonl"),
     `${JSON.stringify({
       kind: "recovery_checkpoint_set",
@@ -48,13 +51,21 @@ async function harness(): Promise<Harness> {
   await writeFile(fxPath, FAKE_FX, { encoding: "utf8", mode: 0o755 })
 
   const recordPath = join(root, "asked.log")
+  const askedPath = join(root, "instruction.txt")
   await writeFile(recordPath, "", "utf8")
   return {
     fxPath,
     home,
     recordPath,
+    askedPath,
     settingsPath,
-    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(root, "config"), FMX_TEST_RECORD: recordPath },
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_CONFIG_HOME: join(root, "config"),
+      FMX_TEST_RECORD: recordPath,
+      FMX_TEST_ASKED: askedPath,
+    },
   }
 }
 
@@ -147,6 +158,46 @@ test("naming that is turned off never reaches for fx", async () => {
     await Bun.sleep(50)
     expect(namer.slugFor(SESSION)).toBeNull()
     expect(await readFile(fixture.recordPath, "utf8")).toBe("")
+  } finally {
+    namer.stop()
+  }
+})
+
+test("a prompt fmx typed itself names the session without waiting for fx", async () => {
+  // No session log at all: fx has not written the prompt down yet, which is
+  // the state naming starts in for every instance launched with one.
+  const fixture = await harness({ prompted: false })
+  const namer = new SlugNamer({
+    fxPath: fixture.fxPath,
+    settings: defaultSlugSettings(),
+    env: fixture.env,
+    home: fixture.home,
+    onSlug: () => {},
+  })
+  try {
+    namer.note(SESSION, { text: "name every instance", workspaceRoot: fixture.home })
+    expect(await named(namer, SESSION)).toBe("name-every-instance")
+  } finally {
+    namer.stop()
+  }
+})
+
+test("an @-mentioned file is read into the excerpt", async () => {
+  const fixture = await harness({ prompted: false })
+  await writeFile(join(fixture.home, "plan.md"), "rename the tabs from the prompt", "utf8")
+  const namer = new SlugNamer({
+    fxPath: fixture.fxPath,
+    settings: defaultSlugSettings(),
+    env: fixture.env,
+    home: fixture.home,
+    onSlug: () => {},
+  })
+  try {
+    namer.note(SESSION, { text: "do @plan.md and @missing.md", workspaceRoot: fixture.home })
+    await named(namer, SESSION)
+
+    const asked = await readFile(fixture.askedPath, "utf8")
+    expect(asked).toContain("do rename the tabs from the prompt and @missing.md")
   } finally {
     namer.stop()
   }

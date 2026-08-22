@@ -1,8 +1,11 @@
+import { readFileSync, statSync } from "node:fs"
+import { isAbsolute, join } from "node:path"
 import type { SlugSettings } from "./config.ts"
 import { ensureInferenceEffort, fxSettingsPath, inferenceWorkspace, readFxProvider } from "./fx-profile.ts"
-import { fxSessionDirectory, readFirstPrompt } from "./fx-sessions.ts"
+import { type FirstPrompt, fxHomeDirectory, fxSessionDirectory, readFirstPrompt } from "./fx-sessions.ts"
 import { claimNaming, readSlug, releaseNaming, slugDirectory, storeSlug } from "./slug-store.ts"
 import { runSlugCompletion } from "./slug-runner.ts"
+import { expandTilde } from "./projects.ts"
 import { buildInstruction, excerptFrom } from "./slug-text.ts"
 
 /**
@@ -20,8 +23,17 @@ import { buildInstruction, excerptFrom } from "./slug-text.ts"
  * for once, and never worth interrupting a session over.
  */
 
-/** How often a watching attempt re-reads its session's log. */
-const PROMPT_POLL_MS = 2_000
+/**
+ * How long an attempt waits between re-reads of its session's log. fx writes
+ * the prompt a second or several after it is submitted — usually two or three,
+ * occasionally ten — so the early polls are quick and then ease off, rather
+ * than charging a fixed interval to every name.
+ */
+const PROMPT_POLL_MS = [250, 250, 250, 250, 500, 500, 500, 1_000, 1_000] as const
+const PROMPT_POLL_STEADY_MS = 2_000
+/** A file mention is read into the excerpt up to this size; the excerpt's own
+ * budget then bounds the whole. */
+const MENTION_FILE_BYTES = 32 * 1024
 /** How long one attempt watches before releasing its session back to the next
  * report. Long enough to cover a human finishing a thought, short enough that
  * an abandoned instance stops costing timers. */
@@ -40,6 +52,17 @@ export type SlugNamerOptions = {
   home?: string
   /** Called once per session, when its slug is known. */
   onSlug: (sessionId: string, slug: string) => void
+}
+
+/**
+ * A prompt fmx already holds, because fmx is what typed it. An instance
+ * launched with a prompt need not wait for fx to record what fmx dictated, so
+ * naming starts the moment the session has an id — while fx is still reading
+ * the prompt rather than seconds after it finishes.
+ */
+export type KnownPrompt = {
+  text: string
+  workspaceRoot: string
 }
 
 type Attempt = {
@@ -76,7 +99,7 @@ export class SlugNamer {
    * a pane sends, it starts at most one attempt per session and answers a
    * session already named from memory.
    */
-  note(sessionId: string): void {
+  note(sessionId: string, known: KnownPrompt | null = null): void {
     if (this.stopped || !this.options.settings.enabled) return
     if (this.slugs.has(sessionId)) return
     const attempt = this.attempts.get(sessionId)
@@ -89,7 +112,7 @@ export class SlugNamer {
     }
 
     this.attempts.set(sessionId, { running: true, retryAt: 0 })
-    void this.run(sessionId).finally(() => {
+    void this.run(sessionId, known).finally(() => {
       const current = this.attempts.get(sessionId)
       if (current) this.attempts.set(sessionId, { running: false, retryAt: Date.now() + RETRY_COOLDOWN_MS })
     })
@@ -113,11 +136,12 @@ export class SlugNamer {
     this.options.onSlug(sessionId, slug)
   }
 
-  private async run(sessionId: string): Promise<void> {
+  private async run(sessionId: string, known: KnownPrompt | null): Promise<void> {
     const sessionDirectory = fxSessionDirectory(sessionId, this.env)
     if (sessionDirectory === null) return
 
-    const prompt = await this.waitForPrompt(sessionDirectory)
+    const prompt =
+      known === null ? await this.waitForPrompt(sessionDirectory) : { ...known }
     if (prompt === null || this.stopped) return
 
     if (!claimNaming(this.directory, sessionId)) {
@@ -126,7 +150,10 @@ export class SlugNamer {
     }
     try {
       this.prepare()
-      const slug = await runSlugCompletion(buildInstruction(excerptFrom(prompt)), {
+      const excerpt = excerptFrom(prompt.text, (mention) =>
+        this.readMention(mention, prompt.workspaceRoot),
+      )
+      const slug = await runSlugCompletion(buildInstruction(excerpt), {
         fxPath: this.options.fxPath,
         workspace: this.workspace,
         env: this.env,
@@ -142,15 +169,32 @@ export class SlugNamer {
     }
   }
 
-  private async waitForPrompt(sessionDirectory: string): Promise<string | null> {
+  private async waitForPrompt(sessionDirectory: string): Promise<FirstPrompt | null> {
     const deadline = Date.now() + PROMPT_WINDOW_MS
-    while (!this.stopped) {
+    for (let poll = 0; !this.stopped; poll += 1) {
       const prompt = await readFirstPrompt(sessionDirectory)
       if (prompt !== null) return prompt
       if (Date.now() >= deadline) return null
-      await this.wait(PROMPT_POLL_MS)
+      await this.wait(PROMPT_POLL_MS[poll] ?? PROMPT_POLL_STEADY_MS)
     }
     return null
+  }
+
+  /**
+   * What an @-mention points at, or null for anything that is not a readable
+   * file. A mention is resolved against the session's own workspace, so a
+   * relative one means what it meant when it was typed.
+   */
+  private readMention(mention: string, workspaceRoot: string | null): string | null {
+    const tilded = expandTilde(mention, fxHomeDirectory(this.env))
+    const path = isAbsolute(tilded) ? tilded : workspaceRoot && join(workspaceRoot, tilded)
+    if (!path) return null
+    try {
+      if (!statSync(path).isFile()) return null
+      return readFileSync(path, "utf8").slice(0, MENTION_FILE_BYTES)
+    } catch {
+      return null
+    }
   }
 
   /** Another fmx holds the claim; watch for what it stores. */

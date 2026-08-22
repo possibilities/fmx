@@ -44,20 +44,31 @@ export function fxSessionDirectory(
   return join(fxProfileDirectory(env), "sessions", sessionId)
 }
 
+/** A conversation's opening prompt and where it was asked, which is what any
+ * @-mention in it is relative to. */
+export type FirstPrompt = {
+  text: string
+  /** null when fx recorded no workspace for the session. */
+  workspaceRoot: string | null
+}
+
 /**
  * The conversation's first user prompt, or null while fx has not recorded one.
  * Null is the ordinary answer for a session that exists but has not been
  * prompted yet — an instance parked at a trust dialog, or one simply waiting
  * for its human — and naming polls on it rather than treating it as a fault.
  */
-export async function readFirstPrompt(sessionDirectory: string): Promise<string | null> {
-  return (
-    (await readPromptFromEvents(join(sessionDirectory, "events.jsonl"))) ??
-    readPromptFromDisplay(await readJsonFile(join(sessionDirectory, "display.json")))
-  )
+export async function readFirstPrompt(sessionDirectory: string): Promise<FirstPrompt | null> {
+  const fromEvents = await readPromptFromEvents(join(sessionDirectory, "events.jsonl"))
+  if (fromEvents !== null) return fromEvents
+
+  const display = await readJsonFile(join(sessionDirectory, "display.json"))
+  const text = readPromptFromDisplay(display)
+  if (text === null) return null
+  return { text, workspaceRoot: workspaceRootOf(display) }
 }
 
-async function readPromptFromEvents(path: string): Promise<string | null> {
+async function readPromptFromEvents(path: string): Promise<FirstPrompt | null> {
   let text: string
   try {
     text = await Bun.file(path).slice(0, EVENT_PREFIX_BYTES).text()
@@ -69,6 +80,9 @@ async function readPromptFromEvents(path: string): Promise<string | null> {
   // A prefix read almost always ends mid-record; the last line is only whole
   // when the file itself ended there.
   if (text.length >= EVENT_PREFIX_BYTES) lines.pop()
+  // `session_started` opens the log and names the workspace; the prompt
+  // arrives later, so the workspace is carried forward to meet it.
+  let workspaceRoot: string | null = null
   for (const line of lines) {
     if (line.trim() === "") continue
     let event: unknown
@@ -77,10 +91,18 @@ async function readPromptFromEvents(path: string): Promise<string | null> {
     } catch {
       continue
     }
+    if (isRecord(event) && event.kind === "session_started") {
+      workspaceRoot = workspaceRootOf(event.payload) ?? workspaceRoot
+    }
     const prompt = promptFromEvent(event)
-    if (prompt) return prompt
+    if (prompt) return { text: prompt, workspaceRoot }
   }
   return null
+}
+
+function workspaceRootOf(payload: unknown): string | null {
+  if (!isRecord(payload)) return null
+  return nonEmptyString(payload.workspace_root) ?? nonEmptyString(payload.origin_workspace_root)
 }
 
 function promptFromEvent(event: unknown): string | null {

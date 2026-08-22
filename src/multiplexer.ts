@@ -24,7 +24,7 @@ import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog, type LaunchRequest } from "./launch-dialog.ts"
-import { SlugNamer } from "./slug-namer.ts"
+import { type KnownPrompt, SlugNamer } from "./slug-namer.ts"
 import {
   detectedTerminalColor,
   hasDetectedBackground,
@@ -132,6 +132,9 @@ class FxInstance {
 
   private processHandle: FxProcess | null = null
   private ptyClosed = false
+  /** The prompt this instance was launched with, kept past the typing so
+   * naming can use it without waiting for fx to write it down. */
+  launchPrompt: string | null = null
   /** A launch prompt waiting for fx to be ready to be typed into. */
   private pendingPrompt: string | null = null
   private promptTimer: ReturnType<typeof setTimeout> | null = null
@@ -176,7 +179,9 @@ class FxInstance {
   /** fx takes no prompt on its command line, so a launch prompt is typed in
    * once fx is running — see `armPrompt`. */
   setPendingPrompt(prompt: string): void {
-    if (prompt !== "") this.pendingPrompt = prompt
+    if (prompt === "") return
+    this.pendingPrompt = prompt
+    this.launchPrompt = prompt
   }
 
   /**
@@ -370,7 +375,7 @@ export class Multiplexer {
     // attempt was cooling down.
     if (frame.paneId) {
       const sessionId = this.registry.get(frame.paneId)?.sessionId
-      if (sessionId) this.slugNamer.note(sessionId)
+      if (sessionId) this.slugNamer.note(sessionId, this.launchPromptFor(frame.paneId))
       // fx reporting itself is the only signal fmx has that it is ready to be
       // typed into.
       this.instanceForPane(frame.paneId)?.armPrompt()
@@ -713,6 +718,13 @@ export class Multiplexer {
 
   private home(): string {
     return this.options.home ?? homedir()
+  }
+
+  /** What fmx itself typed into this pane, if anything. */
+  private launchPromptFor(paneId: string): KnownPrompt | null {
+    const instance = this.instances.find((candidate) => this.paneIdFor(candidate) === paneId)
+    if (!instance?.launchPrompt) return null
+    return { text: instance.launchPrompt, workspaceRoot: instance.cwd }
   }
 
   private paneIdFor(instance: FxInstance): string {

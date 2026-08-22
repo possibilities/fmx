@@ -50,14 +50,17 @@ describe("fxSessionDirectory", () => {
 describe("readFirstPrompt", () => {
   test("reads the prompt from the first recovery checkpoint", async () => {
     const directory = await sessionDirectory(
-      event("session_started", { id: SESSION_ID }) +
+      event("session_started", { id: SESSION_ID, workspace_root: "/work/fmx" }) +
         event("usage_checkpointed", { usage: {} }) +
         event("recovery_checkpoint_set", {
           checkpoint: { turn_id: 1, user: { text: "name every instance", images: [] } },
         }) +
         event("recovery_checkpoint_set", { checkpoint: { user: { text: "a later turn" } } }),
     )
-    expect(await readFirstPrompt(directory)).toBe("name every instance")
+    expect(await readFirstPrompt(directory)).toEqual({
+      text: "name every instance",
+      workspaceRoot: "/work/fmx",
+    })
   })
 
   test("falls back to a committed history turn", async () => {
@@ -65,17 +68,19 @@ describe("readFirstPrompt", () => {
       event("session_started", { id: SESSION_ID }) +
         event("history_turn_committed", { turn: { kind: "assistant", user: { text: "the ask" } } }),
     )
-    expect(await readFirstPrompt(directory)).toBe("the ask")
+    expect(await readFirstPrompt(directory)).toEqual({ text: "the ask", workspaceRoot: null })
   })
 
   test("falls back to fx's display sidecar when the log holds no prompt yet", async () => {
     const directory = await sessionDirectory(event("session_started", { id: SESSION_ID }), {
       title: "In our integration with fx",
       preview: "In our integration with fx + fmx we have special mouse handling",
+      origin_workspace_root: "/work/fmx",
     })
-    expect(await readFirstPrompt(directory)).toBe(
-      "In our integration with fx + fmx we have special mouse handling",
-    )
+    expect(await readFirstPrompt(directory)).toEqual({
+      text: "In our integration with fx + fmx we have special mouse handling",
+      workspaceRoot: "/work/fmx",
+    })
   })
 
   test("answers null for a session that has not been prompted", async () => {
@@ -93,6 +98,9 @@ describe("readFirstPrompt", () => {
         event("recovery_checkpoint_set", { checkpoint: { user: { text: "the real ask" } } }) +
         '{"kind":"recovery_checkpoint_set","payload":{"checkpoint"',
     )
-    expect(await readFirstPrompt(directory)).toBe("the real ask")
+    expect(await readFirstPrompt(directory)).toEqual({
+      text: "the real ask",
+      workspaceRoot: null,
+    })
   })
 })

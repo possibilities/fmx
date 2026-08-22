@@ -57,6 +57,14 @@
   `project_roots` ships empty: a guess at another provider's catalog is a
   model id that does not exist there. A provider with no default names at
   whatever model fx is configured for, which always works.
+- Naming is fastest when fmx already holds the prompt: an instance launched
+  with one names itself from what fmx typed, without waiting for fx to write
+  it down. For a prompt typed by hand there is no such shortcut — fx records
+  it 2 to 11 seconds after submit — so the early polls are quick and then ease
+  off. `~/.fx/history.jsonl` does hold every prompt at submit time, but it
+  carries a workspace and a timestamp and no session id: two instances in one
+  directory could take each other's name, and a wrong name is worse than a
+  slow one.
 - fx never reports a prompt over the agent socket, only a session id. The
   first prompt is read from fx's own session log at
   `~/.fx/sessions/<id>/events.jsonl` (`recovery_checkpoint_set`, then
