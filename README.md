@@ -24,13 +24,15 @@ specific release.
 fmx opens without an agent. `ctrl-b c` starts one where fmx is running, and
 `ctrl-b l` opens the launch
 dialog instead, which asks what to start it with: a prompt, a project, and
-whether to cut a fresh worktree for it. `tab` moves between the rows and enter
-starts the agent.
+whether to cut a fresh worktree for it, plus a Codex model and reasoning
+effort. `tab` moves between the rows and enter starts the agent.
 
-On the project row a letter cycles to the next project whose name begins with
-it, and space opens a picker that filters as you type. Projects are listed
-most-recently-worked-in first. On the worktree row space toggles, and `y` and
-`n` say it outright.
+On the project, model, and effort rows a letter cycles to the next value that
+begins with it, and space opens a picker that filters as you type. Projects
+are listed most-recently-worked-in first. On the worktree row space toggles,
+and `y` and `n` say it outright. The model picker uses fmx's local Codex
+catalog; changing models keeps the selected effort when the new model supports
+it and otherwise returns to that model's default.
 
 The prompt is a real editor: multiline, with readline keys (word motions,
 kills, selection, undo), a kill ring on `ctrl-y` and `alt-y`, and `ctrl-g` to
@@ -78,10 +80,10 @@ gateway = "openai/gpt-5-mini"
 ```
 
 A provider with no model named here is asked at whatever model fx is
-configured for. Reasoning effort cannot be set per command, so fmx runs these
-completions in `~/.config/fmx/inference` and adds one entry for that path to
-`workspaces` in `~/.fx/settings.json` — nothing else in that file is touched.
-Set `manage_effort = false` to leave it alone, and naming inherits your own
+configured for. Slug naming keeps its effort isolated in
+`~/.config/fmx/inference` by adding one entry for that path to `workspaces` in
+`~/.fx/settings.json` — nothing else in that file is touched. Set
+`manage_effort = false` to leave it alone, and naming inherits your own
 configured effort.
 
 ## Agents
@@ -96,7 +98,7 @@ fmx reachable, `4` timed out.
 ```sh
 fmx control orient                      # where you are and what the interface shows
 fmx control launch "write the tests"    # start an agent here, in the background
-fmx control launch --project ~/code/x --worktree --focus
+fmx control launch --project ~/code/x --worktree --model gpt-5.6-luna --effort max --focus
 fmx control launch --editable --project ~/code/x --worktree   # open the dialog, prefilled
 fmx control draft show|set|submit|cancel|wait [id]
 fmx control focus next|previous|3|<slug>

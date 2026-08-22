@@ -88,7 +88,18 @@ test("resolves prompt text from a file or stdin before sending", async () => {
   const { socket, calls } = await server(async () => ({ instance: { id: 2 } }), "text")
   try {
     await runCommand(
-      parseArgs(["control", "launch", "--prompt-file", "brief.md", "--project", "proj"]).command!,
+      parseArgs([
+        "control",
+        "launch",
+        "--prompt-file",
+        "brief.md",
+        "--project",
+        "proj",
+        "--model",
+        "gpt-5.6-luna",
+        "--effort",
+        "max",
+      ]).command!,
       socket.path,
       environment({ cwd: directory }),
     )
@@ -100,7 +111,13 @@ test("resolves prompt text from a file or stdin before sending", async () => {
     expect(calls).toEqual([
       {
         method: "launch",
-        params: { prompt: "do the thing\n", directory: join(directory, "proj"), focus: false },
+        params: {
+          prompt: "do the thing\n",
+          directory: join(directory, "proj"),
+          model: "gpt-5.6-luna",
+          effort: "max",
+          focus: false,
+        },
       },
       { method: "instance.send", params: { target: "2", text: "from stdin" } },
     ])

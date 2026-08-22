@@ -65,6 +65,8 @@ test("opens on the prompt, over the project fmx was started in", async () => {
     expect(frame).toContain("prompt    what should the agent do?")
     expect(frame).toContain("project   ~/code/fmx")
     expect(frame).toContain("worktree  no")
+    expect(frame).toContain("model     gpt-5.6-sol")
+    expect(frame).toContain("effort    high")
 
     // The prompt has focus, so printables are text rather than commands —
     // space included, which is the picker's key one row down.
@@ -72,6 +74,38 @@ test("opens on the prompt, over the project fmx was started in", async () => {
     await setup.renderOnce()
     expect(setup.captureCharFrame()).toContain("prompt    fix the flaky test")
     expect(setup.renderer.root.findDescendantById("fmx-launch-picker")?.visible).toBe(false)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("chooses a model and only efforts that model supports", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
+    setup.mockInput.pressTab()
+    setup.mockInput.pressTab()
+    // Sol supports ultra.
+    setup.mockInput.pressTab()
+    setup.mockInput.pressKey(" ")
+    await setup.mockInput.typeText("ultra")
+    setup.mockInput.pressEnter()
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("effort    ultra")
+
+    // Terra keeps ultra; Luna does not and snaps to its catalog default.
+    setup.mockInput.pressArrow("up")
+    setup.mockInput.pressArrow("right")
+    setup.mockInput.pressArrow("right")
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("model     gpt-5.6-luna")
+    expect(frame).toContain("effort    high")
   } finally {
     await multiplexer.shutdown()
   }

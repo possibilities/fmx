@@ -217,6 +217,8 @@ async function launchFieldParams(
     params.directory = isAbsolute(fields.directory) ? fields.directory : resolve(environment.cwd, fields.directory)
   }
   if (fields.worktree !== undefined) params.worktree = fields.worktree
+  if (fields.model !== undefined) params.model = fields.model
+  if (fields.effort !== undefined) params.effort = fields.effort
   if (fields.prompt !== undefined) params.prompt = await readText(fields.prompt, environment)
   return params
 }

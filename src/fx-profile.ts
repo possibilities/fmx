@@ -10,9 +10,10 @@ import { fmxDirectory } from "./state.ts"
  *
  * Naming runs `fx ask`, which means it runs at whatever model and reasoning
  * effort the human configured for their own work — a session titled at `max`
- * costs what a session's work costs. The model is overridable per call through
- * `FX_MODEL`; the effort is not, and no environment variable or project file
- * can set it: fx rejects `effort` from a workspace's own `.fx.json` as a
+ * costs what a session's work costs. fx now has per-process `FX_MODEL` and
+ * `FX_EFFORT` overrides, which ordinary launches use; slug naming retains its
+ * established profile workspace so its configured effort is inspectable and
+ * isolated. fx rejects `effort` from a workspace's own `.fx.json` as a
  * user-only setting.
  *
  * What fx does honor is a per-workspace entry in the human's own settings:

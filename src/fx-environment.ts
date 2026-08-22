@@ -36,6 +36,12 @@ export type FxAgentSocketBinding = {
   paneId: string
 }
 
+/** Model settings applied to one fx process without changing the profile. */
+export type FxLaunchLevel = {
+  model: string
+  effort: string
+}
+
 /**
  * fx is attached to fmx's embedded terminal, not directly to an outer tmux,
  * screen, or Zellij session. Hiding those parent markers prevents fx from
@@ -51,6 +57,7 @@ export function createFxEnvironment(
   cwd: string,
   agentSocket: FxAgentSocketBinding | null = null,
   controlSocketPath: string | null = null,
+  launchLevel: FxLaunchLevel | null = null,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...parent,
@@ -74,5 +81,9 @@ export function createFxEnvironment(
   // this fmx through it, and `FMX_INSTANCE_ID` says which instance it is.
   if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
   else delete env[CONTROL_SOCKET_ENV_VAR]
+  if (launchLevel) {
+    env.FX_MODEL = launchLevel.model
+    env.FX_EFFORT = launchLevel.effort
+  }
   return env
 }

@@ -82,3 +82,15 @@ test("hands every instance the control socket, and clears one inherited from ano
   expect(env.FMX_INSTANCE_ID).toBe("3")
   expect(createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work").FMX_SOCKET_PATH).toBeUndefined()
 })
+
+test("applies model and effort to one instance without changing unrelated launches", () => {
+  const ambient = { FX_MODEL: "ambient-model", FX_EFFORT: "medium" }
+  expect(createFxEnvironment(ambient, 3, "/work")).toMatchObject(ambient)
+
+  const selected = createFxEnvironment(ambient, 4, "/work", null, null, {
+    model: "gpt-5.6-luna",
+    effort: "max",
+  })
+  expect(selected.FX_MODEL).toBe("gpt-5.6-luna")
+  expect(selected.FX_EFFORT).toBe("max")
+})

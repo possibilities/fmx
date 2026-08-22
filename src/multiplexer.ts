@@ -20,6 +20,7 @@ import { basename } from "node:path"
 import { AgentRegistry, type DisplayState, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
 import { VERSION } from "./cli.ts"
+import { codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
 import { DEFAULT_WORKTREE_ROOT, defaultSlugSettings, type SlugSettings } from "./config.ts"
 import {
   ControlFailure,
@@ -42,7 +43,7 @@ import {
 import type { ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
-import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
+import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
 import { type KnownPrompt, SlugNamer } from "./slug-namer.ts"
@@ -196,6 +197,7 @@ class FxInstance {
     private readonly fxPath: string,
     private readonly agentSocket: FxAgentSocketBinding | null,
     private readonly controlSocketPath: string | null,
+    private readonly launchLevel: FxLaunchLevel | null,
     hostPalette: TerminalColors | null,
     private readonly events: InstanceEvents,
   ) {
@@ -281,7 +283,14 @@ class FxInstance {
   start(): void {
     const processHandle = Bun.spawn([this.fxPath], {
       cwd: this.cwd,
-      env: createFxEnvironment(process.env, this.id, this.cwd, this.agentSocket, this.controlSocketPath),
+      env: createFxEnvironment(
+        process.env,
+        this.id,
+        this.cwd,
+        this.agentSocket,
+        this.controlSocketPath,
+        this.launchLevel,
+      ),
       terminal: {
         cols: Math.max(1, this.terminal.width || 80),
         rows: Math.max(1, this.terminal.height || 24),
@@ -678,6 +687,7 @@ export class Multiplexer {
     cwd: string = this.options.cwd,
     prompt = "",
     focus = true,
+    launchLevel: FxLaunchLevel | null = null,
   ): FxInstance | null {
     if (this.shuttingDown) return null
     this.cancelExitConfirmation()
@@ -689,6 +699,7 @@ export class Multiplexer {
       this.options.fxPath,
       this.agentSocketBinding(instanceId),
       this.options.controlSocketPath ?? null,
+      launchLevel,
       this.hostPalette,
       {
         onTitleChange: (candidate) => {
@@ -1157,7 +1168,14 @@ export class Multiplexer {
         kind: "launch",
         status: "open",
         opened_by: openedBy,
-        fields: { prompt: "", directory: "", worktree: false, worktree_available: null },
+        fields: {
+          prompt: "",
+          directory: "",
+          worktree: false,
+          worktree_available: null,
+          model: DEFAULT_CODEX_MODEL.id,
+          effort: DEFAULT_CODEX_MODEL.defaultEffort,
+        },
         outcome: null,
       },
       waiters: new Set(),
@@ -1222,7 +1240,10 @@ export class Multiplexer {
       }
     }
     if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    const instance = this.createInstance(directory, request.prompt, focus)
+    const instance = this.createInstance(directory, request.prompt, focus, {
+      model: request.model,
+      effort: request.effort,
+    })
     if (!instance) throw new ControlFailure("shutting_down", "fmx is shutting down")
     return instance
   }
@@ -1374,7 +1395,7 @@ export class Multiplexer {
       case "draft.set": {
         const draft = this.openDraftFor(requiredString(params, "draft"))
         const fields = isRecord(params.fields) ? params.fields : {}
-        const prefill = this.prefillFrom(fields)
+        const prefill = this.prefillFrom(fields, this.launchDialog.fields().model)
         if (prefill.directory !== undefined) {
           const [choice] = orderProjects([prefill.directory], this.projectLaunches, this.home())
           if (choice) this.launchDialog.offerProject(choice)
@@ -1484,11 +1505,13 @@ export class Multiplexer {
       directory: prefill.directory ?? callerInstance?.cwd ?? this.options.cwd,
       prompt: prefill.prompt ?? "",
       worktree: prefill.worktree ?? false,
+      model: prefill.model ?? DEFAULT_CODEX_MODEL.id,
+      effort: prefill.effort ?? DEFAULT_CODEX_MODEL.defaultEffort,
     }
   }
 
   /** Fields an agent gave, checked; a directory must exist to be offered. */
-  private prefillFrom(fields: Record<string, unknown>): LaunchPrefill {
+  private prefillFrom(fields: Record<string, unknown>, currentModel = DEFAULT_CODEX_MODEL.id): LaunchPrefill {
     const prefill: LaunchPrefill = {}
     const directory = optionalString(fields, "directory")
     if (directory !== undefined) {
@@ -1505,6 +1528,20 @@ export class Multiplexer {
     if (prompt !== undefined) prefill.prompt = prompt
     const worktree = optionalBoolean(fields, "worktree")
     if (worktree !== undefined) prefill.worktree = worktree
+    const modelId = optionalString(fields, "model")
+    const model = codexModel(modelId ?? currentModel)
+    if (!model) throw new ControlFailure("invalid_params", `unknown Codex model: ${modelId ?? currentModel}`)
+    if (modelId !== undefined) prefill.model = modelId
+    const effort = optionalString(fields, "effort")
+    if (effort !== undefined) {
+      if (!codexEffort(model, effort)) {
+        throw new ControlFailure("invalid_params", `${model.id} does not support effort ${effort}`, {
+          model: model.id,
+          efforts: model.efforts,
+        })
+      }
+      prefill.effort = effort
+    }
     return prefill
   }
 
