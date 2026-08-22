@@ -5,6 +5,7 @@ import {
   type KeyEvent,
   type KittyKeyboardOptions,
   type OptimizedBuffer,
+  type Selection,
   type TerminalColors,
 } from "@opentui/core"
 import { buildHostPaletteSequence } from "./host-palette.ts"
@@ -39,6 +40,8 @@ export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
   // corner until fx's first frame hides or repositions it. Keep it concealed
   // until fx produces output; from then on the emulator's state is truth.
   private cursorRevealed = false
+  private selectionGesture: Selection | null = null
+  private selectionActivated = false
 
   constructor(renderer: CliRenderer, options: FxTerminalOptions) {
     const onMouseDown = options.onMouseDown
@@ -54,6 +57,34 @@ export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
 
   public setHostSelectionEnabled(enabled: boolean): void {
     this.selectable = enabled
+  }
+
+  public override onSelectionChanged(selection: Selection | null): boolean {
+    if (!selection?.isActive) {
+      this.selectionGesture = null
+      this.selectionActivated = false
+      return super.onSelectionChanged(null)
+    }
+
+    if (selection !== this.selectionGesture) {
+      this.selectionGesture = selection
+      this.selectionActivated = false
+    }
+
+    if (!this.selectionActivated) {
+      const { anchor, focus } = selection
+      this.selectionActivated = anchor.x !== focus.x || anchor.y !== focus.y
+      if (!this.selectionActivated) {
+        // OpenTUI sets isStart false on any drag event, even when the pointer is
+        // still in its original cell. Keep the gesture provisional so mouse-up
+        // clears it without copying. Once two cells have been covered, the latch
+        // stays open and the user may contract the selection back to one cell.
+        selection.isStart = true
+        return super.onSelectionChanged(null)
+      }
+    }
+
+    return super.onSelectionChanged(selection)
   }
 
   public revealCursor(): void {

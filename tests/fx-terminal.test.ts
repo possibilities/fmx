@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { buildKittyKeyboardFlags, type TerminalColors } from "@opentui/core"
+import { buildKittyKeyboardFlags, CliRenderEvents, type Selection, type TerminalColors } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { FX_KEYBOARD_PROTOCOL, FxTerminalRenderable } from "../src/fx-terminal.ts"
 
@@ -188,6 +188,71 @@ test("conceals the host cursor until the cursor is revealed", async () => {
     await setup.renderOnce()
 
     expect(cursorUpdates.at(-1)).toEqual({ x: 3, y: 4, visible: true })
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("keeps one-cell mouse gestures provisional and hidden", async () => {
+  const setup = await createTestRenderer({ width: 20, height: 6 })
+  const finishedSelections: Selection[] = []
+
+  try {
+    const terminal = new FxTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: () => {},
+    })
+    setup.renderer.root.add(terminal)
+    setup.renderer.on(CliRenderEvents.SELECTION, (selection) => finishedSelections.push(selection))
+    terminal.write("select this text\r\n")
+    await setup.renderOnce()
+
+    await setup.mockMouse.pressDown(2, 0)
+    expect(terminal.hasSelection()).toBe(false)
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("")
+
+    await setup.mockMouse.moveTo(2, 0)
+    expect(terminal.hasSelection()).toBe(false)
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("")
+
+    await setup.mockMouse.release(2, 0)
+    expect(finishedSelections).toHaveLength(1)
+    expect(finishedSelections[0]?.isStart).toBe(true)
+    expect(finishedSelections[0]?.getSelectedText()).toBe("")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("allows an activated selection to contract back to one cell", async () => {
+  const setup = await createTestRenderer({ width: 20, height: 6 })
+  const finishedSelections: Selection[] = []
+
+  try {
+    const terminal = new FxTerminalRenderable(setup.renderer, {
+      width: 20,
+      height: 4,
+      onData: () => {},
+    })
+    setup.renderer.root.add(terminal)
+    setup.renderer.on(CliRenderEvents.SELECTION, (selection) => finishedSelections.push(selection))
+    terminal.write("select this text\r\n")
+    await setup.renderOnce()
+
+    await setup.mockMouse.pressDown(0, 0)
+    await setup.mockMouse.moveTo(1, 0)
+    expect(terminal.hasSelection()).toBe(true)
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("se")
+
+    await setup.mockMouse.moveTo(0, 0)
+    expect(terminal.hasSelection()).toBe(true)
+    expect(setup.renderer.getSelection()?.getSelectedText()).toBe("s")
+
+    await setup.mockMouse.release(0, 0)
+    expect(finishedSelections).toHaveLength(1)
+    expect(finishedSelections[0]?.isStart).toBe(false)
+    expect(finishedSelections[0]?.getSelectedText()).toBe("s")
   } finally {
     setup.renderer.destroy()
   }
