@@ -70,6 +70,7 @@ import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from
 import { SessionList, stateIcon } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
+import { SubagentObserver } from "./subagents.ts"
 import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
@@ -406,6 +407,7 @@ export class Multiplexer {
   private readonly agentSocket: AgentSocket | null
   private readonly registry = new AgentRegistry()
   private readonly sessionList: SessionList
+  private readonly subagents: SubagentObserver
   private readonly seenSeq = new Map<number, number>()
   /** Per-directory git context, read once and reused by every instance there. */
   private readonly gitContexts = new Map<string, GitContext | null>()
@@ -490,6 +492,10 @@ export class Multiplexer {
       settings: options.slug ?? defaultSlugSettings(),
       home: options.home,
       onSlug: () => this.refreshSessionList(),
+    })
+    this.subagents = new SubagentObserver({
+      home: options.home,
+      onChange: () => this.refreshSessionList(),
     })
     const help = helpPlainText(this.keybindings)
     const helpLines = help.split("\n")
@@ -628,6 +634,7 @@ export class Multiplexer {
   }
 
   start(): void {
+    this.subagents.start()
     // The host palette query has settled by the time an fx can launch; if it
     // never produced colors, the fallback is the best divider color there will
     // be once an agent makes the sidebar visible.
@@ -657,6 +664,7 @@ export class Multiplexer {
     this.launchDialog.close()
     this.hideModal()
     this.slugNamer.stop()
+    this.subagents.stop()
     for (const waiter of this.instanceWaiters) waiter.settle(null)
     this.instanceWaiters.clear()
 
@@ -791,6 +799,12 @@ export class Multiplexer {
   }
 
   private refreshSessionList(): void {
+    this.subagents.setParents(
+      this.instances.flatMap((instance) => {
+        const sessionId = this.registry.get(this.paneIdFor(instance))?.sessionId
+        return sessionId ? [sessionId] : []
+      }),
+    )
     this.sessionList.render(buildTree(this.sessionEntries()), this.sidebarWidth)
   }
 
@@ -851,6 +865,7 @@ export class Multiplexer {
         state: displayStateFor(record, this.seenSeq.get(instance.id) ?? 0),
         attention: record?.attention ?? null,
         active: index === this.activeIndex,
+        subagents: record?.sessionId ? this.subagents.childrenOf(record.sessionId) : [],
       }
     })
   }
@@ -1668,7 +1683,10 @@ export class Multiplexer {
     const rows: SidebarRow[] = buildTree(this.sessionEntries()).map((row) => ({
       kind: row.kind,
       depth: row.depth,
-      text: row.kind === "agent" ? `${stateIcon(row.state, row.attention)} ${row.label || "—"}` : row.label,
+      text:
+        row.kind === "agent" || row.kind === "subagent"
+          ? `${stateIcon(row.state, row.attention)} ${row.label || "—"}`
+          : row.label,
       instance: row.instanceId,
       active: row.active,
     }))

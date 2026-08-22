@@ -97,7 +97,7 @@ export type InstanceInfo = {
 }
 
 export type SidebarRow = {
-  kind: "project" | "branch" | "agent"
+  kind: "project" | "branch" | "agent" | "subagent"
   depth: number
   text: string
   instance: number | null

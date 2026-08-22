@@ -11,6 +11,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     state: "idle",
     attention: null,
     active: false,
+    subagents: [],
     ...overrides,
   }
 }
@@ -73,9 +74,16 @@ test("nothing is on the path when no instance is active", () => {
   expect(buildTree([entry()]).every((row) => !row.onPath)).toBe(true)
 })
 
-test("only agent rows carry an instance to select", () => {
-  const rows = buildTree([entry({ instanceId: 7 })])
-  expect(rows.map((row) => row.instanceId)).toEqual([null, null, 7])
+test("only selectable agent rows carry an instance", () => {
+  const rows = buildTree([
+    entry({
+      instanceId: 7,
+      subagents: [
+        { sessionId: "child", label: "reviewer", state: "working", attention: null, children: [] },
+      ],
+    }),
+  ])
+  expect(rows.map((row) => row.instanceId)).toEqual([null, null, 7, null])
 })
 
 test("preserves the order instances were created in", () => {
@@ -99,4 +107,46 @@ test("a named session shows its slug in place of its id", () => {
       entry({ instanceId: 2, sessionId: "5a75126ce54edb04" }),
     ]),
   ).toEqual(["fmx", "  main", "    name-every-instance", "    5a75126ce54edb04"])
+})
+
+test("nests subagents recursively beneath their parent agent", () => {
+  const rows = buildTree([
+    entry({
+      slug: "coordinate-the-review",
+      subagents: [
+        {
+          sessionId: "child-a",
+          label: "reviewer",
+          state: "working",
+          attention: null,
+          children: [
+            {
+              sessionId: "grandchild",
+              label: "test-reader",
+              state: "idle",
+              attention: null,
+              children: [],
+            },
+          ],
+        },
+        {
+          sessionId: "child-b",
+          label: "docs-reader",
+          state: "blocked",
+          attention: "permission",
+          children: [],
+        },
+      ],
+    }),
+  ])
+
+  expect(rows.map((row) => [row.kind, row.depth, row.label])).toEqual([
+    ["project", 0, "fmx"],
+    ["branch", 1, "main"],
+    ["agent", 2, "coordinate-the-review"],
+    ["subagent", 3, "reviewer"],
+    ["subagent", 4, "test-reader"],
+    ["subagent", 3, "docs-reader"],
+  ])
+  expect(rows.slice(3).every((row) => !row.active && !row.onPath && row.instanceId === null)).toBe(true)
 })

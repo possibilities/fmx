@@ -78,7 +78,7 @@ export function truncate(value: string, width: number): string {
 /** What a row's text is, once its rails and icon have taken their columns. */
 export function rowText(row: TreeRow, width: number): string {
   const available = width - ROW_PADDING_LEFT - indentFor(row.depth).length
-  if (row.kind !== "agent") return truncate(row.label, available)
+  if (!isAgentRow(row)) return truncate(row.label, available)
   return truncate(row.label || MISSING_SESSION, available - ICON_COLUMN)
 }
 
@@ -162,7 +162,7 @@ export class SessionList {
 
   private styleRow(row: TreeRow, width: number): StyledText {
     const chunks: TextChunk[] = [fg(this.colors.foreground)(indentFor(row.depth))]
-    if (row.kind === "agent") {
+    if (isAgentRow(row)) {
       chunks.push(fg(this.colors[row.state])(`${stateIcon(row.state, row.attention)} `))
       chunks.push(fg(this.colors.session)(rowText(row, width)))
       return new StyledText(chunks)
@@ -174,6 +174,10 @@ export class SessionList {
     chunks.push(row.virtual ? italic(label) : row.onPath ? bold(label) : label)
     return new StyledText(chunks)
   }
+}
+
+function isAgentRow(row: TreeRow): boolean {
+  return row.kind === "agent" || row.kind === "subagent"
 }
 
 function listColors(colors: TerminalColors | null): ListColors {
