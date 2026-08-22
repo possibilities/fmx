@@ -3,7 +3,16 @@ import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { CompanionConnection } from "../src/companion-client.ts"
-import { decodeWelcome, encodeFrame, encodeHello, FrameReader, PROTOCOL_VERSION, Tag } from "../src/zmx-protocol.ts"
+import {
+  decodeWelcome,
+  encodeFrame,
+  encodeHello,
+  type Exit,
+  ExitReason,
+  FrameReader,
+  PROTOCOL_VERSION,
+  Tag,
+} from "../src/zmx-protocol.ts"
 
 /**
  * Drives a real Companion daemon over its socket, with no PTY on this side.
@@ -36,6 +45,7 @@ const CHILD_SCRIPT = [
   "  size) stty size;;",
   "  later) (sleep 0.3; echo LATER) & ;;",
   "  quit) exit 7;;",
+  "  crash) kill -9 $$;;",
   '  *) echo "got:$l";;',
   "esac; done",
 ].join("\n")
@@ -106,9 +116,19 @@ const alive = (pid: number) => {
 /** Collects Output bytes and resolves when a needle shows up in what arrived after `from`. */
 class Capture {
   text = ""
+  /** Every lifecycle event, in the order it arrived, with output as "out". */
+  readonly events: string[] = []
+  exit: Exit | null = null
   private waiters: { needle: string; from: number; resolve: () => void }[] = []
   constructor(connection: CompanionConnection) {
+    connection.onRestoreBegin(() => this.events.push("restore-begin"))
+    connection.onReady(() => this.events.push("ready"))
+    connection.onExit((status) => {
+      this.exit = status
+      this.events.push("exit")
+    })
     connection.onOutput((bytes) => {
+      this.events.push("out")
       this.text += decoder.decode(bytes, { stream: true })
       this.waiters = this.waiters.filter((w) => {
         if (!this.text.slice(w.from).includes(w.needle)) return true
@@ -158,6 +178,11 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   const output = new Capture(first)
   first.attach({ rows: 30, cols: 100 })
 
+  // The attach is bracketed: everything between the two is restored state.
+  expect(await waitFor(() => output.events.includes("ready"))).toBe(true)
+  expect(output.events[0]).toBe("restore-begin")
+  expect(output.events.indexOf("ready")).toBeGreaterThan(0)
+
   // Input goes to the child and its output comes back.
   let mark = output.length
   first.write("hello-from-bun\r")
@@ -184,18 +209,40 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   const replay = new Capture(second)
   second.attach({ rows: 20, cols: 60 })
   await replay.until("got:hello-from-bun")
+  // Reconnect is bracketed too, and every restored byte falls inside it.
+  expect(replay.events[0]).toBe("restore-begin")
+  expect(await waitFor(() => replay.events.includes("ready"))).toBe(true)
+  expect(replay.events.indexOf("out")).toBeLessThan(replay.events.indexOf("ready"))
   mark = replay.length
   second.write("again\r")
   await replay.until("got:again", mark)
 
-  // The child exiting ends the session: the daemon closes the socket and goes away.
-  // (`list` reports the child's pid; the daemon reaps it after its SIGHUP grace period.)
+  // The child exiting ends the session, and the client is told exactly how:
+  // the script exits 7, and Exit is the last frame before the socket closes.
   const peerClosed = new Promise<void>((resolve) => second.onClose(() => resolve()))
   second.write("quit\r")
   await peerClosed
+  expect(replay.exit).toEqual({ code: 7, signal: 0, reason: ExitReason.natural })
+  expect(replay.events.at(-1)).toBe("exit")
   expect(await waitFor(() => !alive(pid!))).toBe(true)
   expect(await sessionPid("s1")).toBeNull()
   sessions = sessions.filter((s) => s !== "s1")
+})
+
+test.skipIf(!ENABLED)("a child killed by a signal reports that signal, not an exit code", async () => {
+  const socket = await startSession("s4")
+  const connection = await CompanionConnection.connect(socket)
+  const seen = new Capture(connection)
+  connection.attach({ rows: 24, cols: 80 })
+  const mark = seen.length
+  connection.write("awake\r")
+  await seen.until("got:awake", mark)
+
+  const closed = new Promise<void>((resolve) => connection.onClose(() => resolve()))
+  connection.write("crash\r")
+  await closed
+  expect(seen.exit).toEqual({ code: 0, signal: 9, reason: ExitReason.natural })
+  sessions = sessions.filter((s) => s !== "s4")
 })
 
 test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach", async () => {
@@ -216,12 +263,19 @@ test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach
   await sleep(150)
   expect(watched.length).toBe(0)
 
-  // Once attached, what it missed arrives before any live byte does.
+  // Once attached, what it missed arrives before any live byte does, and
+  // every one of those bytes is inside the restore boundary.
   watcher.attach({ rows: 24, cols: 80 })
   await watched.until("LATER")
+  expect(await waitFor(() => watched.events.includes("ready"))).toBe(true)
+  const readyAt = watched.events.indexOf("ready")
+  expect(watched.events[0]).toBe("restore-begin")
+  expect(watched.events.slice(0, readyAt).filter((e) => e === "out").length).toBeGreaterThan(0)
   mark = watched.length
   leader.write("live\r")
   await watched.until("got:live", mark)
+  // The live byte landed after Ready, not among the restored ones.
+  expect(watched.events.lastIndexOf("out")).toBeGreaterThan(readyAt)
 
   watcher.detach()
   leader.detach()

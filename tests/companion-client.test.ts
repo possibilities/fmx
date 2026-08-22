@@ -4,8 +4,10 @@ import { join } from "node:path"
 import { setListenerErrorHandler, CompanionConnection } from "../src/companion-client.ts"
 import {
   decodeHello,
+  encodeExit,
   encodeFrame,
   encodeWelcome,
+  ExitReason,
   HEADER_LEN,
   PROTOCOL_VERSION,
   ProtocolError,
@@ -137,6 +139,43 @@ test("a listener that throws neither skips the others nor stalls the stream", as
   expect(seen).toEqual(["one", "two", "three"])
   // Reported, not swallowed: once per frame the throwing listener saw.
   expect(failures).toEqual(["Error: listener blew up", "Error: listener blew up", "Error: listener blew up"])
+  connection.close()
+})
+
+test("the restore boundary and exit reach their listeners in order", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const events: string[] = []
+  connection.onRestoreBegin(() => events.push("restore-begin"))
+  connection.onOutput((bytes) => events.push(`out:${new TextDecoder().decode(bytes)}`))
+  connection.onReady(() => events.push("ready"))
+  connection.onExit((status) => events.push(`exit:${status.code}/${status.signal}/${status.reason}`))
+
+  stub.push(
+    Buffer.concat([
+      encodeFrame(Tag.RestoreBegin),
+      output("replayed"),
+      encodeFrame(Tag.Ready),
+      output("live"),
+      encodeFrame(Tag.Exit, encodeExit({ code: 7, signal: 0, reason: ExitReason.natural })),
+    ]),
+  )
+  await settle()
+  expect(events).toEqual(["restore-begin", "out:replayed", "ready", "out:live", "exit:7/0/0"])
+  expect(connection.exit).toEqual({ code: 7, signal: 0, reason: ExitReason.natural })
+  connection.close()
+})
+
+test("an exit already reported reaches a listener that subscribes after it", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  // Something must be listening, or the frame is backlogged rather than dispatched.
+  connection.onOutput(() => {})
+  stub.push(encodeFrame(Tag.Exit, encodeExit({ code: 0, signal: 9, reason: ExitReason.requested })))
+  await settle()
+  const late: string[] = []
+  connection.onExit((status) => late.push(`${status.signal}/${status.reason}`))
+  expect(late).toEqual([`9/${ExitReason.requested}`])
   connection.close()
 })
 

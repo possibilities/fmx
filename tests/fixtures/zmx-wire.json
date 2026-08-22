@@ -63,6 +63,18 @@
       "maxVersion": 1,
       "capabilities": 0,
       "hex": "00000100010000000000"
+    },
+    "exit": {
+      "code": 7,
+      "signal": 0,
+      "reason": 0,
+      "hex": "0700000000000000"
+    },
+    "exitSignalled": {
+      "code": 0,
+      "signal": 9,
+      "reason": 1,
+      "hex": "0009010000000000"
     }
   },
   "tags": {
@@ -86,9 +98,13 @@
     "LabelData": 17,
     "Send": 18,
     "Hello": 19,
-    "Welcome": 20
+    "Welcome": 20,
+    "RestoreBegin": 21,
+    "Ready": 22,
+    "Exit": 23
   },
-  "zmxIpcBlob": "5541eda7b7e7d929f43272b588c803035f58237e",
+  "zmxIpcBlob": "28941d3e69bcf9bd44a30121f03933ae68d3c075",
   "minProtocolVersion": 1,
-  "maxClientNameLen": 64
+  "maxClientNameLen": 64,
+  "exitLen": 8
 }

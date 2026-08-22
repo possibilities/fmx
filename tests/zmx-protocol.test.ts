@@ -1,15 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import fixture from "./fixtures/zmx-wire.json"
 import {
+  decodeExit,
   decodeHeader,
   decodeHello,
   decodeResize,
   decodeWelcome,
+  encodeExit,
   encodeFrame,
   encodeHeader,
   encodeHello,
   encodeResize,
   encodeWelcome,
+  EXIT_LEN,
   FrameReader,
   HEADER_LEN,
   MAX_CLIENT_NAME_LEN,
@@ -65,6 +68,18 @@ describe("golden wire bytes match the pinned Companion fork", () => {
     expect(toHex(encodeHello(c))).toBe(c.hex)
     expect(decodeHello(hex(c.hex))).toEqual({ minVersion: c.minVersion, maxVersion: c.maxVersion, capabilities: c.capabilities, client: c.client })
     expect(decodeHello(hex(fixture.cases.helloBare.hex)).client).toBe("")
+  })
+
+  test("exit", () => {
+    for (const key of ["exit", "exitSignalled"] as const) {
+      const c = fixture.cases[key]
+      expect(toHex(encodeExit(c))).toBe(c.hex)
+      expect(decodeExit(hex(c.hex))).toEqual({ code: c.code, signal: c.signal, reason: c.reason })
+    }
+    expect(EXIT_LEN).toBe(fixture.exitLen)
+    // A reason this client does not know decodes as its integer.
+    expect(decodeExit(hex("0000c80000000000")).reason).toBe(200)
+    expect(() => decodeExit(hex("000000"))).toThrow(ProtocolError)
   })
 
   test("welcome", () => {

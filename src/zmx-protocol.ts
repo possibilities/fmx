@@ -33,6 +33,9 @@ export const Tag = {
   Send: 18,
   Hello: 19,
   Welcome: 20,
+  RestoreBegin: 21,
+  Ready: 22,
+  Exit: 23,
 } as const
 
 export const PROTOCOL_VERSION = 1
@@ -46,6 +49,7 @@ export const RESIZE_LEN = 8
 export const HELLO_FIXED_LEN = 8
 export const MAX_CLIENT_NAME_LEN = 64
 export const WELCOME_LEN = 10
+export const EXIT_LEN = 8
 
 export type Header = { tag: number; len: number }
 export type Frame = { tag: number; payload: Uint8Array }
@@ -62,6 +66,44 @@ export type Welcome = {
   minVersion: number
   maxVersion: number
   capabilities: number
+}
+
+/**
+ * How a session's child ended. `code` and `signal` are what the daemon's
+ * `waitpid` reported — a signalled child has a non-zero `signal` and a `code`
+ * of 0 — while `reason` says what brought it about.
+ */
+export type Exit = {
+  code: number
+  signal: number
+  reason: ExitReason
+}
+
+export const ExitReason = {
+  /** Ended on its own, by exiting or by a signal nobody in the session sent. */
+  natural: 0,
+  /** Someone asked the daemon to end the session. */
+  requested: 1,
+  /** The daemon could not continue and took the child with it. */
+  daemonFailure: 2,
+  /** Never started: exec failed. */
+  execFailure: 3,
+} as const
+
+/** A reason this client does not know decodes as its integer. */
+export type ExitReason = number
+
+export function encodeExit(status: Exit): Uint8Array {
+  const out = new Uint8Array(EXIT_LEN)
+  out[0] = status.code
+  out[1] = status.signal
+  out[2] = status.reason
+  return out
+}
+
+export function decodeExit(bytes: Uint8Array): Exit {
+  if (bytes.byteLength !== EXIT_LEN) throw new ProtocolError(`Exit payload is ${bytes.byteLength} bytes, not ${EXIT_LEN}`)
+  return { code: bytes[0]!, signal: bytes[1]!, reason: bytes[2]! }
 }
 
 export class ProtocolError extends Error {

@@ -1,10 +1,12 @@
 import {
   clientHello,
+  decodeExit,
   decodeWelcome,
   encodeFrame,
   encodeHello,
   encodeResize,
   FrameReader,
+  type Exit,
   type Frame,
   type Hello,
   ProtocolError,
@@ -49,6 +51,8 @@ export type CompanionConnectionOptions = {
 export type CloseReason = { kind: "detached" } | { kind: "peer-closed" } | { kind: "error"; error: Error }
 
 export type OutputListener = (bytes: Uint8Array) => void
+export type RestoreListener = () => void
+export type ExitListener = (status: Exit) => void
 export type CloseListener = (reason: CloseReason) => void
 export type FrameListener = (frame: Frame) => void
 
@@ -66,6 +70,10 @@ export type FrameListener = (frame: Frame) => void
 export class CompanionConnection {
   readonly welcome: Welcome
   private readonly outputListeners = new Set<OutputListener>()
+  private readonly restoreBeginListeners = new Set<RestoreListener>()
+  private readonly readyListeners = new Set<RestoreListener>()
+  private readonly exitListeners = new Set<ExitListener>()
+  private lastExit: Exit | null = null
   private readonly closeListeners = new Set<CloseListener>()
   private readonly frameListeners = new Set<FrameListener>()
   private closed: CloseReason | null = null
@@ -138,6 +146,41 @@ export class CompanionConnection {
     this.finish({ kind: "detached" })
   }
 
+  /**
+   * The daemon is about to replay this session's screen. Reset the terminal
+   * here: what follows is state, not a continuation of what is on it, and
+   * every attach — first or reconnect — is preceded by this.
+   */
+  onRestoreBegin(listener: RestoreListener): () => void {
+    this.restoreBeginListeners.add(listener)
+    this.flushBacklog()
+    return () => this.restoreBeginListeners.delete(listener)
+  }
+
+  /** The replay is complete; every byte after this is live. */
+  onReady(listener: RestoreListener): () => void {
+    this.readyListeners.add(listener)
+    this.flushBacklog()
+    return () => this.readyListeners.delete(listener)
+  }
+
+  /**
+   * The child ended, with exactly the status the daemon reaped. A connection
+   * that closes without this says nothing about the child: it is still
+   * running, and this client simply stopped watching.
+   */
+  onExit(listener: ExitListener): () => void {
+    this.exitListeners.add(listener)
+    if (this.lastExit) safely(() => listener(this.lastExit!))
+    this.flushBacklog()
+    return () => this.exitListeners.delete(listener)
+  }
+
+  /** The exit already reported, for a caller that subscribed too late to see it. */
+  get exit(): Exit | null {
+    return this.lastExit
+  }
+
   onOutput(listener: OutputListener): () => void {
     this.outputListeners.add(listener)
     this.flushBacklog()
@@ -171,8 +214,18 @@ export class CompanionConnection {
     this.transport.send(encodeFrame(tag, payload))
   }
 
+  private get hasListeners(): boolean {
+    return (
+      this.outputListeners.size > 0 ||
+      this.frameListeners.size > 0 ||
+      this.restoreBeginListeners.size > 0 ||
+      this.readyListeners.size > 0 ||
+      this.exitListeners.size > 0
+    )
+  }
+
   private dispatch(frame: Frame): void {
-    if (this.outputListeners.size === 0 && this.frameListeners.size === 0) {
+    if (!this.hasListeners) {
       if (this.backlogBytes + frame.payload.byteLength <= CompanionConnection.BACKLOG_MAX_BYTES) {
         this.backlog.push(frame)
         this.backlogBytes += frame.payload.byteLength
@@ -196,11 +249,33 @@ export class CompanionConnection {
    * would abort the read loop and strand frames already in the reader.
    */
   private deliver(frame: Frame): void {
-    if (frame.tag === Tag.Output) {
-      for (const listener of this.outputListeners) safely(() => listener(frame.payload))
-      return
+    switch (frame.tag) {
+      case Tag.Output:
+        for (const listener of this.outputListeners) safely(() => listener(frame.payload))
+        return
+      case Tag.RestoreBegin:
+        for (const listener of this.restoreBeginListeners) safely(() => listener())
+        return
+      case Tag.Ready:
+        for (const listener of this.readyListeners) safely(() => listener())
+        return
+      case Tag.Exit: {
+        let status: Exit
+        try {
+          status = decodeExit(frame.payload)
+        } catch (error) {
+          safely(() => {
+            throw error
+          })
+          return
+        }
+        this.lastExit = status
+        for (const listener of this.exitListeners) safely(() => listener(status))
+        return
+      }
+      default:
+        for (const listener of this.frameListeners) safely(() => listener(frame))
     }
-    for (const listener of this.frameListeners) safely(() => listener(frame))
   }
 
   private finish(reason: CloseReason): void {

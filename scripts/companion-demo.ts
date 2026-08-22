@@ -11,6 +11,7 @@
  */
 import { mkdtemp, rm } from "node:fs/promises"
 import { CompanionConnection } from "../src/companion-client.ts"
+import { ExitReason } from "../src/zmx-protocol.ts"
 
 const ZMX = process.env.FMX_ZMX_PATH
 if (!ZMX) {
@@ -25,13 +26,23 @@ const socket = `${dir}/${name}`
 const decoder = new TextDecoder()
 const step = (text: string) => console.log(`\n[1m▶ ${text}[0m`)
 const show = (label: string, bytes: Uint8Array) => console.log(`  ${label}: ${JSON.stringify(decoder.decode(bytes))}`)
+const reasonName = (reason: number) => Object.entries(ExitReason).find(([, v]) => v === reason)?.[0] ?? `reason ${reason}`
+/** Narrate the lifecycle of one connection: the restore boundary, then the exit. */
+const narrate = (connection: CompanionConnection) => {
+  connection.onRestoreBegin(() => console.log("  ── restore begins (a terminal resets here) ──"))
+  connection.onOutput((bytes) => show("output", bytes))
+  connection.onReady(() => console.log("  ── restore complete; everything after this is live ──"))
+  connection.onExit((status) =>
+    console.log(`  ── the child ended: code ${status.code}, signal ${status.signal}, ${reasonName(status.reason)} ──`),
+  )
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const zmx = (...args: string[]) => Bun.$`${ZMX} ${args}`.env(env).nothrow().quiet()
 
 try {
   step(`start a child in a Companion session (private ZMX_DIR=${dir})`)
   // Creation goes through `attach` under pipes until tranche 3 adds `create`.
-  const starter = Bun.spawn([ZMX, "attach", name, "sh", "-c", 'echo "hello from the child, pid $$"; while IFS= read -r l; do echo "child got: $l"; done'], {
+  const starter = Bun.spawn([ZMX, "attach", name, "sh", "-c", 'echo "hello from the child, pid $$"; while IFS= read -r l; do case "$l" in quit) exit 3;; *) echo "child got: $l";; esac; done'], {
     env,
     stdin: "pipe",
     stdout: "pipe",
@@ -46,7 +57,7 @@ try {
   step("Bun connects directly to the socket and negotiates")
   const first = await CompanionConnection.connect(socket, { client: "demo" })
   console.log(`  Welcome: protocol v${first.welcome.version} (daemon speaks ${first.welcome.minVersion}..${first.welcome.maxVersion})`)
-  first.onOutput((bytes) => show("output", bytes))
+  narrate(first)
 
   step("attach at 24x80: the restore replays what the child already printed")
   first.attach({ rows: 24, cols: 80 })
@@ -63,12 +74,11 @@ try {
 
   step("reconnect and attach again: the screen is restored, the session is live")
   const second = await CompanionConnection.connect(socket, { client: "demo-again" })
-  second.onOutput((bytes) => show("output", bytes))
+  narrate(second)
   second.attach({ rows: 24, cols: 80 })
   await sleep(300)
   second.write("still here\r")
   await sleep(300)
-  second.detach()
 
   step("a client claiming protocol 99..100 is refused with the daemon's range")
   try {
@@ -76,6 +86,12 @@ try {
   } catch (error) {
     console.log(`  ${(error as Error).message}`)
   }
+
+  step("the child exits: the exact code reaches the client before the socket closes")
+  second.write("quit\r")
+  await sleep(500)
+  console.log(`  connection.exit = ${JSON.stringify(second.exit)}`)
+
 } finally {
   step("clean up: kill the demo session, remove the private directory")
   console.log((await zmx("kill", name)).stdout.toString().trimEnd())
