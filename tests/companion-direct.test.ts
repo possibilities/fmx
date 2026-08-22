@@ -62,33 +62,36 @@ const zmx = async (...args: string[]) => {
 }
 
 /**
- * Start a session through `attach` under pipes (creation is tranche 3's
- * `create`), then drop that client.
- *
- * Readiness is the session appearing in `list`, not anything the starting
- * client printed: whether that client sees the child's first output at all is
- * a timing race in the daemon today (see the reattach note below), and this
- * harness must not depend on which way it falls.
+ * Start a session through `create --json`: it returns once the child has
+ * crossed exec, so readiness is the Companion's word, not a poll of `list`.
+ * The one-shot creator is gone by the time this returns; nothing holds a
+ * client open.
  */
-const startSession = async (name: string) => {
+const startSession = async (name: string, script = CHILD_SCRIPT) => {
   sessions.push(name)
-  const attach = Bun.spawn([ZMX!, "attach", name, "sh", "-c", CHILD_SCRIPT], {
-    env,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  try {
-    const started = await waitFor(async () => (await sessionPid(name)) !== null)
-    // Let the child reach its read loop before the only client goes away.
-    if (started) await sleep(200)
-    expect(started).toBe(true)
-  } finally {
-    // Killed on the failing path too, or it outlives the test run.
-    attach.kill("SIGKILL")
-    await attach.exited
-  }
+  const created = await create(name, ["sh", "-c", script])
+  expect(created.ok).toBe(true)
+  expect(alive(created.pid as number)).toBe(true)
+  // Let the child reach its read loop before anyone types at it.
+  await sleep(200)
   return join(dir, name)
+}
+
+/** `create --json`, parsed: the shape fmx will consume. */
+const create = async (name: string, argv: string[], labels?: string) => {
+  const args = ["create", "--json", ...(labels ? ["--labels", labels] : []), name, "--", ...argv]
+  const { code, stdout, stderr } = await zmx(...args)
+  const report = JSON.parse(stdout) as Record<string, unknown>
+  expect(stderr).toBe("")
+  expect(code).toBe(report.ok ? 0 : 1)
+  return report
+}
+
+/** `inspect --json`, parsed. */
+const inspect = async (name: string) => {
+  const { code, stdout } = await zmx("inspect", "--json", name)
+  expect(code).toBe(0)
+  return JSON.parse(stdout) as Record<string, unknown>
 }
 
 const sessionPid = async (name: string): Promise<number | null> => {
@@ -348,4 +351,66 @@ test.skipIf(!ENABLED)("a client the daemon cannot serve is told the daemon's ran
 
   // Refused clients leave the session untouched.
   expect(await sessionPid("s3")).not.toBeNull()
+})
+
+test.skipIf(!ENABLED)("create answers on readiness, with labels the session is born with; exit records agree with Exit", async () => {
+  const report = await create("s5", ["sh", "-c", CHILD_SCRIPT], "owner=fmx instance=s5")
+  sessions.push("s5")
+  expect(report).toMatchObject({ ok: true, name: "s5", socketPath: join(dir, "s5") })
+  expect(typeof report.pid).toBe("number")
+  expect(typeof report.createdAt).toBe("number")
+
+  // Discovery sees it live, labelled, speaking our protocol, and touches nothing.
+  const live = await inspect("s5")
+  expect(live).toMatchObject({
+    name: "s5",
+    state: "live",
+    pid: report.pid,
+    labels: { owner: "fmx", instance: "s5" },
+    lifecycle: "running",
+    protocol: { minVersion: PROTOCOL_VERSION, maxVersion: PROTOCOL_VERSION },
+  })
+  const { stdout: filtered } = await zmx("list", "--json", "--where", "instance=s5")
+  expect((JSON.parse(filtered) as { name: string }[]).map((e) => e.name)).toEqual(["s5"])
+  const { stdout: none } = await zmx("list", "--json", "--where", "instance=other")
+  expect(JSON.parse(none)).toEqual([])
+
+  // A taken name is refused; the command it carried never runs.
+  const dup = await create("s5", ["sh", "-c", `touch ${join(dir, "never")}; sleep 30`])
+  expect(dup).toMatchObject({ ok: false, name: "s5", error: "AlreadyExists" })
+  await sleep(200)
+  expect(existsSync(join(dir, "never"))).toBe(false)
+
+  // A command that cannot start is reported exactly, and leaves an exit
+  // record saying so, not a socket.
+  const bad = await create("s6", ["/nonexistent/fx", "--flag"])
+  expect(bad).toMatchObject({ ok: false, name: "s6", error: "ExecFailed", detail: "FileNotFound" })
+  expect(await waitFor(async () => (await inspect("s6")).state === "exited")).toBe(true)
+  expect(await inspect("s6")).toMatchObject({ state: "exited", exit: { reason: "exec_failure" } })
+  expect(existsSync(join(dir, "s6"))).toBe(false)
+
+  // The child ends while a client watches: the Exit frame and the record
+  // that outlives the socket say the same thing.
+  const connection = await CompanionConnection.connect(join(dir, "s5"))
+  const seen = new Capture(connection)
+  connection.attach({ rows: 24, cols: 80 })
+  const closed = new Promise<void>((resolve) => connection.onClose(() => resolve()))
+  connection.write("quit\r")
+  await closed
+  sessions = sessions.filter((s) => s !== "s5")
+  expect(seen.exit).toEqual({ code: 7, signal: 0, reason: ExitReason.natural })
+  expect(await waitFor(async () => (await inspect("s5")).state === "exited")).toBe(true)
+  expect(await inspect("s5")).toMatchObject({
+    state: "exited",
+    pid: report.pid,
+    labels: { owner: "fmx", instance: "s5" },
+    exit: { code: 7, signal: 0, reason: "natural" },
+  })
+
+  // Consumed, it is absent; forgetting twice is not an error.
+  for (const name of ["s5", "s6"]) {
+    expect((await zmx("forget", name)).code).toBe(0)
+    expect((await zmx("forget", name)).code).toBe(0)
+    expect(await inspect(name)).toEqual({ name, state: "absent" })
+  }
 })

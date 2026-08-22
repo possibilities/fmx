@@ -3,7 +3,7 @@
  * Demo: a Bun process drives a Companion-owned PTY over the socket, with no
  * PTY of its own, and the child survives the client going away.
  *
- *   FMX_ZMX_PATH=~/src/zmx/zig-out/bin/zmx bun scripts/zmx-direct-demo.ts
+ *   FMX_ZMX_PATH=~/src/zmx/zig-out/bin/zmx bun scripts/companion-demo.ts
  *
  * Everything happens in a private ZMX_DIR created under /tmp for this run;
  * your own zmx sessions are never touched. The one session it creates is
@@ -40,18 +40,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const zmx = (...args: string[]) => Bun.$`${ZMX} ${args}`.env(env).nothrow().quiet()
 
 try {
-  step(`start a child in a Companion session (private ZMX_DIR=${dir})`)
-  // Creation goes through `attach` under pipes until tranche 3 adds `create`.
-  const starter = Bun.spawn([ZMX, "attach", name, "sh", "-c", 'echo "hello from the child, pid $$"; while IFS= read -r l; do case "$l" in quit) exit 3;; *) echo "child got: $l";; esac; done'], {
-    env,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  await sleep(400)
-  starter.kill("SIGKILL")
-  await starter.exited
-  console.log(`  the client that started it is gone (killed); session list:`)
+  step(`create a child in a Companion session (private ZMX_DIR=${dir})`)
+  // `create --json` returns once the child has crossed exec; no client is
+  // left holding the session open.
+  const created = await zmx("create", "--json", name, "--", "sh", "-c", 'echo "hello from the child, pid $$"; while IFS= read -r l; do case "$l" in quit) exit 3;; *) echo "child got: $l";; esac; done')
+  console.log(`  ${created.stdout.toString().trimEnd()}`)
+  await sleep(200)
+  console.log(`  nothing is attached; session list:`)
   console.log((await zmx("list")).stdout.toString().trimEnd())
 
   step("Bun connects directly to the socket and negotiates")
