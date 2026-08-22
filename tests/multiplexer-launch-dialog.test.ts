@@ -78,6 +78,88 @@ test("opens on the prompt, over the project fmx was started in", async () => {
   }
 })
 
+test("edits the prompt as a real field: readline keys, kills, and yanks", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    await setup.mockInput.typeText("fix the flaky test")
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("prompt    fix the flaky test")
+
+    // ctrl+a to the line start, then ctrl+k kills the line into the ring.
+    setup.mockInput.pressKey("a", { ctrl: true })
+    setup.mockInput.pressKey("k", { ctrl: true })
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).not.toContain("fix the flaky test")
+
+    // ctrl+y yanks it back — the ring is fmx's, the kill was the widget's.
+    setup.mockInput.pressKey("y", { ctrl: true })
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("prompt    fix the flaky test")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("grows with a multiline prompt and keeps enter for the form", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
+  const dialog = setup.renderer.root.findDescendantById("fmx-launch-dialog")
+  if (!(dialog instanceof BoxRenderable)) return
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    await setup.renderOnce()
+    const oneLine = dialog.height
+
+    await setup.mockInput.typeText("first")
+    setup.mockInput.pressEnter({ shift: true })
+    await setup.mockInput.typeText("second")
+    await setup.renderOnce()
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("first")
+    expect(frame).toContain("second")
+    expect(dialog.height).toBe(oneLine + 1)
+
+    // Plain enter is still the form's: it advances rather than inserting.
+    setup.mockInput.pressEnter()
+    await setup.renderOnce()
+    expect(dialog.height).toBe(oneLine + 1)
+    expect(setup.captureCharFrame()).toContain("space pick")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("hands typing back to the rows once the prompt loses focus", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    await setup.mockInput.typeText("a prompt")
+    setup.mockInput.pressTab()
+    // On the project row the same letter cycles instead of typing.
+    setup.mockInput.pressKey("z")
+    await setup.renderOnce()
+
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("prompt    a prompt")
+    expect(frame).toContain("project   ~/code/zulu")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("cycles the project by letter and filters it in the picker", async () => {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })

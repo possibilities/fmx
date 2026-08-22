@@ -31,8 +31,11 @@ it, and space opens a picker that filters as you type. Projects are listed
 most-recently-worked-in first. On the worktree row space toggles, and `y` and
 `n` say it outright.
 
-A prompt is typed into the agent once it is up, so the session starts already
-working on it. A worktree is branched from whatever the project has checked
+The prompt is a real editor: multiline, with readline keys (word motions,
+kills, selection, undo), a kill ring on `ctrl-y` and `alt-y`, and `ctrl-g` to
+write it in `$EDITOR`. Enter moves to the next row; `shift-enter` and `ctrl-j`
+make a newline. It is pasted into the agent once it is up, so the session
+starts already working on it. A worktree is branched from whatever the project has checked
 out, named `<project>-<ordinal>` — `fmx-1`, `fmx-2` — and checked out under
 `worktree_root`:
 

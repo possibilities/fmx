@@ -49,6 +49,7 @@ import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from
 import { SessionList } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
+import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
 
@@ -85,8 +86,10 @@ const MODIFIER_ONLY_KEYS = new Set([
   "iso_level3_shift",
   "iso_level5_shift",
 ])
-/** How long after fx first reports itself the launch prompt is typed in. */
+/** How long after fx first reports itself the launch prompt is pasted in. */
 const PROMPT_SETTLE_MS = 250
+/** How long after the paste the send follows, so fx sees them apart. */
+const PROMPT_SUBMIT_MS = 120
 const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
 const FORCED_EXIT_TIMEOUT_MS = 500
 const MAX_SCROLLBACK_BYTES = 10_000_000
@@ -188,7 +191,16 @@ class FxInstance {
       const prompt = this.pendingPrompt
       this.pendingPrompt = null
       if (prompt === null || this.status !== "running") return
-      this.writeInput(new TextEncoder().encode(`${prompt}\r`), "input")
+      // As a bracketed paste, not as typed bytes: a newline typed into fx
+      // submits at the first line, where a pasted one stays part of the text.
+      const encoder = new TextEncoder()
+      this.writeInput(encoder.encode(bracketedPaste(prompt)), "input")
+      // The send is a separate write: fx discards a paste when anything
+      // follows its end marker in the same one.
+      this.promptTimer = setTimeout(() => {
+        this.promptTimer = null
+        if (this.status === "running") this.writeInput(encoder.encode("\r"), "input")
+      }, PROMPT_SUBMIT_MS)
     }, PROMPT_SETTLE_MS)
   }
 
@@ -348,6 +360,7 @@ export class Multiplexer {
   private readonly keyreleaseHandler = (key: KeyEvent) => this.onKeyRelease(key)
   private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
+  private readonly pasteHandler = () => this.launchDialog.handlePaste()
   private readonly resizeHandler = () => this.applyLayout()
   private readonly frameHandler = (frame: SocketFrame) => this.debugPanel?.append(frame)
   private readonly registryHandler = (frame: SocketFrame) => {
@@ -498,6 +511,7 @@ export class Multiplexer {
     this.renderer.root.add(this.launchDialog.root)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
+    this.renderer.keyInput.on("paste", this.pasteHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
@@ -538,6 +552,7 @@ export class Multiplexer {
       await Promise.allSettled(this.instances.map((instance) => instance.stop()))
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
+      this.renderer.keyInput.off("paste", this.pasteHandler)
       this.renderer.off(CliRenderEvents.SELECTION, this.selectionHandler)
       this.renderer.off(CliRenderEvents.PALETTE, this.paletteHandler)
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
@@ -840,8 +855,15 @@ export class Multiplexer {
     }
 
     if (this.launchDialog.isOpen()) {
-      this.swallow(key)
-      if (!MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) this.launchDialog.handleKey(key)
+      if (MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) {
+        this.swallow(key)
+        return
+      }
+      // A key the dialog declines belongs to its focused prompt field, which
+      // the renderer feeds through its own dispatch — swallowing it here
+      // would stop it ever arriving. fx is blurred, so nothing else can take
+      // it either.
+      if (this.launchDialog.handleKey(key)) this.swallow(key)
       return
     }
 

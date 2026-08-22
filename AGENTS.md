@@ -14,7 +14,15 @@
 - fx has no flag for an interactive prompt — `fx ask` is noninteractive and a
   bare positional is an unknown subcommand. A launch prompt is therefore typed
   into the PTY and submitted, once the pane's first agent-socket frame says fx
-  is up. Do not look for a flag; there isn't one.
+  is up. Do not look for a flag; there isn't one. It goes in as a bracketed
+  paste so newlines survive, and the carriage return that sends it is a
+  separate write a beat later — fx discards a paste when anything follows its
+  end marker in the same write.
+- The launch dialog's prompt is OpenTUI's textarea, fed by the renderer's own
+  dispatch to the focused renderable. That is why `Multiplexer.onKeyPress`
+  swallows a key only when `LaunchDialog.handleKey` says it kept it: a
+  swallowed key never reaches the widget. fx is blurred while the dialog is
+  open, so a key let through can reach nothing else.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
 - fmx has no quit/close/detach keys: fx exits govern the lifecycle. A tab

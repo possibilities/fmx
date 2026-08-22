@@ -53,10 +53,18 @@ the next value starting with it, and space opens its picker.
 _Avoid_: new tab modal, launcher, form.
 
 **Launch prompt** — the text an instance starts working on. fx takes no prompt
-on its command line, so fmx types it into the terminal and sends it once fx
+on its command line, so fmx pastes it into the terminal and sends it once fx
 has reported itself over the agent socket. An instance launched with one is
 therefore already working when it is first looked at.
 _Avoid_: intent, initial message, seed.
+
+**Prompt editor** — the launch dialog's prompt row: OpenTUI's textarea, which
+is a real line editor. Everything readline-shaped is the widget's; fmx owns
+only the kill ring it yanks from and the handoff to `$EDITOR`. It takes keys
+through the renderer's dispatch to the focused renderable, so the dialog lets
+its keys through rather than swallowing them, and a blurred field is what
+leaves a letter on another row free to cycle.
+_Avoid_: input, textarea, prompt field.
 
 **Worktree** — a checkout fmx cuts for a launch, branched from what the chosen
 project has checked out. Its branch and its directory share one name,

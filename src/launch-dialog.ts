@@ -12,6 +12,7 @@ import {
 import { MODAL_FALLBACK_COLORS, type ModalColors, modalColors } from "./host-palette.ts"
 import { isCancelKey } from "./keybindings.ts"
 import { cycleByLetter, matchProjects, type ProjectChoice } from "./projects.ts"
+import { isStructuralKey, PromptEditor } from "./prompt-editor.ts"
 
 /**
  * The launch dialog: what an instance is started with, gathered before fx
@@ -36,15 +37,15 @@ const LABEL_COLUMN = 10
 const ROWS = ["prompt", "project", "worktree"] as const
 type Row = (typeof ROWS)[number]
 
-/** Border, the three rows, a blank line, and the hint. */
-const DIALOG_HEIGHT = ROWS.length + 4
+/** Border, the chooser rows, a blank line, and the hint — everything but the
+ * prompt, which is as tall as what has been written in it. */
+const DIALOG_CHROME_HEIGHT = ROWS.length + 3
 
 const HINTS: Readonly<Record<Row, string>> = {
-  prompt: "⏎ next · tab move · esc cancel",
+  prompt: "⏎ next · ⇧⏎ newline · ^g editor · esc cancel",
   project: "space pick · ←→ cycle · ⏎ start · esc cancel",
   worktree: "space toggle · ⏎ start · esc cancel",
 }
-const PROMPT_PLACEHOLDER = "what should the agent do?"
 const PICKER_HINT = "type to filter"
 const EMPTY = "no projects found — set project_roots in the config"
 const WORKTREE_UNAVAILABLE = "unavailable — not a repository"
@@ -68,6 +69,8 @@ export class LaunchDialog {
   readonly root: BoxRenderable
   private readonly dialog: BoxRenderable
   private readonly rowTexts = new Map<Row, TextRenderable>()
+  private readonly promptRow: BoxRenderable
+  private readonly editor: PromptEditor
   private readonly hintText: TextRenderable
   private readonly picker: BoxRenderable
   private readonly filterText: TextRenderable
@@ -77,8 +80,9 @@ export class LaunchDialog {
   private projects: ProjectChoice[] = []
   private selected = 0
   private focus = 0
-  private prompt = ""
   private worktree = false
+  /** Set when the external editor could not be run, or refused to answer. */
+  private notice: string | null = null
   /** Null until the answer for the selected project arrives. */
   private worktreeAvailable: boolean | null = null
   private open = false
@@ -118,26 +122,44 @@ export class LaunchDialog {
       titleAlignment: "left",
       onMouseDown: (event) => event.stopPropagation(),
     })
+    this.editor = new PromptEditor(renderer, { onChange: () => this.layout() })
     for (const [index, row] of ROWS.entries()) {
       const text = new TextRenderable(renderer, {
         id: `fmx-launch-row-${row}`,
         content: "",
         height: 1,
+        // The prompt's label sits beside a field that grows; the chooser
+        // rows are their whole line.
+        width: row === "prompt" ? LABEL_COLUMN + 2 : undefined,
         selectable: false,
         onMouseDown: (event) => {
           // A press on a row is its primary action: focus it, and act where
           // the row has an action of its own.
           event.preventDefault()
           event.stopPropagation()
-          this.focus = index
+          this.setFocus(index)
           if (row === "worktree") this.toggleWorktree()
           else if (row === "project") this.openPicker()
-          else this.layout()
         },
       })
       this.rowTexts.set(row, text)
-      this.dialog.add(text)
+      if (row !== "prompt") this.dialog.add(text)
     }
+    this.promptRow = new BoxRenderable(renderer, {
+      id: "fmx-launch-prompt-row",
+      width: "100%",
+      height: 1,
+      flexShrink: 0,
+      flexDirection: "row",
+      onMouseDown: (event) => {
+        event.stopPropagation()
+        this.setFocus(ROWS.indexOf("prompt"))
+      },
+    })
+    this.promptRow.add(this.rowTexts.get("prompt")!)
+    this.promptRow.add(this.editor.root)
+    // The prompt leads, as it does in the form fmx borrowed this from.
+    this.dialog.insertBefore(this.promptRow, this.rowTexts.get("project"))
     // A blank line separates the hint from the choices, not a rule: on a
     // character grid a rule can only sit mid-cell or at the cell's floor, and
     // neither lands between two rows — it reads as underlining one of them.
@@ -202,14 +224,16 @@ export class LaunchDialog {
     this.projects = [...projects]
     const at = this.projects.findIndex((project) => project.directory === preselect)
     this.selected = at === -1 ? 0 : at
-    this.prompt = ""
+    this.editor.reset()
     this.worktree = false
     this.worktreeAvailable = null
+    this.notice = null
     this.focus = 0
     this.open = true
     this.picking = false
     this.root.visible = true
     this.picker.visible = false
+    this.editor.focus()
     this.askAboutWorktree()
     this.layout()
   }
@@ -218,6 +242,7 @@ export class LaunchDialog {
     if (!this.open) return
     this.open = false
     this.picking = false
+    this.editor.blur()
     this.root.visible = false
     this.picker.visible = false
     this.clearRows()
@@ -247,27 +272,54 @@ export class LaunchDialog {
       text.fg = this.colors.foreground
       text.bg = this.colors.background
     }
+    this.promptRow.backgroundColor = this.colors.background
+    this.editor.applyPalette(this.colors)
     if (this.open) this.layout()
   }
 
-  /** Every key while the dialog is open belongs to it; the caller has already
-   * swallowed it, so nothing here needs to fall through. */
-  handleKey(key: KeyEvent): void {
-    if (!this.open) return
+  /**
+   * Answers whether the dialog kept the key. A false means the focused prompt
+   * field should have it, and the caller must leave it alone: the widget is
+   * fed by the renderer's own dispatch, which a swallowed key never reaches.
+   */
+  handleKey(key: KeyEvent): boolean {
+    if (!this.open) return false
+    // While $EDITOR holds the terminal the keys are its own.
+    if (this.editor.suspended) return false
     // Escape steps back one layer, closing the picker onto the row it came
     // from; ctrl+c leaves outright, from whichever layer is in front.
+    // Any key moves on from what the external editor had to say.
+    this.notice = null
     if (isCancelKey(key)) {
       this.close()
-      return
+      return true
     }
-    if (this.picking) this.handlePickerKey(key)
-    else this.handleRowKey(key)
+    if (this.picking) {
+      this.handlePickerKey(key)
+      return true
+    }
+    if (this.currentRow() === "prompt" && !isStructuralKey(key)) {
+      // The field owns every readline chord, ctrl+k included — it is
+      // kill-to-line-end here whatever it may be on another row.
+      this.editor.observe(key)
+      return false
+    }
+    this.handleRowKey(key)
+    return true
+  }
+
+  /** Paste reaches the focused field through the renderer; the dialog only
+   * has to re-measure once it lands. */
+  handlePaste(): void {
+    if (this.open && this.currentRow() === "prompt") this.editor.observePaste()
   }
 
   layout(): void {
     if (!this.open) return
     const width = Math.max(DIALOG_MIN_WIDTH, Math.min(DIALOG_MAX_WIDTH, this.renderer.width - 8))
-    center(this.dialog, width, DIALOG_HEIGHT)
+    const promptRows = this.editor.measure(width - 4 - LABEL_COLUMN - 2)
+    this.promptRow.height = promptRows
+    center(this.dialog, width, DIALOG_CHROME_HEIGHT + promptRows)
     this.paintRows(width - 4)
     if (this.picking) this.paintPicker(width)
     this.renderer.requestRender()
@@ -299,7 +351,7 @@ export class LaunchDialog {
     }
     switch (this.currentRow()) {
       case "prompt":
-        this.handlePromptKey(key)
+        if (key.ctrl === true && key.name === "g") void this.editExternally()
         return
       case "project":
         this.handleProjectKey(key)
@@ -310,20 +362,10 @@ export class LaunchDialog {
     }
   }
 
-  private handlePromptKey(key: KeyEvent): void {
-    if (key.name === "backspace") {
-      this.prompt = [...this.prompt].slice(0, -1).join("")
-      this.layout()
-      return
-    }
-    if (key.ctrl && key.name.toLowerCase() === "u") {
-      this.prompt = ""
-      this.layout()
-      return
-    }
-    const character = printableFrom(key)
-    if (character === null) return
-    this.prompt += character
+  private async editExternally(): Promise<void> {
+    this.notice = await this.editor.editExternally()
+    if (!this.open) return
+    this.editor.focus()
     this.layout()
   }
 
@@ -388,7 +430,15 @@ export class LaunchDialog {
   }
 
   private moveFocus(delta: number): void {
-    this.focus = (((this.focus + delta) % ROWS.length) + ROWS.length) % ROWS.length
+    this.setFocus((((this.focus + delta) % ROWS.length) + ROWS.length) % ROWS.length)
+  }
+
+  /** Focus is the field's too: a blurred field neither takes keys nor draws a
+   * cursor, which is what leaves a letter on the project row free to cycle. */
+  private setFocus(index: number): void {
+    this.focus = index
+    if (this.currentRow() === "prompt") this.editor.focus()
+    else this.editor.blur()
     this.layout()
   }
 
@@ -405,6 +455,12 @@ export class LaunchDialog {
     this.layout()
   }
 
+  /** Focus without a repaint, for callers that lay out immediately after. */
+  private setFocusQuietly(index: number): void {
+    this.focus = index
+    this.editor.blur()
+  }
+
   private askAboutWorktree(): void {
     const directory = this.projects[this.selected]?.directory
     if (directory) this.events.onProjectChange(directory)
@@ -412,7 +468,7 @@ export class LaunchDialog {
 
   private openPicker(): void {
     if (this.projects.length === 0) return
-    this.focus = ROWS.indexOf("project")
+    this.setFocusQuietly(ROWS.indexOf("project"))
     this.picking = true
     this.filter = ""
     // The picker opens on the row's own choice, so dismissing it changes
@@ -435,7 +491,7 @@ export class LaunchDialog {
     if (!project) return
     const request: LaunchRequest = {
       directory: project.directory,
-      prompt: this.prompt.trim(),
+      prompt: this.editor.text.trim(),
       worktree: this.worktree,
     }
     this.close()
@@ -481,18 +537,18 @@ export class LaunchDialog {
       ])
     }
     this.hintText.content = new StyledText([
-      fg(this.colors.dim)(truncate(HINTS[this.currentRow()], inner)),
+      this.notice === null
+        ? fg(this.colors.dim)(truncate(HINTS[this.currentRow()], inner))
+        : fg(this.colors.error)(truncate(this.notice, inner)),
     ])
   }
 
   private rowValue(row: Row, project: ProjectChoice | undefined, width: number): TextChunk[] {
     switch (row) {
+      // The prompt draws itself: the field is a renderable beside the label,
+      // with its own cursor, scroll, and placeholder.
       case "prompt":
-        // A prompt longer than the row is cut at its head, so what stays on
-        // screen is what was typed last — where the cursor would be.
-        return this.prompt === ""
-          ? [fg(this.colors.dim)(truncate(PROMPT_PLACEHOLDER, width))]
-          : [fg(this.colors.foreground)(truncateHead(this.prompt, width))]
+        return []
       case "project":
         return [
           project
@@ -606,12 +662,4 @@ function truncate(value: string, width: number): string {
   if (characters.length <= width) return value
   if (width === 1) return "…"
   return `${characters.slice(0, width - 1).join("")}…`
-}
-
-function truncateHead(value: string, width: number): string {
-  if (width <= 0) return ""
-  const characters = [...value]
-  if (characters.length <= width) return value
-  if (width === 1) return "…"
-  return `…${characters.slice(characters.length - width + 1).join("")}`
 }
