@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs"
+import { type FSWatcher, readFileSync, statSync, watch } from "node:fs"
 import { isAbsolute, join } from "node:path"
 import type { SlugSettings } from "./config.ts"
 import { ensureInferenceEffort, fxSettingsPath, inferenceWorkspace, readFxProvider } from "./fx-profile.ts"
@@ -24,10 +24,15 @@ import { buildInstruction, excerptFrom } from "./slug-text.ts"
  */
 
 /**
- * How long an attempt waits between re-reads of its session's log. fx writes
- * the prompt a second or several after it is submitted — usually two or three,
- * occasionally ten — so the early polls are quick and then ease off, rather
- * than charging a fixed interval to every name.
+ * A watch delivers fx's write; this is only the sweep behind it, for a
+ * filesystem whose watches drop events. Long, because it should almost never
+ * be what notices.
+ */
+const PROMPT_SWEEP_MS = 5_000
+/**
+ * How long an attempt waits between re-reads when it has no watch at all. fx
+ * writes the prompt a second or several after it is submitted — usually two or
+ * three, occasionally ten — so the early reads are quick and then ease off.
  */
 const PROMPT_POLL_MS = [250, 250, 250, 250, 500, 500, 500, 1_000, 1_000] as const
 const PROMPT_POLL_STEADY_MS = 2_000
@@ -169,21 +174,35 @@ export class SlugNamer {
     }
   }
 
+  /**
+   * Wait for fx to record the prompt, woken by the write rather than looking
+   * for it. A read still comes first, and a slow sweep still runs behind the
+   * watch, so a missed event costs seconds rather than the name.
+   */
   private async waitForPrompt(sessionDirectory: string): Promise<FirstPrompt | null> {
     const deadline = Date.now() + PROMPT_WINDOW_MS
-    for (let poll = 0; !this.stopped; poll += 1) {
-      const prompt = await readFirstPrompt(sessionDirectory)
-      if (prompt !== null) return prompt
-      if (Date.now() >= deadline) return null
-      await this.wait(PROMPT_POLL_MS[poll] ?? PROMPT_POLL_STEADY_MS)
+    const changes = DirectoryChanges.open(sessionDirectory)
+    try {
+      for (let poll = 0; !this.stopped; poll += 1) {
+        const prompt = await readFirstPrompt(sessionDirectory)
+        if (prompt !== null) return prompt
+        if (Date.now() >= deadline) return null
+        if (changes === null) await this.wait(PROMPT_POLL_MS[poll] ?? PROMPT_POLL_STEADY_MS)
+        else await Promise.race([changes.changed(), this.wait(PROMPT_SWEEP_MS)])
+      }
+      return null
+    } finally {
+      changes?.close()
     }
-    return null
   }
 
   /**
-   * What an @-mention points at, or null for anything that is not a readable
-   * file. A mention is resolved against the session's own workspace, so a
-   * relative one means what it meant when it was typed.
+   * What an @-mention points at, or null for anything that is not a real file
+   * of text — a directory, a path that is not there, a binary. Only a mention
+   * that resolves is read in; every other one stays in the prompt as it was
+   * typed, because it is then just a word the human wrote. A relative mention
+   * resolves against the session's own workspace, so it means what it meant
+   * when it was typed.
    */
   private readMention(mention: string, workspaceRoot: string | null): string | null {
     const tilded = expandTilde(mention, fxHomeDirectory(this.env))
@@ -191,7 +210,8 @@ export class SlugNamer {
     if (!path) return null
     try {
       if (!statSync(path).isFile()) return null
-      return readFileSync(path, "utf8").slice(0, MENTION_FILE_BYTES)
+      const content = readFileSync(path, "utf8").slice(0, MENTION_FILE_BYTES)
+      return content.includes("\u0000") ? null : content
     } catch {
       return null
     }
@@ -233,5 +253,60 @@ export class SlugNamer {
       }, milliseconds)
       this.waits.set(timer, resolve)
     })
+  }
+}
+
+/**
+ * fx writing to a session's log, delivered rather than looked for.
+ *
+ * The directory is watched rather than the log inside it: fx creates the file
+ * a moment after the directory, and a watch opened on a file that is not there
+ * yet is no watch at all. The signal latches, so a write that lands between a
+ * read and the wait after it is not missed and then waited out.
+ */
+class DirectoryChanges {
+  static open(directory: string): DirectoryChanges | null {
+    try {
+      // Not persistent: a watch is never a reason for fmx to stay running.
+      return new DirectoryChanges(watch(directory, { persistent: false }))
+    } catch {
+      // A directory that is not there yet, or a filesystem with no watches to
+      // give. The caller's own reads are the whole answer then.
+      return null
+    }
+  }
+
+  private changed_ = false
+  private waiting: (() => void) | null = null
+
+  private constructor(private readonly watcher: FSWatcher) {
+    watcher.on("change", () => this.notify())
+    // A watch that fails mid-flight wakes the caller once so it reads again
+    // and falls back to its own sweep.
+    watcher.on("error", () => this.notify())
+  }
+
+  changed(): Promise<void> {
+    if (this.changed_) {
+      this.changed_ = false
+      return Promise.resolve()
+    }
+    return new Promise((resolve) => {
+      this.waiting = resolve
+    })
+  }
+
+  close(): void {
+    this.watcher.close()
+  }
+
+  private notify(): void {
+    const waiting = this.waiting
+    if (waiting === null) {
+      this.changed_ = true
+      return
+    }
+    this.waiting = null
+    waiting()
   }
 }

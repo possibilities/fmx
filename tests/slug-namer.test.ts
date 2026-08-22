@@ -193,11 +193,51 @@ test("an @-mentioned file is read into the excerpt", async () => {
     onSlug: () => {},
   })
   try {
-    namer.note(SESSION, { text: "do @plan.md and @missing.md", workspaceRoot: fixture.home })
+    await mkdir(join(fixture.home, "docs"), { recursive: true })
+    await writeFile(join(fixture.home, "logo.bin"), "PNG\u0000\u0001binary", "utf8")
+
+    namer.note(SESSION, {
+      text: "do @plan.md and @missing.md and @docs and @logo.bin",
+      workspaceRoot: fixture.home,
+    })
     await named(namer, SESSION)
 
+    // Only a real file of text is read in; every other mention is left as the
+    // word it was.
     const asked = await readFile(fixture.askedPath, "utf8")
-    expect(asked).toContain("do rename the tabs from the prompt and @missing.md")
+    expect(asked).toContain(
+      "do rename the tabs from the prompt and @missing.md and @docs and @logo.bin",
+    )
+  } finally {
+    namer.stop()
+  }
+})
+
+test("fx writing the prompt wakes naming, rather than a sweep noticing it", async () => {
+  const fixture = await harness({ prompted: false })
+  const namer = new SlugNamer({
+    fxPath: fixture.fxPath,
+    settings: defaultSlugSettings(),
+    env: fixture.env,
+    home: fixture.home,
+    onSlug: () => {},
+  })
+  try {
+    namer.note(SESSION)
+    await Bun.sleep(100)
+
+    const started = Date.now()
+    await writeFile(
+      join(fixture.home, ".fx", "sessions", SESSION, "events.jsonl"),
+      `${JSON.stringify({
+        kind: "recovery_checkpoint_set",
+        payload: { checkpoint: { user: { text: "name every instance" } } },
+      })}\n`,
+      "utf8",
+    )
+    expect(await named(namer, SESSION)).toBe("name-every-instance")
+    // The sweep behind the watch is five seconds; only the watch is this fast.
+    expect(Date.now() - started).toBeLessThan(2_000)
   } finally {
     namer.stop()
   }

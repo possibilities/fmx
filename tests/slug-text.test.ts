@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   buildInstruction,
-  centerTruncate,
+  truncateExcerpt,
   excerptFrom,
   expandFileMentions,
   slugFromAnswer,
@@ -35,17 +35,13 @@ describe("stripSlashCommand", () => {
   })
 })
 
-describe("centerTruncate", () => {
+describe("truncateExcerpt", () => {
   test("keeps short text whole", () => {
-    expect(centerTruncate("short", 100)).toBe("short")
+    expect(truncateExcerpt("short", 100)).toBe("short")
   })
 
-  test("cuts the middle, keeping head and tail", () => {
-    const truncated = centerTruncate(`${"a".repeat(50)}${"b".repeat(50)}`, 20)
-    expect(truncated.length).toBe(20)
-    expect(truncated.startsWith("aaa")).toBe(true)
-    expect(truncated.endsWith("bbb")).toBe(true)
-    expect(truncated).toContain("…")
+  test("keeps the opening and drops the rest", () => {
+    expect(truncateExcerpt(`${"a".repeat(10)}${"b".repeat(50)}`, 12)).toBe(`${"a".repeat(10)}bb`)
   })
 })
 
@@ -104,8 +100,8 @@ describe("excerptFrom and buildInstruction", () => {
   })
 
   test("strips the command, reads mentions in, then bounds the whole", () => {
-    const excerpt = excerptFrom("/collab --deep @plan.md", () => "a".repeat(EXCERPT_BUDGET * 2))
+    const excerpt = excerptFrom("/collab --deep @plan.md", () => `read-in${"a".repeat(EXCERPT_BUDGET * 2)}`)
     expect(excerpt.length).toBe(EXCERPT_BUDGET)
-    expect(excerpt).toContain("…")
+    expect(excerpt.startsWith("read-in")).toBe(true)
   })
 })

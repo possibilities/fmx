@@ -60,8 +60,10 @@
 - Naming is fastest when fmx already holds the prompt: an instance launched
   with one names itself from what fmx typed, without waiting for fx to write
   it down. For a prompt typed by hand there is no such shortcut — fx records
-  it 2 to 11 seconds after submit — so the early polls are quick and then ease
-  off. `~/.fx/history.jsonl` does hold every prompt at submit time, but it
+  it 2 to 11 seconds after submit — so the session directory is watched and the
+  write itself wakes naming; the sweep behind that watch is a safety net for a
+  filesystem that drops events, not the thing that should ever notice.
+  `~/.fx/history.jsonl` does hold every prompt at submit time, but it
   carries a workspace and a timestamp and no session id: two instances in one
   directory could take each other's name, and a wrong name is worse than a
   slow one.

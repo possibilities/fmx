@@ -8,11 +8,10 @@
  * column without a width surprise.
  */
 
-/** Character budget for the excerpt handed to the completion. Truncation cuts
- * the middle: the ask is usually at the head and the constraints at the tail. */
+/** Character budget for the excerpt handed to the completion. What overruns it
+ * is dropped from the end: the ask is at the top of a prompt, and a title
+ * drawn from the opening is the same title the whole prompt would have earned. */
 export const EXCERPT_BUDGET = 1600
-const HEAD_SHARE = 0.6
-const TRUNCATION_MARK = "\n…\n"
 
 /** Longest slug fmx will mint. Long enough for six words, short enough that a
  * sidebar row still fits a project and a branch above it. */
@@ -38,12 +37,9 @@ function stripFlagTokens(text: string): string {
     .trim()
 }
 
-/** Bound the excerpt by cutting the middle; head and tail survive, marked. */
-export function centerTruncate(text: string, budget: number = EXCERPT_BUDGET): string {
-  if (text.length <= budget) return text
-  const keep = budget - TRUNCATION_MARK.length
-  const head = Math.ceil(keep * HEAD_SHARE)
-  return text.slice(0, head) + TRUNCATION_MARK + text.slice(text.length - (keep - head))
+/** Bound the excerpt by keeping its opening. */
+export function truncateExcerpt(text: string, budget: number = EXCERPT_BUDGET): string {
+  return text.length <= budget ? text : text.slice(0, budget)
 }
 
 /**
@@ -62,13 +58,14 @@ export function expandFileMentions(
   })
 }
 
-/** A recorded prompt as the completion sees it: the command stripped, its
- * mentions read in, and the whole bounded. */
+/** A recorded prompt as the completion sees it, in that order: the command
+ * stripped, its mentions read in, and only then the whole bounded — so the
+ * budget is spent on what the prompt is actually about. */
 export function excerptFrom(
   prompt: string,
   readMention: (path: string) => string | null = () => null,
 ): string {
-  return centerTruncate(expandFileMentions(stripSlashCommand(prompt), readMention))
+  return truncateExcerpt(expandFileMentions(stripSlashCommand(prompt), readMention))
 }
 
 /** What fmx asks for. Only the title text comes back, so the answer needs no
