@@ -9,6 +9,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import { MODAL_FALLBACK_COLORS, type ModalColors, modalColors } from "./host-palette.ts"
+import { isCancelKey } from "./keybindings.ts"
 import { cycleByLetter, matchProjects, type ProjectChoice } from "./projects.ts"
 
 /**
@@ -194,6 +195,12 @@ export class LaunchDialog {
    * swallowed it, so nothing here needs to fall through. */
   handleKey(key: KeyEvent): void {
     if (!this.open) return
+    // Escape steps back one layer, closing the picker onto the row it came
+    // from; ctrl+c leaves outright, from whichever layer is in front.
+    if (isCancelKey(key)) {
+      this.close()
+      return
+    }
     if (this.picking) this.handlePickerKey(key)
     else this.handleRowKey(key)
   }

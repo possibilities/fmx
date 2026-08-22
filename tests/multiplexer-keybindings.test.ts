@@ -66,6 +66,14 @@ test("uses the configured prefix and renders configured bindings", async () => {
       source: "kitty",
     })
     expect(helpModal.visible).toBe(false)
+
+    setup.mockInput.pressKey(" ", { ctrl: true })
+    setup.mockInput.pressKey("?")
+    await setup.renderOnce()
+    expect(helpModal.visible).toBe(true)
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await setup.renderOnce()
+    expect(helpModal.visible).toBe(false)
   } finally {
     await multiplexer.shutdown()
   }

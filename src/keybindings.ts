@@ -134,6 +134,8 @@ const SHIFTED_CHARACTERS: Readonly<Record<string, string>> = {
   "`": "~",
 }
 
+const CANCEL_COMBO = parseKeyCombo("ctrl+c")!
+
 export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
   const diagnostics: string[] = []
   const configured = isRecord(rawKeys) ? rawKeys : {}
@@ -196,6 +198,15 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
   }
 
   return { keybindings, diagnostics }
+}
+
+/**
+ * ctrl+c leaves any fmx surface drawn over fx. It is fixed rather than
+ * configurable, and paired with escape everywhere: a surface a human cannot
+ * get out of is worse than one whose exit they had to guess at once.
+ */
+export function isCancelKey(key: KeyEvent): boolean {
+  return keyMatchesCombo(key, CANCEL_COMBO)
 }
 
 export function keyMatchesCombo(key: KeyEvent, expected: KeyCombo): boolean {

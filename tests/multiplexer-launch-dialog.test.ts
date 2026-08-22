@@ -109,6 +109,43 @@ test("dismisses the picker back to the row without changing the choice", async (
   }
 })
 
+test("leaves the dialog on ctrl+c from either layer", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: "fx",
+    cwd: join(code, "fmx"),
+    initialFxArgs: [],
+    keybindings: resolveKeybindings().keybindings,
+    projectRoots: ["~/code"],
+    home,
+  })
+  const backdrop = setup.renderer.root.findDescendantById("fmx-launch-backdrop")
+  const picker = setup.renderer.root.findDescendantById("fmx-launch-picker")
+  if (!(backdrop instanceof BoxRenderable) || !(picker instanceof BoxRenderable)) return
+
+  try {
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await setup.renderOnce()
+    expect(backdrop.visible).toBe(false)
+
+    // From the picker it leaves outright, where escape would step back a layer.
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressKey(" ")
+    await setup.renderOnce()
+    expect(picker.visible).toBe(true)
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await setup.renderOnce()
+    expect(backdrop.visible).toBe(false)
+    expect(picker.visible).toBe(false)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("offers fmx's own workspace when no root is configured", async () => {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })

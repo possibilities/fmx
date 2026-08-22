@@ -34,6 +34,7 @@ import {
 } from "./host-palette.ts"
 import {
   actionForKey,
+  isCancelKey,
   keyIdentity,
   keyMatchesCombo,
   parseKeyCombo,
@@ -766,6 +767,7 @@ export class Multiplexer {
       this.swallow(key)
       if (
         key.name === "escape" ||
+        isCancelKey(key) ||
         (this.modalKind === "help" && keyMatchesCombo(key, HELP_CLOSE_KEY))
       ) {
         this.hideModal()
