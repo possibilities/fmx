@@ -4,7 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 
-test("renders no persistent chrome and themes keyboard-opened help", async () => {
+test("themes the empty state and keyboard-opened help", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "fx",
@@ -18,23 +18,27 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
   const modalBackdrop = setup.renderer.root.findDescendantById("fmx-modal-backdrop")
   const modal = setup.renderer.root.findDescendantById("fmx-modal")
   const modalText = setup.renderer.root.findDescendantById("fmx-modal-text")
+  const emptyState = setup.renderer.root.findDescendantById("fmx-empty-state")
 
   expect(stage).toBeInstanceOf(BoxRenderable)
   expect(modalBackdrop).toBeInstanceOf(BoxRenderable)
   expect(modal).toBeInstanceOf(BoxRenderable)
   expect(modalText).toBeInstanceOf(TextRenderable)
+  expect(emptyState).toBeInstanceOf(TextRenderable)
   expect(setup.renderer.root.findDescendantById("fmx-header")).toBeUndefined()
   expect(setup.renderer.root.findDescendantById("fmx-footer")).toBeUndefined()
   if (!(stage instanceof BoxRenderable)) return
   if (!(modalBackdrop instanceof BoxRenderable)) return
   if (!(modal instanceof BoxRenderable) || !(modalText instanceof TextRenderable)) return
+  if (!(emptyState instanceof TextRenderable)) return
 
   try {
     await setup.renderOnce()
     expect([stage.x, stage.y, stage.width, stage.height]).toEqual([0, 0, 80, 24])
     expect(modalBackdrop.visible).toBe(false)
     expect(modal.visible).toBe(false)
-    expect(setup.captureCharFrame()).not.toContain("prefix+c")
+    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
+    expect(rgb(emptyState.fg)).toEqual([174, 179, 185])
 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("?")
@@ -73,6 +77,7 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
     expect(rgb(modalText.fg)).toEqual([232, 233, 234])
     expect(rgb(modalText.bg)).toEqual([17, 18, 19])
     expect(rgb(modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))?.fg)).toEqual([136, 153, 170])
+    expect(rgb(emptyState.fg)).toEqual([82, 83, 84])
 
     await setup.mockMouse.click(modal.x + 1, modal.y + 1)
     await setup.renderOnce()
@@ -82,7 +87,7 @@ test("renders no persistent chrome and themes keyboard-opened help", async () =>
     await setup.renderOnce()
     expect(modalBackdrop.visible).toBe(false)
     expect(modal.visible).toBe(false)
-    expect(setup.captureCharFrame()).not.toContain("prefix+c")
+    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
   } finally {
     await multiplexer.shutdown()
   }

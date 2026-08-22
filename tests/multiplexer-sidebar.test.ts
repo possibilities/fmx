@@ -1,22 +1,115 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type RGBA, type TerminalColors } from "@opentui/core"
+import { BoxRenderable, type RGBA, type TerminalColors, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { fileURLToPath } from "node:url"
 import { resolveKeybindings } from "../src/keybindings.ts"
-import { Multiplexer } from "../src/multiplexer.ts"
+import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
+
+const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
 async function createMultiplexer(width: number, height: number) {
   const setup = await createTestRenderer({ width, height })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
+    fxPath: process.execPath,
     cwd: process.cwd(),
-    initialFxArgs: [],
+    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
   })
+  multiplexer.start()
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
   return { setup, multiplexer, sidebar, divider, content }
 }
+
+test("starts without an fx, hiding the sidebar and centering dimmed prefix actions", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const { keybindings } = resolveKeybindings({ prefix: "ctrl+space" })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    initialFxArgs: [],
+    keybindings,
+  })
+  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
+  const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
+  const emptyState = setup.renderer.root.findDescendantById("fmx-empty-state") as TextRenderable
+
+  try {
+    multiplexer.setHostPalette(
+      hostPalette({}, { foreground: "#a0a0a0", background: "#000000" }),
+    )
+    multiplexer.start()
+    await setup.renderOnce()
+
+    expect(sidebar.visible).toBe(false)
+    expect(divider.visible).toBe(false)
+    expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 80, 24])
+    expect(emptyState).toBeInstanceOf(TextRenderable)
+    expect([emptyState.x, emptyState.y, emptyState.width, emptyState.height]).toEqual([28, 11, 24, 2])
+    expect(rgb(emptyState.fg)).toEqual([48, 48, 48])
+    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
+    expect(setup.captureCharFrame()).toContain("prefix+l to prompt agent")
+    expect(setup.captureCharFrame()).not.toContain("ctrl+space+c")
+
+    setup.mockInput.pressKey(" ", { ctrl: true })
+    setup.mockInput.pressKey("c")
+    await setup.renderOnce()
+
+    expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
+    expect(sidebar.visible).toBe(true)
+    expect(divider.visible).toBe(true)
+    expect(emptyState.visible).toBe(false)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("requires a second ctrl+c before the empty-state exit timeout", async () => {
+  const setup = await createTestRenderer({
+    width: 80,
+    height: 24,
+    kittyKeyboard: true,
+    exitOnCtrlC: false,
+  })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    initialFxArgs: [],
+    keybindings: resolveKeybindings().keybindings,
+  })
+  let done = false
+  void multiplexer.waitUntilDone().then(() => {
+    done = true
+  })
+
+  try {
+    multiplexer.start()
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await setup.renderOnce()
+
+    expect(done).toBe(false)
+    expect(setup.captureCharFrame()).toContain("press ctrl+c again to exit")
+    expect(setup.captureCharFrame()).not.toContain("prefix+c to create agent")
+
+    await Bun.sleep(EXIT_CONFIRMATION_TIMEOUT_MS + 50)
+    await setup.renderOnce()
+    expect(done).toBe(false)
+    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
+
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await setup.renderOnce()
+    expect(done).toBe(false)
+    expect(setup.captureCharFrame()).toContain("press ctrl+c again to exit")
+
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await multiplexer.waitUntilDone()
+    expect(done).toBe(true)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
 
 test("lays out sidebar, divider line, and content row", async () => {
   const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
@@ -82,7 +175,14 @@ test("re-clamps the sidebar when the terminal shrinks", async () => {
 })
 
 test("themes the divider from the host palette", async () => {
-  const { multiplexer, divider } = await createMultiplexer(90, 24)
+  const setup = await createTestRenderer({ width: 90, height: 24 })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: "fx",
+    cwd: process.cwd(),
+    initialFxArgs: [],
+    keybindings: resolveKeybindings().keybindings,
+  })
+  const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   try {
     // Invisible until the host palette settles: painting a guessed color first
     // would flash and then swap once the real theme arrives.
@@ -113,13 +213,14 @@ test("restores a persisted width and reports changes on drag end", async () => {
   const widthChanges: number[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
+    fxPath: process.execPath,
     cwd: process.cwd(),
-    initialFxArgs: [],
+    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     initialSidebarWidth: 22,
     onSidebarWidthChange: (width) => widthChanges.push(width),
   })
+  multiplexer.start()
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -141,12 +242,13 @@ test("restores a persisted width and reports changes on drag end", async () => {
 test("clamps a stale persisted width to the current screen", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
+    fxPath: process.execPath,
     cwd: process.cwd(),
-    initialFxArgs: [],
+    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     initialSidebarWidth: 70,
   })
+  multiplexer.start()
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
   try {
     await setup.renderOnce()

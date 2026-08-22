@@ -21,7 +21,8 @@ specific release.
 
 `ctrl-b` is the prefix key; `ctrl-b ?` lists the bindings. Rebind them in `~/.config/fmx/config.toml` in the `[keys]` table.
 
-`ctrl-b c` starts an agent where fmx is running. `ctrl-b l` opens the launch
+fmx opens without an agent. `ctrl-b c` starts one where fmx is running, and
+`ctrl-b l` opens the launch
 dialog instead, which asks what to start it with: a prompt, a project, and
 whether to cut a fresh worktree for it. `tab` moves between the rows and enter
 starts the agent.

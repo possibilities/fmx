@@ -94,6 +94,9 @@ const PROMPT_SETTLE_MS = 250
 const PROMPT_SUBMIT_MS = 120
 const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
 const FORCED_EXIT_TIMEOUT_MS = 500
+const EMPTY_STATE_CONTENT = "prefix+c to create agent\nprefix+l to prompt agent"
+const EXIT_CONFIRMATION_CONTENT = "press ctrl+c again to exit"
+export const EXIT_CONFIRMATION_TIMEOUT_MS = 2_000
 const MAX_SCROLLBACK_BYTES = 10_000_000
 
 type MultiplexerOptions = {
@@ -330,6 +333,7 @@ export class Multiplexer {
   private readonly sidebar: BoxRenderable
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
+  private readonly emptyState: TextRenderable
   private readonly debugDivider: BoxRenderable | null = null
   private readonly debugPanel: DebugPanel | null = null
   private readonly agentSocket: AgentSocket | null
@@ -356,6 +360,7 @@ export class Multiplexer {
   private spawnErrorHeading = "fx did not start"
   private hostPalette: TerminalColors | null = null
   private shuttingDown = false
+  private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private readonly swallowedReleases = new Set<string>()
   private readonly slugNamer: SlugNamer
   private readonly donePromise: Promise<void>
@@ -417,6 +422,7 @@ export class Multiplexer {
       width: this.sidebarWidth,
       height: "100%",
       flexShrink: 0,
+      visible: false,
     })
     this.divider = new BoxRenderable(renderer, {
       id: "fmx-divider",
@@ -426,6 +432,7 @@ export class Multiplexer {
       border: ["left"],
       borderStyle: "single",
       borderColor: DIVIDER_UNREVEALED_COLOR,
+      visible: false,
       onMouseDown: (event) => this.beginDividerDrag(event),
       onMouseDrag: (event) => this.continueDividerDrag(event),
       onMouseUp: () => this.endDividerDrag(),
@@ -436,7 +443,16 @@ export class Multiplexer {
       flexGrow: 1,
       flexShrink: 1,
       height: "100%",
+      alignItems: "center",
+      justifyContent: "center",
     })
+    this.emptyState = new TextRenderable(renderer, {
+      id: "fmx-empty-state",
+      content: EMPTY_STATE_CONTENT,
+      fg: MODAL_FALLBACK_COLORS.dim,
+      selectable: false,
+    })
+    this.content.add(this.emptyState)
     this.stage.add(this.sidebar)
     this.stage.add(this.divider)
     this.stage.add(this.content)
@@ -526,9 +542,11 @@ export class Multiplexer {
   }
 
   start(): void {
-    // The host palette query has settled by the time fx launches; if it never
-    // produced colors, the fallback is the best divider color there will be.
+    // The host palette query has settled by the time an fx can launch; if it
+    // never produced colors, the fallback is the best divider color there will
+    // be once an agent makes the sidebar visible.
     if (!this.hostPalette) this.applyDividerPalette(null)
+    if (this.options.initialFxArgs.length === 0) return
     try {
       this.createInstance(this.options.initialFxArgs)
     } catch (error) {
@@ -548,6 +566,8 @@ export class Multiplexer {
     if (this.shuttingDown) return this.donePromise
     this.shuttingDown = true
     this.cancelPrefix()
+    if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
+    this.exitConfirmationTimer = null
     this.launchDialog.close()
     this.hideModal()
     this.slugNamer.stop()
@@ -572,6 +592,7 @@ export class Multiplexer {
 
   private createInstance(argv: string[] = [], cwd: string = this.options.cwd, prompt = ""): void {
     if (this.shuttingDown) return
+    this.cancelExitConfirmation()
     const instanceId = this.nextId++
     const instance = new FxInstance(
       this.renderer,
@@ -585,12 +606,13 @@ export class Multiplexer {
         onTitleChange: (candidate) => {
           if (this.activeInstance() === candidate) this.refreshTerminalTitle()
         },
-        onExit: (candidate, exitCode) => this.handleInstanceExit(candidate, exitCode),
+        onExit: (candidate) => this.handleInstanceExit(candidate),
       },
     )
     instance.setPendingPrompt(prompt)
     this.instances.push(instance)
     this.content.add(instance.terminal)
+    this.refreshInstanceChrome()
     this.switchTo(this.instances.length - 1)
     this.loadGitContext(cwd)
     this.countLaunch(cwd)
@@ -603,9 +625,9 @@ export class Multiplexer {
     }
   }
 
-  private handleInstanceExit(instance: FxInstance, exitCode: number): void {
-    if (this.shuttingDown || !this.removeInstance(instance)) return
-    if (this.instances.length === 0) void this.shutdown(exitCode)
+  private handleInstanceExit(instance: FxInstance): void {
+    if (this.shuttingDown) return
+    this.removeInstance(instance)
   }
 
   private removeInstance(instance: FxInstance): boolean {
@@ -617,6 +639,7 @@ export class Multiplexer {
     this.instances.splice(index, 1)
     this.registry.forget(this.paneIdFor(instance))
     this.seenSeq.delete(instance.id)
+    this.refreshInstanceChrome()
 
     if (this.instances.length === 0) {
       this.activeIndex = -1
@@ -662,6 +685,42 @@ export class Multiplexer {
 
   private refreshSessionList(): void {
     this.sessionList.render(buildTree(this.sessionEntries()), this.sidebarWidth)
+  }
+
+  private refreshInstanceChrome(): void {
+    const hasInstances = this.instances.length > 0
+    this.sidebar.visible = hasInstances
+    this.divider.visible = hasInstances
+    this.emptyState.visible = !hasInstances
+    if (!hasInstances) this.refreshEmptyState()
+  }
+
+  private refreshEmptyState(): void {
+    const confirmingExit = this.exitConfirmationTimer !== null
+    const palette = modalColors(this.hostPalette)
+    this.emptyState.content = confirmingExit ? EXIT_CONFIRMATION_CONTENT : EMPTY_STATE_CONTENT
+    this.emptyState.fg = confirmingExit ? palette.foreground : palette.dim
+  }
+
+  private requestExitConfirmation(): void {
+    if (this.exitConfirmationTimer !== null) {
+      clearTimeout(this.exitConfirmationTimer)
+      this.exitConfirmationTimer = null
+      void this.shutdown()
+      return
+    }
+
+    this.exitConfirmationTimer = setTimeout(() => {
+      this.exitConfirmationTimer = null
+      if (!this.shuttingDown && this.instances.length === 0) this.refreshEmptyState()
+    }, EXIT_CONFIRMATION_TIMEOUT_MS)
+    this.refreshEmptyState()
+  }
+
+  private cancelExitConfirmation(): void {
+    if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
+    this.exitConfirmationTimer = null
+    this.refreshEmptyState()
   }
 
   private sessionEntries(): SessionEntry[] {
@@ -801,6 +860,7 @@ export class Multiplexer {
     this.hostPalette = colors
     this.applyModalPalette(colors)
     this.applyDividerPalette(colors)
+    this.refreshEmptyState()
     const themeMode = this.renderer.themeMode
     for (const instance of this.instances) instance.updateHostPalette(colors, themeMode)
   }
@@ -887,6 +947,13 @@ export class Multiplexer {
       ) {
         this.hideModal()
       }
+      return
+    }
+
+    if (this.instances.length === 0 && isCancelKey(key)) {
+      this.swallow(key)
+      this.cancelPrefix()
+      this.requestExitConfirmation()
       return
     }
 
