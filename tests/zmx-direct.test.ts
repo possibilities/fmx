@@ -243,6 +243,37 @@ test.skipIf(!ENABLED)("a client the daemon cannot serve is told the daemon's ran
   expect(frames[0]!.tag).toBe(Tag.Welcome)
   expect(decodeWelcome(frames[0]!.payload)).toEqual({ version: 0, minVersion: 1, maxVersion: PROTOCOL_VERSION, capabilities: 0 })
 
+  // Nothing a refused client sends is acted on, even bundled with its Hello.
+  const legit = await ZmxConnection.connect(socket, { client: "legit" })
+  const seen = new Capture(legit)
+  legit.attach({ rows: 24, cols: 80 })
+  let mark = seen.length
+  legit.write("before\r")
+  await seen.until("got:before", mark)
+
+  const injected = new Promise<void>((resolve) => {
+    Bun.connect({
+      unix: socket,
+      socket: {
+        open: (s) => {
+          s.write(encodeFrame(Tag.Hello, encodeHello({ minVersion: 99, maxVersion: 100, client: "future" })))
+          s.write(encodeFrame(Tag.Input, new TextEncoder().encode("INJECTED\r")))
+        },
+        data: () => {},
+        close: () => resolve(),
+        error: () => resolve(),
+      },
+    })
+  })
+  await injected
+
+  // A round trip after the attempt: had the input landed, it would precede this.
+  mark = seen.length
+  legit.write("after\r")
+  await seen.until("got:after", mark)
+  expect(seen.text).not.toContain("INJECTED")
+  legit.detach()
+
   // The typed client turns that refusal into an error naming both ranges.
   await expect(ZmxConnection.connect(socket, { versions: { min: 99, max: 100 } })).rejects.toThrow(/daemon speaks protocol 1\.\.1; this client speaks 99\.\.100/)
 
