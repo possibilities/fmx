@@ -1,6 +1,6 @@
 # fmx
 
-**fmx** /fʌks/ — A TUI surface for [fx](https://fx.sh/).
+**fmx** /fʌks/ — An orchestration surface for [fx](https://fx.sh/).
 
 ## Install
 
