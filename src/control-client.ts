@@ -196,7 +196,11 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
       return [
         {
           method: "sidebar",
-          params: command.width === undefined ? {} : { width: command.width },
+          params: {
+            ...(command.width === undefined ? {} : { width: command.width }),
+            ...(command.hidden === undefined ? {} : { hidden: command.hidden }),
+            ...(command.toggle ? { toggle: true } : {}),
+          },
           timeoutMs: REPLY_TIMEOUT_MS,
         },
       ]

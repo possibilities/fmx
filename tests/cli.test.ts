@@ -98,6 +98,9 @@ describe("commands", () => {
     expect(parseArgs(["control", "keys", "--show"]).command).toEqual({ name: "keys", show: true })
     expect(parseArgs(["control", "focus", "next"]).command).toEqual({ name: "focus", target: "next" })
     expect(parseArgs(["control", "sidebar", "--width", "30"]).command).toEqual({ name: "sidebar", width: 30 })
+    expect(parseArgs(["control", "sidebar", "--hide"]).command).toEqual({ name: "sidebar", hidden: true })
+    expect(parseArgs(["control", "sidebar", "--toggle"]).command).toEqual({ name: "sidebar", toggle: true })
+    expect(() => parseArgs(["control", "sidebar", "--show", "--hide"])).toThrow("contradict")
     expect(() => parseArgs(["control", "sidebar", "--width", "wide"])).toThrow("whole number")
   })
 

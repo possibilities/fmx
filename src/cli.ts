@@ -32,7 +32,7 @@ export type Command =
   | { name: "draft"; verb: "cancel"; draft: string }
   | { name: "draft"; verb: "wait"; draft?: string; timeoutMs?: number }
   | { name: "focus"; target: string }
-  | { name: "sidebar"; width?: number }
+  | { name: "sidebar"; width?: number; hidden?: boolean; toggle?: boolean }
   | { name: "keys"; show: boolean }
 
 export type CliOptions = {
@@ -138,10 +138,16 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[], fxAr
       return { name: "focus", target }
     }
     case "sidebar": {
-      const flags = parseFlags(args, { width: "value" }, "sidebar")
+      const flags = parseFlags(args, { width: "value", show: "switch", hide: "switch", toggle: "switch" }, "sidebar")
       rejectExtra(flags.positional, "sidebar")
-      const width = flags.values.width
-      return width === undefined ? { name: "sidebar" } : { name: "sidebar", width: integerFlag("--width", width) }
+      const visibility = ["show", "hide", "toggle"].filter((flag) => flags.switches.has(flag))
+      if (visibility.length > 1) throw new UsageError("--show, --hide, and --toggle contradict", "sidebar")
+      const command: Command = { name: "sidebar" }
+      if (flags.values.width !== undefined) command.width = integerFlag("--width", flags.values.width)
+      if (flags.switches.has("show")) command.hidden = false
+      if (flags.switches.has("hide")) command.hidden = true
+      if (flags.switches.has("toggle")) command.toggle = true
+      return command
     }
     case "keys": {
       const flags = parseFlags(args, { show: "switch" }, "keys")
@@ -354,7 +360,7 @@ export function usage(topic: string | null = null): string {
     case "focus":
       return "Usage: fmx control focus <target>\n\n  target: instance id, slug, session-id prefix, next, previous, current\n"
     case "sidebar":
-      return "Usage: fmx control sidebar [--width N]\n"
+      return "Usage: fmx control sidebar [--width N] [--show | --hide | --toggle]\n"
     case "keys":
       return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running fmx as well\n"
   }
@@ -386,7 +392,8 @@ Each command prints one JSON object.
                                an open dialog an agent can finish or hand over
   focus <target>               switch to an instance (next, previous, id, slug)
   instance list|wait|send      read, wait on, or type into instances
-  sidebar [--width N]          the session list's width
+  sidebar [--width N] [--show|--hide|--toggle]
+                               the session list's width and visibility
   keys [--show]                the keybindings and their command equivalents
 
   --socket PATH                talk to a specific fmx (default: FMX_SOCKET_PATH)

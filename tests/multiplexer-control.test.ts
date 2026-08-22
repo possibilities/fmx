@@ -362,12 +362,16 @@ test("lists the keys with their command equivalents, and resizes the sidebar", a
         launch: { keys: ["prefix+l"], command: "fmx control launch --editable" },
         previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
         next_tab: { keys: ["prefix+n"], command: "fmx control focus next" },
+        toggle_sidebar: { keys: ["prefix+b"], command: "fmx control sidebar --toggle" },
       },
     })
+    expect(await h.control("sidebar", { hidden: true })).toEqual({ visible: false, hidden: true, width: 26 })
     await h.launch()
-    expect(await h.control("sidebar", { width: 30 })).toEqual({ visible: true, width: 30 })
-    expect(await h.control("sidebar", { width: 400 })).toEqual({ visible: true, width: 33 })
-    expect(await h.control("sidebar")).toEqual({ visible: true, width: 33 })
+    expect(await h.control("sidebar", { width: 30 })).toEqual({ visible: false, hidden: true, width: 30 })
+    expect(await h.control("sidebar", { toggle: true })).toEqual({ visible: true, hidden: false, width: 30 })
+    expect(await h.control("sidebar", { width: 400 })).toEqual({ visible: true, hidden: false, width: 33 })
+    expect(await h.control("sidebar", { hidden: false })).toEqual({ visible: true, hidden: false, width: 33 })
+    expect(((await h.control("orient")) as Snapshot).sidebar).toMatchObject({ visible: true, hidden: false })
   } finally {
     await h.close()
   }

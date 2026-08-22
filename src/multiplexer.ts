@@ -794,6 +794,13 @@ export class Multiplexer {
     this.sessionList.render(buildTree(this.sessionEntries()), this.sidebarWidth)
   }
 
+  private setSidebarHidden(hidden: boolean): void {
+    if (hidden === this.sidebarHidden) return
+    this.sidebarHidden = hidden
+    this.refreshInstanceChrome()
+    this.options.onSidebarHiddenChange?.(this.sidebarHidden)
+  }
+
   private refreshInstanceChrome(): void {
     const hasInstances = this.instances.length > 0
     const showSidebar = hasInstances && !this.sidebarHidden
@@ -1121,9 +1128,7 @@ export class Multiplexer {
         this.showHelp()
         return
       case "toggle_sidebar":
-        this.sidebarHidden = !this.sidebarHidden
-        this.refreshInstanceChrome()
-        this.options.onSidebarHiddenChange?.(this.sidebarHidden)
+        this.setSidebarHidden(!this.sidebarHidden)
         return
     }
   }
@@ -1416,7 +1421,10 @@ export class Multiplexer {
           this.applySidebarWidth(width)
           this.options.onSidebarWidthChange?.(this.sidebarWidth)
         }
-        return { visible: this.sidebar.visible, width: this.sidebarWidth }
+        const hidden = optionalBoolean(params, "hidden")
+        if (hidden !== undefined) this.setSidebarHidden(hidden)
+        else if (optionalBoolean(params, "toggle")) this.setSidebarHidden(!this.sidebarHidden)
+        return this.sidebarInfo()
       }
       case "keys": {
         if (optionalBoolean(params, "show")) {
@@ -1676,9 +1684,15 @@ export class Multiplexer {
       you: you ? this.instanceInfo(you) : null,
       active: this.activeInstance()?.id ?? null,
       instances: this.instances.map((instance) => this.instanceInfo(instance)),
-      sidebar: { visible: this.sidebar.visible, width: this.sidebarWidth, rows },
+      sidebar: { ...this.sidebarInfo(), rows },
       surface: this.surface(),
     }
+  }
+
+  /** `visible` is what is drawn; `hidden` is the human's choice, which an
+   * empty fmx keeps without showing. */
+  private sidebarInfo(): { visible: boolean; hidden: boolean; width: number } {
+    return { visible: this.sidebar.visible, hidden: this.sidebarHidden, width: this.sidebarWidth }
   }
 
   private keysInfo(): KeysInfo {
@@ -1688,9 +1702,10 @@ export class Multiplexer {
       launch: "fmx control launch --editable",
       previous_tab: "fmx control focus previous",
       next_tab: "fmx control focus next",
+      toggle_sidebar: "fmx control sidebar --toggle",
     }
     const bindings: KeysInfo["bindings"] = {}
-    for (const action of ["help", "new_tab", "launch", "previous_tab", "next_tab"] as const) {
+    for (const action of ["help", "new_tab", "launch", "previous_tab", "next_tab", "toggle_sidebar"] as const) {
       bindings[action] = {
         keys: this.keybindings[action].map((binding) => binding.label),
         command: commands[action]!,

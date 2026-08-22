@@ -143,7 +143,7 @@ export type Snapshot = {
   you: InstanceInfo | null
   active: number | null
   instances: InstanceInfo[]
-  sidebar: { visible: boolean; width: number; rows: SidebarRow[] }
+  sidebar: { visible: boolean; hidden: boolean; width: number; rows: SidebarRow[] }
   surface: Surface
 }
 
