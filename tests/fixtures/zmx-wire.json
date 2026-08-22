@@ -103,7 +103,7 @@
     "Ready": 22,
     "Exit": 23
   },
-  "zmxIpcBlob": "f9812c18461e4652d16e79a0c775681965bd9b90",
+  "zmxIpcBlob": "0c33db91a2b2e0e8a375546780ad2fbf180702e1",
   "minProtocolVersion": 1,
   "maxClientNameLen": 64,
   "exitLen": 8,

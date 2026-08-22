@@ -162,7 +162,10 @@ afterAll(async () => {
   if (!ENABLED) return
   // Kill only what this run started, and clean up BEFORE asserting: a failed
   // check must not be what leaves a daemon and a socket directory behind.
+  // `kill` returns when the daemon accepts it, not when it has finished:
+  // the socket stays, refusing connections, until the teardown removes it.
   for (const name of sessions) await zmx("kill", name)
+  await waitFor(async () => (await zmx("list")).stdout === "", 10_000)
   const { stdout, stderr } = await zmx("list")
   await rm(dir, { recursive: true, force: true })
   expect(stdout).toBe("")
