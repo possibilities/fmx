@@ -37,15 +37,10 @@ const LABEL_COLUMN = 10
 const ROWS = ["prompt", "project", "worktree"] as const
 type Row = (typeof ROWS)[number]
 
-/** Border, the chooser rows, a blank line, and the hint — everything but the
- * prompt, which is as tall as what has been written in it. */
-const DIALOG_CHROME_HEIGHT = ROWS.length + 3
+/** Border and the chooser rows — everything but the prompt, which is as tall
+ * as what has been written in it, and the notice, which is usually absent. */
+const DIALOG_CHROME_HEIGHT = ROWS.length + 1
 
-const HINTS: Readonly<Record<Row, string>> = {
-  prompt: "⏎ next · ⇧⏎ newline · ^g editor · esc cancel",
-  project: "space pick · ←→ cycle · ⏎ start · esc cancel",
-  worktree: "space toggle · ⏎ start · esc cancel",
-}
 const PICKER_HINT = "type to filter"
 const EMPTY = "no projects found — set project_roots in the config"
 const WORKTREE_UNAVAILABLE = "unavailable — not a repository"
@@ -71,7 +66,7 @@ export class LaunchDialog {
   private readonly rowTexts = new Map<Row, TextRenderable>()
   private readonly promptRow: BoxRenderable
   private readonly editor: PromptEditor
-  private readonly hintText: TextRenderable
+  private readonly noticeText: TextRenderable
   private readonly picker: BoxRenderable
   private readonly filterText: TextRenderable
   private readonly pickerRows: BoxRenderable
@@ -160,17 +155,17 @@ export class LaunchDialog {
     this.promptRow.add(this.editor.root)
     // The prompt leads, as it does in the form fmx borrowed this from.
     this.dialog.insertBefore(this.promptRow, this.rowTexts.get("project"))
-    // A blank line separates the hint from the choices, not a rule: on a
-    // character grid a rule can only sit mid-cell or at the cell's floor, and
-    // neither lands between two rows — it reads as underlining one of them.
-    this.hintText = new TextRenderable(renderer, {
-      id: "fmx-launch-hint",
+    // Not a standing hint line: the dialog carries no chrome of its own, and
+    // this row exists only for the rare thing worth saying — an $EDITOR that
+    // would not run. It takes no height until then.
+    this.noticeText = new TextRenderable(renderer, {
+      id: "fmx-launch-notice",
       content: "",
-      height: 1,
-      marginTop: 1,
+      height: 0,
+      visible: false,
       selectable: false,
     })
-    this.dialog.add(this.hintText)
+    this.dialog.add(this.noticeText)
 
     this.picker = new BoxRenderable(renderer, {
       id: "fmx-launch-picker",
@@ -268,7 +263,7 @@ export class LaunchDialog {
       box.focusedBorderColor = this.colors.accent
       box.titleColor = this.colors.key
     }
-    for (const text of [...this.rowTexts.values(), this.hintText, this.filterText]) {
+    for (const text of [...this.rowTexts.values(), this.noticeText, this.filterText]) {
       text.fg = this.colors.foreground
       text.bg = this.colors.background
     }
@@ -319,7 +314,10 @@ export class LaunchDialog {
     const width = Math.max(DIALOG_MIN_WIDTH, Math.min(DIALOG_MAX_WIDTH, this.renderer.width - 8))
     const promptRows = this.editor.measure(width - 4 - LABEL_COLUMN - 2)
     this.promptRow.height = promptRows
-    center(this.dialog, width, DIALOG_CHROME_HEIGHT + promptRows)
+    const noticeRows = this.notice === null ? 0 : 1
+    this.noticeText.height = noticeRows
+    this.noticeText.visible = noticeRows === 1
+    center(this.dialog, width, DIALOG_CHROME_HEIGHT + promptRows + noticeRows)
     this.paintRows(width - 4)
     if (this.picking) this.paintPicker(width)
     this.renderer.requestRender()
@@ -536,11 +534,9 @@ export class LaunchDialog {
         ...this.rowValue(row, project, available),
       ])
     }
-    this.hintText.content = new StyledText([
-      this.notice === null
-        ? fg(this.colors.dim)(truncate(HINTS[this.currentRow()], inner))
-        : fg(this.colors.error)(truncate(this.notice, inner)),
-    ])
+    if (this.notice !== null) {
+      this.noticeText.content = new StyledText([fg(this.colors.error)(truncate(this.notice, inner))])
+    }
   }
 
   private rowValue(row: Row, project: ProjectChoice | undefined, width: number): TextChunk[] {

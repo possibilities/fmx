@@ -132,7 +132,7 @@ test("grows with a multiline prompt and keeps enter for the form", async () => {
     setup.mockInput.pressEnter()
     await setup.renderOnce()
     expect(dialog.height).toBe(oneLine + 1)
-    expect(setup.captureCharFrame()).toContain("space pick")
+    expect(setup.captureCharFrame()).toContain("▎ project")
   } finally {
     await multiplexer.shutdown()
   }
