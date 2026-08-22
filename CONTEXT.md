@@ -44,6 +44,12 @@ Clicking an agent row switches to that instance; project and branch rows are
 not selectable.
 _Avoid_: agent panel, tab bar, session picker.
 
+**Subagent row** — a non-selectable Session list row for an fx subagent whose
+filesystem control record names a visible Instance's session as its parent.
+It uses the agent-row status icon and nests recursively beneath that parent;
+its state comes from the control record and the subagent's own session lock.
+_Avoid_: child pane, sub-instance.
+
 **Path** — the active agent and its ancestors. The active row takes a
 background fill and its ancestors are set in bold; nothing else marks them, so
 two faint backgrounds never have to be told apart.

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { mkdir, mkdtemp, realpath } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -148,6 +148,44 @@ test("launches in the background once something is on screen, and says where the
     expect(focused.instance.id).toBe(3)
     expect(terminal(h.setup, 3).visible).toBe(true)
     expect(terminal(h.setup, 1).visible).toBe(false)
+  } finally {
+    await h.close()
+  }
+})
+
+test("includes filesystem subagents in the sidebar orientation", async () => {
+  const h = await harness("subagents")
+  const parent = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
+  const child = "1787368609310-1787368609310138000-3e38dc7a8d7c16c2"
+  try {
+    await h.launch()
+    await mkdir(join(h.home, ".fx", "sessions", parent), { recursive: true })
+    const subagentDirectory = join(h.home, ".fx", "sessions", child, "subagent")
+    await mkdir(subagentDirectory, { recursive: true })
+    await writeFile(
+      join(subagentDirectory, "control.json"),
+      JSON.stringify({
+        schema_version: 7,
+        child_id: child,
+        parent_id: parent,
+        generation: 1,
+        configuration: { name: "test-subagent" },
+        state: "completed",
+        created_at_ms: 1,
+      }),
+    )
+    await h.session("p_1", parent)
+
+    const snapshot = await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (candidate) => candidate.sidebar.rows.some((row) => row.kind === "subagent"),
+    )
+    expect(snapshot.sidebar.rows.map((row) => [row.kind, row.depth, row.text, row.instance])).toEqual([
+      ["project", 0, "alpha", null],
+      ["branch", 1, "(untracked)", null],
+      ["agent", 2, "· ba9a9f7e16e5ef8c", 1],
+      ["subagent", 3, "✓ test-subagent", null],
+    ])
   } finally {
     await h.close()
   }
@@ -420,3 +458,17 @@ test("lists the keys with their command equivalents, and resizes the sidebar", a
     await h.close()
   }
 })
+
+async function waitForSnapshot(
+  read: () => Promise<Snapshot>,
+  condition: (snapshot: Snapshot) => boolean,
+  timeoutMs = 2_000,
+): Promise<Snapshot> {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const snapshot = await read()
+    if (condition(snapshot)) return snapshot
+    if (Date.now() >= deadline) throw new Error("snapshot condition timed out")
+    await Bun.sleep(10)
+  }
+}

@@ -21,6 +21,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     state: "idle",
     attention: null,
     active: false,
+    subagents: [],
     ...overrides,
   }
 }
@@ -89,6 +90,50 @@ test("draws the tree and reports clicks on agent rows", async () => {
     const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-3") as BoxRenderable
     await setup.mockMouse.click(row.x + 6, row.y)
     expect(selected).toEqual([3])
+  } finally {
+    list.root.destroy()
+    setup.renderer.destroy()
+  }
+})
+
+test("draws recursive subagent state rows without making them selectable", async () => {
+  const { setup, list, selected } = await createList(34, 10)
+  try {
+    list.render(
+      buildTree([
+        entry({
+          slug: "coordinate-the-review",
+          subagents: [
+            {
+              sessionId: "child",
+              label: "reviewer",
+              state: "working",
+              attention: null,
+              children: [
+                {
+                  sessionId: "grandchild",
+                  label: "test-reader",
+                  state: "blocked",
+                  attention: "permission",
+                  children: [],
+                },
+              ],
+            },
+          ],
+        }),
+      ]),
+      30,
+    )
+    await setup.renderOnce()
+
+    const frame = setup.captureCharFrame().split("\n")
+    expect(frame[2]).toStartWith("     ○ coordinate-the-review")
+    expect(frame[3]).toStartWith("       ◐ reviewer")
+    expect(frame[4]).toStartWith("         × test-reader")
+
+    const child = setup.renderer.root.findDescendantById("fmx-session-row-subagent-3") as BoxRenderable
+    await setup.mockMouse.click(child.x + 9, child.y)
+    expect(selected).toEqual([])
   } finally {
     list.root.destroy()
     setup.renderer.destroy()

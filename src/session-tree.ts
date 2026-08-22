@@ -1,4 +1,5 @@
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
+import type { SubagentEntry } from "./subagents.ts"
 
 /**
  * Flattening a project → branch → agent tree into the rows the sidebar draws.
@@ -18,13 +19,15 @@ export type SessionEntry = {
   state: DisplayState
   attention: AgentAttention | null
   active: boolean
+  /** Filesystem-discovered fx children, already ordered and nested. */
+  subagents: SubagentEntry[]
 }
 
 export type TreeRow = {
-  kind: "project" | "branch" | "agent"
+  kind: "project" | "branch" | "agent" | "subagent"
   depth: number
   label: string
-  /** Set on agent rows only. */
+  /** Set only on selectable agent rows; subagents have no Instance to switch to. */
   instanceId: number | null
   state: DisplayState
   attention: AgentAttention | null
@@ -81,11 +84,29 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
           onPath: entry.active,
           virtual: false,
         })
+        appendSubagents(rows, entry.subagents, 3)
       }
     }
   }
 
   return rows
+}
+
+function appendSubagents(rows: TreeRow[], subagents: SubagentEntry[], depth: number): void {
+  for (const subagent of subagents) {
+    rows.push({
+      kind: "subagent",
+      depth,
+      label: subagent.label,
+      instanceId: null,
+      state: subagent.state,
+      attention: subagent.attention,
+      active: false,
+      onPath: false,
+      virtual: false,
+    })
+    appendSubagents(rows, subagent.children, depth + 1)
+  }
 }
 
 /**

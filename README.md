@@ -114,6 +114,8 @@ fmx control catalog                     # the models and efforts the dialog offe
 branch, slug, state, and whether it is the one on screen — alongside every
 instance, the sidebar's rows as they are drawn, and whatever surface is open.
 Reading never marks an instance seen; `focus` does, as clicking its row does.
+Subagents recorded by fx appear as non-selectable status rows nested beneath
+their parent instance, in both the sidebar and `orient`.
 
 `launch` without `--editable` starts the agent and answers with its instance.
 It does not take the screen unless `--focus` is given: an agent starting
