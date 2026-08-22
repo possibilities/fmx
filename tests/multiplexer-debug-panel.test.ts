@@ -1,22 +1,26 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { debugPanelRequested, debugPanelWidth } from "../src/debug-panel.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 
+const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
+
 async function createMultiplexer(width: number, height: number, debugPanel: boolean) {
   const setup = await createTestRenderer({ width, height })
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-panel-test-${process.pid}.sock` })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
+    fxPath: process.execPath,
     cwd: process.cwd(),
-    initialFxArgs: [],
+    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     agentSocket,
     debugPanel,
   })
+  multiplexer.start()
   const find = (id: string) => setup.renderer.root.findDescendantById(id) as BoxRenderable | undefined
   return { setup, multiplexer, agentSocket, find }
 }

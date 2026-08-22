@@ -8,12 +8,12 @@ import { Multiplexer } from "../src/multiplexer.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
-test("propagates an initial fx spawn failure after removing its provisional tab", async () => {
+test("propagates an explicit initial fx spawn failure after removing its provisional tab", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "/definitely/missing/fx",
     cwd: process.cwd(),
-    initialFxArgs: [],
+    initialFxArgs: ["--record"],
     keybindings: resolveKeybindings().keybindings,
   })
 
@@ -26,7 +26,12 @@ test("propagates an initial fx spawn failure after removing its provisional tab"
 })
 
 test("rolls back a later spawn failure without stopping the active fx", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const setup = await createTestRenderer({
+    width: 80,
+    height: 24,
+    kittyKeyboard: true,
+    exitOnCtrlC: false,
+  })
   const options = {
     fxPath: process.execPath,
     cwd: process.cwd(),
@@ -71,8 +76,25 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
     const activeTerminal = setup.renderer.root.findDescendantById("fx-1")
     expect(activeTerminal).toBeInstanceOf(FxTerminalRenderable)
     if (!(activeTerminal instanceof FxTerminalRenderable)) return
+    let done = false
+    void multiplexer.waitUntilDone().then(() => {
+      done = true
+    })
+
     activeTerminal.onData?.(Uint8Array.of(3, 3), "input")
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
+    await setup.renderOnce()
+    expect(done).toBe(false)
+    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
+
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await setup.renderOnce()
+    expect(done).toBe(false)
+    expect(setup.captureCharFrame()).toContain("press ctrl+c again to exit")
+
+    setup.mockInput.pressKey("c", { ctrl: true })
     await within(multiplexer.waitUntilDone(), 2_000)
+    expect(done).toBe(true)
   } finally {
     await multiplexer.shutdown()
   }
@@ -97,6 +119,14 @@ function hostPalette(error: string): TerminalColors {
 
 function rgb(color: RGBA | undefined): number[] | undefined {
   return color?.toInts().slice(0, 3)
+}
+
+async function waitFor(condition: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error("condition timed out")
+    await Bun.sleep(10)
+  }
 }
 
 async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

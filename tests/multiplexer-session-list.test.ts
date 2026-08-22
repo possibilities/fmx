@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
@@ -8,6 +9,7 @@ import { rowText, SessionList, stateIcon, truncate } from "../src/session-list.t
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 
 const SESSION_ID = "909bc46b64721838"
+const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
@@ -175,12 +177,13 @@ test("the indent keeps every row's text aligned", async () => {
 test("mounts the list into the sidebar", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: "fx",
+    fxPath: process.execPath,
     cwd: process.cwd(),
-    initialFxArgs: [],
+    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     agentSocket: new AgentSocket({ path: `/tmp/fmx-list-test-${process.pid}.sock` }),
   })
+  multiplexer.start()
   try {
     await setup.renderOnce()
     const list = setup.renderer.root.findDescendantById("fmx-session-list") as BoxRenderable

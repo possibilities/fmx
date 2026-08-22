@@ -66,6 +66,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
+      await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
+      const initialEmptyStateCount = countOccurrences(output, "prefix+c")
+      child.terminal?.write(Uint8Array.of(0, "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("start 1"), 8_000, () => output)
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("private-terminal-response 1"),
@@ -140,7 +143,22 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(await readLifecycle(lifecycleLog)).not.toContain("graceful 2")
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
-      const code = await withTimeout(child.exited, 6_000, "fmx did not exit after the final fx process exited")
+      await waitUntil(
+        async () => (await readLifecycle(lifecycleLog)).includes("terminal-response 2"),
+        5_000,
+        () => output,
+      )
+      await waitUntil(
+        () => countOccurrences(output, "prefix+c") > initialEmptyStateCount,
+        5_000,
+        () => output,
+      )
+      expect(child.exitCode).toBeNull()
+
+      child.terminal?.write(Uint8Array.of(control("c")))
+      await waitUntil(() => output.includes("press ctrl+c again to exit"), 5_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("c")))
+      const code = await withTimeout(child.exited, 6_000, "fmx did not exit after confirmed ctrl+c")
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(code).toBe(0)
       expect(lifecycle).toContain("graceful 2")
@@ -157,7 +175,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "removes fx processes that exit normally and exits after the final one",
+  "removes fx processes that exit normally and confirms exit after the final one",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-natural-exit-e2e-"))
@@ -166,7 +184,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn(FMX_COMMAND, {
+    const child = Bun.spawn([...FMX_COMMAND, "--", "--", "--e2e"], {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -207,7 +225,14 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(child.exitCode).toBeNull()
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
-      const code = await withTimeout(child.exited, 6_000, "fmx did not exit after the final fx process exited")
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
+      await waitUntil(() => output.includes("prefix+c"), 5_000, () => output)
+      expect(child.exitCode).toBeNull()
+
+      child.terminal?.write(Uint8Array.of(control("c")))
+      await waitUntil(() => output.includes("press ctrl+c again to exit"), 5_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("c")))
+      const code = await withTimeout(child.exited, 6_000, "fmx did not exit after confirmed ctrl+c")
       expect(code).toBe(0)
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(lifecycle).toContain("graceful 1")
@@ -270,6 +295,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
     for (const reply of pendingReplies) sendHostReply(reply)
 
     try {
+      await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
+      const initialEmptyStateCount = countOccurrences(output, "prefix+c")
+      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("background-response 1"),
         8_000,
@@ -290,7 +318,16 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(updatedLifecycle).toContain("rgb:eeee/eeee/eeee")
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
-      expect(await withTimeout(child.exited, 6_000, "fmx did not exit after fx exited")).toBe(0)
+      await waitUntil(
+        () => countOccurrences(output, "prefix+c") > initialEmptyStateCount,
+        5_000,
+        () => output,
+      )
+      expect(child.exitCode).toBeNull()
+      child.terminal?.write(Uint8Array.of(control("c")))
+      await waitUntil(() => output.includes("press ctrl+c again to exit"), 5_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("c")))
+      expect(await withTimeout(child.exited, 6_000, "fmx did not exit after confirmed ctrl+c")).toBe(0)
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL")
       child.terminal?.close()
@@ -310,7 +347,7 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn(FMX_COMMAND, {
+    const child = Bun.spawn([...FMX_COMMAND, "--", "--", "--e2e"], {
       cwd: ROOT,
       env: {
         ...process.env,
