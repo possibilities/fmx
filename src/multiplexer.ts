@@ -748,15 +748,21 @@ export class Multiplexer {
   }
 
   private onSelection(selection: Selection): void {
-    // A plain click creates a provisional one-cell OpenTUI selection. Treat it
-    // as focus, not a clipboard mutation; real drags clear isStart on movement.
+    // FxTerminalRenderable keeps a gesture provisional until it has covered two
+    // cells. Treat gestures that never cross that threshold as focus, not a
+    // clipboard mutation. Activated selections may later contract to one cell.
     if (selection.isStart) {
       this.renderer.clearSelection()
       return
     }
 
     const text = selection.getSelectedText()
-    if (!text) return
+    if (!text) {
+      // Blank terminal rows can form a real multi-cell selection but yield no
+      // clipboard text. There is nothing useful to preserve after mouse-up.
+      this.renderer.clearSelection()
+      return
+    }
     if (this.renderer.copyToClipboardOSC52(text)) this.renderer.clearSelection()
   }
 
