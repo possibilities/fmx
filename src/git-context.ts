@@ -1,4 +1,4 @@
-import { basename } from "node:path"
+import { basename, dirname } from "node:path"
 
 /**
  * Where an fx instance is working, as far as git is concerned. fx never
@@ -8,6 +8,9 @@ import { basename } from "node:path"
 export type GitContext = {
   /** Worktree root — the linked worktree's own path, not the main repo's. */
   root: string
+  /** The main worktree's root: the repository this checkout belongs to, which
+   * is the same for every worktree of it and is what names the project. */
+  mainRoot: string
   /** Branch name, or a short sha when the worktree is on a detached head. */
   branch: string
 }
@@ -15,23 +18,41 @@ export type GitContext = {
 const CONTEXT_TIMEOUT_MS = 2000
 
 /**
- * `rev-parse` answers all three in one call, in order: the worktree root, the
- * branch, and the short sha. A detached head reports its branch as the literal
- * "HEAD", in which case the sha is the only name the worktree has.
+ * `rev-parse` answers in one call, in this order: the common git directory,
+ * the worktree root, and the branch. The common directory is the main
+ * worktree's `.git`, so its parent names the repository every worktree of it
+ * shares — which is what keeps a worktree nested under the project it was cut
+ * from rather than standing beside it as a project of its own.
+ *
+ * A detached head reports its branch as the literal "HEAD" and, in this
+ * combined form, swallows the sha with it; the sha is then worth a second
+ * call, because it is the only name such a worktree has.
  */
 export async function readGitContext(cwd: string): Promise<GitContext | null> {
-  const lines = await runGit(cwd, ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD", "--short", "HEAD"])
+  const lines = await runGit(cwd, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+    "--show-toplevel",
+    "--abbrev-ref",
+    "HEAD",
+  ])
   if (!lines) return null
-  const [root, branch, sha] = lines
-  if (!root || !branch) return null
-  const resolved = branch === "HEAD" ? sha : branch
-  if (!resolved) return null
-  return { root, branch: resolved }
+  const [commonDir, root, branch] = lines
+  if (!commonDir || !root || !branch) return null
+  const mainRoot = dirname(commonDir)
+  if (branch !== "HEAD") return { root, mainRoot, branch }
+
+  const detached = await runGit(cwd, ["rev-parse", "--short", "HEAD"])
+  const sha = detached?.[0]
+  if (!sha) return null
+  return { root, mainRoot, branch: sha }
 }
 
-/** The name a project is known by: its worktree directory. */
+/** The name a project is known by: the repository's own directory, shared by
+ * every worktree cut from it. */
 export function projectNameFor(context: GitContext | null, cwd: string): string {
-  return basename(context?.root ?? cwd) || "workspace"
+  return basename(context?.mainRoot ?? cwd) || "workspace"
 }
 
 async function runGit(cwd: string, args: string[]): Promise<string[] | null> {
