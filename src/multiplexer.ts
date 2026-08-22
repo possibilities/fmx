@@ -61,6 +61,9 @@ const DIVIDER_FALLBACK_COLOR = "#4c566a"
 // guessed one on startup.
 const DIVIDER_UNREVEALED_COLOR = "transparent"
 
+const HELP_MODAL_TITLE = " keys "
+const ERROR_MODAL_TITLE = " error "
+
 const CTRL_C = new Uint8Array([0x03])
 const HELP_CLOSE_KEY = parseKeyCombo("?")!
 const MODIFIER_ONLY_KEYS = new Set([
@@ -411,6 +414,8 @@ export class Multiplexer {
       borderStyle: "single",
       borderColor: MODAL_FALLBACK_COLORS.accent,
       backgroundColor: MODAL_FALLBACK_COLORS.background,
+      title: HELP_MODAL_TITLE,
+      titleAlignment: "left",
       visible: false,
       onMouseDown: (event) => event.stopPropagation(),
     })
@@ -724,11 +729,16 @@ export class Multiplexer {
 
   private applyModalPalette(colors: TerminalColors | null): void {
     const palette = modalColors(colors)
-    const borderColor = this.modalKind === "spawn-error" ? palette.error : palette.accent
+    const isError = this.modalKind === "spawn-error"
+    const borderColor = isError ? palette.error : palette.accent
     this.modalBackdrop.backgroundColor = palette.backdrop
     this.modal.backgroundColor = palette.background
     this.modal.borderColor = borderColor
     this.modal.focusedBorderColor = borderColor
+    // Every surface fmx draws over fx names itself in its own border, so what
+    // took the screen is legible before any of its content is read.
+    this.modal.title = isError ? ERROR_MODAL_TITLE : HELP_MODAL_TITLE
+    this.modal.titleColor = palette.key
     this.modalText.fg = palette.foreground
     this.modalText.bg = palette.background
     this.modalText.content =

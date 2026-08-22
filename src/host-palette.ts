@@ -1,5 +1,7 @@
 import type { TerminalColors, ThemeMode } from "@opentui/core"
 
+const DIM_TEXT_BLEND = 0.3
+
 const OSC = "\x1b]"
 const ST = "\x1b\\"
 const ANSI_PALETTE_SIZE = 16
@@ -84,6 +86,7 @@ export const MODAL_FALLBACK_COLORS = {
   backdrop: "#00000033",
   error: "#f87171",
   key: "#a3a3a3",
+  dim: "#6b7280",
 }
 
 export type ModalColors = typeof MODAL_FALLBACK_COLORS
@@ -107,5 +110,15 @@ export function modalColors(colors: TerminalColors | null): ModalColors {
       detectedTerminalColor(colors?.palette[7]) ??
       detectedTerminalColor(colors?.palette[8]) ??
       foreground,
+    dim: dimColor(colors, foreground),
   }
+}
+
+/** Standing instructional text — a hint that is always on screen — sits
+ * nearer the background than any other text, the way the divider does: it has
+ * to be readable when looked for and recede when it is not. */
+function dimColor(colors: TerminalColors | null, foreground: string): string {
+  const background = detectedTerminalColor(colors?.defaultBackground)
+  if (background) return mixHexColors(background, foreground, DIM_TEXT_BLEND)
+  return detectedTerminalColor(colors?.palette[8]) ?? MODAL_FALLBACK_COLORS.dim
 }

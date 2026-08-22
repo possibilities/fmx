@@ -26,7 +26,7 @@ const DIALOG_TITLE = " launch "
 const PICKER_TITLE = " project "
 const DIALOG_MAX_WIDTH = 56
 const DIALOG_MIN_WIDTH = 32
-/** Border, the row, a blank line, and the hint. */
+/** Border, the row, the rule, and the hint. */
 const DIALOG_HEIGHT = 5
 const PICKER_MAX_ROWS = 10
 const ROW_LABEL = "project"
@@ -43,6 +43,7 @@ export class LaunchDialog {
   readonly root: BoxRenderable
   private readonly dialog: BoxRenderable
   private readonly rowText: TextRenderable
+  private readonly ruleText: TextRenderable
   private readonly hintText: TextRenderable
   private readonly picker: BoxRenderable
   private readonly filterText: TextRenderable
@@ -95,14 +96,23 @@ export class LaunchDialog {
       height: 1,
       selectable: false,
     })
+    // The rule does the work the blank line was doing, and says what the
+    // blank line could not: the hint below it is about the dialog, not
+    // another choice waiting to be made.
+    this.ruleText = new TextRenderable(renderer, {
+      id: "fmx-launch-rule",
+      content: "",
+      height: 1,
+      selectable: false,
+    })
     this.hintText = new TextRenderable(renderer, {
       id: "fmx-launch-hint",
       content: "",
       height: 1,
-      marginTop: 1,
       selectable: false,
     })
     this.dialog.add(this.rowText)
+    this.dialog.add(this.ruleText)
     this.dialog.add(this.hintText)
 
     this.picker = new BoxRenderable(renderer, {
@@ -184,7 +194,7 @@ export class LaunchDialog {
       box.focusedBorderColor = this.colors.accent
       box.titleColor = this.colors.key
     }
-    for (const text of [this.rowText, this.hintText, this.filterText]) {
+    for (const text of [this.rowText, this.ruleText, this.hintText, this.filterText]) {
       text.fg = this.colors.foreground
       text.bg = this.colors.background
     }
@@ -329,10 +339,11 @@ export class LaunchDialog {
   }
 
   private paintRow(inner: number): void {
+    this.ruleText.content = new StyledText([fg(this.colors.dim)("─".repeat(Math.max(0, inner)))])
     const project = this.projects[this.selected]
     if (!project) {
       this.rowText.content = new StyledText([fg(this.colors.key)(EMPTY)])
-      this.hintText.content = new StyledText([fg(this.colors.key)("esc cancel")])
+      this.hintText.content = new StyledText([fg(this.colors.dim)("esc cancel")])
       return
     }
     const label = `${ROW_LABEL}  `
@@ -342,7 +353,7 @@ export class LaunchDialog {
       fg(this.colors.key)(label),
       fg(this.colors.foreground)(truncate(project.display, available)),
     ])
-    this.hintText.content = new StyledText([fg(this.colors.key)(truncate(HINT, inner))])
+    this.hintText.content = new StyledText([fg(this.colors.dim)(truncate(HINT, inner))])
   }
 
   private paintPicker(width: number): void {
@@ -362,7 +373,7 @@ export class LaunchDialog {
       bold(fg(this.colors.accent)("> ")),
       this.filter.length > 0
         ? fg(this.colors.foreground)(this.filter)
-        : fg(this.colors.key)(PICKER_HINT),
+        : fg(this.colors.dim)(PICKER_HINT),
     ])
 
     this.clearRows()
