@@ -3,25 +3,17 @@ import packageMetadata from "../package.json" with { type: "json" }
 export const VERSION = packageMetadata.version
 
 type CliOptions = {
-  initialFxArgs: string[]
   help: boolean
   version: boolean
 }
 
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
-    initialFxArgs: [],
     help: false,
     version: false,
   }
 
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]!
-    if (arg === "--") {
-      options.initialFxArgs = args.slice(index + 1)
-      return options
-    }
-
+  for (const arg of args) {
     switch (arg) {
       case "-h":
       case "--help":
@@ -32,7 +24,7 @@ export function parseArgs(args: string[]): CliOptions {
         options.version = true
         break
       default:
-        throw new Error(`unknown option: ${arg}\nPass fx arguments after --.`)
+        throw new Error(`unknown option: ${arg}`)
     }
   }
 
@@ -43,7 +35,7 @@ export function usage(): string {
   return `fmx ${VERSION} — run multiple fx sessions in one terminal
 
 Usage:
-  fmx [options] [-- <fx arguments>]
+  fmx [options]
 
 Options:
   -h, --help     show this help

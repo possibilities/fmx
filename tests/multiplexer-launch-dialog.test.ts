@@ -22,7 +22,6 @@ function launcher(setup: Setup, home: string, code: string, roots = ["~/code"]):
   return new Multiplexer(setup.renderer, {
     fxPath: "fx",
     cwd: join(code, "fmx"),
-    initialFxArgs: [],
     keybindings: resolveKeybindings().keybindings,
     projectRoots: roots,
     home,

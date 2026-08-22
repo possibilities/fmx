@@ -8,18 +8,21 @@ import { Multiplexer } from "../src/multiplexer.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
-test("propagates an explicit initial fx spawn failure after removing its provisional tab", async () => {
+test("reports an fx spawn failure after removing its provisional instance", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "/definitely/missing/fx",
     cwd: process.cwd(),
-    initialFxArgs: ["--record"],
     keybindings: resolveKeybindings().keybindings,
   })
 
   try {
-    expect(() => multiplexer.start()).toThrow("failed to start fx")
+    multiplexer.start()
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("c")
+    await setup.renderOnce()
     expect(setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
+    expect(setup.captureCharFrame()).toContain("fx did not start")
   } finally {
     await multiplexer.shutdown()
   }
@@ -33,9 +36,8 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
     exitOnCtrlC: false,
   })
   const options = {
-    fxPath: process.execPath,
+    fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
   }
   const multiplexer = new Multiplexer(setup.renderer, options)
@@ -51,6 +53,8 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
   try {
     multiplexer.setHostPalette(hostPalette("#cc3344"))
     multiplexer.start()
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("c")
     options.fxPath = "/definitely/missing/fx"
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")

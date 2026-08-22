@@ -199,13 +199,14 @@ test("the indent keeps every row's text aligned", async () => {
 test("mounts the list into the sidebar", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: process.execPath,
+    fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     agentSocket: new AgentSocket({ path: `/tmp/fmx-list-test-${process.pid}.sock` }),
   })
   multiplexer.start()
+  setup.mockInput.pressKey("b", { ctrl: true })
+  setup.mockInput.pressKey("c")
   try {
     await setup.renderOnce()
     const list = setup.renderer.root.findDescendantById("fmx-session-list") as BoxRenderable

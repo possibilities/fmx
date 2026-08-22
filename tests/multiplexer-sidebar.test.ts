@@ -10,12 +10,13 @@ const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 async function createMultiplexer(width: number, height: number) {
   const setup = await createTestRenderer({ width, height })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: process.execPath,
+    fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
   })
   multiplexer.start()
+  setup.mockInput.pressKey("b", { ctrl: true })
+  setup.mockInput.pressKey("c")
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
@@ -28,7 +29,6 @@ test("starts without an fx, hiding the sidebar and centering dimmed prefix actio
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [],
     keybindings,
   })
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
@@ -76,7 +76,6 @@ test("requires a second ctrl+c before the empty-state exit timeout", async () =>
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [],
     keybindings: resolveKeybindings().keybindings,
   })
   let done = false
@@ -169,14 +168,15 @@ test("restores a persisted hidden sidebar and reports each toggle", async () => 
   const hiddenChanges: boolean[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: process.execPath,
+    fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     initialSidebarHidden: true,
     onSidebarHiddenChange: (hidden) => hiddenChanges.push(hidden),
   })
   multiplexer.start()
+  setup.mockInput.pressKey("b", { ctrl: true })
+  setup.mockInput.pressKey("c")
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -241,7 +241,6 @@ test("themes the divider from the host palette", async () => {
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "fx",
     cwd: process.cwd(),
-    initialFxArgs: [],
     keybindings: resolveKeybindings().keybindings,
   })
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
@@ -275,14 +274,15 @@ test("restores a persisted width and reports changes on drag end", async () => {
   const widthChanges: number[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: process.execPath,
+    fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     initialSidebarWidth: 22,
     onSidebarWidthChange: (width) => widthChanges.push(width),
   })
   multiplexer.start()
+  setup.mockInput.pressKey("b", { ctrl: true })
+  setup.mockInput.pressKey("c")
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -304,13 +304,14 @@ test("restores a persisted width and reports changes on drag end", async () => {
 test("clamps a stale persisted width to the current screen", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: process.execPath,
+    fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     initialSidebarWidth: 70,
   })
   multiplexer.start()
+  setup.mockInput.pressKey("b", { ctrl: true })
+  setup.mockInput.pressKey("c")
   const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
   try {
     await setup.renderOnce()

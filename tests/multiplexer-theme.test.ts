@@ -9,7 +9,6 @@ test("themes the empty state and keyboard-opened help", async () => {
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "fx",
     cwd: process.cwd(),
-    initialFxArgs: [],
     keybindings: resolveKeybindings().keybindings,
   })
   multiplexer.setHostPalette(hostPalette("#102030", "#f1f2f3", "#00aabb", "#778899"))

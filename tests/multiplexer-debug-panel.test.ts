@@ -13,14 +13,15 @@ async function createMultiplexer(width: number, height: number, debugPanel: bool
   const setup = await createTestRenderer({ width, height })
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-panel-test-${process.pid}.sock` })
   const multiplexer = new Multiplexer(setup.renderer, {
-    fxPath: process.execPath,
+    fxPath: FAKE_FX,
     cwd: process.cwd(),
-    initialFxArgs: [FAKE_FX],
     keybindings: resolveKeybindings().keybindings,
     agentSocket,
     debugPanel,
   })
   multiplexer.start()
+  setup.mockInput.pressKey("b", { ctrl: true })
+  setup.mockInput.pressKey("c")
   const find = (id: string) => setup.renderer.root.findDescendantById(id) as BoxRenderable | undefined
   return { setup, multiplexer, agentSocket, find }
 }

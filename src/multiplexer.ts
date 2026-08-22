@@ -102,7 +102,6 @@ const MAX_SCROLLBACK_BYTES = 10_000_000
 type MultiplexerOptions = {
   fxPath: string
   cwd: string
-  initialFxArgs: string[]
   keybindings: Keybindings
   agentSocket?: AgentSocket | null
   debugPanel?: boolean
@@ -152,15 +151,13 @@ class FxInstance {
     renderer: CliRenderer,
     readonly id: number,
     readonly cwd: string,
-    private readonly argv: string[],
     private readonly fxPath: string,
     private readonly agentSocket: FxAgentSocketBinding | null,
     hostPalette: TerminalColors | null,
     private readonly events: InstanceEvents,
   ) {
     const workspace = basename(cwd) || "workspace"
-    const fallback = argv.length > 0 ? `${workspace} (${argv.join(" ")})` : workspace
-    this.fallbackLabel = sanitizeTitle(fallback) || "fx"
+    this.fallbackLabel = sanitizeTitle(workspace) || "fx"
     this.label = this.fallbackLabel
     this.titleParser = new OscTitleParser({
       onTitle: (title) => {
@@ -217,7 +214,7 @@ class FxInstance {
   }
 
   start(): void {
-    const processHandle = Bun.spawn([this.fxPath, ...this.argv], {
+    const processHandle = Bun.spawn([this.fxPath], {
       cwd: this.cwd,
       env: createFxEnvironment(process.env, this.id, this.cwd, this.agentSocket),
       terminal: {
@@ -552,12 +549,6 @@ export class Multiplexer {
     // never produced colors, the fallback is the best divider color there will
     // be once an agent makes the sidebar visible.
     if (!this.hostPalette) this.applyDividerPalette(null)
-    if (this.options.initialFxArgs.length === 0) return
-    try {
-      this.createInstance(this.options.initialFxArgs)
-    } catch (error) {
-      throw new Error(`failed to start fx: ${errorMessage(error)}`)
-    }
   }
 
   setHostPalette(colors: TerminalColors): void {
@@ -596,7 +587,7 @@ export class Multiplexer {
     }
   }
 
-  private createInstance(argv: string[] = [], cwd: string = this.options.cwd, prompt = ""): void {
+  private createInstance(cwd: string = this.options.cwd, prompt = ""): void {
     if (this.shuttingDown) return
     this.cancelExitConfirmation()
     const instanceId = this.nextId++
@@ -604,7 +595,6 @@ export class Multiplexer {
       this.renderer,
       instanceId,
       cwd,
-      argv,
       this.options.fxPath,
       this.agentSocketBinding(instanceId),
       this.hostPalette,
@@ -1061,7 +1051,7 @@ export class Multiplexer {
       if (this.shuttingDown) return
     }
     try {
-      this.createInstance([], directory, request.prompt)
+      this.createInstance(directory, request.prompt)
     } catch (error) {
       this.showError("fx did not start", error)
     }

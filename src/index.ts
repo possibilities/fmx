@@ -59,7 +59,6 @@ async function main(): Promise<void> {
     app = new Multiplexer(renderer, {
       fxPath,
       cwd: workspace,
-      initialFxArgs: options.initialFxArgs,
       keybindings: loadedConfig.keybindings,
       agentSocket,
       debugPanel,

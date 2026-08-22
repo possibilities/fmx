@@ -10,7 +10,6 @@ test("uses the configured prefix and renders configured bindings", async () => {
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "fx",
     cwd: process.cwd(),
-    initialFxArgs: [],
     keybindings,
   })
   const helpModal = setup.renderer.root.findDescendantById("fmx-modal")

@@ -3,10 +3,10 @@ import packageMetadata from "../package.json" with { type: "json" }
 import { parseArgs, VERSION } from "../src/cli.ts"
 
 describe("parseArgs", () => {
-  test("passes trailing arguments only after the separator", () => {
-    expect(parseArgs([]).initialFxArgs).toEqual([])
-    expect(parseArgs(["--", "--record"]).initialFxArgs).toEqual(["--record"])
+  test("rejects anything other than fmx options", () => {
+    expect(parseArgs([])).toEqual({ help: false, version: false })
     expect(() => parseArgs(["--record"])).toThrow("unknown option")
+    expect(() => parseArgs(["--", "--record"])).toThrow("unknown option: --")
   })
 
   test("parses help and version flags", () => {

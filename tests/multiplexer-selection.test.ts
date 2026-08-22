@@ -9,7 +9,6 @@ test("clears provisional, empty, and successfully copied selections", async () =
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: "fx",
     cwd: process.cwd(),
-    initialFxArgs: [],
     keybindings: resolveKeybindings().keybindings,
   })
   const originalClearSelection = setup.renderer.clearSelection.bind(setup.renderer)

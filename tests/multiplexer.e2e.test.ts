@@ -184,7 +184,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([...FMX_COMMAND, "--", "--", "--e2e"], {
+    const child = Bun.spawn(FMX_COMMAND, {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -208,6 +208,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
+      await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
+      const initialEmptyStateCount = countOccurrences(output, "prefix+c")
+      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
@@ -226,15 +229,23 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
-      await waitUntil(() => output.includes("prefix+c"), 5_000, () => output)
+      await waitUntil(
+        () => countOccurrences(output, "prefix+c") > initialEmptyStateCount,
+        5_000,
+        () => output,
+      )
       expect(child.exitCode).toBeNull()
 
+      // The empty state is rendered synchronously with instance removal; give
+      // Bun a brief settle to release the exited child PTYs before fmx exits.
+      await Bun.sleep(250)
       child.terminal?.write(Uint8Array.of(control("c")))
       await waitUntil(() => output.includes("press ctrl+c again to exit"), 5_000, () => output)
       child.terminal?.write(Uint8Array.of(control("c")))
       const code = await withTimeout(child.exited, 6_000, "fmx did not exit after confirmed ctrl+c")
       expect(code).toBe(0)
       const lifecycle = await readLifecycle(lifecycleLog)
+      expect(lifecycle).toContain("start 1 []")
       expect(lifecycle).toContain("graceful 1")
       expect(lifecycle).toContain("graceful 2")
     } finally {
@@ -347,7 +358,7 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
 
     let output = ""
     const decoder = new TextDecoder()
-    const child = Bun.spawn([...FMX_COMMAND, "--", "--", "--e2e"], {
+    const child = Bun.spawn(FMX_COMMAND, {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -371,7 +382,12 @@ test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
     })
 
     try {
+      await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
+      // Let the key-driven spawn finish unwinding before a signal starts
+      // shutdown; otherwise Bun can leave the child PTY's exit promise pending.
+      await Bun.sleep(250)
       process.kill(child.pid, "SIGQUIT")
       const code = await withTimeout(child.exited, 6_000, "fmx did not exit after SIGQUIT")
       const lifecycle = await readLifecycle(lifecycleLog)
