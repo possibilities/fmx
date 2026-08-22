@@ -9,12 +9,13 @@ import {
 } from "@opentui/core"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
 import { detectedTerminalColor, mixHexColors } from "./host-palette.ts"
+import { railsFor, type TreeRow } from "./session-tree.ts"
 
 /** How far the active row's background sits from the terminal's own. */
 const ACTIVE_ROW_BLEND = 0.12
-const ICON_COLUMN = 2
 /** Inset the text; the row's shading still spans the full sidebar width. */
 const ROW_PADDING_LEFT = 1
+const ICON_COLUMN = 2
 const MISSING_SESSION = "—"
 
 const FALLBACK_COLORS = {
@@ -25,24 +26,11 @@ const FALLBACK_COLORS = {
   idle: "#4ade80",
   unknown: "#6b7280",
   session: "#9aa5b1",
+  rail: "#4c566a",
   activeBackground: "#2a2f3a",
 }
 
 type ListColors = typeof FALLBACK_COLORS
-
-/**
- * One row's worth of what the list needs. The multiplexer assembles these:
- * `project` and `active` are its own, `state` and `attention` come from what fx
- * reported.
- */
-export type SessionRow = {
-  instanceId: number
-  project: string
-  sessionId: string | null
-  state: DisplayState
-  attention: AgentAttention | null
-  active: boolean
-}
 
 /**
  * The icon carries the whole status. A blocked pane varies its glyph by what
@@ -72,23 +60,10 @@ export function stateIcon(state: DisplayState, attention: AgentAttention | null)
 }
 
 /**
- * Lay a row out to `width`. Text is only ever cut at the right-hand end of the
- * row, so an ellipsis never appears mid-line: the project keeps its full
- * length and the session id, which trails it, takes whatever is left.
+ * Text is only ever cut at the right-hand end of a row, so an ellipsis never
+ * appears mid-line.
  */
-export function layoutRow(row: SessionRow, width: number): { project: string; session: string } {
-  const available = width - ICON_COLUMN
-  if (available <= 0) return { project: "", session: "" }
-
-  const session = row.sessionId ?? MISSING_SESSION
-  // A project long enough to fill the row is itself the last thing on the
-  // line, so it takes the ellipsis and the id has nowhere to go.
-  const sessionRoom = available - row.project.length - 1
-  if (sessionRoom <= 0) return { project: truncate(row.project, available), session: "" }
-  return { project: row.project, session: truncate(session, sessionRoom) }
-}
-
-function truncate(value: string, width: number): string {
+export function truncate(value: string, width: number): string {
   if (width <= 0) return ""
   const characters = [...value]
   if (characters.length <= width) return value
@@ -96,9 +71,17 @@ function truncate(value: string, width: number): string {
   return `${characters.slice(0, width - 1).join("")}…`
 }
 
+/** What a row's text is, once its rails and icon have taken their columns. */
+export function rowText(row: TreeRow, width: number): string {
+  const available = width - ROW_PADDING_LEFT - railsFor(row.depth).length
+  if (row.kind !== "agent") return truncate(row.label, available)
+  return truncate(row.label || MISSING_SESSION, available - ICON_COLUMN)
+}
+
 /**
- * The sidebar's list of fx instances: one row each, status in the icon, the
- * active row shaded. Clicking a row makes that instance the visible one.
+ * The sidebar's tree of fx instances: project, branch, and one row per agent.
+ * The active row is filled; the rails on the path up to it are drawn in the
+ * foreground while every other rail stays dim.
  */
 export class SessionList {
   readonly root: BoxRenderable
@@ -117,9 +100,9 @@ export class SessionList {
     })
   }
 
-  render(rows: SessionRow[], width: number): void {
+  render(rows: TreeRow[], width: number): void {
     this.clearRows()
-    for (const row of rows) this.rows.push(this.buildRow(row, width))
+    for (const [index, row] of rows.entries()) this.rows.push(this.buildRow(row, width, index))
     for (const rendered of this.rows) this.root.add(rendered)
     this.renderer.requestRender()
   }
@@ -136,25 +119,28 @@ export class SessionList {
     this.rows = []
   }
 
-  private buildRow(row: SessionRow, width: number): BoxRenderable {
+  private buildRow(row: TreeRow, width: number, index: number): BoxRenderable {
+    const id = row.instanceId !== null ? `agent-${row.instanceId}` : `${row.kind}-${index}`
     const container = new BoxRenderable(this.renderer, {
-      id: `fmx-session-row-${row.instanceId}`,
+      id: `fmx-session-row-${id}`,
       width: "100%",
       height: 1,
       flexShrink: 0,
       paddingLeft: ROW_PADDING_LEFT,
+      // Only the active row is filled. Its ancestors are marked by their
+      // rails, so two faint backgrounds never have to be told apart.
       backgroundColor: row.active ? this.colors.activeBackground : undefined,
       onMouseDown: (event) => {
         // The press selects a pane; it must not start a drag selection or
         // reach the embedded terminal underneath.
         event.preventDefault()
         event.stopPropagation()
-        this.onSelect(row.instanceId)
+        if (row.instanceId !== null) this.onSelect(row.instanceId)
       },
     })
     container.add(
       new TextRenderable(this.renderer, {
-        id: `fmx-session-row-text-${row.instanceId}`,
+        id: `fmx-session-row-text-${id}`,
         content: this.styleRow(row, width),
         selectable: false,
       }),
@@ -162,18 +148,17 @@ export class SessionList {
     return container
   }
 
-  private styleRow(row: SessionRow, width: number): StyledText {
-    const { project, session } = layoutRow(row, width - ROW_PADDING_LEFT)
-    const chunks: TextChunk[] = [
-      fg(this.stateColor(row.state))(`${stateIcon(row.state, row.attention)} `),
-      fg(this.colors.foreground)(project),
-    ]
-    if (session) chunks.push(fg(this.colors.session)(`${project ? " " : ""}${session}`))
+  private styleRow(row: TreeRow, width: number): StyledText {
+    const rails = railsFor(row.depth)
+    const chunks: TextChunk[] = []
+    if (rails) chunks.push(fg(row.onPath ? this.colors.foreground : this.colors.rail)(rails))
+    if (row.kind === "agent") {
+      chunks.push(fg(this.colors[row.state])(`${stateIcon(row.state, row.attention)} `))
+      chunks.push(fg(this.colors.session)(rowText(row, width)))
+    } else {
+      chunks.push(fg(this.colors.foreground)(rowText(row, width)))
+    }
     return new StyledText(chunks)
-  }
-
-  private stateColor(state: DisplayState): string {
-    return this.colors[state]
   }
 }
 
@@ -188,6 +173,7 @@ function listColors(colors: TerminalColors | null): ListColors {
     idle: ansi(colors, 2, 10) ?? FALLBACK_COLORS.idle,
     unknown: ansi(colors, 8, 7) ?? FALLBACK_COLORS.unknown,
     session: ansi(colors, 8, 7) ?? FALLBACK_COLORS.session,
+    rail: ansi(colors, 8, 7) ?? FALLBACK_COLORS.rail,
     activeBackground:
       background && foreground
         ? mixHexColors(background, foreground, ACTIVE_ROW_BLEND)

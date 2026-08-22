@@ -36,7 +36,9 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
-import { SessionList, type SessionRow } from "./session-list.ts"
+import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
+import { SessionList } from "./session-list.ts"
+import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 
@@ -117,7 +119,7 @@ class FxInstance {
   constructor(
     renderer: CliRenderer,
     readonly id: number,
-    private readonly cwd: string,
+    readonly cwd: string,
     private readonly argv: string[],
     private readonly fxPath: string,
     private readonly agentSocket: FxAgentSocketBinding | null,
@@ -275,6 +277,8 @@ export class Multiplexer {
   private readonly registry = new AgentRegistry()
   private readonly sessionList: SessionList
   private readonly seenSeq = new Map<number, number>()
+  /** Per-directory git context, read once and reused by every instance there. */
+  private readonly gitContexts = new Map<string, GitContext | null>()
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   private dividerDragging = false
   private dragStartWidth = SIDEBAR_DEFAULT_WIDTH
@@ -491,6 +495,7 @@ export class Multiplexer {
     this.instances.push(instance)
     this.content.add(instance.terminal)
     this.switchTo(this.instances.length - 1)
+    this.loadGitContext(this.options.cwd)
     this.refreshSessionList()
     try {
       instance.start()
@@ -558,21 +563,37 @@ export class Multiplexer {
   }
 
   private refreshSessionList(): void {
-    this.sessionList.render(this.sessionRows(), this.sidebarWidth)
+    this.sessionList.render(buildTree(this.sessionEntries()), this.sidebarWidth)
   }
 
-  private sessionRows(): SessionRow[] {
-    const project = basename(this.options.cwd) || "workspace"
+  private sessionEntries(): SessionEntry[] {
     return this.instances.map((instance, index) => {
       const record = this.registry.get(this.paneIdFor(instance))
+      const git = this.gitContexts.get(instance.cwd) ?? null
       return {
         instanceId: instance.id,
-        project,
+        project: projectNameFor(git, instance.cwd),
+        branch: git?.branch ?? null,
         sessionId: shortSessionId(record?.sessionId ?? null),
         state: displayStateFor(record, this.seenSeq.get(instance.id) ?? 0),
         attention: record?.attention ?? null,
         active: index === this.activeIndex,
       }
+    })
+  }
+
+  /**
+   * fx never reports where it is working, so fmx reads it from the directory
+   * it spawned the instance in. The list renders without a branch rung until
+   * the answer arrives, which is why this refreshes rather than blocking.
+   */
+  private loadGitContext(cwd: string): void {
+    if (this.gitContexts.has(cwd)) return
+    this.gitContexts.set(cwd, null)
+    void readGitContext(cwd).then((context) => {
+      if (this.shuttingDown || !context) return
+      this.gitContexts.set(cwd, context)
+      this.refreshSessionList()
     })
   }
 

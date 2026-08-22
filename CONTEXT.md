@@ -27,10 +27,27 @@ Its `[clear]` button empties the view alone; the socket keeps running and later
 frames still arrive.
 _Avoid_: log pane, console, inspector.
 
-**Session list** — the sidebar's one-line-per-instance list: status icon,
-project, and short session id, with the active row shaded and a click switching
-to that instance.
+**Session list** — the sidebar's tree of running instances: project, then
+branch, then one row per agent carrying its status icon and short session id.
+Clicking an agent row switches to that instance; project and branch rows are
+not selectable.
 _Avoid_: agent panel, tab bar, session picker.
+
+**Rails** — the guide characters standing left of a row. A solid `│` carries a
+project's children and a dashed `╎` a branch's, so depth reads by texture as
+well as indentation. Rails on the path to the active agent are drawn in the
+foreground; every other rail stays dim.
+_Avoid_: tree lines, connectors, indent guides.
+
+**Path** — the active agent and its ancestors. Only the active row takes a
+background fill; its ancestors are marked by bright rails alone, so two faint
+backgrounds never have to be told apart.
+_Avoid_: selection, breadcrumb.
+
+**Git context** — the worktree root and branch fmx reads for an instance's
+directory, because fx never reports where it is working. An instance outside a
+repository has none and nests directly under its project.
+_Avoid_: repo info, workspace.
 
 **Agent record** — what fx has reported about one pane, folded from frames:
 state, attention, session id, label. It holds socket truth only — which pane a
