@@ -67,6 +67,7 @@ async function main(): Promise<void> {
       worktreeRoot: loadedConfig.worktreeRoot,
       slug: loadedConfig.slug,
       initialSidebarWidth: persistedState.sidebarWidth,
+      initialSidebarHidden: persistedState.sidebarHidden,
       initialProjectLaunches: persistedState.projectLaunches,
       onProjectLaunch: (launches) => {
         persistedState.projectLaunches = launches
@@ -76,6 +77,11 @@ async function main(): Promise<void> {
         persistedState.sidebarWidth = width
         // State persistence is an enhancement; a failed write must never
         // disturb the running session.
+        void saveState(persistedState).catch(() => {})
+      },
+      onSidebarHiddenChange: (hidden) => {
+        if (hidden) persistedState.sidebarHidden = true
+        else delete persistedState.sidebarHidden
         void saveState(persistedState).catch(() => {})
       },
     })

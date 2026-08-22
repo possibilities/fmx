@@ -7,6 +7,9 @@ const STATE_PATH_ENV_VAR = "FMX_STATE_PATH"
 /** Machine-owned UI state, kept out of the hand-edited config.toml. */
 export type PersistedState = {
   sidebarWidth?: number
+  /** Hidden by the toggle key; absent when shown, so an untouched state.json
+   * stays as it was. */
+  sidebarHidden?: boolean
   /** Instances started per directory, which orders the project picker. */
   projectLaunches?: Record<string, number>
 }
@@ -54,6 +57,7 @@ export async function loadState(path = statePath()): Promise<PersistedState> {
   ) {
     state.sidebarWidth = document.sidebarWidth
   }
+  if (document.sidebarHidden === true) state.sidebarHidden = true
   const launches = readLaunches(document.projectLaunches)
   if (launches) state.projectLaunches = launches
   return state

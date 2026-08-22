@@ -165,6 +165,37 @@ test("toggles the sidebar with prefix+b and keeps it hidden across a new agent",
   }
 })
 
+test("restores a persisted hidden sidebar and reports each toggle", async () => {
+  const hiddenChanges: boolean[] = []
+  const setup = await createTestRenderer({ width: 90, height: 24 })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: process.execPath,
+    cwd: process.cwd(),
+    initialFxArgs: [FAKE_FX],
+    keybindings: resolveKeybindings().keybindings,
+    initialSidebarHidden: true,
+    onSidebarHiddenChange: (hidden) => hiddenChanges.push(hidden),
+  })
+  multiplexer.start()
+  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  try {
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(false)
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(true)
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(sidebar.visible).toBe(false)
+    expect(hiddenChanges).toEqual([false, true])
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("resizes the sidebar by dragging the divider, clamped to 16..width/3", async () => {
   const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
   try {

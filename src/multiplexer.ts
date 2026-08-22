@@ -108,6 +108,8 @@ type MultiplexerOptions = {
   debugPanel?: boolean
   initialSidebarWidth?: number
   onSidebarWidthChange?: (width: number) => void
+  initialSidebarHidden?: boolean
+  onSidebarHiddenChange?: (hidden: boolean) => void
   /** Directories the launch dialog scans one level deep for projects. */
   projectRoots?: string[]
   /** Where a launch's new worktree is checked out. */
@@ -403,6 +405,7 @@ export class Multiplexer {
     })
     this.keybindings = options.keybindings
     this.sidebarWidth = options.initialSidebarWidth ?? SIDEBAR_DEFAULT_WIDTH
+    this.sidebarHidden = options.initialSidebarHidden ?? false
     this.slugNamer = new SlugNamer({
       fxPath: options.fxPath,
       settings: options.slug ?? defaultSlugSettings(),
@@ -1015,6 +1018,7 @@ export class Multiplexer {
       case "toggle_sidebar":
         this.sidebarHidden = !this.sidebarHidden
         this.refreshInstanceChrome()
+        this.options.onSidebarHiddenChange?.(this.sidebarHidden)
         return
     }
   }
