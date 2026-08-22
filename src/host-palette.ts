@@ -70,3 +70,42 @@ export function detectedTerminalColor(color: string | null | undefined): string 
   if (!color || !/^#[0-9a-f]{6}$/iu.test(color)) return null
   return color.toLowerCase()
 }
+
+/**
+ * Colors for fmx's own surfaces drawn over the terminal — the help modal, the
+ * spawn error, the launch dialog. They are derived from the host's palette so
+ * fmx never paints a theme the terminal did not choose; the fallbacks are only
+ * for a host that answers no color query at all.
+ */
+export const MODAL_FALLBACK_COLORS = {
+  background: "#232938",
+  foreground: "#d8dee9",
+  accent: "#7dd3fc",
+  backdrop: "#00000033",
+  error: "#f87171",
+  key: "#a3a3a3",
+}
+
+export type ModalColors = typeof MODAL_FALLBACK_COLORS
+
+export function modalColors(colors: TerminalColors | null): ModalColors {
+  const foreground =
+    detectedTerminalColor(colors?.defaultForeground) ?? MODAL_FALLBACK_COLORS.foreground
+  return {
+    foreground,
+    background: detectedTerminalColor(colors?.defaultBackground) ?? MODAL_FALLBACK_COLORS.background,
+    accent:
+      detectedTerminalColor(colors?.palette[4]) ??
+      detectedTerminalColor(colors?.palette[12]) ??
+      MODAL_FALLBACK_COLORS.accent,
+    backdrop: MODAL_FALLBACK_COLORS.backdrop,
+    error:
+      detectedTerminalColor(colors?.palette[1]) ??
+      detectedTerminalColor(colors?.palette[9]) ??
+      MODAL_FALLBACK_COLORS.error,
+    key:
+      detectedTerminalColor(colors?.palette[7]) ??
+      detectedTerminalColor(colors?.palette[8]) ??
+      foreground,
+  }
+}

@@ -7,8 +7,12 @@ const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
 
 type LoadedConfig = {
   keybindings: Keybindings
+  /** Directories whose children the launch dialog offers as projects. */
+  projectRoots: string[]
   diagnostics: string[]
 }
+
+const KNOWN_SECTIONS = new Set(["keys", "project_roots"])
 
 export function configPath(
   env: NodeJS.ProcessEnv = process.env,
@@ -41,15 +45,43 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
 
   const diagnostics: string[] = []
   for (const section of Object.keys(document)) {
-    if (section !== "keys") diagnostics.push(`unknown config section [${section}]; ignoring section`)
+    if (!KNOWN_SECTIONS.has(section)) {
+      diagnostics.push(`unknown config section [${section}]; ignoring section`)
+    }
   }
   const resolved = resolveKeybindings(document.keys)
   diagnostics.push(...resolved.diagnostics)
-  return { keybindings: resolved.keybindings, diagnostics }
+  return {
+    keybindings: resolved.keybindings,
+    projectRoots: resolveProjectRoots(document.project_roots, diagnostics),
+    diagnostics,
+  }
+}
+
+/**
+ * Where projects live on this machine, so the default is empty: a shipped
+ * guess at someone's directory layout would offer a list that is wrong
+ * everywhere it is not exactly right.
+ */
+function resolveProjectRoots(raw: unknown, diagnostics: string[]): string[] {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) {
+    diagnostics.push("invalid project_roots: must be an array of directories; ignoring it")
+    return []
+  }
+  const roots: string[] = []
+  for (const entry of raw) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      diagnostics.push(`invalid project root: ${JSON.stringify(entry)}; ignoring entry`)
+      continue
+    }
+    if (!roots.includes(entry)) roots.push(entry)
+  }
+  return roots
 }
 
 function defaultConfig(...diagnostics: string[]): LoadedConfig {
-  return { keybindings: resolveKeybindings().keybindings, diagnostics }
+  return { keybindings: resolveKeybindings().keybindings, projectRoots: [], diagnostics }
 }
 
 function isMissingFile(error: unknown): boolean {

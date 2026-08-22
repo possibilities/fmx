@@ -21,6 +21,21 @@ specific release.
 
 `ctrl-b` is the prefix key; `ctrl-b ?` lists the bindings. Rebind them in `~/.config/fmx/config.toml` in the `[keys]` table.
 
+`ctrl-b c` starts an agent where fmx is running. `ctrl-b l` opens the launch
+dialog instead, which asks where to start it: a letter cycles the project row
+to the next project whose name begins with it, space opens a picker that
+filters as you type, and enter starts the agent there. Projects are listed
+most-recently-worked-in first.
+
+The dialog offers each directory named by `project_roots` and the directories
+one level under it:
+
+```toml
+project_roots = ["~/code", "~/src"]
+```
+
+With no roots configured it offers the directory fmx itself was started in.
+
 ## Development
 
 Development and machine provisioning should use an editable checkout, never

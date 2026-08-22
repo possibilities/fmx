@@ -51,6 +51,31 @@ test("loads keys from TOML", async () => {
   }
 })
 
+test("loads project roots and diagnoses entries it cannot use", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-config-roots-"))
+  const good = join(directory, "roots.toml")
+  const bad = join(directory, "bad-roots.toml")
+  await writeFile(good, `project_roots = ["~/code", "~/src", "~/code"]\n`)
+  await writeFile(bad, `project_roots = ["~/code", 7, ""]\n`)
+
+  try {
+    const loaded = await loadConfig(good)
+    expect(loaded.diagnostics).toEqual([])
+    expect(loaded.projectRoots).toEqual(["~/code", "~/src"])
+
+    const rejected = await loadConfig(bad)
+    expect(rejected.projectRoots).toEqual(["~/code"])
+    expect(rejected.diagnostics).toEqual([
+      "invalid project root: 7; ignoring entry",
+      'invalid project root: ""; ignoring entry',
+    ])
+
+    expect((await loadConfig("/definitely/missing/fmx-config.toml")).projectRoots).toEqual([])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test("falls back on malformed TOML and diagnoses unknown keys", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-config-errors-"))
   const malformed = join(directory, "malformed.toml")

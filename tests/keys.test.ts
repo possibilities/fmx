@@ -28,6 +28,14 @@ describe("keybindings", () => {
     expect(diagnostics).toEqual([])
     expect(keybindings.prefixLabel).toBe("ctrl+b")
     expect(keybindings.new_tab.map((binding) => binding.label)).toEqual(["prefix+c"])
+    expect(keybindings.launch.map((binding) => binding.label)).toEqual(["prefix+l"])
+  })
+
+  test("resolves the launch action from its own binding", () => {
+    const { keybindings, diagnostics } = resolveKeybindings({ launch: "prefix+o" })
+    expect(diagnostics).toEqual([])
+    expect(actionForKey(keybindings, key({ name: "o" }), "prefix")).toEqual({ name: "launch" })
+    expect(actionForKey(keybindings, key({ name: "l" }), "prefix")).toBeNull()
   })
 
   test("supports a Ctrl-Space prefix without changing action bindings", () => {

@@ -7,6 +7,8 @@ const STATE_PATH_ENV_VAR = "FMX_STATE_PATH"
 /** Machine-owned UI state, kept out of the hand-edited config.toml. */
 export type PersistedState = {
   sidebarWidth?: number
+  /** Instances started per directory, which orders the project picker. */
+  projectLaunches?: Record<string, number>
 }
 
 export function statePath(
@@ -42,7 +44,22 @@ export async function loadState(path = statePath()): Promise<PersistedState> {
   ) {
     state.sidebarWidth = document.sidebarWidth
   }
+  const launches = readLaunches(document.projectLaunches)
+  if (launches) state.projectLaunches = launches
   return state
+}
+
+/** Counts a hand-edit or an older fmx could have left in any shape; only
+ * whole positive tallies for absolute directories are kept. */
+function readLaunches(raw: unknown): Record<string, number> | null {
+  if (!isRecord(raw)) return null
+  const launches: Record<string, number> = {}
+  for (const [directory, count] of Object.entries(raw)) {
+    if (!directory.startsWith("/")) continue
+    if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) continue
+    launches[directory] = count
+  }
+  return Object.keys(launches).length > 0 ? launches : null
 }
 
 export async function saveState(state: PersistedState, path = statePath()): Promise<void> {

@@ -63,7 +63,13 @@ async function main(): Promise<void> {
       keybindings: loadedConfig.keybindings,
       agentSocket,
       debugPanel,
+      projectRoots: loadedConfig.projectRoots,
       initialSidebarWidth: persistedState.sidebarWidth,
+      initialProjectLaunches: persistedState.projectLaunches,
+      onProjectLaunch: (launches) => {
+        persistedState.projectLaunches = launches
+        void saveState(persistedState).catch(() => {})
+      },
       onSidebarWidthChange: (width) => {
         persistedState.sidebarWidth = width
         // State persistence is an enhancement; a failed write must never

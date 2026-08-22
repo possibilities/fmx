@@ -14,6 +14,7 @@ import {
   TextRenderable,
   type ThemeMode,
 } from "@opentui/core"
+import { homedir } from "node:os"
 import { basename } from "node:path"
 import { AgentRegistry, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
@@ -21,9 +22,13 @@ import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding } from "./fx-environment.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
+import { LaunchDialog } from "./launch-dialog.ts"
 import {
   detectedTerminalColor,
   hasDetectedBackground,
+  MODAL_FALLBACK_COLORS,
+  type ModalColors,
+  modalColors,
   mixHexColors,
   themeModeReport,
 } from "./host-palette.ts"
@@ -37,19 +42,11 @@ import {
   type ResolvedBinding,
 } from "./keybindings.ts"
 import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
+import { orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
 import { SessionList } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
-
-const MODAL_FALLBACK_COLORS = {
-  background: "#232938",
-  foreground: "#d8dee9",
-  accent: "#7dd3fc",
-  backdrop: "#00000033",
-  error: "#f87171",
-  key: "#a3a3a3",
-}
 
 const SIDEBAR_DEFAULT_WIDTH = 26
 const SIDEBAR_MIN_WIDTH = 16
@@ -94,6 +91,12 @@ type MultiplexerOptions = {
   debugPanel?: boolean
   initialSidebarWidth?: number
   onSidebarWidthChange?: (width: number) => void
+  /** Directories the launch dialog scans one level deep for projects. */
+  projectRoots?: string[]
+  home?: string
+  /** Instances started per directory so far, which orders the picker. */
+  initialProjectLaunches?: Record<string, number>
+  onProjectLaunch?: (launches: Record<string, number>) => void
 }
 
 type InstanceStatus = "starting" | "running" | "closing" | "exited"
@@ -282,6 +285,8 @@ export class Multiplexer {
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   private dividerDragging = false
   private dragStartWidth = SIDEBAR_DEFAULT_WIDTH
+  private readonly launchDialog: LaunchDialog
+  private readonly projectLaunches: Map<string, number>
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
@@ -419,8 +424,17 @@ export class Multiplexer {
     this.modalBackdrop.add(this.modal)
     this.applyModalPalette(this.hostPalette)
 
+    this.projectLaunches = new Map(Object.entries(options.initialProjectLaunches ?? {}))
+    this.launchDialog = new LaunchDialog(renderer, {
+      onLaunch: (directory) => this.startInProject(directory),
+      onClose: () => {
+        if (!this.shuttingDown) this.activeInstance()?.terminal.focus()
+      },
+    })
+
     this.renderer.root.add(this.stage)
     this.renderer.root.add(this.modalBackdrop)
+    this.renderer.root.add(this.launchDialog.root)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
@@ -455,6 +469,7 @@ export class Multiplexer {
     if (this.shuttingDown) return this.donePromise
     this.shuttingDown = true
     this.cancelPrefix()
+    this.launchDialog.close()
     this.hideModal()
 
     try {
@@ -474,13 +489,13 @@ export class Multiplexer {
     }
   }
 
-  private createInstance(argv: string[] = []): void {
+  private createInstance(argv: string[] = [], cwd: string = this.options.cwd): void {
     if (this.shuttingDown) return
     const instanceId = this.nextId++
     const instance = new FxInstance(
       this.renderer,
       instanceId,
-      this.options.cwd,
+      cwd,
       argv,
       this.options.fxPath,
       this.agentSocketBinding(instanceId),
@@ -495,7 +510,8 @@ export class Multiplexer {
     this.instances.push(instance)
     this.content.add(instance.terminal)
     this.switchTo(this.instances.length - 1)
-    this.loadGitContext(this.options.cwd)
+    this.loadGitContext(cwd)
+    this.countLaunch(cwd)
     this.refreshSessionList()
     try {
       instance.start()
@@ -659,6 +675,7 @@ export class Multiplexer {
   private applyLayout(requestedSidebarWidth = this.sidebarWidth): void {
     this.applyDebugPanelWidth()
     this.applySidebarWidth(requestedSidebarWidth)
+    this.launchDialog.layout()
   }
 
   private applyDebugPanelWidth(): void {
@@ -699,6 +716,7 @@ export class Multiplexer {
       this.debugDivider.focusedBorderColor = color
     }
     this.debugPanel?.applyPalette(colors)
+    this.launchDialog.applyPalette(colors)
     this.sessionList.applyPalette(colors)
     this.refreshSessionList()
   }
@@ -735,6 +753,12 @@ export class Multiplexer {
     if (this.renderer.hasSelection) this.renderer.clearSelection()
     if (this.shuttingDown) {
       this.swallow(key)
+      return
+    }
+
+    if (this.launchDialog.isOpen()) {
+      this.swallow(key)
+      if (!MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) this.launchDialog.handleKey(key)
       return
     }
 
@@ -788,6 +812,9 @@ export class Multiplexer {
           this.showSpawnError(error)
         }
         return
+      case "launch":
+        this.showLaunchDialog()
+        return
       case "previous_tab":
         this.switchTo(this.activeIndex - 1)
         return
@@ -802,6 +829,43 @@ export class Multiplexer {
 
   private cancelPrefix(): void {
     this.prefixArmed = false
+  }
+
+  /**
+   * The projects on offer, freshly scanned so a directory made a minute ago is
+   * already there. fmx's own workspace joins the list unconditionally, which
+   * keeps the dialog useful before any root is configured.
+   */
+  private projectChoices(): ProjectChoice[] {
+    const home = this.options.home ?? homedir()
+    const scanned = scanProjectRoots(this.options.projectRoots ?? [], home)
+    const directories = scanned.includes(this.options.cwd)
+      ? scanned
+      : [...scanned, this.options.cwd]
+    return orderProjects(directories, this.projectLaunches, home)
+  }
+
+  private showLaunchDialog(): void {
+    if (this.shuttingDown || this.modalKind) return
+    const active = this.activeInstance()
+    this.launchDialog.applyPalette(this.hostPalette)
+    this.launchDialog.show(this.projectChoices(), active?.cwd ?? this.options.cwd)
+    active?.terminal.blur()
+  }
+
+  private startInProject(directory: string): void {
+    try {
+      this.createInstance([], directory)
+    } catch (error) {
+      this.showSpawnError(error)
+    }
+  }
+
+  /** Every start counts, whichever key opened it, so the picker's order
+   * reflects where work actually happens. */
+  private countLaunch(cwd: string): void {
+    this.projectLaunches.set(cwd, (this.projectLaunches.get(cwd) ?? 0) + 1)
+    this.options.onProjectLaunch?.(Object.fromEntries(this.projectLaunches))
   }
 
   private showHelp(): void {
@@ -865,7 +929,6 @@ export class Multiplexer {
   }
 }
 
-type ModalColors = typeof MODAL_FALLBACK_COLORS
 type HelpEntry = readonly [key: string, description: string]
 
 function dividerColor(colors: TerminalColors | null): string {
@@ -879,30 +942,12 @@ function dividerColor(colors: TerminalColors | null): string {
   )
 }
 
-function modalColors(colors: TerminalColors | null): ModalColors {
-  const foreground = detectedTerminalColor(colors?.defaultForeground) ?? MODAL_FALLBACK_COLORS.foreground
-  return {
-    foreground,
-    background: detectedTerminalColor(colors?.defaultBackground) ?? MODAL_FALLBACK_COLORS.background,
-    accent:
-      detectedTerminalColor(colors?.palette[4]) ??
-      detectedTerminalColor(colors?.palette[12]) ??
-      MODAL_FALLBACK_COLORS.accent,
-    backdrop: MODAL_FALLBACK_COLORS.backdrop,
-    error:
-      detectedTerminalColor(colors?.palette[1]) ??
-      detectedTerminalColor(colors?.palette[9]) ??
-      MODAL_FALLBACK_COLORS.error,
-    key:
-      detectedTerminalColor(colors?.palette[7]) ?? detectedTerminalColor(colors?.palette[8]) ?? foreground,
-  }
-}
-
 function helpEntries(keybindings: Keybindings): HelpEntry[] {
   return [
     [keybindings.prefixLabel, "prefix mode"],
     [bindingLabel(keybindings.help), "keybinds"],
     [bindingLabel(keybindings.new_tab), "new agent"],
+    [bindingLabel(keybindings.launch), "launch agent"],
     [bindingLabel(keybindings.previous_tab), "prev agent"],
     [bindingLabel(keybindings.next_tab), "next agent"],
   ]

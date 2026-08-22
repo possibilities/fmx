@@ -5,7 +5,12 @@
   string arrays, `prefix+` trigger syntax, and direct modified chords work in
   both programs. Keep new fields compatible with Herdr's schema, and don't
   mention Herdr in user-facing text (README, `--help`, diagnostics) — only
-  here.
+  here. `keys.launch` is the one field Herdr has no counterpart for; a field
+  fmx alone needs is fine, but a field both have must keep Herdr's spelling
+  and meaning. Herdr ignores what it does not know, with a diagnostic.
+- `project_roots` is deliberately empty by default. Personal roots belong in
+  `~/.config/fmx/config.toml`, never in a shipped default: a guess at
+  someone's directory layout is wrong everywhere it is not exactly right.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
 - fmx has no quit/close/detach keys: fx exits govern the lifecycle. A tab

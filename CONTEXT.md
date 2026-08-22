@@ -39,6 +39,29 @@ background fill and its ancestors are set in bold; nothing else marks them, so
 two faint backgrounds never have to be told apart.
 _Avoid_: selection, breadcrumb.
 
+**Project root** — a directory named by `project_roots` whose children are
+offered as projects, along with the root itself. Roots are scanned one level
+deep and never recursively; a root that is not on this machine contributes
+nothing.
+_Avoid_: workspace root, search path, scan directory.
+
+**Launch dialog** — the modal that gathers what an instance is started with
+before fx runs. Today that is one choice, the project, drawn as a row: a
+letter cycles it to the next project starting with that letter, and space
+opens the project picker. Further choices join as further rows.
+_Avoid_: new tab modal, launcher, form.
+
+**Project picker** — the filterable list the launch dialog opens on space.
+Typing filters by subsequence, so `agl` finds `agentlaunch`; enter applies the
+highlighted project to the row rather than starting anything. Dismissing it
+changes nothing.
+_Avoid_: overlay, palette, fuzzy finder.
+
+**Launch count** — how many instances have been started in a directory, kept
+in `state.json` and incremented by every start whichever key opened it. It
+orders the project picker and is never drawn in it.
+_Avoid_: frecency, history, usage.
+
 **Git context** — the worktree root and branch fmx reads for an instance's
 directory, because fx never reports where it is working. An instance outside a
 repository has none and nests directly under its project.
