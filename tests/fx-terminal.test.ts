@@ -149,7 +149,7 @@ test("forwards host key bytes without re-encoding them", async () => {
   }
 })
 
-test("conceals the host cursor until the cursor is revealed", async () => {
+test("conceals the fresh origin cursor until fx places it", async () => {
   const setup = await createTestRenderer({ width: 20, height: 6 })
   const cursorUpdates: { x: number; y: number; visible: boolean | undefined }[] = []
 
@@ -183,11 +183,24 @@ test("conceals the host cursor until the cursor is revealed", async () => {
     expect(cursorUpdates.length).toBeGreaterThan(0)
     expect(cursorUpdates.at(-1)?.visible).toBe(false)
 
+    // Queries and metadata are real PTY output but do not establish where fx's
+    // input cursor belongs. The emulator's provisional origin stays hidden.
+    terminal.write("\u001b[6n\u001b]2;fx starting\u0007")
+    await setup.renderOnce()
+
+    expect(cursorUpdates.at(-1)?.visible).toBe(false)
+
     terminal.write("fx frame\u001b[4;3H")
-    terminal.revealCursor()
     await setup.renderOnce()
 
     expect(cursorUpdates.at(-1)).toEqual({ x: 3, y: 4, visible: true })
+
+    // Once fx has placed a visible cursor, the emulator remains authoritative,
+    // including when fx later puts it at the origin deliberately.
+    terminal.write("\u001b[H")
+    await setup.renderOnce()
+
+    expect(cursorUpdates.at(-1)).toEqual({ x: 1, y: 1, visible: true })
   } finally {
     setup.renderer.destroy()
   }

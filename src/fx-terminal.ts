@@ -36,10 +36,11 @@ export const FX_KEYBOARD_PROTOCOL = {
  */
 export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
   // A fresh emulator reports a visible cursor at the origin, and fmx focuses a
-  // new tab before fx has drawn anything — the host cursor would flash in the
-  // corner until fx's first frame hides or repositions it. Keep it concealed
-  // until fx produces output; from then on the emulator's state is truth.
-  private cursorRevealed = false
+  // new instance before fx has drawn anything. Control-only startup output can
+  // leave that provisional cursor untouched, so bytes arriving are not proof
+  // that fx owns its position. Keep it concealed until the emulator reports a
+  // visible cursor away from the origin; from then on its state is truth.
+  private cursorPositionEstablished = false
   private selectionGesture: Selection | null = null
   private selectionActivated = false
 
@@ -87,15 +88,15 @@ export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
     return super.onSelectionChanged(selection)
   }
 
-  public revealCursor(): void {
-    if (this.cursorRevealed) return
-    this.cursorRevealed = true
-    this.requestRender()
-  }
-
   protected override renderSelf(buffer: OptimizedBuffer): void {
     super.renderSelf(buffer)
-    if (!this.cursorRevealed && this.focused) this._ctx.setCursorPosition(0, 0, false)
+    if (!this.focused || this.cursorPositionEstablished) return
+    const cursor = this.screen().cursor
+    if (cursor.visible && (cursor.x !== 0 || cursor.y !== 0)) {
+      this.cursorPositionEstablished = true
+      return
+    }
+    this._ctx.setCursorPosition(0, 0, false)
   }
 
   public applyHostPalette(colors: TerminalColors): boolean {

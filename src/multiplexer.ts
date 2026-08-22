@@ -240,10 +240,7 @@ class FxInstance {
   private acceptOutput(data: Uint8Array): void {
     this.titleParser.push(data)
     const terminalData = this.cursorReportAdapter.toTerminal(data)
-    if (terminalData.byteLength > 0) {
-      this.terminal.write(terminalData)
-      this.terminal.revealCursor()
-    }
+    if (terminalData.byteLength > 0) this.terminal.write(terminalData)
   }
 
   private writeInput(data: Uint8Array, source: EmbeddedTerminalDataSource): void {
