@@ -343,6 +343,9 @@ export class Multiplexer {
   /** Per-directory git context, read once and reused by every instance there. */
   private readonly gitContexts = new Map<string, GitContext | null>()
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
+  /** Hidden by the toggle key; orthogonal to the empty state, which hides the
+   * sidebar because there is nothing to list. */
+  private sidebarHidden = false
   private dividerDragging = false
   private dragStartWidth = SIDEBAR_DEFAULT_WIDTH
   private readonly launchDialog: LaunchDialog
@@ -689,8 +692,9 @@ export class Multiplexer {
 
   private refreshInstanceChrome(): void {
     const hasInstances = this.instances.length > 0
-    this.sidebar.visible = hasInstances
-    this.divider.visible = hasInstances
+    const showSidebar = hasInstances && !this.sidebarHidden
+    this.sidebar.visible = showSidebar
+    this.divider.visible = showSidebar
     this.emptyState.visible = !hasInstances
     if (!hasInstances) this.refreshEmptyState()
   }
@@ -1008,6 +1012,10 @@ export class Multiplexer {
       case "help":
         this.showHelp()
         return
+      case "toggle_sidebar":
+        this.sidebarHidden = !this.sidebarHidden
+        this.refreshInstanceChrome()
+        return
     }
   }
 
@@ -1172,6 +1180,7 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
     [bindingLabel(keybindings.launch), "launch agent"],
     [bindingLabel(keybindings.previous_tab), "prev agent"],
     [bindingLabel(keybindings.next_tab), "next agent"],
+    [bindingLabel(keybindings.toggle_sidebar), "toggle sidebar"],
   ]
 }
 
