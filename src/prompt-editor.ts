@@ -100,11 +100,6 @@ export function isStructuralKey(key: KeyEvent): boolean {
   )
 }
 
-type EditorOutcome =
-  | { kind: "edited"; text: string }
-  | { kind: "unchanged" }
-  | { kind: "unrunnable"; editor: string }
-
 /** The editor's answer replaces the prompt wholesale; a trailing newline is
  * the editor's punctuation, not the operator's. */
 export function normalizeEditedPrompt(text: string): string {
@@ -240,13 +235,17 @@ export class PromptEditor {
    * `$EDITOR` (`$VISUAL` first, its arguments honored through the shell),
    * and read the answer back on exit. fx keeps running underneath; its
    * output buffers until the renderer comes back.
+   *
+   * An editor that will not run, or that exits nonzero, leaves the prompt as
+   * it was. There is nothing to report: the operator is looking straight at
+   * the text they were about to edit, unchanged.
    */
-  async editExternally(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
-    if (this.editing) return null
+  async editExternally(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+    if (this.editing) return
     this.editing = true
     const editor = env.VISUAL ?? env.EDITOR ?? "vi"
     const file = join(tmpdir(), `fmx-prompt-${process.pid}-${Date.now()}.md`)
-    let outcome: EditorOutcome
+    let edited: string | null = null
     try {
       await Bun.write(file, this.text)
       this.renderer.suspend()
@@ -257,14 +256,12 @@ export class PromptEditor {
           stderr: "inherit",
           env: env as Record<string, string>,
         })
-        const exitCode = await editorProcess.exited
-        outcome =
-          exitCode === 0 ? { kind: "edited", text: await Bun.file(file).text() } : { kind: "unchanged" }
+        if ((await editorProcess.exited) === 0) edited = await Bun.file(file).text()
       } finally {
         this.renderer.resume()
       }
     } catch {
-      outcome = { kind: "unrunnable", editor }
+      // An editor that cannot be spawned changes nothing.
     } finally {
       try {
         unlinkSync(file)
@@ -274,16 +271,11 @@ export class PromptEditor {
       this.editing = false
     }
 
-    if (outcome.kind === "edited") {
-      this.root.setText(normalizeEditedPrompt(outcome.text))
-      this.root.cursorOffset = this.text.length
-      this.lastEdit = null
-      this.settle()
-      return null
-    }
-    return outcome.kind === "unrunnable"
-      ? `could not run ${outcome.editor}`
-      : "editor exited nonzero · prompt unchanged"
+    if (edited === null) return
+    this.root.setText(normalizeEditedPrompt(edited))
+    this.root.cursorOffset = this.text.length
+    this.lastEdit = null
+    this.settle()
   }
 
   /**

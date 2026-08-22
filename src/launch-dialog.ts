@@ -38,7 +38,7 @@ const ROWS = ["prompt", "project", "worktree"] as const
 type Row = (typeof ROWS)[number]
 
 /** Border and the chooser rows — everything but the prompt, which is as tall
- * as what has been written in it, and the notice, which is usually absent. */
+ * as what has been written in it. */
 const DIALOG_CHROME_HEIGHT = ROWS.length + 1
 
 const PICKER_HINT = "type to filter"
@@ -66,7 +66,6 @@ export class LaunchDialog {
   private readonly rowTexts = new Map<Row, TextRenderable>()
   private readonly promptRow: BoxRenderable
   private readonly editor: PromptEditor
-  private readonly noticeText: TextRenderable
   private readonly picker: BoxRenderable
   private readonly filterText: TextRenderable
   private readonly pickerRows: BoxRenderable
@@ -76,8 +75,6 @@ export class LaunchDialog {
   private selected = 0
   private focus = 0
   private worktree = false
-  /** Set when the external editor could not be run, or refused to answer. */
-  private notice: string | null = null
   /** Null until the answer for the selected project arrives. */
   private worktreeAvailable: boolean | null = null
   private open = false
@@ -155,17 +152,6 @@ export class LaunchDialog {
     this.promptRow.add(this.editor.root)
     // The prompt leads, as it does in the form fmx borrowed this from.
     this.dialog.insertBefore(this.promptRow, this.rowTexts.get("project"))
-    // Not a standing hint line: the dialog carries no chrome of its own, and
-    // this row exists only for the rare thing worth saying — an $EDITOR that
-    // would not run. It takes no height until then.
-    this.noticeText = new TextRenderable(renderer, {
-      id: "fmx-launch-notice",
-      content: "",
-      height: 0,
-      visible: false,
-      selectable: false,
-    })
-    this.dialog.add(this.noticeText)
 
     this.picker = new BoxRenderable(renderer, {
       id: "fmx-launch-picker",
@@ -222,7 +208,6 @@ export class LaunchDialog {
     this.editor.reset()
     this.worktree = false
     this.worktreeAvailable = null
-    this.notice = null
     this.focus = 0
     this.open = true
     this.picking = false
@@ -263,7 +248,7 @@ export class LaunchDialog {
       box.focusedBorderColor = this.colors.accent
       box.titleColor = this.colors.key
     }
-    for (const text of [...this.rowTexts.values(), this.noticeText, this.filterText]) {
+    for (const text of [...this.rowTexts.values(), this.filterText]) {
       text.fg = this.colors.foreground
       text.bg = this.colors.background
     }
@@ -283,8 +268,6 @@ export class LaunchDialog {
     if (this.editor.suspended) return false
     // Escape steps back one layer, closing the picker onto the row it came
     // from; ctrl+c leaves outright, from whichever layer is in front.
-    // Any key moves on from what the external editor had to say.
-    this.notice = null
     if (isCancelKey(key)) {
       this.close()
       return true
@@ -314,10 +297,7 @@ export class LaunchDialog {
     const width = Math.max(DIALOG_MIN_WIDTH, Math.min(DIALOG_MAX_WIDTH, this.renderer.width - 8))
     const promptRows = this.editor.measure(width - 4 - LABEL_COLUMN - 2)
     this.promptRow.height = promptRows
-    const noticeRows = this.notice === null ? 0 : 1
-    this.noticeText.height = noticeRows
-    this.noticeText.visible = noticeRows === 1
-    center(this.dialog, width, DIALOG_CHROME_HEIGHT + promptRows + noticeRows)
+    center(this.dialog, width, DIALOG_CHROME_HEIGHT + promptRows)
     this.paintRows(width - 4)
     if (this.picking) this.paintPicker(width)
     this.renderer.requestRender()
@@ -361,7 +341,7 @@ export class LaunchDialog {
   }
 
   private async editExternally(): Promise<void> {
-    this.notice = await this.editor.editExternally()
+    await this.editor.editExternally()
     if (!this.open) return
     this.editor.focus()
     this.layout()
@@ -533,9 +513,6 @@ export class LaunchDialog {
         fg(this.colors.key)(row.padEnd(LABEL_COLUMN)),
         ...this.rowValue(row, project, available),
       ])
-    }
-    if (this.notice !== null) {
-      this.noticeText.content = new StyledText([fg(this.colors.error)(truncate(this.notice, inner))])
     }
   }
 
