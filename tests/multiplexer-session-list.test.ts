@@ -105,7 +105,8 @@ test("renders a row per session, one line tall, and reports clicks", async () =>
     for (const rendered of rows) expect(rendered.height).toBe(1)
 
     const frame = setup.captureCharFrame().split("\n")
-    expect(frame[0]).toContain(`? fmx ${SESSION_ID}`)
+    // One space of inset before the icon column.
+    expect(frame[0]).toStartWith(` ? fmx ${SESSION_ID}`)
     expect(frame[1]).toContain("◐ fmx 5a75126ce54edb04")
     expect(frame[2]).toContain("✓ fmx 84af73d3e9e42cb1")
 
@@ -148,9 +149,9 @@ test("the icon column keeps every row's text aligned", async () => {
     )
     await setup.renderOnce()
 
-    // A wide-rendered glyph would push "fmx" off column 2 on that row alone.
+    // A wide-rendered glyph would push "fmx" off column 3 on that row alone.
     for (const line of setup.captureCharFrame().split("\n").slice(0, 5)) {
-      expect(line.slice(2, 5)).toBe("fmx")
+      expect(line.slice(3, 6)).toBe("fmx")
     }
   } finally {
     list.root.destroy()

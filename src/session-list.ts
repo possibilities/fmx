@@ -13,6 +13,8 @@ import { detectedTerminalColor, mixHexColors } from "./host-palette.ts"
 /** How far the active row's background sits from the terminal's own. */
 const ACTIVE_ROW_BLEND = 0.12
 const ICON_COLUMN = 2
+/** Inset the text; the row's shading still spans the full sidebar width. */
+const ROW_PADDING_LEFT = 1
 const MISSING_SESSION = "—"
 
 const FALLBACK_COLORS = {
@@ -137,6 +139,7 @@ export class SessionList {
       width: "100%",
       height: 1,
       flexShrink: 0,
+      paddingLeft: ROW_PADDING_LEFT,
       backgroundColor: row.active ? this.colors.activeBackground : undefined,
       onMouseDown: (event) => {
         // The press selects a pane; it must not start a drag selection or
@@ -157,7 +160,7 @@ export class SessionList {
   }
 
   private styleRow(row: SessionRow, width: number): StyledText {
-    const { project, session } = layoutRow(row, width)
+    const { project, session } = layoutRow(row, width - ROW_PADDING_LEFT)
     const chunks: TextChunk[] = [
       fg(this.stateColor(row.state))(`${stateIcon(row.state, row.attention)} `),
       fg(this.colors.foreground)(project),
