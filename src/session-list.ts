@@ -72,17 +72,20 @@ export function stateIcon(state: DisplayState, attention: AgentAttention | null)
 }
 
 /**
- * Lay a row out to `width`. The project name truncates before the session id:
- * it repeats down every row, so the id is the part carrying information.
+ * Lay a row out to `width`. Text is only ever cut at the right-hand end of the
+ * row, so an ellipsis never appears mid-line: the project keeps its full
+ * length and the session id, which trails it, takes whatever is left.
  */
 export function layoutRow(row: SessionRow, width: number): { project: string; session: string } {
-  const session = row.sessionId ?? MISSING_SESSION
   const available = width - ICON_COLUMN
   if (available <= 0) return { project: "", session: "" }
-  // The id, one space, then whatever the project can have of the rest.
-  const projectRoom = available - session.length - 1
-  if (projectRoom <= 0) return { project: "", session: truncate(session, available) }
-  return { project: truncate(row.project, projectRoom), session }
+
+  const session = row.sessionId ?? MISSING_SESSION
+  // A project long enough to fill the row is itself the last thing on the
+  // line, so it takes the ellipsis and the id has nowhere to go.
+  const sessionRoom = available - row.project.length - 1
+  if (sessionRoom <= 0) return { project: truncate(row.project, available), session: "" }
+  return { project: row.project, session: truncate(session, sessionRoom) }
 }
 
 function truncate(value: string, width: number): string {

@@ -40,16 +40,28 @@ test("lays a row out inside the default sidebar", () => {
   expect(layoutRow(row(), 26)).toEqual({ project: "fmx", session: SESSION_ID })
 })
 
-test("truncates the project before the session id", () => {
+test("cuts the trailing id rather than putting an ellipsis mid-line", () => {
   const narrow = layoutRow(row({ project: "agentbrain" }), 26)
-  expect(narrow.session).toBe(SESSION_ID)
-  expect(narrow.project).toBe("agentb…")
-  expect(narrow.project.length + narrow.session.length + 3).toBeLessThanOrEqual(26)
+  expect(narrow.project).toBe("agentbrain")
+  expect(narrow.session).toBe("909bc46b6472…")
+  expect(`${narrow.project} ${narrow.session}`.length + 2).toBeLessThanOrEqual(26)
 })
 
-test("keeps the id when there is no room for a project at all", () => {
-  expect(layoutRow(row(), 18).project).toBe("")
-  expect(layoutRow(row(), 18).session).toBe(SESSION_ID)
+test("gives the ellipsis to the project when it fills the row alone", () => {
+  const cramped = layoutRow(row({ project: "agentbrain-worktree" }), 14)
+  expect(cramped.project).toBe("agentbrain-…")
+  expect(cramped.session).toBe("")
+})
+
+test("never leaves an ellipsis anywhere but the end of the row", () => {
+  for (const width of [8, 12, 16, 20, 26, 40]) {
+    for (const project of ["fmx", "agentbrain", "agentbrain-worktree"]) {
+      const laid = layoutRow(row({ project }), width)
+      const line = laid.session ? `${laid.project} ${laid.session}` : laid.project
+      const ellipsis = line.indexOf("…")
+      if (ellipsis !== -1) expect(ellipsis).toBe([...line].length - 1)
+    }
+  }
 })
 
 test("shows a placeholder until fx reports its session", () => {
