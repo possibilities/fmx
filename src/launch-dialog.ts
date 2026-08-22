@@ -52,9 +52,29 @@ export type LaunchRequest = {
   worktree: boolean
 }
 
+/** What the dialog opens with, or is changed to, beyond its defaults. A field
+ * left out keeps what it has: an empty prompt, the preselected project, no
+ * worktree. */
+export type LaunchPrefill = {
+  prompt?: string
+  directory?: string
+  worktree?: boolean
+}
+
+/** The rows as they stand, for a reader that is not looking at the screen. */
+export type LaunchDialogFields = {
+  prompt: string
+  directory: string
+  worktree: boolean
+  worktree_available: boolean | null
+}
+
+export type LaunchDialogOutcome = "submitted" | "cancelled"
+
 type LaunchDialogEvents = {
   onLaunch: (request: LaunchRequest) => void
-  onClose: () => void
+  /** The dialog has left the screen; `submitted` means `onLaunch` follows. */
+  onClose: (outcome: LaunchDialogOutcome) => void
   /** Asks whether a worktree can be cut here; answered by
    * `setWorktreeAvailability`, possibly after several more selections. */
   onProjectChange: (directory: string) => void
@@ -200,8 +220,13 @@ export class LaunchDialog {
     return this.open
   }
 
-  /** Opens over `projects`, on the choice for `preselect` when it is offered. */
-  show(projects: readonly ProjectChoice[], preselect: string | null): void {
+  /**
+   * Opens over `projects`, on the choice for `preselect` when it is offered,
+   * with whatever `prefill` sets already in place. A prefilled directory that
+   * is not among the projects joins them, so an agent can name any directory
+   * and the human still sees it on the row.
+   */
+  show(projects: readonly ProjectChoice[], preselect: string | null, prefill: LaunchPrefill = {}): void {
     this.projects = [...projects]
     const at = this.projects.findIndex((project) => project.directory === preselect)
     this.selected = at === -1 ? 0 : at
@@ -214,11 +239,55 @@ export class LaunchDialog {
     this.root.visible = true
     this.picker.visible = false
     this.editor.focus()
+    this.apply(prefill)
     this.askAboutWorktree()
     this.layout()
   }
 
+  /** Add a choice the scan did not offer, so a named directory is on the row
+   * under its proper display rather than its raw path. */
+  offerProject(choice: ProjectChoice): void {
+    if (this.projects.some((project) => project.directory === choice.directory)) return
+    this.projects.push(choice)
+  }
+
+  /** Change rows in place; `worktree` waits for the repository check the way
+   * a `y` on the row does, so it can still come back as `false`. */
+  apply(fields: LaunchPrefill): void {
+    if (fields.directory !== undefined) {
+      this.offerProject({ directory: fields.directory, display: fields.directory, launches: 0 })
+      const at = this.projects.findIndex((project) => project.directory === fields.directory)
+      if (at !== this.selected) {
+        this.selected = at
+        this.worktreeAvailable = null
+        if (this.open) this.askAboutWorktree()
+      }
+    }
+    if (fields.prompt !== undefined) this.editor.setText(fields.prompt)
+    if (fields.worktree !== undefined) this.worktree = fields.worktree && this.worktreeAvailable !== false
+    if (this.open) this.layout()
+  }
+
+  fields(): LaunchDialogFields {
+    return {
+      prompt: this.editor.text,
+      directory: this.projects[this.selected]?.directory ?? "",
+      worktree: this.worktree,
+      worktree_available: this.worktreeAvailable,
+    }
+  }
+
+  /** Launch from the rows as they stand, as enter on a chooser row does. */
+  submit(): void {
+    if (!this.open) return
+    this.launch()
+  }
+
   close(): void {
+    this.dismiss("cancelled")
+  }
+
+  private dismiss(outcome: LaunchDialogOutcome): void {
     if (!this.open) return
     this.open = false
     this.picking = false
@@ -226,7 +295,7 @@ export class LaunchDialog {
     this.root.visible = false
     this.picker.visible = false
     this.clearRows()
-    this.events.onClose()
+    this.events.onClose(outcome)
     this.renderer.requestRender()
   }
 
@@ -472,7 +541,7 @@ export class LaunchDialog {
       prompt: this.editor.text.trim(),
       worktree: this.worktree,
     }
-    this.close()
+    this.dismiss("submitted")
     this.events.onLaunch(request)
   }
 

@@ -75,3 +75,10 @@ test("fmx's own agent socket replaces whatever was inherited", () => {
   expect(env.HERDR_PANE_ID).toBe("p_3")
   expect(env.HERDR_ENV).toBeUndefined()
 })
+
+test("hands every instance the control socket, and clears one inherited from another fmx", () => {
+  const env = createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work", null, "/tmp/fmx-42.ctl")
+  expect(env.FMX_SOCKET_PATH).toBe("/tmp/fmx-42.ctl")
+  expect(env.FMX_INSTANCE_ID).toBe("3")
+  expect(createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work").FMX_SOCKET_PATH).toBeUndefined()
+})
