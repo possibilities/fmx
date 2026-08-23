@@ -27,17 +27,25 @@ export type AgentRecord = {
   label: string | null
   agentName: string | null
   /**
-   * The frame sequence at the last state change. Compared against the
-   * multiplexer's per-instance "seen" sequence to tell `done` from `idle`
-   * without either side needing a clock or a callback into the other.
+   * The registry-local version at the last state change. Compared against
+   * the multiplexer's per-instance "seen" version to tell `done` from
+   * `idle` without either side needing a clock or a callback into the other.
    */
   stateSeq: number
+}
+
+export type AgentSeed = {
+  sessionId: string | null
+  state: AgentState
+  attention: AgentAttention | null
 }
 
 const ATTENTION_VALUES: readonly string[] = ["permission", "question", "recovery"]
 
 export class AgentRegistry {
   private readonly records = new Map<string, AgentRecord>()
+  /** Monotonic across live frames and restored seeds alike. */
+  private nextStateSeq = 1
 
   /** Fold one of fx's frames into the record for its pane. */
   apply(frame: SocketFrame): void {
@@ -49,7 +57,7 @@ export class AgentRegistry {
     switch (frame.method) {
       case "pane.report_agent": {
         const state = readState(params.state)
-        if (state !== record.state) record.stateSeq = frame.seq
+        if (state !== record.state) this.advanceState(record)
         record.state = state
         record.attention = readAttention(params.custom_status)
         return
@@ -68,7 +76,7 @@ export class AgentRegistry {
         // stands, so the record drops back to knowing nothing.
         record.state = "unknown"
         record.attention = null
-        record.stateSeq = frame.seq
+        this.advanceState(record)
         return
       default:
         return
@@ -76,16 +84,19 @@ export class AgentRegistry {
   }
 
   /**
-   * What a restart already knows about a pane from the Manifest: its fx
-   * session id. The state stays `unknown` and nothing needs attention —
-   * durability of the PTY says nothing about what fx is doing in it — until
-   * fx's next frame says otherwise. A record fx has already reported into is
-   * left alone.
+   * What a restart already knows about a pane from the Manifest: the last
+   * facts fx reported before fmx detached. They remain true until a newer fx
+   * frame says otherwise. A record fx has already reported into is left alone.
    */
-  seed(paneId: string, sessionId: string | null): void {
-    if (this.records.has(paneId)) return
+  seed(paneId: string, seed: AgentSeed): AgentRecord {
+    const existing = this.records.get(paneId)
+    if (existing) return existing
     const record = this.ensure(paneId)
-    record.sessionId = sessionId
+    record.sessionId = seed.sessionId
+    record.state = seed.state
+    record.attention = seed.attention
+    if (seed.state !== "unknown") this.advanceState(record)
+    return record
   }
 
   get(paneId: string): AgentRecord | null {
@@ -111,6 +122,10 @@ export class AgentRegistry {
     }
     this.records.set(paneId, record)
     return record
+  }
+
+  private advanceState(record: AgentRecord): void {
+    record.stateSeq = this.nextStateSeq++
   }
 }
 

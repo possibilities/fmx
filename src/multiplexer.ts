@@ -534,6 +534,12 @@ export class Multiplexer {
     // finishing in the foreground never shows as an unacknowledged `done`.
     const active = this.activeInstance()
     if (active) this.markSeen(active)
+    // A report from somewhere else advances beyond that Instance's seen
+    // version; checkpoint it as unseen so `done` survives a detach too.
+    if (frame.paneId) {
+      const reported = this.instanceForPane(frame.paneId)
+      if (reported && reported !== active) this.checkpointAgent(reported)
+    }
     this.refreshSessionList()
     this.settleInstanceWaiters()
   }
@@ -839,17 +845,27 @@ export class Multiplexer {
   }
 
   /**
-   * Attach to an Instance the Companion held between runs. What fx last
-   * reported is seeded so its name shows; its state is unknown until it
-   * reports again, and a launch prompt is not replayed — there is none.
+   * Attach to an Instance the Companion held between runs. The last socket
+   * truth is seeded before the renderer can expose this row; it stays true
+   * until fx reports something newer. A launch prompt is not replayed —
+   * there is none.
    */
   private async restoreInstance(entry: ManifestEntry): Promise<void> {
     const instance = this.addInstance(entry, entry.cwd, false)
-    if (entry.fxSessionId) {
-      this.registry.seed(instance.paneId, entry.fxSessionId)
-      this.slugNamer.note(entry.fxSessionId, null)
-      this.refreshSessionList()
-    }
+    const checkpoint = entry.agentStatus
+    const record = this.registry.seed(instance.paneId, {
+      sessionId: entry.fxSessionId,
+      state: checkpoint?.state ?? "unknown",
+      attention: checkpoint?.attention ?? null,
+    })
+    this.seenSeq.set(
+      instance.id,
+      checkpoint?.seen === false ? Math.max(0, record.stateSeq - 1) : record.stateSeq,
+    )
+    // The first restored Instance is already the surface the human will see.
+    if (this.activeInstance() === instance) this.markSeen(instance)
+    if (entry.fxSessionId) this.slugNamer.note(entry.fxSessionId, null)
+    this.refreshSessionList()
     try {
       const transport = await this.options.transport.attach(entry, instance.currentSize())
       if (this.shuttingDown || !this.instances.includes(instance)) {
@@ -1128,6 +1144,18 @@ export class Multiplexer {
   private markSeen(instance: FxInstance): void {
     const record = this.registry.get(this.paneIdFor(instance))
     this.seenSeq.set(instance.id, record?.stateSeq ?? 0)
+    this.checkpointAgent(instance)
+  }
+
+  /** Keep the last trustworthy socket state and its acknowledgement relation. */
+  private checkpointAgent(instance: FxInstance): void {
+    const record = this.registry.get(this.paneIdFor(instance))
+    if (!record) return
+    void this.options.manifest.setAgentStatus(instance.entry.instanceId, {
+      state: record.state,
+      attention: record.attention,
+      seen: (this.seenSeq.get(instance.id) ?? 0) >= record.stateSeq,
+    }).catch(() => {})
   }
 
   private selectInstance(instanceId: number): void {

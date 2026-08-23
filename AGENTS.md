@@ -56,6 +56,11 @@
   fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the
   same moment — a query half-translated when the last transport dropped must
   not pair with a response from the next.
+- Each Manifest entry checkpoints the last Agent-socket state, attention, and
+  whether that exact state was seen. Seed it synchronously as the restored row
+  is added; the first visible Instance becomes seen, inactive `done` remains
+  done, and a newer fx frame supersedes it. Subagent state is not duplicated:
+  refresh it from fx's control records and session locks on restore.
 - A lost transport is not an exit. `recoverInstance` asks the Companion: a
   live session is re-attached (and replays onto the reset), an ended one is
   removed exactly as an Exit would remove it, and one that cannot be reached

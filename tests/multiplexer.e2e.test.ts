@@ -4,8 +4,13 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { defaultSocketPath } from "../src/agent-socket.ts"
+import { runCommand } from "../src/control-client.ts"
+import type { Snapshot } from "../src/control-protocol.ts"
+import { ControlSocket } from "../src/control-socket.ts"
 import { loadManifest } from "../src/instance-manifest.ts"
 import { SIDEBAR_DEFAULT_WIDTH } from "../src/multiplexer.ts"
+import { LineAssembler } from "../src/socket-frames.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
 
@@ -18,6 +23,10 @@ const FMX_COMMAND = process.env.FMX_BINARY_PATH
 const configWithRoot = (extra = "") => `project_roots = [${JSON.stringify(ROOT)}]\n${extra}`
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
+
+const RESTORED_SESSION_A = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
+const RESTORED_SESSION_B = "1787368597000-1787368597000000000-cccccccccccccccc"
+const RESTORED_CHILD = "1787368609310-1787368609310138000-3e38dc7a8d7c16c2"
 
 // The embedded terminal starts past the sidebar and its one-column divider, so
 // a drag aimed at fx must be addressed there rather than at the screen origin.
@@ -212,6 +221,134 @@ test.skipIf(!PTY_TEST_ENABLED)(
     }
   },
   20_000,
+)
+
+test.skipIf(!PTY_TEST_ENABLED)(
+  "restores agent and subagent status without unknown flashes",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-status-restore-e2e-"))
+    const projectRoot = join(tempDirectory, "root")
+    const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "config.toml")
+    await mkdir(projectRoot)
+    await writeFile(configFile, `project_roots = [${JSON.stringify(projectRoot)}]\n`)
+    await writeSubagentControl(tempDirectory, RESTORED_CHILD, RESTORED_SESSION_B, "awaiting_approval")
+
+    const env = {
+      ...process.env,
+      HOME: tempDirectory,
+      FMX_FX_PATH: FAKE_FX,
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      FMX_CONFIG_PATH: configFile,
+      FMX_STATE_PATH: join(tempDirectory, "state.json"),
+      ...privateHome(tempDirectory),
+      FMX_TEST_LOG: lifecycleLog,
+    }
+    const spawnFmx = (sink: { output: string }) => {
+      const decoder = new TextDecoder()
+      return Bun.spawn(FMX_COMMAND, {
+        cwd: projectRoot,
+        env,
+        terminal: {
+          cols: 100,
+          rows: 24,
+          data: (_terminal, bytes) => {
+            sink.output += decoder.decode(bytes, { stream: true })
+          },
+        },
+      })
+    }
+    const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
+    const agentSocketPath = defaultSocketPath(homeOf(tempDirectory))
+
+    const firstOutput = { output: "" }
+    const first = spawnFmx(firstOutput)
+    let replacement: ReturnType<typeof spawnFmx> | null = null
+    try {
+      await waitUntil(() => firstOutput.output.includes("prefix+c"), 8_000, () => firstOutput.output)
+      first.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
+      const firstEntry = (await manifest()).instances[0]!
+      await sendAgentFrame(agentSocketPath, sessionFrame(firstEntry.paneId, RESTORED_SESSION_A))
+      await sendAgentFrame(agentSocketPath, stateFrame(firstEntry.paneId, "blocked", "question"))
+
+      first.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
+      const secondEntry = (await manifest()).instances[1]!
+      await sendAgentFrame(agentSocketPath, sessionFrame(secondEntry.paneId, RESTORED_SESSION_B))
+      await sendAgentFrame(agentSocketPath, stateFrame(secondEntry.paneId, "working"))
+
+      // Leave agent 2 inactive, then let its turn finish there: it must revive
+      // as `done`, not collapse to either idle or unknown.
+      first.terminal?.write(Uint8Array.of(control("b"), "p".charCodeAt(0)))
+      await waitUntil(
+        async () => (await orientation(tempDirectory, env))?.active === 1,
+        5_000,
+        () => firstOutput.output,
+      )
+      await sendAgentFrame(agentSocketPath, stateFrame(secondEntry.paneId, "idle"))
+      await waitUntil(
+        async () => {
+          const entries = (await manifest()).instances
+          return (
+            entries[0]?.agentStatus?.state === "blocked" &&
+            entries[0]?.agentStatus?.attention === "question" &&
+            entries[1]?.agentStatus?.state === "idle" &&
+            entries[1]?.agentStatus?.seen === false
+          )
+        },
+        5_000,
+        () => firstOutput.output,
+      )
+      await waitUntil(
+        async () => (await orientation(tempDirectory, env))?.instances[1]?.subagents[0]?.state === "blocked",
+        5_000,
+        () => firstOutput.output,
+      )
+
+      first.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(first.exited, 6_000, "first fmx did not detach")).toBe(0)
+      first.terminal?.close()
+
+      const restoredOutput = { output: "" }
+      replacement = spawnFmx(restoredOutput)
+      let restored: Snapshot | null = null
+      await waitUntil(
+        async () => {
+          restored = await orientation(tempDirectory, env)
+          return restored?.instances.length === 2 && restored.instances[1]?.subagents.length === 1
+        },
+        10_000,
+        () => restoredOutput.output,
+      )
+
+      expect(restored!.instances.map((instance) => [instance.state, instance.attention])).toEqual([
+        ["blocked", "question"],
+        ["done", null],
+      ])
+      expect(restored!.instances[1]!.subagents).toMatchObject([
+        { session_id: RESTORED_CHILD, state: "blocked", attention: "permission" },
+      ])
+      // Both status checkpoints are seeded in the same synchronous turn that
+      // adds their rows, before OpenTUI can expose an unknown-state frame.
+      expect(restoredOutput.output).not.toContain(`· ${RESTORED_SESSION_A.split("-").at(-1)}`)
+      expect(restoredOutput.output).not.toContain(`· ${RESTORED_SESSION_B.split("-").at(-1)}`)
+
+      replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
+      replacement.terminal?.close()
+    } finally {
+      if (first.exitCode === null) first.kill("SIGKILL")
+      first.terminal?.close()
+      if (replacement && replacement.exitCode === null) replacement.kill("SIGKILL")
+      replacement?.terminal?.close()
+      await endSurvivors(tempDirectory)
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  25_000,
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
@@ -715,6 +852,97 @@ function createHostPaletteResponder(
     }
     if (buffer.length > 4_096) buffer = buffer.slice(-4_096)
   }
+}
+
+async function orientation(
+  tempDirectory: string,
+  env: NodeJS.ProcessEnv,
+): Promise<Snapshot | null> {
+  const socket = ControlSocket.pathFor(defaultSocketPath(homeOf(tempDirectory)))
+  try {
+    const outcome = await runCommand({ name: "orient" }, socket, {
+      env,
+      cwd: ROOT,
+      readStdin: async () => "",
+    })
+    return outcome.exitCode === 0 ? (outcome.result as Snapshot) : null
+  } catch {
+    return null
+  }
+}
+
+/** One request and one reply, as fx speaks to the Agent socket. */
+async function sendAgentFrame(path: string, payload: string): Promise<void> {
+  const assembler = new LineAssembler()
+  const { promise, resolve, reject } = Promise.withResolvers<void>()
+  const timeout = setTimeout(() => reject(new Error("Agent socket did not reply")), 1_000)
+  let connection: Awaited<ReturnType<typeof Bun.connect>> | null = null
+  try {
+    connection = await Bun.connect({
+      unix: path,
+      socket: {
+        open: (socket) => void socket.write(`${payload}\n`),
+        data: (_socket, data) => {
+          if (assembler.push(new TextDecoder().decode(data)).length > 0) resolve()
+        },
+        error: (_socket, error) => reject(error),
+      },
+    })
+    await promise
+  } finally {
+    clearTimeout(timeout)
+    connection?.end()
+  }
+}
+
+function sessionFrame(paneId: string, sessionId: string): string {
+  return JSON.stringify({
+    id: `session-${paneId}`,
+    method: "pane.report_agent_session",
+    params: { pane_id: paneId, source: "custom:fx", agent: "fx", agent_session_id: sessionId },
+  })
+}
+
+function stateFrame(
+  paneId: string,
+  state: "idle" | "working" | "blocked",
+  attention?: "permission" | "question" | "recovery",
+): string {
+  return JSON.stringify({
+    id: `state-${paneId}-${state}`,
+    method: "pane.report_agent",
+    params: {
+      pane_id: paneId,
+      source: "custom:fx",
+      agent: "fx",
+      state,
+      ...(attention ? { custom_status: attention } : {}),
+    },
+  })
+}
+
+async function writeSubagentControl(
+  home: string,
+  childId: string,
+  parentId: string,
+  state: string,
+): Promise<void> {
+  const directory = join(home, ".fx", "sessions", childId, "subagent")
+  await mkdir(directory, { recursive: true })
+  await writeFile(
+    join(directory, "control.json"),
+    JSON.stringify({
+      schema_version: 7,
+      child_id: childId,
+      parent_id: parentId,
+      generation: 1,
+      mode: "persistent",
+      configuration: { name: "restored-worker" },
+      state,
+      created_at_ms: 1,
+      updated_at_ms: 1,
+    }),
+  )
 }
 
 async function waitUntil(

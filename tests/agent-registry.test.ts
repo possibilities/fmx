@@ -120,11 +120,27 @@ test("shortens a session id to the segment that distinguishes it", () => {
   expect(shortSessionId("plain")).toBe("plain")
 })
 
-test("seeding a pane after a restart keeps its session id and nothing else", () => {
+test("seeding a pane after a restart restores the last reported state", () => {
   const registry = new AgentRegistry()
-  registry.seed("p_a", "sess-a")
-  expect(registry.get("p_a")).toMatchObject({ sessionId: "sess-a", state: "unknown", attention: null, stateSeq: 0 })
+  const seeded = registry.seed("p_a", {
+    sessionId: "sess-a",
+    state: "idle",
+    attention: null,
+  })
+  expect(seeded).toMatchObject({ sessionId: "sess-a", state: "idle", attention: null })
+  expect(displayStateFor(seeded, seeded.stateSeq)).toBe("idle")
+  expect(displayStateFor(seeded, seeded.stateSeq - 1)).toBe("done")
+
   // A pane fx has already reported into is not overwritten by a stale seed.
-  registry.seed("p_a", "sess-old")
+  registry.seed("p_a", { sessionId: "sess-old", state: "blocked", attention: "question" })
   expect(registry.get("p_a")?.sessionId).toBe("sess-a")
+  expect(registry.get("p_a")?.state).toBe("idle")
+})
+
+test("a live state change advances beyond a restored state version", () => {
+  const store = registry()
+  const restored = store.seed("p_1", { sessionId: SESSION_ID, state: "working", attention: null })
+  const restoredSeq = restored.stateSeq
+  fold(store, report("idle"))
+  expect(store.get("p_1")!.stateSeq).toBeGreaterThan(restoredSeq)
 })

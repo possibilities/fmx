@@ -38,11 +38,12 @@ is fx's own settings), installation, workspace.
 
 **Manifest** — `~/.config/fmx/instances.json`, the Home's own record of the
 Instances its Companion holds: one entry per Instance carrying its identity,
-display number, directory, and the fx it runs, written before the Companion
-is asked to start anything and removed when the Instance ends. A claim, not
-the truth: the Companion's sessions are the truth, and a start joins the two —
-attaching what both know, adopting what only the Companion holds, dropping
-what only the Manifest remembers. It keeps no prompt text.
+display number, directory, the fx it runs, and the last Agent-socket status
+checkpoint, written before the Companion is asked to start anything and
+removed when the Instance ends. A claim, not the truth: the Companion's
+sessions are the truth, and a start joins the two — attaching what both know,
+adopting what only the Companion holds, dropping what only the Manifest
+remembers. It keeps no prompt text.
 _Avoid_: registry (that is the agent registry), state file (that is
 `state.json`), session list.
 
@@ -56,7 +57,9 @@ _Avoid_: connection (that is the socket underneath), PTY, backend.
 **Restore** — what the Companion sends first on every attach: the Instance's
 whole terminal as it stands, between a `RestoreBegin` the visible terminal
 resets at and a `Ready` after which bytes are live. A reconnect replays onto
-a clean screen for the same reason a first attach does.
+a clean screen for the same reason a first attach does. The Instance's last
+reported agent status is seeded before its row can render; subagent status is
+derived again from fx's control records and live locks.
 _Avoid_: replay, resync, history.
 
 **Agent socket** — the Unix socket fmx binds and points every instance at, and
@@ -167,13 +170,14 @@ session list.
 _Avoid_: repo info, workspace.
 
 **Agent record** — what fx has reported about one pane, folded from frames:
-state, attention, session id, label. It holds socket truth only — which pane a
+state, attention, session id, label. On restore it begins at the Manifest's
+last socket-truth checkpoint, and a newer frame supersedes that. Which pane a
 human is looking at is fmx's own knowledge and lives in the multiplexer.
 _Avoid_: session state, pane state.
 
 **Seen** — whether the human has had an instance in front of them since its
-state last changed, tracked as a frame sequence per instance rather than a
-flag. An idle instance that is not seen is **done** — finished and
+state last changed, tracked as a registry-local state version per instance
+rather than a clock. An idle instance that is not seen is **done** — finished and
 unacknowledged — which is the only difference between the `✓` and `○` icons.
 _Avoid_: read, acknowledged, unread.
 

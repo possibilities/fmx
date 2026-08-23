@@ -18,6 +18,7 @@ const entry = (instanceId: string, phase: ManifestEntry["phase"] = "running"): M
   fxArgs: [],
   createdAt: 0,
   fxSessionId: null,
+  agentStatus: null,
   phase,
 })
 

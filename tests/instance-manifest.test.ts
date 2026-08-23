@@ -58,6 +58,8 @@ test("parsing keeps valid entries and drops each bad one on its own", () => {
   const manifest = parseManifest(JSON.stringify(document), HOME)
   expect(manifest.instances.map((entry) => entry.instanceId)).toEqual([good.instanceId])
   expect(manifest.instances[0]!.fxSessionId).toBe("s1")
+  // A Manifest written before status checkpoints existed remains valid.
+  expect(manifest.instances[0]!.agentStatus).toBeNull()
   // The counter never hands out a number an entry already holds.
   expect(manifest.nextDisplayId).toBe(5)
 })
@@ -90,6 +92,17 @@ test("creation is written before it is acknowledged, and acknowledged in place",
     await manifest.setFxSessionId(entry.instanceId, "sess-1")
     expect((await loadManifest(path, HOME)).instances[0]!.fxSessionId).toBe("sess-1")
 
+    await manifest.setAgentStatus(entry.instanceId, {
+      state: "blocked",
+      attention: "question",
+      seen: false,
+    })
+    expect((await loadManifest(path, HOME)).instances[0]!.agentStatus).toEqual({
+      state: "blocked",
+      attention: "question",
+      seen: false,
+    })
+
     await manifest.remove(entry.instanceId)
     expect((await loadManifest(path, HOME)).instances).toEqual([])
     // Removed numbers are never reused.
@@ -110,9 +123,16 @@ test("a snapshot handed out does not alias the manifest", async () => {
   await withDirectory(async (dir) => {
     const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
     const entry = await manifest.beginCreate({ ...params(), fxArgs: ["a"] })
+    await manifest.setAgentStatus(entry.instanceId, { state: "idle", attention: null, seen: true })
+    const snapshot = manifest.get(entry.instanceId)!
     entry.fxArgs!.push("b")
     entry.phase = "running"
-    expect(manifest.get(entry.instanceId)).toMatchObject({ fxArgs: ["a"], phase: "creating" })
+    snapshot.agentStatus!.state = "working"
+    expect(manifest.get(entry.instanceId)).toMatchObject({
+      fxArgs: ["a"],
+      phase: "creating",
+      agentStatus: { state: "idle", attention: null, seen: true },
+    })
   })
 })
 

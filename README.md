@@ -73,10 +73,11 @@ daemon that owns the agent and its terminal, so closing fmx — or losing it
 to a crash, a signal, or a dropped connection — leaves every agent running
 exactly where it was. The next fmx started from the same configuration
 directory finds them, numbered as they were, with their screens restored,
-and picks up where the last one left off. An agent disappears only when it
-exits; with the last one gone fmx shows its empty state, and `ctrl-c` twice
-there closes it. `ctrl-b d` detaches fmx at any time. There is no key to
-close an agent: end it from inside, the way you would at a terminal.
+their last reported status intact, and picks up where the last one left off.
+Subagent status is re-read from fx's own records. An agent disappears only
+when it exits; with the last one gone fmx shows its empty state, and `ctrl-c`
+twice there closes it. `ctrl-b d` detaches fmx at any time. There is no key
+to close an agent: end it from inside, the way you would at a terminal.
 
 One fmx runs per configuration directory at a time. A replacement started
 while the previous fmx is finishing terminal teardown waits briefly for the

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import type { AgentAttention, AgentState } from "./agent-registry.ts"
 import { fmxDirectory } from "./state.ts"
 
 const MANIFEST_PATH_ENV_VAR = "FMX_MANIFEST_PATH"
@@ -29,6 +30,14 @@ export type InstanceIdentity = {
 
 export type ManifestPhase = "creating" | "running"
 
+/** The last state fx reported while an fmx held the Agent socket. */
+export type AgentStatusCheckpoint = {
+  state: AgentState
+  attention: AgentAttention | null
+  /** Whether the human had this exact state in front of them. */
+  seen: boolean
+}
+
 export type ManifestEntry = InstanceIdentity & {
   /** The number fmx's UI knows the Instance by; persisted, never reused. */
   displayId: number
@@ -38,6 +47,8 @@ export type ManifestEntry = InstanceIdentity & {
   fxArgs: string[] | null
   createdAt: number
   fxSessionId: string | null
+  /** Null until fx has reported a state, including for older Manifests. */
+  agentStatus: AgentStatusCheckpoint | null
   /**
    * `creating` from the moment the entry is written until the Companion
    * acknowledges the start. An entry still `creating` after a restart is a
@@ -140,8 +151,24 @@ function readEntry(raw: unknown): ManifestEntry | null {
     fxArgs: fxArgs === null ? null : [...(fxArgs as string[])],
     createdAt,
     fxSessionId: typeof fxSessionId === "string" && fxSessionId.length > 0 ? fxSessionId : null,
+    agentStatus: readAgentStatus(raw.agentStatus),
     phase,
   }
+}
+
+function readAgentStatus(raw: unknown): AgentStatusCheckpoint | null {
+  if (!isRecord(raw)) return null
+  const state = raw.state
+  if (state !== "idle" && state !== "working" && state !== "blocked" && state !== "unknown") return null
+  const attention = raw.attention
+  if (
+    attention !== null &&
+    attention !== "permission" &&
+    attention !== "question" &&
+    attention !== "recovery"
+  ) return null
+  if (typeof raw.seen !== "boolean") return null
+  return { state, attention, seen: raw.seen }
 }
 
 export async function loadManifest(path: string, homeId: string): Promise<Manifest> {
@@ -235,6 +262,7 @@ export class InstanceManifest {
       fxArgs: params.fxArgs && [...params.fxArgs],
       createdAt: params.createdAt,
       fxSessionId: null,
+      agentStatus: null,
       phase: "creating",
     }
     manifest.instances.push(entry)
@@ -263,6 +291,7 @@ export class InstanceManifest {
         fxArgs: params.fxArgs && [...params.fxArgs],
         createdAt: params.createdAt,
         fxSessionId: params.fxSessionId ?? null,
+        agentStatus: null,
         phase: "running",
       }
       manifest.instances.push(entry)
@@ -279,6 +308,17 @@ export class InstanceManifest {
       const entry = manifest.instances.find((candidate) => candidate.instanceId === instanceId)
       if (!entry || entry.fxSessionId === fxSessionId) return
       entry.fxSessionId = fxSessionId
+    })
+  }
+
+  /** Checkpoint the last socket truth so a detach does not turn it unknown. */
+  setAgentStatus(instanceId: string, status: AgentStatusCheckpoint): Promise<void> {
+    const current = this.manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+    if (!current || sameAgentStatus(current.agentStatus, status)) return Promise.resolve()
+    return this.mutate((manifest) => {
+      const entry = manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+      if (!entry || sameAgentStatus(entry.agentStatus, status)) return
+      entry.agentStatus = { ...status }
     })
   }
 
@@ -322,7 +362,18 @@ export class InstanceManifest {
 }
 
 function copy(entry: ManifestEntry): ManifestEntry {
-  return { ...entry, fxArgs: entry.fxArgs && [...entry.fxArgs] }
+  return {
+    ...entry,
+    fxArgs: entry.fxArgs && [...entry.fxArgs],
+    agentStatus: entry.agentStatus && { ...entry.agentStatus },
+  }
+}
+
+function sameAgentStatus(
+  left: AgentStatusCheckpoint | null,
+  right: AgentStatusCheckpoint,
+): boolean {
+  return left?.state === right.state && left.attention === right.attention && left.seen === right.seen
 }
 
 function find(manifest: Manifest, instanceId: string): ManifestEntry {
