@@ -13,6 +13,12 @@ import {
 type SocketListener = ReturnType<typeof Bun.listen>
 type SocketConnection = { write: (data: string) => unknown }
 
+/** A closing fmx normally drops its singleton in a handful of milliseconds.
+ * Give that handoff one bounded window so the replacement invocation can be
+ * the one that attaches, without ever taking the lock from a live holder. */
+const SINGLETON_HANDOFF_TIMEOUT_MS = 1_000
+const SINGLETON_HANDOFF_INTERVAL_MS = 25
+
 export type AgentSocketOptions = {
   /** Keys the stable default path; see `defaultSocketPath`. Defaults to this process's Home. */
   homeId?: string
@@ -70,7 +76,8 @@ export class AgentSocket {
     // which a second fmx would otherwise unlink what the first just bound.
     // It is held until close, so a live fmx is refused at the lock before
     // its socket is ever probed.
-    const lock = acquireExclusiveLock(lockPathFor(this.path))
+    let lock = acquireExclusiveLock(lockPathFor(this.path))
+    if (lock === null) lock = await waitForSingletonHandoff(lockPathFor(this.path))
     if (lock === null) throw new AgentSocketActiveError(this.path)
     this.lock = lock ?? null
     if (await listenerAnswers(this.path)) {
@@ -206,6 +213,22 @@ export async function listenerAnswers(path: string): Promise<boolean> {
   }
   clearTimeout(timeout)
   return promise
+}
+
+/**
+ * A terminal disappearing and its replacement shell starting are independent
+ * processes, so the replacement can reach the flock while the old fmx is in
+ * its final cleanup. Poll only the flock: it is the authority, and acquiring
+ * it is the only observation that permits the caller to touch the socket.
+ */
+async function waitForSingletonHandoff(path: string): Promise<HeldLock | null | undefined> {
+  const deadline = Date.now() + SINGLETON_HANDOFF_TIMEOUT_MS
+  let lock: HeldLock | null | undefined = null
+  while (lock === null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SINGLETON_HANDOFF_INTERVAL_MS))
+    lock = acquireExclusiveLock(path)
+  }
+  return lock
 }
 
 function isAddressInUse(error: unknown): boolean {

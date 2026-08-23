@@ -157,6 +157,22 @@ test("two fmx starting in the same instant: one binds, the other is refused, the
   expect(existsSync(path)).toBe(false)
 })
 
+test("a replacement waits for a closing holder and takes over in the same invocation", async () => {
+  const path = socketPath("handoff")
+  const first = new AgentSocket({ path })
+  const replacement = new AgentSocket({ path })
+  await first.start()
+
+  const starting = replacement.start()
+  setTimeout(() => first.close(), 50)
+  await starting
+  try {
+    expect(await listenerAnswers(path)).toBe(true)
+  } finally {
+    replacement.close()
+  }
+})
+
 test("the lock is held by the process, so a second process is refused without probing", async () => {
   const path = socketPath("lock")
   const first = new AgentSocket({ path })

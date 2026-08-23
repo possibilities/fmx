@@ -148,6 +148,9 @@
   so an fx that outlives the fmx that started it reports to the next one.
   `AgentSocket.start` therefore takes a flock on `<path minus .sock>.lock`
   for the life of the process, and only under it probes, unlinks, and binds:
+  when the flock is held it waits one bounded handoff window for a predecessor
+  finishing terminal teardown, then refuses a holder that remains. It never
+  touches the socket without first acquiring the flock. Once acquired,
   a path something answers on is another fmx for this Home, refused with
   exit code 2, and never unlinked — only the process that bound the socket
   removes it. Only a path nothing answers on is the residue of a crash and

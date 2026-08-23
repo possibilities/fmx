@@ -31,7 +31,8 @@ _Avoid_: lock file, version file, dependency.
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates
 and keys its agent socket. One Home runs one fmx at a time, and owns the
-Instances its Companion holds between runs.
+Instances its Companion holds between runs. A new fmx briefly waits for a
+closing predecessor to release the Home, but never displaces a live one.
 _Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
 is fx's own settings), installation, workspace.
 

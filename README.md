@@ -78,8 +78,9 @@ exits; with the last one gone fmx shows its empty state, and `ctrl-c` twice
 there closes it. `ctrl-b d` detaches fmx at any time. There is no key to
 close an agent: end it from inside, the way you would at a terminal.
 
-One fmx runs per configuration directory at a time; a second one started
-alongside says so and exits.
+One fmx runs per configuration directory at a time. A replacement started
+while the previous fmx is finishing terminal teardown waits briefly for the
+handoff; a genuinely concurrent second fmx says so and exits.
 
 #### Recovering agents by hand
 

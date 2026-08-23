@@ -544,7 +544,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
   15_000,
 )
 
-for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
+for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
   test.skipIf(!PTY_TEST_ENABLED)(
     `${signal} leaves every fx running, and the next fmx restores them`,
     async () => {
@@ -566,9 +566,9 @@ for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
         FMX_TEST_PASSTHROUGH_KEYS: "1",
         FMX_TEST_QUERY_ON_EXIT: "1",
       }
-      const decoder = new TextDecoder()
-      const spawnFmx = (sink: { output: string }) =>
-        Bun.spawn(FMX_COMMAND, {
+      const spawnFmx = (sink: { output: string }) => {
+        const decoder = new TextDecoder()
+        return Bun.spawn(FMX_COMMAND, {
           cwd: ROOT,
           env,
           terminal: {
@@ -579,6 +579,7 @@ for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
             },
           },
         })
+      }
       const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
       const heartbeats = async (id: number) => countOccurrences(await readLifecycle(lifecycleLog), `alive ${id} `)
 
@@ -602,8 +603,12 @@ for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
         )
 
         process.kill(one.pid, signal)
+        // Start the replacement before waiting for the old fmx to finish,
+        // exactly as a new terminal can race the SIGHUP teardown.
+        const second = { output: "" }
+        two = spawnFmx(second)
         const code = await withTimeout(one.exited, 6_000, `fmx did not exit after ${signal}`)
-        expect(code).toBe(signal === "SIGQUIT" ? 131 : 137)
+        expect(code).toBe(signal === "SIGHUP" ? 129 : signal === "SIGQUIT" ? 131 : 137)
         one.terminal?.close()
 
         // Nothing was sent to fx: it is still running, and still its own process.
@@ -618,8 +623,6 @@ for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
 
         // The next fmx for this Home finds both, numbered as they were, and
         // shows what was on their screens; nothing is started.
-        const second = { output: "" }
-        two = spawnFmx(second)
         await waitUntil(() => readyBanners(second.output) >= 1, 10_000, () => second.output)
         await Bun.sleep(300)
         // The restored Instance is the first surface the renderer exposes:
