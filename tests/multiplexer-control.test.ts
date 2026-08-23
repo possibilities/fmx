@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
+import { AdeSocket } from "../src/ade-events.ts"
 import { exchange as exchangeControl } from "../src/control-client.ts"
 import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
 import { ControlSocket } from "../src/control-socket.ts"
@@ -27,25 +28,32 @@ async function workspace(): Promise<{ home: string; code: string }> {
   return { home, code }
 }
 
-async function harness(name: string) {
+async function harness(name: string, withAde = false) {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-control-test-${name}-${process.pid}.sock` })
   await agentSocket.start()
+  const adeSocket = withAde
+    ? new AdeSocket({ path: `/tmp/fmx-control-test-${name}-${process.pid}.ade.sock` })
+    : null
+  adeSocket?.start()
+  const options = agentOptions()
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...agentOptions(),
+    ...options,
     fxPath: FAKE_FX,
     cwd: join(code, "alpha"),
     keybindings: resolveKeybindings().keybindings,
     projectRoots: ["~/code"],
     home,
     agentSocket,
+    adeSocket,
     controlSocketPath: CONTROL_PATH,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
   const close = async () => {
     await multiplexer.shutdown()
+    adeSocket?.close()
     agentSocket.close()
   }
   /**
@@ -77,7 +85,38 @@ async function harness(name: string) {
   }
   const launch = (params: Record<string, unknown> = {}) =>
     control("launch", params) as Promise<{ agent: { id: number } }>
-  return { setup, multiplexer, control, close, report, session, launch, home, code }
+  return { setup, multiplexer, control, close, report, session, launch, home, code, adeSocket, options }
+}
+
+async function sendAde(socket: AdeSocket, record: Record<string, unknown>): Promise<void> {
+  const connection = await Bun.connect({
+    unix: socket.path,
+    socket: { data: () => {} },
+  })
+  connection.write(`${JSON.stringify(record)}\n`)
+  connection.end()
+}
+
+function adeRecord(
+  sequence: number,
+  instanceId: string,
+  event: string,
+  sessionId: string | null,
+  payload: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    sequence,
+    event,
+    instance_id: instanceId,
+    context: {
+      agent_role: "main",
+      workspace_root: "/work",
+      session_id: sessionId,
+      parent_session_id: null,
+    },
+    payload,
+  }
 }
 
 async function exchange(path: string, payload: string): Promise<string> {
@@ -259,6 +298,126 @@ test("focuses by position, id, and name, and refuses while something is open", a
     const busy = await failure(h.control("focus", { target: "next" }))
     expect(busy.code).toBe("busy")
     expect(busy.data).toEqual({ surface: { kind: "help" } })
+  } finally {
+    await h.close()
+  }
+})
+
+test("adopts native session names over ADE, recovers gaps, and keeps eager identity authoritative", async () => {
+  const h = await harness("ade-names", true)
+  const firstSession = "1787362101388-1787362101388156000-2897385323da2683"
+  const secondSession = "1787362101389-1787362101389156000-2897385323da2684"
+  const replacementSession = "1787362101390-1787362101390156000-2897385323da2685"
+  const writeName = async (sessionId: string, title: string) => {
+    const directory = join(h.home, ".fx", "sessions", sessionId)
+    await mkdir(directory, { recursive: true })
+    await writeFile(
+      join(directory, "display.json"),
+      `${JSON.stringify({ schema_version: 1, title, preview: null, origin_workspace_root: null })}\n`,
+    )
+  }
+
+  try {
+    await h.launch()
+    await h.launch()
+    const ade = h.adeSocket!
+    const [first, second] = h.options.manifest.entries
+    expect(first).toBeDefined()
+    expect(second).toBeDefined()
+
+    await sendAde(ade, adeRecord(1, first!.agentId, "FxStarted", firstSession))
+    await sendAde(
+      ade,
+      adeRecord(2, first!.agentId, "SessionMetadataChanged", firstSession, {
+        title: "Coordinate the review",
+      }),
+    )
+    let snapshot = await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (current) => current.agents[0]?.name === "Coordinate the review",
+    )
+    expect(snapshot.agents[0]).toMatchObject({ session_id: firstSession, name: "Coordinate the review" })
+    expect(snapshot.tray.rows.find((row) => row.agent === 1)?.text).toContain("Coordinate the review")
+
+    // A late frame on the legacy socket cannot rewind ADE's eager identity.
+    await h.session("p_1", "legacy-session")
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.session_id).toBe(firstSession)
+
+    // An unknown additive event still carries authoritative envelope context.
+    // This is the first record a restarted fmx could see after fx changed
+    // sessions while detached.
+    await writeName(replacementSession, "Recovered from additive context")
+    await sendAde(ade, adeRecord(3, first!.agentId, "FutureObservation", replacementSession))
+    snapshot = await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (current) => current.agents[0]?.name === "Recovered from additive context",
+    )
+    expect(snapshot.agents[0]?.session_id).toBe(replacementSession)
+
+    // A later gap re-reads fx's durable sidecar before ignoring the event.
+    await writeName(replacementSession, "Recovered after gap")
+    await sendAde(ade, adeRecord(5, first!.agentId, "FutureObservation", replacementSession))
+    snapshot = await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (current) => current.agents[0]?.name === "Recovered after gap",
+    )
+
+    await sendAde(ade, adeRecord(1, second!.agentId, "FxStarted", secondSession))
+    await sendAde(
+      ade,
+      adeRecord(2, second!.agentId, "SessionMetadataChanged", secondSession, {
+        title: "Recovered after gap",
+      }),
+    )
+    await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (current) => current.agents[1]?.name === "Recovered after gap",
+    )
+    const ambiguous = await failure(h.control("focus", { target: "Recovered after gap" }))
+    expect(ambiguous.code).toBe("ambiguous")
+    expect(ambiguous.data).toEqual({ agents: [1, 2] })
+
+    // Exact duplicate names remain ambiguous even when that same text is a
+    // unique prefix of another Agent's session id.
+    const collidingName = firstSession.slice(0, firstSession.indexOf("-") + 4)
+    await sendAde(
+      ade,
+      adeRecord(6, first!.agentId, "SessionMetadataChanged", replacementSession, {
+        title: collidingName,
+      }),
+    )
+    await sendAde(
+      ade,
+      adeRecord(3, second!.agentId, "SessionMetadataChanged", secondSession, {
+        title: collidingName,
+      }),
+    )
+    await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (current) => current.agents.every((agent) => agent.name === collidingName),
+    )
+    const nameBeforePrefix = await failure(h.control("focus", { target: collidingName }))
+    expect(nameBeforePrefix.code).toBe("ambiguous")
+    expect(nameBeforePrefix.data).toEqual({ agents: [1, 2] })
+
+    await writeName(firstSession, "Replacement session")
+    await sendAde(
+      ade,
+      adeRecord(7, first!.agentId, "SessionChanged", firstSession, {
+        previous_session_id: replacementSession,
+        session_id: firstSession,
+      }),
+    )
+    snapshot = await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (current) => current.agents[0]?.session_id === firstSession,
+    )
+    expect(snapshot.agents[0]?.name).toBe("Replacement session")
+    await h.session("p_1", replacementSession)
+    expect(((await h.control("orient")) as Snapshot).agents[0]).toMatchObject({
+      session_id: firstSession,
+      name: "Replacement session",
+    })
   } finally {
     await h.close()
   }

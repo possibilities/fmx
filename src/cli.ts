@@ -421,7 +421,7 @@ export function usage(topic: string | null = null): string {
     case "agent":
       return AGENT_USAGE
     case "focus":
-      return "Usage: fmx control focus <target>\n\n  target: agent id, slug, session-id prefix, next, previous, current\n"
+      return "Usage: fmx control focus <target>\n\n  target: agent id, exact session name, session-id prefix, next, previous, current\n"
     case "detach":
       return "Usage: fmx control detach\n\nDetach fmx and leave every agent running.\n"
     case "tray":
@@ -464,7 +464,7 @@ Each command prints one JSON object.
   launch [prompt] [flags]      start an agent; --editable opens the dialog instead
   draft show|set|submit|cancel|wait [id]
                                an open dialog an agent can finish or hand over
-  focus <target>               switch to an agent (next, previous, id, slug)
+  focus <target>               switch to an agent (next, previous, id, session name)
   agent list|wait|send      read, wait on, or type into agents
   tray [--width N] [--show|--hide|--toggle]
                                the session list's width and visibility

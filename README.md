@@ -140,34 +140,20 @@ installed does not see them either.
 
 ### Session names
 
-An agent is listed by its session id until it is given something to do. As
-soon as its first prompt is submitted, fmx asks a small model for a three-to-
-six-word title, turns it into a slug, and lists the agent under that name
-instead. The name is kept in `~/.config/fmx/slugs`, so a resumed session is
-recognised without asking again, and it is unique — a name that is already
-taken picks up a `-2`.
+An agent is listed by its session id until fx gives the session a native name.
+Fx starts its small naming request alongside the first submitted prompt,
+persists the result through the same path as `/rename`, and publishes the
+committed change over its ADE event feed. fmx updates the tray immediately and
+re-reads `~/.fx/sessions/<id>/display.json` when it attaches or detects an
+event-sequence gap. fmx never reads prompt logs, runs a naming agent, stores a
+second name, or handles the provider credential.
 
-The completion runs through `fx ask`, so it uses whatever provider fx is
-already signed in to and needs no credentials of its own. Defaults suit codex;
-name a model for any other provider, or turn naming off entirely:
-
-```toml
-[slug]
-enabled = true      # set false to keep listing agents by session id
-effort = "low"      # reasoning effort the naming completion runs at
-timeout_ms = 60000
-
-[slug.models]
-codex = "gpt-5.4-mini"
-gateway = "openai/gpt-5-mini"
-```
-
-A provider with no model named here is asked at whatever model fx is
-configured for. Slug naming keeps its effort isolated in
-`~/.config/fmx/inference` by adding one entry for that path to `workspaces` in
-`~/.fx/settings.json` — nothing else in that file is touched. Set
-`manage_effort = false` to leave it alone, and naming inherits your own
-configured effort.
+Naming models, effort, timeout, and provider opt-in belong to fx's profile
+settings in `~/.fx/settings.json`. Codex defaults to `gpt-5.4-mini` at low
+effort; other providers require an explicit fx setting. A manual `/rename`
+uses the same native authority and supersedes work still in flight. Names are
+not made unique: two exact matches make a control target ambiguous, just as
+two matching session-id prefixes do.
 
 ## Agents
 
@@ -185,7 +171,7 @@ fmx control launch "write the tests"    # start an agent here, in the background
 fmx control launch --project ~/code/x --worktree --model gpt-5.6-luna --effort max --focus
 fmx control launch --editable --project ~/code/x --worktree   # open the dialog, prefilled
 fmx control draft show|set|submit|cancel|wait [id]
-fmx control focus next|previous|3|<slug>
+fmx control focus next|previous|3|"<session name>"
 fmx control agent list
 fmx control agent wait 3 --state done,blocked --timeout 600000
 fmx control agent send 3 "now run them"
@@ -197,7 +183,7 @@ fmx control catalog                     # the models and efforts the dialog offe
 ```
 
 `orient` answers with `you` — the caller's own agent: directory, project,
-branch, slug, state, its subagents, and whether it is the one on screen — alongside every
+branch, native session name, state, its subagents, and whether it is the one on screen — alongside every
 agent, the tray's rows as they are drawn, the tools panel's availability,
 links, selection, size, visibility, and focus owner, and whatever surface is open.
 Reading never marks an agent seen; `focus` does, as clicking its row does.

@@ -49,6 +49,8 @@ test("an inherited agent socket never reaches fx", () => {
       HERDR_TAB_ID: "t3",
       HERDR_WORKSPACE_ID: "w1",
       HERDR_BIN_PATH: "/usr/local/bin/other",
+      FX_ADE_SOCKET_PATH: "/tmp/outer.ade.sock",
+      FX_ADE_INSTANCE_ID: "outer-agent",
     },
     3,
     "/work",
@@ -61,6 +63,8 @@ test("an inherited agent socket never reaches fx", () => {
   expect(env.HERDR_TAB_ID).toBeUndefined()
   expect(env.HERDR_WORKSPACE_ID).toBeUndefined()
   expect(env.HERDR_BIN_PATH).toBeUndefined()
+  expect(env.FX_ADE_SOCKET_PATH).toBeUndefined()
+  expect(env.FX_ADE_INSTANCE_ID).toBeUndefined()
 })
 
 test("fmx's own agent socket replaces whatever was inherited", () => {
@@ -81,6 +85,20 @@ test("hands every agent the control socket, and clears one inherited from anothe
   expect(env.FMX_SOCKET_PATH).toBe("/tmp/fmx-42.ctl")
   expect(env.FMX_AGENT_ID).toBe("3")
   expect(createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work").FMX_SOCKET_PATH).toBeUndefined()
+})
+
+test("hands fx the passive ADE socket with the stable Manifest identity", () => {
+  const env = createFxEnvironment(
+    { FX_ADE_SOCKET_PATH: "/tmp/outer.ade.sock", FX_ADE_INSTANCE_ID: "outer-agent" },
+    3,
+    "/work",
+    null,
+    null,
+    null,
+    { socketPath: "/tmp/fmx-home.ade.sock", instanceId: "0123456789abcdef0123456789abcdef" },
+  )
+  expect(env.FX_ADE_SOCKET_PATH).toBe("/tmp/fmx-home.ade.sock")
+  expect(env.FX_ADE_INSTANCE_ID).toBe("0123456789abcdef0123456789abcdef")
 })
 
 test("applies model and effort to one agent without changing unrelated launches", () => {

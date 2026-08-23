@@ -25,6 +25,8 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   "ZELLIJ_SESSION_NAME",
   "ZELLIJ_PANE_ID",
   ...INHERITED_AGENT_SOCKET_VARIABLES,
+  "FX_ADE_SOCKET_PATH",
+  "FX_ADE_INSTANCE_ID",
   // The Companion's own names: an fmx started inside a human's zmx must not
   // hand that session on to fx, and the Companion sets its own when it
   // starts the child.
@@ -39,6 +41,12 @@ const OUTER_MULTIPLEXER_VARIABLES = [
 export type FxAgentSocketBinding = {
   socketPath: string
   paneId: string
+}
+
+/** The passive ADE event feed shared by Agents, with this Agent's stable identity. */
+export type FxAdeBinding = {
+  socketPath: string
+  instanceId: string
 }
 
 /** Model settings applied to one fx process without changing the profile. */
@@ -63,6 +71,7 @@ export function createFxEnvironment(
   agentSocket: FxAgentSocketBinding | null = null,
   controlSocketPath: string | null = null,
   launchLevel: FxLaunchLevel | null = null,
+  ade: FxAdeBinding | null = null,
 ): NodeJS.ProcessEnv {
   const env = createEmbeddedEnvironment(parent, cwd)
   env.FMX_AGENT_ID = String(agentId)
@@ -75,6 +84,10 @@ export function createFxEnvironment(
   // this fmx through it, and `FMX_AGENT_ID` says which agent it is.
   if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
   else delete env[CONTROL_SOCKET_ENV_VAR]
+  if (ade) {
+    env.FX_ADE_SOCKET_PATH = ade.socketPath
+    env.FX_ADE_INSTANCE_ID = ade.instanceId
+  }
   if (launchLevel) {
     env.FX_MODEL = launchLevel.model
     env.FX_EFFORT = launchLevel.effort

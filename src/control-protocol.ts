@@ -88,7 +88,7 @@ export type AgentInfo = {
   branch: string | null
   /** Whether the directory is a linked worktree rather than the main checkout. */
   worktree: boolean | null
-  slug: string | null
+  name: string | null
   session_id: string | null
   label: string
   state: DisplayState
@@ -200,7 +200,7 @@ export type KeysInfo = {
 /**
  * How a command names an agent. Numbers are agent ids; `current` is the
  * caller's own; `next` and `previous` are relative to the active one; a bare
- * word is a slug first and a session-id prefix second.
+ * word is an exact session name first and a session-id prefix second.
  */
 export type Target =
   | { kind: "id"; id: number }

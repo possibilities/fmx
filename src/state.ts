@@ -23,8 +23,7 @@ export type PersistedState = {
 }
 
 /** Everything fmx keeps for itself lives here, alongside the config file the
- * human edits: state.json, the slug store, and the workspace slug completions
- * are run in. */
+ * human edits. */
 export function fmxDirectory(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),

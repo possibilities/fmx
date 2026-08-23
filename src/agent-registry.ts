@@ -103,6 +103,14 @@ export class AgentRegistry {
     return this.records.get(paneId) ?? null
   }
 
+  /** Install the eager session identity from the ADE feed without inventing
+   * an agent-socket frame. The next lifecycle frame may update other facts. */
+  setSessionId(paneId: string, sessionId: string | null): AgentRecord {
+    const record = this.ensure(paneId)
+    record.sessionId = sessionId
+    return record
+  }
+
   /** Drop a pane's record once its agent is gone. */
   forget(paneId: string): void {
     this.records.delete(paneId)

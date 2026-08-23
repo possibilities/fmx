@@ -7,7 +7,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -16,7 +16,6 @@ import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { projectNameFor, readGitContext, treeNameFor } from "../src/git-context.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { slugDirectory, storeSlug } from "../src/slug-store.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -124,7 +123,7 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
   }
 })
 
-test("toasts project and Worktree on start, then uses the Slug on exit", async () => {
+test("toasts project and Worktree on start, then uses the native session name on exit", async () => {
   const setup = await createTestRenderer({
     width: 80,
     height: 24,
@@ -134,7 +133,12 @@ test("toasts project and Worktree on start, then uses the Slug on exit", async (
   const home = await mkdtemp(join(tmpdir(), "fmx-lifecycle-home-"))
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-lifecycle-${process.pid}.sock` })
   await agentSocket.start()
-  storeSlug(slugDirectory(process.env, home), SESSION_ID, "clear-cloud")
+  const sessionDirectory = join(home, ".fx", "sessions", SESSION_ID)
+  await mkdir(sessionDirectory, { recursive: true })
+  await writeFile(
+    join(sessionDirectory, "display.json"),
+    `${JSON.stringify({ schema_version: 1, title: "Clear cloud", preview: null, origin_workspace_root: null })}\n`,
+  )
   const options = agentOptions()
   const multiplexer = new Multiplexer(setup.renderer, {
     ...options,
@@ -167,7 +171,7 @@ test("toasts project and Worktree on start, then uses the Slug on exit", async (
     if (!(terminal instanceof FxTerminalRenderable)) return
     terminal.onData?.(Uint8Array.of(3, 3), "input")
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
-    await waitForText(setup, `${location} / clear-cloud exited`, 2_000)
+    await waitForText(setup, `${location} / Clear cloud exited`, 2_000)
   } finally {
     await multiplexer.shutdown()
     agentSocket.close()

@@ -7,7 +7,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     project: "fmx",
     branch: "main",
     sessionId: "909bc46b64721838",
-    slug: null,
+    name: null,
     state: "idle",
     attention: null,
     active: false,
@@ -100,19 +100,19 @@ test("indents two columns per level, with nothing that can render wide", () => {
   expect(indentFor(2)).toBe("    ")
 })
 
-test("a named session shows its slug in place of its id", () => {
+test("a named session shows its native name in place of its id", () => {
   expect(
     shape([
-      entry({ agentId: 1, slug: "name-every-agent" }),
+      entry({ agentId: 1, name: "Name every agent" }),
       entry({ agentId: 2, sessionId: "5a75126ce54edb04" }),
     ]),
-  ).toEqual(["fmx", "  main", "    name-every-agent", "    5a75126ce54edb04"])
+  ).toEqual(["fmx", "  main", "    Name every agent", "    5a75126ce54edb04"])
 })
 
 test("nests subagents recursively beneath their parent agent", () => {
   const rows = buildTree([
     entry({
-      slug: "coordinate-the-review",
+      name: "Coordinate the review",
       subagents: [
         {
           sessionId: "child-a",
@@ -143,7 +143,7 @@ test("nests subagents recursively beneath their parent agent", () => {
   expect(rows.map((row) => [row.kind, row.depth, row.label])).toEqual([
     ["project", 0, "fmx"],
     ["branch", 1, "main"],
-    ["agent", 2, "coordinate-the-review"],
+    ["agent", 2, "Coordinate the review"],
     ["subagent", 3, "reviewer"],
     ["subagent", 4, "test-reader"],
     ["subagent", 3, "docs-reader"],

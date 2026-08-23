@@ -111,38 +111,25 @@
 - fx sends `custom_status` on `pane.report_agent` (`permission`, `question`,
   `recovery`). Herdr has no such field and drops it; fmx keeps it. Do not
   "fix" it to `message` to match Herdr.
-- Naming a session runs `fx ask --no-save --json`, deliberately, not libfx.
-  libfx's native backend requires an `apiKey` and installs an unavailable
-  OAuth transport, so a Codex or Grok subscription cannot reach it at all;
-  the fx binary fmx already resolved answers on whatever provider the human
-  is signed in to and keeps every credential out of fmx.
 - fx takes per-process launch overrides from `FX_MODEL` and `FX_EFFORT`; the
   launch dialog passes both to the one agent it starts. fx rejects both
   `effort` and `codex_model` from a workspace's own `.fx.json` as user-only
-  settings. Slug naming still keeps its effort in the fmx-owned inference
-  workspace through `workspaces["<abs path>"]` in the human's
-  `~/.fx/settings.json`. Never widen that write: read, add the one key, and
-  abandon the write if the file changed underneath.
-- Slug models ship a default for codex alone, for the same reason
-  `project_roots` ships empty: a guess at another provider's catalog is a
-  model id that does not exist there. A provider with no default names at
-  whatever model fx is configured for, which always works.
-- Naming is fastest when fmx already holds the prompt: an agent launched
-  with one names itself from what fmx typed, without waiting for fx to write
-  it down. For a prompt typed by hand there is no such shortcut — fx records
-  it 2 to 11 seconds after submit — so the session directory is watched and the
-  write itself wakes naming; the sweep behind that watch is a safety net for a
-  filesystem that drops events, not the thing that should ever notice.
-  `~/.fx/history.jsonl` does hold every prompt at submit time, but it
-  carries a workspace and a timestamp and no session id: two agents in one
-  directory could take each other's name, and a wrong name is worse than a
-  slow one.
-- fx never reports a prompt over the agent socket, only a session id. The
-  first prompt is read from fx's own session log at
-  `~/.fx/sessions/<id>/events.jsonl` (`recovery_checkpoint_set`, then
-  `history_turn_committed`), with fx's `display.json` sidecar as a late,
-  240-byte fallback. Only a prefix of the log is read: it grows into
-  megabytes, and the prompt is in the opening events.
+  settings. Native session naming is also fx profile configuration; fmx does
+  not manage it or write `~/.fx/settings.json`.
+- The ADE socket is a one-way, mode-0600 NDJSON feed beside the Agent socket,
+  under the same Home singleton. Every fx receives its path plus the stable
+  Manifest Agent identity as `FX_ADE_SOCKET_PATH` and `FX_ADE_INSTANCE_ID`.
+  ADE session identity is eager and wins over a later legacy Agent-socket
+  frame. Sequence is monotonic per fx process; after a gap, re-read the active
+  session's `display.json`. Unknown additive schema-1 events still advance the
+  sequence and are otherwise ignored.
+- Session names belong to fx. fmx applies `SessionMetadataChanged` only to the
+  session named by its ADE context and reads
+  `~/.fx/sessions/<id>/display.json` on attach, identity change, or recovery.
+  It never reads prompt logs, starts a naming completion, stores another name,
+  normalizes the title, or makes names unique. An exact duplicate is an
+  ambiguous control target; `/rename` and generated names follow the same
+  path because fx is the sole persistence authority.
 - The control socket (`src/control-socket.ts`) is a second socket, not a
   second protocol on the agent socket. The agent socket must reply before it
   acts (see above), and a command that needs its result cannot. The two share

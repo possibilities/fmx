@@ -4,6 +4,7 @@ import type { KeyEvent } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentSocket, FrameListener } from "../src/agent-socket.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
+import type { AdeEventListener, AdeRecord, AdeSocket } from "../src/ade-events.ts"
 import type { PanelDefinition } from "../src/config.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { LaunchDialog } from "../src/launch-dialog.ts"
@@ -69,7 +70,7 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Working Agent",
     description: "The everyday composition: Session list, active path, divider, and one working surface.",
     viewport: { cols: 86, rows: 24 },
-    expectedText: ["fmx", "Working on the UI gallery", "Review the gallery in a terminal"],
+    expectedText: ["Review UI", "Working on the UI gallery", "Review the gallery in a terminal"],
     interaction: "Use ctrl+b b to toggle the Tray and ctrl+b ? to inspect the active key map.",
     arrange: mountMultiplexer({
       screen: AGENT_SCREEN,
@@ -82,7 +83,7 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Tools beside an Agent",
     description: "The complete workspace keeps the Session list, Agent, and selected tool legible as one block.",
     viewport: { cols: 86, rows: 24 },
-    expectedText: ["fmx", "Working on the UI gallery", "Diff", "Tests", "363 pass", "Watching for changes"],
+    expectedText: ["Review UI", "Working on the UI gallery", "Diff", "Tests", "363 pass", "Watching for changes"],
     interaction: "Use ctrl+b r to hide the Tools panel and ctrl+b o to move focus into it.",
     arrange: mountMultiplexer({
       screen: AGENT_SCREEN,
@@ -99,13 +100,13 @@ export const UI_STORIES: readonly UiStory[] = [
     expectedText: ["? waiting-for-answer", "↻ recovering-transport", "◐ implement-gallery", "✓ review-complete", "○ available", "· starting"],
     arrange(context) {
       mountSessionList(context, [
-        entry({ agentId: 1, slug: "needs-permission", state: "blocked", attention: "permission" }),
-        entry({ agentId: 2, slug: "waiting-for-answer", state: "blocked", attention: "question" }),
-        entry({ agentId: 3, slug: "recovering-transport", state: "blocked", attention: "recovery" }),
-        entry({ agentId: 4, slug: "implement-gallery", state: "working", active: true }),
-        entry({ agentId: 5, slug: "review-complete", state: "done" }),
-        entry({ agentId: 6, slug: "available", state: "idle" }),
-        entry({ agentId: 7, slug: "starting", state: "unknown" }),
+        entry({ agentId: 1, name: "needs-permission", state: "blocked", attention: "permission" }),
+        entry({ agentId: 2, name: "waiting-for-answer", state: "blocked", attention: "question" }),
+        entry({ agentId: 3, name: "recovering-transport", state: "blocked", attention: "recovery" }),
+        entry({ agentId: 4, name: "implement-gallery", state: "working", active: true }),
+        entry({ agentId: 5, name: "review-complete", state: "done" }),
+        entry({ agentId: 6, name: "available", state: "idle" }),
+        entry({ agentId: 7, name: "starting", state: "unknown" }),
       ])
     },
   },
@@ -121,7 +122,7 @@ export const UI_STORIES: readonly UiStory[] = [
         entry({
           agentId: 1,
           branch: "feature/ui-gallery",
-          slug: "coordinate-the-review",
+          name: "coordinate-the-review",
           active: true,
           subagents: [
             {
@@ -141,7 +142,7 @@ export const UI_STORIES: readonly UiStory[] = [
             },
           ],
         }),
-        entry({ agentId: 2, project: "notes", branch: null, slug: "draft-release-notes", state: "idle" }),
+        entry({ agentId: 2, project: "notes", branch: null, name: "draft-release-notes", state: "idle" }),
       ])
     },
   },
@@ -149,7 +150,7 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "session-list-narrow",
     component: "Session list",
     title: "Narrow tray",
-    description: "Long project, branch, and Slug values truncate only at their right edge.",
+    description: "Long project, branch, and Session name values truncate only at their right edge.",
     viewport: { cols: 20, rows: 8 },
     expectedText: ["agentbrain-worktree", "feature/componen…", "◐ gallery-with…"],
     arrange(context) {
@@ -159,7 +160,7 @@ export const UI_STORIES: readonly UiStory[] = [
           entry({
             project: "agentbrain-worktree",
             branch: "feature/component-gallery",
-            slug: "gallery-with-a-very-long-name",
+            name: "gallery-with-a-very-long-name",
             state: "working",
             active: true,
           }),
@@ -330,7 +331,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     project: "fmx",
     branch: "main",
     sessionId: SESSION_ID,
-    slug: null,
+    name: null,
     state: "idle",
     attention: null,
     active: false,
@@ -442,6 +443,7 @@ type MultiplexerStoryOptions = {
 function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiStoryContext) => Promise<void> {
   return async (context) => {
     const agentSocket = new GalleryAgentSocket()
+    const adeSocket = new GalleryAdeSocket()
     const panelSessions = options.panelScreen === undefined
       ? null
       : new GalleryPanelSessions("ready", options.panelScreen)
@@ -451,12 +453,30 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       keybindings: resolveKeybindings().keybindings,
       manifest: AgentManifest.ephemeral("ui-gallery"),
       transport: options.transport ?? new GalleryAgentTransportFactory(options.screen ?? "", (launch) => {
+        const sessionId = `1770000000000-000000000-gallery${launch.entry.displayId}`
         agentSocket.report(launch.entry.paneId, "pane.report_agent_session", {
-          agent_session_id: `1770000000000-000000000-gallery${launch.entry.displayId}`,
+          agent_session_id: sessionId,
         })
         agentSocket.report(launch.entry.paneId, "pane.report_agent", { state: "working" })
+        adeSocket.report({
+          schemaVersion: 1,
+          sequence: 1,
+          event: "FxStarted",
+          instanceId: launch.entry.agentId,
+          context: { agentRole: "main", sessionId, parentSessionId: null },
+          payload: {},
+        })
+        adeSocket.report({
+          schemaVersion: 1,
+          sequence: 2,
+          event: "SessionMetadataChanged",
+          instanceId: launch.entry.agentId,
+          context: { agentRole: "main", sessionId, parentSessionId: null },
+          payload: { title: "Review UI" },
+        })
       }),
       agentSocket: agentSocket as unknown as AgentSocket,
+      adeSocket: adeSocket as unknown as AdeSocket,
       panels: panelSessions ? PANELS : [],
       panelSessions,
       initialPanelVisible: panelSessions !== null,
@@ -500,6 +520,19 @@ class GalleryAgentSocket {
       params: { pane_id: paneId, ...params },
     }))
     for (const listener of this.listeners) listener(frame)
+  }
+}
+
+class GalleryAdeSocket {
+  readonly path = "/tmp/fmx-ui-gallery.ade.sock"
+  private readonly listeners = new Set<AdeEventListener>()
+
+  addEventListener(listener: AdeEventListener): void {
+    this.listeners.add(listener)
+  }
+
+  report(record: AdeRecord): void {
+    for (const listener of this.listeners) listener(record)
   }
 }
 

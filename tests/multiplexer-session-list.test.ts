@@ -18,7 +18,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
     project: "fmx",
     branch: "main",
     sessionId: SESSION_ID,
-    slug: null,
+    name: null,
     state: "idle",
     attention: null,
     active: false,
@@ -137,7 +137,7 @@ test("draws recursive subagent state rows without making them selectable", async
     list.render(
       buildTree([
         entry({
-          slug: "coordinate-the-review",
+          name: "Coordinate the review",
           subagents: [
             {
               sessionId: "child",
@@ -162,7 +162,7 @@ test("draws recursive subagent state rows without making them selectable", async
     await setup.renderOnce()
 
     const frame = setup.captureCharFrame().split("\n")
-    expect(frame[2]).toStartWith("     ○ coordinate-the-review")
+    expect(frame[2]).toStartWith("     ○ Coordinate the review")
     expect(frame[3]).toStartWith("       ◐ reviewer")
     expect(frame[4]).toStartWith("         × test-reader")
 

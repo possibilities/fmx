@@ -66,6 +66,12 @@ _Avoid_: replay, resync, history.
 over which fx reports its own lifecycle. One socket serves all agents.
 _Avoid_: status socket, control socket, IPC socket.
 
+**ADE feed** — the private one-way Unix socket beside the Agent socket over
+which fx publishes ordered raw events. Each record carries the stable Manifest
+Agent identity and eager session context; gaps trigger recovery from fx's
+durable state, while unknown additive schema-1 events remain ignorable.
+_Avoid_: Agent socket, control socket, event bus.
+
 **Pane id** — the opaque string that identifies an agent on the agent
 socket. It is the wire's word, not fmx's: fx addresses every request to a pane
 id, so fmx mints one per agent and never uses the term anywhere else. It is
@@ -101,7 +107,7 @@ _Avoid_: sidebar, panel.
 
 **Session list** — the tray's tree of running agents: project, then
 branch, then one row per agent carrying its status icon and its name — the
-slug once naming lands, the short session id until then.
+native session name once fx reports one, the short session id until then.
 Depth is carried by indentation alone, with no connecting glyphs.
 Clicking an agent row switches to that agent; project and branch rows are
 not selectable. The switch happens on mouse-down and tray text itself is
@@ -181,10 +187,11 @@ repository has none and nests under a virtual `(untracked)` branch in the
 session list.
 _Avoid_: repo info, workspace.
 
-**Agent record** — what fx has reported about one pane, folded from frames:
-state, attention, session id, label. On restore it begins at the Manifest's
-last socket-truth checkpoint, and a newer frame supersedes that. Which pane a
-human is looking at is fmx's own knowledge and lives in the multiplexer.
+**Agent record** — what fx has reported about one pane: state, attention, and
+label folded from Agent-socket frames, plus the eager ADE session identity when
+available and the legacy frame identity otherwise. On restore it begins at the
+Manifest's last socket-truth checkpoint. Which pane a human is looking at is
+fmx's own knowledge and lives in the multiplexer.
 _Avoid_: session state, pane state.
 
 **Seen** — whether the human has had an agent in front of them since its
@@ -193,31 +200,13 @@ rather than a clock. An idle agent that is not seen is **done** — finished and
 unacknowledged — which is the only difference between the `✓` and `○` icons.
 _Avoid_: read, acknowledged, unread.
 
-**Slug** — the name an agent earns from its first prompt: `[a-z0-9-]+`,
-three to six words, minted once by a metadata completion and kept. It stands
-in for the session id wherever one is accepted, which is why it is unique
-across the store and why a collision is suffixed rather than shared. An
-agent nobody has prompted has none, and shows its session id instead.
-_Avoid_: title, label (that is what fx calls a pane through `pane.rename`),
-name.
-
-**Slug store** — `~/.config/fmx/slugs`, one file per fx session holding its
-slug. A file each rather than a table, because a slug outlives the fmx that
-paid for it and two fmx processes name sessions at the same time. It is also
-the index that resolves a slug back to a session.
-_Avoid_: cache, database, registry.
-
-**Inference workspace** — `~/.config/fmx/inference`, the empty directory slug
-completions run in. Empty so an agent asked for a title has nothing to wander
-into, and separate so fx's own settings can give that one path a cheaper
-reasoning effort than the human works at.
-_Avoid_: scratch directory, sandbox, temp dir.
-
-**Naming attempt** — one bounded run at naming a session: watch its fx log for
-a first prompt, claim the session, ask, store. It expires quietly when the
-wait runs long, and the next thing fx reports arms another. A conversation
-nobody has started has no name, which is an answer and not a failure.
-_Avoid_: job, task, naming run.
+**Session name** — the native display name fx persists for a session and
+changes through `/rename`. Fx may infer it from the first admitted prompt and
+reports committed changes over ADE as `SessionMetadataChanged`; fmx only reads
+that authority, shows the name, and uses exact matches as control targets.
+Duplicate names remain ambiguous. The Fx storage and event schema call the
+field `title`.
+_Avoid_: fmx name, label.
 
 **Control socket** — the Unix socket `fmx control <command>` drives a running fmx
 through, bound beside the agent socket as `/tmp/fmx-<uid>-<home id>.ctl` — as
@@ -241,7 +230,7 @@ _Avoid_: pending launch, form state, staged launch.
 
 **Target** — how a command names an agent: its id, `current` for the
 caller's own, `active` for the one on screen, `next` or `previous` relative to
-it, or a slug, with a session-id prefix as the fallback.
+it, or an exact session name, with a session-id prefix as the fallback.
 _Avoid_: selector, handle, address.
 
 **Awaiting work** — an agent whose prompt has gone in, by launch or by

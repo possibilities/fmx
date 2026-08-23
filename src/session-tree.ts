@@ -14,9 +14,9 @@ export type SessionEntry = {
   /** null when the agent is not in a git worktree. */
   branch: string | null
   sessionId: string | null
-  /** The name minted from the agent's first prompt, once it has one. It
-   * stands in for the session id, which is what a row shows until then. */
-  slug: string | null
+  /** Fx's native session name, once it has one. The row falls back to the
+   * short session id until then. */
+  name: string | null
   state: DisplayState
   attention: AgentAttention | null
   active: boolean
@@ -77,7 +77,7 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
         rows.push({
           kind: "agent",
           depth: 2,
-          label: entry.slug ?? entry.sessionId ?? "",
+          label: entry.name ?? entry.sessionId ?? "",
           agentId: entry.agentId,
           state: entry.state,
           attention: entry.attention,

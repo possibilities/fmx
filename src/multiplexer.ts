@@ -19,14 +19,10 @@ import { homedir } from "node:os"
 import { basename } from "node:path"
 import { AgentRegistry, type DisplayState, displayStateFor, shortSessionId } from "./agent-registry.ts"
 import type { AgentSocket } from "./agent-socket.ts"
+import type { AdeRecord, AdeSocket } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
 import { CODEX_MODELS, codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
-import {
-  DEFAULT_WORKTREE_ROOT,
-  defaultSlugSettings,
-  type PanelDefinition,
-  type SlugSettings,
-} from "./config.ts"
+import { DEFAULT_WORKTREE_ROOT, type PanelDefinition } from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
@@ -51,7 +47,12 @@ import {
 } from "./control-protocol.ts"
 import { afterControlReply, type ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
-import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } from "./fx-environment.ts"
+import {
+  createFxEnvironment,
+  type FxAdeBinding,
+  type FxAgentSocketBinding,
+  type FxLaunchLevel,
+} from "./fx-environment.ts"
 import type { AgentManifest, ManifestEntry } from "./agent-manifest.ts"
 import {
   AgentEndedError,
@@ -64,7 +65,6 @@ import {
 } from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
-import { type KnownPrompt, SlugNamer } from "./slug-namer.ts"
 import {
   detectedTerminalColor,
   hasDetectedBackground,
@@ -91,8 +91,10 @@ import {
   treeNameFor,
   UNTRACKED_TREE_NAME,
 } from "./git-context.ts"
+import { isSessionId } from "./fx-sessions.ts"
 import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
+import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
@@ -162,6 +164,7 @@ type MultiplexerOptions = {
   /** Agents the join found running: attached, in display order, before anything else. */
   survivors?: readonly ManifestEntry[]
   agentSocket?: AgentSocket | null
+  adeSocket?: AdeSocket | null
   /** Ordered configured tools available in the active agent's tools panel. */
   panels?: readonly PanelDefinition[]
   /** Owns configured tool processes and their terminal transports. */
@@ -188,8 +191,6 @@ type MultiplexerOptions = {
   /** Agents started per directory so far, which orders the picker. */
   initialProjectLaunches?: Record<string, number>
   onProjectLaunch?: (launches: Record<string, number>) => void
-  /** How agents earn a name from their first prompt. */
-  slug?: SlugSettings
   /** Where `fmx control <command>` reaches this fmx; handed to every agent. */
   controlSocketPath?: string
   /** How long each lifecycle Toast remains; overridden only by renderer tests. */
@@ -478,7 +479,12 @@ export class Multiplexer {
   private readonly panelDivider: BoxRenderable | null = null
   private readonly toolPanel: ToolPanel | null = null
   private readonly agentSocket: AgentSocket | null
+  private readonly adeSocket: AdeSocket | null
   private readonly registry = new AgentRegistry()
+  private readonly sessionNames: SessionNames
+  /** ADE identities are eager and remain authoritative over a late legacy frame. */
+  private readonly adeSessionIds = new Map<string, string | null>()
+  private readonly adeSequences = new Map<string, number>()
   private readonly sessionList: SessionList
   private readonly subagents: SubagentObserver
   private readonly seenSeq = new Map<number, number>()
@@ -522,7 +528,6 @@ export class Multiplexer {
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
   private readonly swallowedReleases = new Set<string>()
-  private readonly slugNamer: SlugNamer
   /** Every launch dialog opening, by id, the open one included. */
   private readonly drafts = new Map<string, Draft>()
   private openDraft: Draft | null = null
@@ -542,20 +547,29 @@ export class Multiplexer {
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
   private readonly pasteHandler = () => this.launchDialog.handlePaste()
   private readonly resizeHandler = () => this.applyLayout()
+  private readonly adeHandler = (record: AdeRecord) => this.acceptAdeRecord(record)
   private readonly registryHandler = (frame: SocketFrame) => {
+    const previousReportedSessionId = frame.paneId
+      ? (this.registry.get(frame.paneId)?.sessionId ?? null)
+      : null
     this.registry.apply(frame)
-    // A session id is the first thing fx reports that naming can act on, and
-    // every later frame is a chance to notice one that arrived while an
-    // attempt was cooling down.
     if (frame.paneId) {
-      const sessionId = this.registry.get(frame.paneId)?.sessionId
-      if (sessionId) this.slugNamer.note(sessionId, this.launchPromptFor(frame.paneId))
       // fx reporting itself is the only signal fmx has that it is ready to be
       // typed into.
       const agent = this.agentForPane(frame.paneId)
       agent?.armPrompt()
+      const reportedSessionId = this.registry.get(frame.paneId)?.sessionId ?? null
+      if (
+        agent &&
+        reportedSessionId &&
+        previousReportedSessionId !== reportedSessionId &&
+        !this.adeSessionIds.has(agent.entry.agentId)
+      ) {
+        this.sessionNames.recover(reportedSessionId)
+      }
       // The session id is what a restart seeds the name from; written the
       // moment fx first says it, and never again for the same one.
+      const sessionId = agent ? this.sessionIdOf(agent) : reportedSessionId
       if (agent && sessionId) {
         void this.options.manifest.setFxSessionId(agent.entry.agentId, sessionId).catch(() => {})
       }
@@ -587,12 +601,7 @@ export class Multiplexer {
     this.trayHidden = options.initialTrayHidden ?? false
     this.panelWidth =
       options.initialPanelWidth ?? Math.max(1, Math.floor(renderer.width * TOOL_PANEL_MAX_SCREEN_FRACTION))
-    this.slugNamer = new SlugNamer({
-      fxPath: options.fxPath,
-      settings: options.slug ?? defaultSlugSettings(),
-      home: options.home,
-      onSlug: () => this.refreshSessionList(),
-    })
+    this.sessionNames = new SessionNames({ home: options.home })
     this.subagents = new SubagentObserver({
       home: options.home,
       onChange: () => this.refreshSessionList(),
@@ -649,6 +658,7 @@ export class Multiplexer {
     this.stage.add(this.content)
 
     this.agentSocket = options.agentSocket ?? null
+    this.adeSocket = options.adeSocket ?? null
     this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
     this.tray.add(this.sessionList.root)
     const panelDefinitions = options.panels ?? []
@@ -753,6 +763,7 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
     this.agentSocket?.addFrameListener(this.registryHandler)
+    this.adeSocket?.addEventListener(this.adeHandler)
     this.refreshPanelChrome()
     this.applyLayout()
     this.refreshTerminalTitle()
@@ -816,7 +827,6 @@ export class Multiplexer {
     this.exitConfirmationKey = null
     this.launchDialog.close()
     this.hideModal()
-    this.slugNamer.stop()
     this.subagents.stop()
     for (const waiter of this.agentWaiters) waiter.settle(null)
     this.agentWaiters.clear()
@@ -890,6 +900,7 @@ export class Multiplexer {
             this.agentSocketBinding(entry.paneId),
             this.options.controlSocketPath ?? null,
             launchLevel,
+            this.adeBinding(entry.agentId),
           ),
         ),
         size: agent.currentSize(),
@@ -940,7 +951,7 @@ export class Multiplexer {
       agent.id,
       checkpoint?.seen === false ? Math.max(0, record.stateSeq - 1) : record.stateSeq,
     )
-    if (entry.fxSessionId) this.slugNamer.note(entry.fxSessionId, null)
+    if (entry.fxSessionId) this.sessionNames.recover(entry.fxSessionId)
     this.refreshSessionList()
     return agent
   }
@@ -1002,7 +1013,7 @@ export class Multiplexer {
     void this.options.manifest.remove(agent.entry.agentId).catch(() => {})
     void this.options.panelSessions?.stopAgent(agent.entry.agentId).catch(() => {})
     if (this.shuttingDown) return
-    const identity = this.slugOf(agent) ?? `agent ${agent.id}`
+    const identity = this.nameOf(agent) ?? `agent ${agent.id}`
     // The shell's number for a signal, so a notice reads the way `$?` would.
     const exitCode = exit === null ? 0 : exit.signal ? 128 + exit.signal : exit.code
     this.queueLifecycleNotice(agent, identity, "exited", exitCode === 0 ? "neutral" : "error", exitCode)
@@ -1075,6 +1086,8 @@ export class Multiplexer {
     agent.destroy()
     this.agents.splice(index, 1)
     this.registry.forget(this.paneIdFor(agent))
+    this.adeSessionIds.delete(agent.entry.agentId)
+    this.adeSequences.delete(agent.entry.agentId)
     this.seenSeq.delete(agent.id)
     this.refreshAgentChrome()
     for (const waiter of this.agentWaiters) {
@@ -1142,7 +1155,7 @@ export class Multiplexer {
   private refreshSessionList(): void {
     this.subagents.setParents(
       this.agents.flatMap((agent) => {
-        const sessionId = this.registry.get(this.paneIdFor(agent))?.sessionId
+        const sessionId = this.sessionIdOf(agent)
         return sessionId ? [sessionId] : []
       }),
     )
@@ -1245,17 +1258,18 @@ export class Multiplexer {
   private sessionEntries(): SessionEntry[] {
     return this.agents.map((agent, index) => {
       const record = this.registry.get(this.paneIdFor(agent))
+      const sessionId = this.sessionIdOf(agent)
       const git = this.gitContexts.get(agent.cwd) ?? null
       return {
         agentId: agent.id,
         project: projectNameFor(git, agent.cwd),
         branch: git?.branch ?? null,
-        sessionId: shortSessionId(record?.sessionId ?? null),
-        slug: record?.sessionId ? this.slugNamer.slugFor(record.sessionId) : null,
+        sessionId: shortSessionId(sessionId),
+        name: sessionId ? this.sessionNames.nameFor(sessionId) : null,
         state: displayStateFor(record, this.seenSeq.get(agent.id) ?? 0),
         attention: record?.attention ?? null,
         active: index === this.activeIndex,
-        subagents: record?.sessionId ? this.subagents.childrenOf(record.sessionId) : [],
+        subagents: sessionId ? this.subagents.childrenOf(sessionId) : [],
       }
     })
   }
@@ -1314,15 +1328,78 @@ export class Multiplexer {
     return this.agents.find((agent) => this.paneIdFor(agent) === paneId) ?? null
   }
 
-  private home(): string {
-    return this.options.home ?? homedir()
+  private acceptAdeRecord(record: AdeRecord): void {
+    const agent = this.agents.find((candidate) => candidate.entry.agentId === record.instanceId)
+    if (!agent) return
+
+    const previousSequence = this.adeSequences.get(record.instanceId)
+    if (previousSequence !== undefined && record.sequence <= previousSequence) return
+    const gap = previousSequence === undefined ? record.sequence !== 1 : record.sequence !== previousSequence + 1
+    this.adeSequences.set(record.instanceId, record.sequence)
+
+    let changed = false
+    // Identity is envelope context, not event payload. That makes a first
+    // record observed after an ADE restart authoritative even when its event
+    // is additive or belongs to a child of the main session.
+    const contextualMainSession = record.context.agentRole === "main"
+      ? record.context.sessionId
+      : record.context.parentSessionId
+    const contextualIdentityKnown = record.context.agentRole === "main" || contextualMainSession !== null
+    const previousSession = this.sessionIdOf(agent)
+    const contextualIdentityChanged = contextualIdentityKnown && (
+      !this.adeSessionIds.has(record.instanceId) || previousSession !== contextualMainSession
+    )
+    if (contextualIdentityKnown) {
+      changed = this.installAdeSession(agent, contextualMainSession) || changed
+    }
+    if (gap) {
+      const recoverySession = contextualMainSession ?? this.sessionIdOf(agent)
+      // Installing a different identity already reads its durable sidecar.
+      if (recoverySession && !contextualIdentityChanged) {
+        changed = this.sessionNames.recover(recoverySession) || changed
+      }
+    }
+    if (record.context.agentRole !== "main") {
+      if (changed) this.refreshSessionList()
+      return
+    }
+
+    switch (record.event) {
+      case "FxStarted":
+        break
+      case "SessionChanged":
+        break
+      case "SessionMetadataChanged": {
+        const sessionId = record.context.sessionId
+        const title = record.payload.title
+        if (sessionId && typeof title === "string") {
+          changed = this.sessionNames.apply(sessionId, title) || changed
+        }
+        break
+      }
+      default:
+        // Schema 1 is additive. Unknown events still advance sequence.
+        break
+    }
+    if (changed) this.refreshSessionList()
   }
 
-  /** What fmx itself typed into this pane, if anything. */
-  private launchPromptFor(paneId: string): KnownPrompt | null {
-    const agent = this.agents.find((candidate) => this.paneIdFor(candidate) === paneId)
-    if (!agent?.launchPrompt) return null
-    return { text: agent.launchPrompt, workspaceRoot: agent.cwd }
+  private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
+    if (sessionId !== null && !isSessionId(sessionId)) return false
+    const hadAdeSession = this.adeSessionIds.has(agent.entry.agentId)
+    const previous = this.sessionIdOf(agent)
+    const identityChanged = !hadAdeSession || previous !== sessionId
+    this.adeSessionIds.set(agent.entry.agentId, sessionId)
+    this.registry.setSessionId(this.paneIdFor(agent), sessionId)
+    if (identityChanged) {
+      void this.options.manifest.setFxSessionId(agent.entry.agentId, sessionId).catch(() => {})
+    }
+    const recovered = identityChanged && sessionId ? this.sessionNames.recover(sessionId) : false
+    return previous !== sessionId || recovered
+  }
+
+  private home(): string {
+    return this.options.home ?? homedir()
   }
 
   private paneIdFor(agent: FxAgent): string {
@@ -1333,6 +1410,18 @@ export class Multiplexer {
     const socket = this.agentSocket
     if (!socket) return null
     return { socketPath: socket.path, paneId }
+  }
+
+  private adeBinding(instanceId: string): FxAdeBinding | null {
+    const socket = this.adeSocket
+    return socket ? { socketPath: socket.path, instanceId } : null
+  }
+
+  private sessionIdOf(agent: FxAgent): string | null {
+    if (this.adeSessionIds.has(agent.entry.agentId)) {
+      return this.adeSessionIds.get(agent.entry.agentId) ?? null
+    }
+    return this.registry.get(this.paneIdFor(agent))?.sessionId ?? null
   }
 
   private beginDividerDrag(event: MouseEvent): void {
@@ -2016,15 +2105,18 @@ export class Multiplexer {
         return this.agents[(((this.activeIndex + step) % count) + count) % count]!
       }
       case "name": {
-        const bySlug = this.agents.filter((agent) => this.slugOf(agent) === target.name)
-        if (bySlug.length === 1) return bySlug[0]!
-        const bySession = this.agents.filter((agent) =>
-          this.registry.get(this.paneIdFor(agent))?.sessionId?.startsWith(target.name),
-        )
-        if (bySession.length === 1) return bySession[0]!
-        if (bySession.length > 1 || bySlug.length > 1) {
+        const byName = this.agents.filter((agent) => this.nameOf(agent) === target.name)
+        if (byName.length === 1) return byName[0]!
+        if (byName.length > 1) {
           throw new ControlFailure("ambiguous", `${target.name} names more than one agent`, {
-            agents: [...bySlug, ...bySession].map((agent) => agent.id),
+            agents: byName.map((agent) => agent.id),
+          })
+        }
+        const bySession = this.agents.filter((agent) => this.sessionIdOf(agent)?.startsWith(target.name))
+        if (bySession.length === 1) return bySession[0]!
+        if (bySession.length > 1) {
+          throw new ControlFailure("ambiguous", `${target.name} names more than one agent`, {
+            agents: bySession.map((agent) => agent.id),
           })
         }
         throw new ControlFailure("not_found", `no agent named ${target.name}`)
@@ -2195,13 +2287,14 @@ export class Multiplexer {
     return displayStateFor(this.registry.get(this.paneIdFor(agent)), this.seenSeq.get(agent.id) ?? 0)
   }
 
-  private slugOf(agent: FxAgent): string | null {
-    const sessionId = this.registry.get(this.paneIdFor(agent))?.sessionId
-    return sessionId ? this.slugNamer.slugFor(sessionId) : null
+  private nameOf(agent: FxAgent): string | null {
+    const sessionId = this.sessionIdOf(agent)
+    return sessionId ? this.sessionNames.nameFor(sessionId) : null
   }
 
   private agentInfo(agent: FxAgent): AgentInfo {
     const record = this.registry.get(this.paneIdFor(agent))
+    const sessionId = this.sessionIdOf(agent)
     const git = this.gitContexts.get(agent.cwd) ?? null
     return {
       id: agent.id,
@@ -2210,14 +2303,14 @@ export class Multiplexer {
       project: projectNameFor(git, agent.cwd),
       branch: git?.branch ?? null,
       worktree: git ? git.root !== git.mainRoot : null,
-      slug: this.slugOf(agent),
-      session_id: record?.sessionId ?? null,
+      name: this.nameOf(agent),
+      session_id: sessionId,
       label: agent.label,
       state: this.displayStateOf(agent),
       attention: record?.attention ?? null,
       active: this.activeAgent() === agent,
       awaiting_work: agent.awaitingWork,
-      subagents: record?.sessionId ? subagentInfos(this.subagents.childrenOf(record.sessionId)) : [],
+      subagents: sessionId ? subagentInfos(this.subagents.childrenOf(sessionId)) : [],
     }
   }
 

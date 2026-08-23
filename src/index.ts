@@ -9,6 +9,7 @@ import {
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { AgentSocket, AgentSocketActiveError } from "./agent-socket.ts"
+import { AdeSocket, adeSocketPathFor } from "./ade-events.ts"
 import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
@@ -104,6 +105,7 @@ async function main(): Promise<void> {
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const agentSocket = new AgentSocket({ homeId: home })
+  let adeSocket: AdeSocket | null = null
   let controlSocket: ControlSocket | null = null
   let transport: CompanionTransportFactory | null = null
   let panelSessions: CompanionPanelSessions | null = null
@@ -113,6 +115,8 @@ async function main(): Promise<void> {
     // The socket is the Home's singleton; only its holder may touch the
     // Manifest, so the join runs after the bind and before anything is drawn.
     await agentSocket.start()
+    adeSocket = new AdeSocket({ path: adeSocketPathFor(agentSocket.path) })
+    adeSocket.start()
     await ensureCompanionDirectories(companionDirectories())
     // The pair is checked once the directory is ours: `version` creates the
     // directory if it must, and a stock-built fork would create one fmx
@@ -185,11 +189,11 @@ async function main(): Promise<void> {
       transport,
       survivors,
       agentSocket,
+      adeSocket,
       panels: loadedConfig.panels,
       panelSessions,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
-      slug: loadedConfig.slug,
       controlSocketPath,
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
@@ -282,6 +286,7 @@ async function main(): Promise<void> {
     await manifest?.settled()
     await stateSave
     controlSocket?.close()
+    adeSocket?.close()
     startupPaletteDetector?.cleanup()
     // Only the fmx that bound the socket may unlink it; the one refused at
     // start never had it.
