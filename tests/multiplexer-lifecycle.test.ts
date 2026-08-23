@@ -1,13 +1,20 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable, type RGBA, type TerminalColors, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { AgentSocket } from "../src/agent-socket.ts"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
+import { projectNameFor, readGitContext, worktreeNameFor } from "../src/git-context.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { slugDirectory, storeSlug } from "../src/slug-store.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 const FAILING_FX = fileURLToPath(new URL("./fixtures/failing-fx.sh", import.meta.url))
+const SESSION_ID = "1732673860000-123456789-deadbeef"
 
 test("reports an fx spawn failure after removing its provisional instance", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
@@ -105,62 +112,72 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
   }
 })
 
-test("toasts successful Instance starts and natural exits", async () => {
+test("toasts project and Worktree on start, then uses the Slug on exit", async () => {
   const setup = await createTestRenderer({
     width: 80,
     height: 24,
     kittyKeyboard: true,
     exitOnCtrlC: false,
   })
+  const home = await mkdtemp(join(tmpdir(), "fmx-lifecycle-home-"))
+  const agentSocket = new AgentSocket({ path: `/tmp/fmx-lifecycle-${process.pid}.sock` })
+  await agentSocket.start()
+  storeSlug(slugDirectory(process.env, home), SESSION_ID, "clear-cloud")
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    toastDurationMs: 30,
+    agentSocket,
+    home,
+    toastDurationMs: 100,
   })
+  const location = await lifecycleLocation(process.cwd())
 
   try {
     multiplexer.start()
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined, 2_000)
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("agent 1 started")
+    await waitForText(setup, `${location} · agent 1 started`, 2_000)
 
-    await Bun.sleep(40)
+    await sendFrame(
+      agentSocket,
+      `{"id":"1","method":"pane.report_agent_session","params":{"pane_id":"p_1","agent_session_id":"${SESSION_ID}"}}`,
+    )
+
+    await Bun.sleep(110)
     const terminal = setup.renderer.root.findDescendantById("fx-1")
     expect(terminal).toBeInstanceOf(FxTerminalRenderable)
     if (!(terminal instanceof FxTerminalRenderable)) return
     terminal.onData?.(Uint8Array.of(3, 3), "input")
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
-    await setup.renderOnce()
-
-    expect(setup.captureCharFrame()).toContain("agent 1 exited")
+    await waitForText(setup, `${location} · clear-cloud exited`, 2_000)
   } finally {
     await multiplexer.shutdown()
+    agentSocket.close()
+    await rm(home, { recursive: true, force: true })
   }
 })
 
-test("includes a nonzero exit code in the queued Toast", async () => {
+test("falls back to the Instance id and includes a nonzero exit code", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: FAILING_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    toastDurationMs: 30,
+    toastDurationMs: 100,
   })
+  const location = await lifecycleLocation(process.cwd())
 
   try {
     multiplexer.start()
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("agent 1 started")
+    await waitForText(setup, `${location} · agent 1 started`, 2_000)
 
-    await Bun.sleep(40)
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("agent 1 exited · code 7")
+    await Bun.sleep(110)
+    await waitForText(setup, `${location} · agent 1 exited · code 7`, 2_000)
   } finally {
     await multiplexer.shutdown()
   }
@@ -193,6 +210,39 @@ async function waitFor(condition: () => boolean, timeoutMs: number): Promise<voi
     if (Date.now() >= deadline) throw new Error("condition timed out")
     await Bun.sleep(10)
   }
+}
+
+async function waitForText(
+  setup: Awaited<ReturnType<typeof createTestRenderer>>,
+  expected: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await setup.renderOnce()
+    if (setup.captureCharFrame().includes(expected)) return
+    await Bun.sleep(5)
+  }
+  throw new Error(`did not render ${JSON.stringify(expected)}`)
+}
+
+async function lifecycleLocation(cwd: string): Promise<string> {
+  const context = await readGitContext(cwd)
+  return `${projectNameFor(context, cwd)} · ${worktreeNameFor(context, cwd)}`
+}
+
+async function sendFrame(agentSocket: AgentSocket, payload: string): Promise<void> {
+  const connection = await Bun.connect({
+    unix: agentSocket.path,
+    socket: {
+      open: (socket) => {
+        socket.write(`${payload}\n`)
+      },
+      data: () => {},
+    },
+  })
+  await Bun.sleep(20)
+  connection.end()
 }
 
 async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

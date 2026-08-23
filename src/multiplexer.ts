@@ -69,7 +69,7 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
-import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
+import { readGitContext, projectNameFor, type GitContext, worktreeNameFor } from "./git-context.ts"
 import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
@@ -423,6 +423,9 @@ export class Multiplexer {
   private readonly seenSeq = new Map<number, number>()
   /** Per-directory git context, read once and reused by every instance there. */
   private readonly gitContexts = new Map<string, GitContext | null>()
+  /** In-flight reads stay shared too, so lifecycle notices for a fast exit
+   * resolve against the same answer and keep their arrival order. */
+  private readonly gitContextLoads = new Map<string, Promise<GitContext | null>>()
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   /** Hidden by the toggle key; orthogonal to the empty state, which hides the
    * sidebar because there is nothing to list. */
@@ -435,6 +438,9 @@ export class Multiplexer {
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
   private readonly toast: Toast
+  /** Per-Instance tails keep a fast exit behind its start notice even when
+   * both are waiting for Git context. */
+  private readonly lifecycleNoticeTails = new Map<number, Promise<void>>()
   private readonly keybindings: Keybindings
   private readonly instances: FxInstance[] = []
   private activeIndex = -1
@@ -732,12 +738,13 @@ export class Multiplexer {
     this.content.add(instance.terminal)
     this.refreshInstanceChrome()
     if (focus || this.activeIndex === -1) this.switchTo(this.instances.length - 1)
-    this.loadGitContext(cwd)
     this.countLaunch(cwd)
     this.refreshSessionList()
+    let started = false
+    this.queueLifecycleNotice(instance, `agent ${instance.id}`, "started", "success", null, () => started)
     try {
       instance.start()
-      this.toast.show(`agent ${instance.id} started`, "success")
+      started = true
     } catch (error) {
       this.removeInstance(instance)
       throw error
@@ -747,11 +754,32 @@ export class Multiplexer {
 
   private handleInstanceExit(instance: FxInstance, exitCode: number): void {
     if (this.shuttingDown) return
-    this.toast.show(
-      exitCode === 0 ? `agent ${instance.id} exited` : `agent ${instance.id} exited · code ${exitCode}`,
-      exitCode === 0 ? "neutral" : "error",
-    )
+    const identity = this.slugOf(instance) ?? `agent ${instance.id}`
+    this.queueLifecycleNotice(instance, identity, "exited", exitCode === 0 ? "neutral" : "error", exitCode)
     this.removeInstance(instance)
+  }
+
+  private queueLifecycleNotice(
+    instance: FxInstance,
+    identity: string,
+    event: "started" | "exited",
+    tone: "success" | "neutral" | "error",
+    exitCode: number | null,
+    shouldShow: () => boolean = () => true,
+  ): void {
+    const context = this.loadGitContext(instance.cwd)
+    const previous = this.lifecycleNoticeTails.get(instance.id) ?? Promise.resolve()
+    const queued = previous.then(async () => {
+      const git = await context
+      if (this.shuttingDown || !shouldShow()) return
+      const location = `${projectNameFor(git, instance.cwd)} · ${worktreeNameFor(git, instance.cwd)}`
+      const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` · code ${exitCode}` : ""
+      this.toast.show(`${location} · ${identity} ${event}${code}`, tone)
+    })
+    this.lifecycleNoticeTails.set(instance.id, queued)
+    void queued.finally(() => {
+      if (this.lifecycleNoticeTails.get(instance.id) === queued) this.lifecycleNoticeTails.delete(instance.id)
+    })
   }
 
   private removeInstance(instance: FxInstance): boolean {
@@ -891,14 +919,22 @@ export class Multiplexer {
    * it spawned the instance in. The list renders without a branch rung until
    * the answer arrives, which is why this refreshes rather than blocking.
    */
-  private loadGitContext(cwd: string): void {
-    if (this.gitContexts.has(cwd)) return
+  private loadGitContext(cwd: string): Promise<GitContext | null> {
+    const pending = this.gitContextLoads.get(cwd)
+    if (pending) return pending
+    if (this.gitContexts.has(cwd)) return Promise.resolve(this.gitContexts.get(cwd) ?? null)
     this.gitContexts.set(cwd, null)
-    void readGitContext(cwd).then((context) => {
-      if (this.shuttingDown || !context) return
-      this.gitContexts.set(cwd, context)
-      this.refreshSessionList()
+    const load = readGitContext(cwd).then((context) => {
+      if (!this.shuttingDown && context) {
+        this.gitContexts.set(cwd, context)
+        this.refreshSessionList()
+      }
+      return context
+    }).finally(() => {
+      this.gitContextLoads.delete(cwd)
     })
+    this.gitContextLoads.set(cwd, load)
+    return load
   }
 
   /**

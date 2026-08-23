@@ -55,6 +55,12 @@ export function projectNameFor(context: GitContext | null, cwd: string): string 
   return basename(context?.mainRoot ?? cwd) || "workspace"
 }
 
+/** The directory name of the checkout this instance is actually working in.
+ * Unlike the project name, this differs for every linked worktree. */
+export function worktreeNameFor(context: GitContext | null, cwd: string): string {
+  return basename(context?.root ?? cwd) || "workspace"
+}
+
 async function runGit(cwd: string, args: string[]): Promise<string[] | null> {
   try {
     const process = Bun.spawn(["git", ...args], {
