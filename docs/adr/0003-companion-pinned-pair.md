@@ -1,0 +1,3 @@
+# The companion is pinned, and the pair is the release
+
+fmx ships `fmx-zmx` beside itself, built from the one fork commit named in `companion.json`, and refuses to start against any other build it finds beside itself or on `PATH`; only `FMX_ZMX_PATH` may name an unpinned build, and fmx says so when it does. The alternative — accepting any companion whose protocol negotiates — would let a half-updated installation or a stray binary run quietly on whatever the two happen to agree on, and the protocol is the pair's, not a public contract. The price is that a checkout cannot use an installed companion unless the pin matches, and that moving the pin is a release act rather than a dependency bump.

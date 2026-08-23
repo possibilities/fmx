@@ -4,7 +4,7 @@ import { parseArgs, UsageError, usage, VERSION } from "../src/cli.ts"
 
 describe("parseArgs", () => {
   test("rejects anything other than fmx options", () => {
-    expect(parseArgs([])).toEqual({ help: false, version: false, command: null, socket: null })
+    expect(parseArgs([])).toEqual({ help: false, version: false, doctor: false, command: null, socket: null })
     expect(() => parseArgs(["--record"])).toThrow("unknown option")
     expect(() => parseArgs(["--", "--record"])).toThrow("unknown option: --")
   })
@@ -22,6 +22,9 @@ describe("parseArgs", () => {
 describe("commands", () => {
   test("a bare invocation is the TUI, a word is a command", () => {
     expect(parseArgs([]).command).toBeNull()
+    expect(parseArgs(["doctor"])).toMatchObject({ doctor: true, command: null })
+    expect(() => parseArgs(["doctor", "now"])).toThrow("unexpected argument: now")
+    expect(() => parseArgs(["orient"])).toThrow("Commands: control, doctor.")
     expect(parseArgs(["control", "orient"]).command).toEqual({ name: "orient" })
     expect(() => parseArgs(["orient"])).toThrow("unknown command: orient")
     expect(() => parseArgs(["control"])).toThrow("control needs a command")

@@ -1,5 +1,17 @@
 import { expect, test } from "bun:test"
-import { companionDirectory, companionEnvironment, homeIdFor, resolveCompanion } from "../src/zmx-environment.ts"
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { join } from "node:path"
+import companionPin from "../companion.json" with { type: "json" }
+import {
+  COMPANION_PIN,
+  companionBuild,
+  companionDirectory,
+  companionEnvironment,
+  companionMismatch,
+  homeIdFor,
+  parseCompanionVersion,
+  resolveCompanion,
+} from "../src/zmx-environment.ts"
 
 test("the Home id is a stable short digest of the fmx directory", () => {
   expect(homeIdFor("/home/u/.config/fmx")).toMatch(/^[0-9a-f]{12}$/)
@@ -20,10 +32,86 @@ test("the Companion environment drops every inherited zmx variable and sets its 
   expect(env).toEqual({ PATH: "/bin", ZMX_DIR: "/ours" })
 })
 
-test("the Companion is FMX_ZMX_PATH, else fmx-zmx on PATH, never zmx", async () => {
-  await expect(resolveCompanion({ FMX_ZMX_PATH: "/nonexistent/fmx-zmx" })).rejects.toThrow("not executable")
-  await expect(resolveCompanion({ PATH: "/nonexistent" })).rejects.toThrow("fmx-zmx")
-  expect(await resolveCompanion({ FMX_ZMX_PATH: "/bin/sh" })).toBe("/bin/sh")
+test("the Companion is FMX_ZMX_PATH, else fmx-zmx beside fmx, else fmx-zmx on PATH, never zmx", async () => {
+  const root = await realpath(await mkdtemp("/tmp/fmx-env-"))
+  try {
+    const install = join(root, "install")
+    const elsewhere = join(root, "elsewhere")
+    await mkdir(install)
+    await mkdir(elsewhere)
+    for (const dir of [install, elsewhere]) {
+      await writeFile(join(dir, "fmx-zmx"), "#!/bin/sh\nexit 0\n")
+      await chmod(join(dir, "fmx-zmx"), 0o755)
+      // A plain zmx beside either is never what fmx wants.
+      await writeFile(join(dir, "zmx"), "#!/bin/sh\nexit 0\n")
+      await chmod(join(dir, "zmx"), 0o755)
+    }
+
+    await expect(resolveCompanion({ FMX_ZMX_PATH: "/nonexistent/fmx-zmx" }, install)).rejects.toThrow("not executable")
+    expect(await resolveCompanion({ FMX_ZMX_PATH: "/bin/sh", PATH: elsewhere }, install)).toEqual({ path: "/bin/sh", origin: "override" })
+
+    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(install, "fmx-zmx"), origin: "sibling" })
+    expect(await resolveCompanion({ PATH: elsewhere }, null)).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
+    expect(await resolveCompanion({ PATH: elsewhere }, join(root, "no-such-install"))).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
+
+    // Beside fmx but not executable: passed over, like any other file there.
+    await chmod(join(install, "fmx-zmx"), 0o644)
+    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
+
+    await expect(resolveCompanion({ PATH: "/nonexistent" }, install)).rejects.toThrow(`beside ${install}/fmx or no fmx-zmx on PATH`)
+    await expect(resolveCompanion({ PATH: "/nonexistent" }, null)).rejects.toThrow("no fmx-zmx on PATH")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("the Companion pin is a fork commit and the build string a Companion built from it reports", () => {
+  expect(COMPANION_PIN).toEqual(companionPin)
+  expect(COMPANION_PIN.repository).toMatch(/^https:\/\/github\.com\/possibilities\/zmx(\.git)?$/)
+  expect(COMPANION_PIN.branch).toBe("integration")
+  expect(COMPANION_PIN.commit).toMatch(/^[0-9a-f]{40}$/)
+  // `<upstream version>+fmx.<12 hex of the commit>`: the build metadata names the commit, so the two can never disagree.
+  expect(COMPANION_PIN.build).toMatch(/^\d+\.\d+\.\d+\+fmx\.[0-9a-f]{12}$/)
+  expect(COMPANION_PIN.build.endsWith(`+fmx.${COMPANION_PIN.commit.slice(0, 12)}`)).toBe(true)
+})
+
+test("a Companion's build is the first line of its version output", async () => {
+  expect(parseCompanionVersion("zmx\t\t0.7.0+fmx.0123456789ab\nghostty_vt\tghostty-1.3.2\nsocket_dir\t/tmp/x\n")).toBe("0.7.0+fmx.0123456789ab")
+  expect(parseCompanionVersion("zmx 0.7.0\n")).toBe("0.7.0")
+  expect(parseCompanionVersion("fmx 0.1.1\n")).toBeNull()
+  expect(parseCompanionVersion("")).toBeNull()
+
+  const root = await mkdtemp("/tmp/fmx-env-")
+  try {
+    const fake = join(root, "fmx-zmx")
+    await writeFile(fake, `#!/bin/sh\n[ "$1" = version ] || exit 2\nprintf 'zmx\\t\\t%s\\nsocket_dir\\t%s\\n' "$FAKE_BUILD" "$ZMX_DIR"\n`)
+    await chmod(fake, 0o755)
+    const directory = join(root, "zmx")
+    expect(await companionBuild(fake, { FAKE_BUILD: "0.7.0+fmx.abc", ZMX_DIR: "/theirs" }, directory)).toBe("0.7.0+fmx.abc")
+    const broken = join(root, "broken")
+    await writeFile(broken, "#!/bin/sh\necho 'no such command' >&2\nexit 1\n")
+    await chmod(broken, 0o755)
+    await expect(companionBuild(broken, {}, directory)).rejects.toThrow("did not report a build from `version`: no such command")
+    const silent = join(root, "silent")
+    await writeFile(silent, "#!/bin/sh\nexit 0\n")
+    await chmod(silent, 0o755)
+    await expect(companionBuild(silent, {}, directory)).rejects.toThrow("did not report a build")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("a Companion that is not the pinned build is refused unless the override named it", () => {
+  const pinned = COMPANION_PIN.build
+  const sibling = companionMismatch({ path: "/opt/fmx/fmx-zmx", origin: "sibling" }, "0.7.0", 1)
+  expect(sibling).toContain("/opt/fmx/fmx-zmx (beside fmx) is build 0.7.0")
+  expect(sibling).toContain(`released with ${pinned} (protocol 1)`)
+  expect(sibling).toContain("Reinstall fmx to restore the pair, or set FMX_ZMX_PATH")
+  expect(companionMismatch({ path: "/usr/local/bin/fmx-zmx", origin: "path" }, "0.8.0+fmx.000000000000", 1)).toContain("(on PATH)")
+  const override = companionMismatch({ path: "/src/zmx/zig-out/bin/zmx", origin: "override" }, "0.7.0", 1)
+  expect(override).toContain("(FMX_ZMX_PATH) is build 0.7.0")
+  expect(override).toContain("running under the override")
+  expect(override).not.toContain("Reinstall")
 })
 
 test("the Companion directory is made private and refused when it is not ours", async () => {

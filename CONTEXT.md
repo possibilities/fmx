@@ -15,6 +15,13 @@ _Avoid_: backend, host, server, zmx for the thing itself — though zmx is
 still the right word for the wire protocol it speaks and the environment
 variables that protocol defines, the way `HERDR_*` names fx's.
 
+**Companion pin** — `companion.json`: the fork commit an fmx release is built
+with and the build string a Companion built from it reports. The pair is the
+unit of release; fmx refuses a Companion beside it or on `PATH` that reports
+any other build, and runs one named by `FMX_ZMX_PATH` with a word about it,
+because that override is how a checkout develops the two together.
+_Avoid_: lock file, version file, dependency.
+
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates

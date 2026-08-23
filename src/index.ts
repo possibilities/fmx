@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 
 import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opentui/core"
-import { access, constants, realpath } from "node:fs/promises"
-import { isAbsolute, resolve } from "node:path"
+import { realpath } from "node:fs/promises"
 import { AgentSocket, AgentSocketActiveError } from "./agent-socket.ts"
 import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
 import { debugPanelRequested } from "./debug-panel.ts"
+import { doctor, resolveFx } from "./doctor.ts"
 import { InstanceManifest, type ManifestEntry, manifestPath } from "./instance-manifest.ts"
 import { reconcileInstances, type ReconcileOutcome } from "./instance-reconcile.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
@@ -16,7 +16,17 @@ import { Multiplexer } from "./multiplexer.ts"
 import { loadState, saveState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
 import { CompanionCommand } from "./zmx-command.ts"
-import { companionDirectories, companionDirectory, ensureCompanionDirectories, homeId, resolveCompanion } from "./zmx-environment.ts"
+import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
+import {
+  COMPANION_PIN,
+  companionBuild,
+  companionDirectories,
+  companionDirectory,
+  companionMismatch,
+  ensureCompanionDirectories,
+  homeId,
+  resolveCompanion,
+} from "./zmx-environment.ts"
 
 async function main(): Promise<void> {
   let options
@@ -35,6 +45,12 @@ async function main(): Promise<void> {
   }
   if (options.version) {
     process.stdout.write(`${VERSION}\n`)
+    return
+  }
+  if (options.doctor) {
+    const report = await doctor()
+    process.stdout.write(`${report.lines.join("\n")}\n`)
+    process.exitCode = report.ok ? 0 : 1
     return
   }
   if (options.command) {
@@ -56,7 +72,7 @@ async function main(): Promise<void> {
   }
 
   const workspace = await realpath(process.cwd())
-  const fxPath = await resolveExecutable(process.env.FMX_FX_PATH ?? "fx")
+  const fxPath = await resolveFx(process.env.FMX_FX_PATH ?? "fx")
   const companionPath = await resolveCompanion()
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
@@ -77,7 +93,17 @@ async function main(): Promise<void> {
     // Manifest, so the join runs after the bind and before anything is drawn.
     await agentSocket.start()
     await ensureCompanionDirectories(companionDirectories())
-    const companion = new CompanionCommand(companionDirectory(), process.env, companionPath)
+    // The pair is checked once the directory is ours: `version` creates the
+    // directory if it must, and a stock-built fork would create one fmx
+    // refuses. An installed Companion that is not the pinned build never
+    // runs; one named by the override runs with a word about it.
+    const build = await companionBuild(companionPath.path)
+    if (build !== COMPANION_PIN.build) {
+      const message = companionMismatch(companionPath, build, PROTOCOL_VERSION)
+      if (companionPath.origin !== "override") throw new Error(message)
+      process.stderr.write(`fmx: ${message}\n`)
+    }
+    const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
     manifest = await InstanceManifest.open(manifestPath(), home)
     const survivors = await reconcileAtStartup(manifest, companion)
     transport = new CompanionTransportFactory(companion, home)
@@ -194,21 +220,6 @@ async function detectHostPalette(renderer: CliRenderer): Promise<TerminalColors 
     // cannot answer OSC color queries.
     return null
   }
-}
-
-async function resolveExecutable(requested: string): Promise<string> {
-  const candidate = requested.includes("/")
-    ? isAbsolute(requested)
-      ? requested
-      : resolve(process.cwd(), requested)
-    : Bun.which(requested)
-  if (!candidate) throw new Error(`fx executable not found: ${requested} (set FMX_FX_PATH)`)
-  try {
-    await access(candidate, constants.X_OK)
-  } catch {
-    throw new Error(`fx executable is not executable: ${candidate}`)
-  }
-  return realpath(candidate)
 }
 
 function errorMessage(error: unknown): string {

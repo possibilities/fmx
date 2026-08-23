@@ -11,11 +11,18 @@ curl -fsSL https://c1g42cnmuvvspilo.public.blob.vercel-storage.com/setup.sh | ba
 ```
 
 The installer selects Linux or macOS and x86_64 or arm64, verifies the
-archive's SHA-256 checksum, and installs to `~/.local/bin/fmx`. Set
-`FMX_INSTALL_DIR` to use another directory, or `FMX_VERSION` to install a
-specific release.
+archive's SHA-256 checksum, and installs `fmx` and its companion `fmx-zmx`
+to `~/.local/bin`. Set `FMX_INSTALL_DIR` to use another directory, or
+`FMX_VERSION` to install a specific release. `fmx doctor` reports what an
+installation has: the versions, the companion and whether it is the build
+this fmx was released with, its directory, and `fx`.
 
 `fx` must also be on `PATH`; install it from [fx.sh](https://fx.sh/).
+
+The two executables are a pair: each fmx release is built with one exact
+companion, and fmx refuses to start against any other it finds beside itself
+or on `PATH` — reinstalling restores the pair. Agents running through a
+companion keep running through an update; start a new fmx afterwards.
 
 ## Usage
 
@@ -69,6 +76,24 @@ inside, the way you would at a terminal.
 
 One fmx runs per configuration directory at a time; a second one started
 alongside says so and exits.
+
+#### Recovering agents by hand
+
+The companion is a terminal session daemon in its own right, and its command
+line reaches the agents directly when fmx cannot — to look at one from a
+plain terminal, or to end one fmx no longer shows:
+
+```sh
+fmx-zmx list                     # every agent the companion holds, live or ended
+fmx-zmx attach fmx-<id>          # the agent's terminal, as it stands (ctrl-\ detaches)
+fmx-zmx kill fmx-<id>            # end an agent
+```
+
+Names are `fmx-` followed by the agent's id, as `fmx-zmx list` shows them.
+The companion keeps its sessions in its own directory, `/tmp/fmx-<uid>/zmx`,
+private to the user and separate from any zmx of your own, so these commands
+need no configuration and never touch your own sessions. A `zmx` you have
+installed does not see them either.
 
 ### Session names
 
@@ -166,4 +191,20 @@ Running fmx from a checkout needs the companion daemon, which a release
 bundles as `fmx-zmx`. Point `FMX_ZMX_PATH` at a build of it (the fork of
 zmx at `possibilities/zmx`, branch `integration`: `zig build`, then
 `zig-out/bin/zmx`); `test:pty` and the Companion tests read the same
-variable and skip without it.
+variable and skip without it. A build named that way may be any build —
+fmx says so at start when it is not the pinned one — where a companion
+found beside fmx or on `PATH` must be the pinned build exactly.
+
+### The companion pin
+
+`companion.json` names the fork commit a release is built from and the build
+string a companion built from it reports (`fmx-zmx version`, first line:
+`<fork version>+fmx.<12 hex of the commit>`). `scripts/build-release.sh
+<platform>` fetches that commit — or builds `FMX_COMPANION_CHECKOUT`, a
+local checkout that must sit exactly at it — with `zig build -Dcompanion
+-Doptimize=ReleaseFast -Dversion=<build>`, and ships it beside fmx in both
+archives; the release host needs Zig 0.16 and git as well as Bun. To move
+the pin: land the fork change on `integration` and push it, put the new
+commit and build string in `companion.json`, re-check the companion's
+notices in `THIRD_PARTY_NOTICES.md` against the fork's dependencies, and
+release both together.

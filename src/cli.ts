@@ -40,6 +40,8 @@ export type Command =
 export type CliOptions = {
   help: boolean
   version: boolean
+  /** `fmx doctor`: report the installation instead of running. */
+  doctor: boolean
   /** A control command, when the invocation is one rather than the TUI. */
   command: Command | null
   /** `--socket PATH`: which fmx to talk to, for a caller outside any. */
@@ -49,6 +51,8 @@ export type CliOptions = {
 /** Every control command lives under `fmx control`, leaving the top level
  * free for concerns that are not about driving a running fmx. */
 const CONTROL_GROUP = "control"
+/** The one other top-level command: a report on the installation, never a running fmx. */
+const DOCTOR_COMMAND = "doctor"
 const COMMAND_NAMES = ["orient", "instance", "launch", "draft", "focus", "sidebar", "keys", "catalog"] as const
 const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
 const INSTANCE_VERBS = ["list", "wait", "send"] as const
@@ -67,6 +71,7 @@ export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     help: false,
     version: false,
+    doctor: false,
     command: null,
     socket: null,
   }
@@ -102,8 +107,13 @@ export function parseArgs(args: string[]): CliOptions {
   }
 
   if (rest.length === 0) return options
+  if (rest[0] === DOCTOR_COMMAND) {
+    rejectExtra(rest.slice(1), DOCTOR_COMMAND)
+    options.doctor = true
+    return options
+  }
   if (rest[0] !== CONTROL_GROUP) {
-    throw new UsageError(`unknown command: ${rest[0]}\nCommands: ${CONTROL_GROUP}.`)
+    throw new UsageError(`unknown command: ${rest[0]}\nCommands: ${CONTROL_GROUP}, ${DOCTOR_COMMAND}.`)
   }
   const name = rest[1]
   if (name === undefined) throw new UsageError("control needs a command", CONTROL_GROUP)
@@ -372,6 +382,7 @@ export function usage(topic: string | null = null): string {
 Usage:
   fmx [options]
   fmx control <command> [args]           drive a running fmx from inside it
+  fmx doctor                             report the installation
 
 Options:
   -h, --help     show this help
@@ -379,6 +390,9 @@ Options:
 
 Commands:
   control        every key and click as a command, for agents; see fmx control
+  doctor         versions, the companion and whether it is the one this fmx
+                 was released with, its directory, and fx; exits 1 when the
+                 companion is missing or not that build
 
 Configuration:
   ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)

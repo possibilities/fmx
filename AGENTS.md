@@ -174,7 +174,28 @@
   ownership.
 - The Companion's directory is under `/tmp/fmx-<uid>/zmx`, not the config
   directory: macOS caps a socket path near 104 bytes, and sessions do not
-  survive a reboot, so neither need their exit records.
+  survive a reboot, so neither need their exit records. A `-Dcompanion`
+  build of the fork defaults to the same directory, created 0700, so a
+  human's `fmx-zmx list` needs no `ZMX_DIR` and a stock-built fork's 0750
+  directory — which `ensureCompanionDirectories` refuses — never appears
+  from a by-hand command. fmx still sets `ZMX_DIR` on every command it runs.
+- The Companion is resolved `FMX_ZMX_PATH`, then `fmx-zmx` beside the
+  installed binary (`installedDirectory()`: only a compiled fmx has one),
+  then `fmx-zmx` on PATH, and its build (`fmx-zmx version`, first line) is
+  compared to `companion.json` after `ensureCompanionDirectories` — the
+  command creates the directory if it must. Beside fmx or on PATH, a
+  mismatch is fatal; under the override it is one stderr line, because the
+  override is the development loop and a debug build prints a plain
+  version. `fmx doctor` runs the same resolution and check without binding
+  anything, and its exit code judges only the Companion: fx is a separate
+  install. Keep `--version` one line — the installer and the release script
+  compare it whole.
+- Moving the pin is a release act: land the fork change on `integration`,
+  push, put the commit and `<fork version>+fmx.<12 hex>` in
+  `companion.json`, re-check the Companion notices, release the pair. A
+  protocol bump will also need a plan for daemons still running the old
+  build when the new pair is installed — today there is none, because the
+  protocol has not moved.
 - The two `tests/git-context.test.ts` cases that read `process.cwd()` assume a
   main checkout and fail in a linked worktree. That is the test's assumption,
   not a regression.

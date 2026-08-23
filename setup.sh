@@ -94,12 +94,24 @@ case "$archive" in
   *.tar.xz) xz -dc "$temp_dir/$archive" | tar -xf - -C "$extract_dir" ;;
   *.tar.gz) gzip -dc "$temp_dir/$archive" | tar -xf - -C "$extract_dir" ;;
 esac
+# One archive is one pair: fmx and the companion it was released with. Both
+# are checked before either is placed, so a bad archive installs nothing.
 [[ -x "$extract_dir/fmx" ]] || fail 'archive does not contain an executable fmx binary'
+[[ -x "$extract_dir/fmx-zmx" ]] || fail 'archive does not contain an executable fmx-zmx companion'
 if [[ "$("$extract_dir/fmx" --version)" != "$version" ]]; then
   fail 'downloaded binary version does not match the requested release'
 fi
+companion_build="$("$extract_dir/fmx-zmx" version 2>/dev/null | awk 'NR == 1 && $1 == "zmx" { print $2 }')"
+[[ -n "$companion_build" ]] || fail 'downloaded companion did not report its build'
 
+# The companion goes first, then fmx, each into place in one rename. A
+# failure between the two leaves a pair fmx itself refuses to run, with a
+# message saying to run this installer again; it never leaves one that runs.
 mkdir -p "$install_dir"
+install_temp="$(mktemp "$install_dir/.fmx-zmx.XXXXXX")"
+cp "$extract_dir/fmx-zmx" "$install_temp"
+chmod 0755 "$install_temp"
+mv -f "$install_temp" "$install_dir/fmx-zmx"
 install_temp="$(mktemp "$install_dir/.fmx.XXXXXX")"
 cp "$extract_dir/fmx" "$install_temp"
 chmod 0755 "$install_temp"
@@ -109,8 +121,11 @@ install_temp=""
 if [[ "$("$install_dir/fmx" --version)" != "$version" ]]; then
   fail 'installed binary did not pass its version check'
 fi
+if [[ "$("$install_dir/fmx-zmx" version 2>/dev/null | awk 'NR == 1 && $1 == "zmx" { print $2 }')" != "$companion_build" ]]; then
+  fail 'installed companion did not pass its build check'
+fi
 
-printf 'Installed fmx %s at %s/fmx\n' "$version" "$install_dir"
+printf 'Installed fmx %s at %s/fmx, with its companion fmx-zmx (%s) beside it\n' "$version" "$install_dir" "$companion_build"
 case ":${PATH:-}:" in
   *":$install_dir:"*) ;;
   *)

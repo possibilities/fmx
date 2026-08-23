@@ -9,16 +9,18 @@ const SUPPORTED_HOST =
   (process.platform === "darwin" || process.platform === "linux") &&
   (process.arch === "arm64" || process.arch === "x64")
 
-test.skipIf(!SUPPORTED_HOST)("setup installs a verified gzip fallback and rejects a bad checksum", async () => {
+test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallback, and nothing from a bad checksum or a lone fmx", async () => {
   const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-setup-test-"))
   const payloadDirectory = join(tempDirectory, "payload")
   const releaseDirectory = join(tempDirectory, "release")
   const version = "9.8.7"
+  const companionBuild = "0.7.0+fmx.0123456789ab"
   const os = process.platform === "darwin" ? "macos" : "linux"
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64"
   const archiveName = `fmx-${os}-${arch}.tar.gz`
   const archivePath = join(releaseDirectory, archiveName)
   let corruptChecksum = false
+  let archive: "pair" | "lone" = "pair"
 
   await mkdir(payloadDirectory)
   await mkdir(releaseDirectory)
@@ -27,35 +29,34 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified gzip fallback and reject
     `#!/bin/sh\nif [ "\${1:-}" = "--version" ]; then printf '%s\\n' '${version}'; exit 0; fi\nexit 0\n`,
   )
   await chmod(join(payloadDirectory, "fmx"), 0o755)
+  // The companion answers \`version\` the way the fork does: a tab-separated table whose first line is the build.
+  await writeFile(
+    join(payloadDirectory, "fmx-zmx"),
+    `#!/bin/sh\nif [ "\${1:-}" = "version" ]; then printf 'zmx\\t\\t%s\\nsocket_dir\\t/tmp/x\\n' '${companionBuild}'; exit 0; fi\nexit 0\n`,
+  )
+  await chmod(join(payloadDirectory, "fmx-zmx"), 0o755)
   await writeFile(join(payloadDirectory, "LICENSE"), "test license\n")
   await writeFile(join(payloadDirectory, "THIRD_PARTY_NOTICES.md"), "test notices\n")
 
-  const tar = Bun.spawn(
-    [
-      "tar",
-      "-czf",
-      archivePath,
-      "-C",
-      payloadDirectory,
-      "fmx",
-      "LICENSE",
-      "THIRD_PARTY_NOTICES.md",
-    ],
-    { stdout: "inherit", stderr: "inherit" },
-  )
-  expect(await tar.exited).toBe(0)
-  const archiveBytes = await Bun.file(archivePath).arrayBuffer()
-  const checksum = new Bun.CryptoHasher("sha256").update(archiveBytes).digest("hex")
+  const pack = async (members: string[]): Promise<{ bytes: ArrayBuffer; checksum: string }> => {
+    const tar = Bun.spawn(["tar", "-czf", archivePath, "-C", payloadDirectory, ...members], { stdout: "inherit", stderr: "inherit" })
+    expect(await tar.exited).toBe(0)
+    const bytes = await Bun.file(archivePath).arrayBuffer()
+    return { bytes, checksum: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") }
+  }
+  const lone = await pack(["fmx", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+  const pair = await pack(["fmx", "fmx-zmx", "LICENSE", "THIRD_PARTY_NOTICES.md"])
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
       const path = new URL(request.url).pathname
+      const served = archive === "pair" ? pair : lone
       if (path === "/latest.txt") return new Response(`v${version}`)
-      if (path === `/releases/v${version}/${archiveName}`) return new Response(Bun.file(archivePath))
+      if (path === `/releases/v${version}/${archiveName}`) return new Response(served.bytes)
       if (path === `/releases/v${version}/${archiveName}.sha256`) {
-        const digest = corruptChecksum ? "0".repeat(64) : checksum
+        const digest = corruptChecksum ? "0".repeat(64) : served.checksum
         return new Response(`${digest}  ${archiveName}\n`)
       }
       return new Response("not found", { status: 404 })
@@ -70,8 +71,10 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified gzip fallback and reject
     const installDirectory = join(tempDirectory, "verified", "bin")
     const installed = await runSetup(undefined, installDirectory, publishedSetup)
     expect(installed.code).toBe(0)
-    expect(installed.stdout).toContain(`Installed fmx ${version}`)
+    expect(installed.stdout).toContain(`Installed fmx ${version} at ${installDirectory}/fmx, with its companion fmx-zmx (${companionBuild}) beside it`)
     expect(await readFile(join(installDirectory, "fmx"), "utf8")).toContain(version)
+    expect(await readFile(join(installDirectory, "fmx-zmx"), "utf8")).toContain(companionBuild)
+    expect(await Bun.file(join(installDirectory, ".fmx-zmx.keep")).exists()).toBe(false)
 
     corruptChecksum = true
     const rejectedDirectory = join(tempDirectory, "rejected", "bin")
@@ -79,6 +82,17 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified gzip fallback and reject
     expect(rejected.code).toBe(1)
     expect(rejected.stderr).toContain("SHA-256 mismatch")
     expect(await Bun.file(join(rejectedDirectory, "fmx")).exists()).toBe(false)
+    expect(await Bun.file(join(rejectedDirectory, "fmx-zmx")).exists()).toBe(false)
+
+    // An archive with no companion is not a release: nothing is placed, not even fmx.
+    corruptChecksum = false
+    archive = "lone"
+    const loneDirectory = join(tempDirectory, "lone", "bin")
+    const refused = await runSetup(baseUrl, loneDirectory)
+    expect(refused.code).toBe(1)
+    expect(refused.stderr).toContain("does not contain an executable fmx-zmx companion")
+    expect(await Bun.file(join(loneDirectory, "fmx")).exists()).toBe(false)
+    expect(await Bun.file(join(loneDirectory, "fmx-zmx")).exists()).toBe(false)
   } finally {
     server.stop(true)
     await rm(tempDirectory, { recursive: true, force: true })
