@@ -186,6 +186,11 @@ test("includes filesystem subagents in the sidebar orientation", async () => {
       ["agent", 2, "· ba9a9f7e16e5ef8c", 1],
       ["subagent", 3, "✓ test-subagent", null],
     ])
+    // The model carries them too, so an agent need not parse the drawing.
+    expect(snapshot.instances[0]?.subagents).toEqual([
+      { session_id: child, label: "test-subagent", state: "done", attention: null, children: [] },
+    ])
+    expect(((await h.control("orient", { caller: 1 })) as Snapshot).you?.subagents).toHaveLength(1)
   } finally {
     await h.close()
   }

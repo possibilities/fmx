@@ -95,6 +95,18 @@ export type InstanceInfo = {
   /** A prompt has been typed in — by launch or by `instance send` — and fx
    * has not yet reported working on it. `instance wait` holds through it. */
   awaiting_work: boolean
+  /** The fx subagents whose control records name this instance's session as
+   * their parent, nested as the sidebar nests them. Not targets: the sidebar
+   * cannot select one either. */
+  subagents: SubagentInfo[]
+}
+
+export type SubagentInfo = {
+  session_id: string
+  label: string
+  state: DisplayState
+  attention: AgentAttention | null
+  children: SubagentInfo[]
 }
 
 export type SidebarRow = {

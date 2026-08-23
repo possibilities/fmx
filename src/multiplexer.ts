@@ -39,6 +39,7 @@ import {
   isRecord,
   type SidebarRow,
   type Snapshot,
+  type SubagentInfo,
   type Surface,
   type Target,
 } from "./control-protocol.ts"
@@ -73,7 +74,7 @@ import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from
 import { SessionList, stateIcon } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import type { SocketFrame } from "./socket-frames.ts"
-import { SubagentObserver } from "./subagents.ts"
+import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
@@ -1696,6 +1697,7 @@ export class Multiplexer {
       attention: record?.attention ?? null,
       active: this.activeInstance() === instance,
       awaiting_work: instance.awaitingWork,
+      subagents: record?.sessionId ? subagentInfos(this.subagents.childrenOf(record.sessionId)) : [],
     }
   }
 
@@ -1837,6 +1839,16 @@ function wrapText(value: string, width: number): string[] {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function subagentInfos(entries: SubagentEntry[]): SubagentInfo[] {
+  return entries.map((entry) => ({
+    session_id: entry.sessionId,
+    label: entry.label,
+    state: entry.state,
+    attention: entry.attention,
+    children: subagentInfos(entry.children),
+  }))
 }
 
 function launchChoices(modelId: string): LaunchChoices {

@@ -111,7 +111,7 @@ fmx control catalog                     # the models and efforts the dialog offe
 ```
 
 `orient` answers with `you` — the caller's own instance: directory, project,
-branch, slug, state, and whether it is the one on screen — alongside every
+branch, slug, state, its subagents, and whether it is the one on screen — alongside every
 instance, the sidebar's rows as they are drawn, and whatever surface is open.
 Reading never marks an instance seen; `focus` does, as clicking its row does.
 Subagents recorded by fx appear as non-selectable status rows nested beneath
