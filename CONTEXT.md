@@ -257,8 +257,9 @@ _Avoid_: selector, handle, address.
 through it: the idle fx reports at startup is not the idle that means finished.
 _Avoid_: busy, pending, queued.
 
-**UI gallery** — the developer-only TUI that browses executable OpenTUI
-stories. Each story mounts fmx's real renderables under deterministic fakes,
-reaches one useful visible state, and asserts it; the gallery keeps the rendered
-frame in memory, while `gallery:check` exercises the same catalog headlessly.
+**UI gallery** — the developer-only TUI that browses fmx's interesting OpenTUI
+components and blocks. Each component has executable states that mount the real
+renderables under deterministic fakes; the selected theme applies to the whole
+gallery independently of the selected component and state. `gallery:check`
+renders and asserts every state under both themes headlessly.
 _Avoid_: Storybook (there is no Storybook runtime), screenshot suite.

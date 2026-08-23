@@ -21,7 +21,6 @@ export type UiStory = {
   title: string
   description: string
   viewport: { cols: number; rows: number }
-  palette: UiGalleryPaletteName
   expectedText: readonly string[]
   arrange(context: UiStoryContext): void | Promise<void>
   verify?(context: UiStoryContext, frame: string): void | Promise<void>
@@ -35,9 +34,14 @@ export type UiStoryContext = {
 }
 
 export type RenderedUiStory = Omit<UiStory, "arrange" | "verify"> & {
+  palette: UiGalleryPaletteName
   frame: CapturedFrame
   text: string
 }
+
+export type UiGalleryStoriesByPalette = Readonly<
+  Record<UiGalleryPaletteName, readonly RenderedUiStory[]>
+>
 
 const ANSI_DARK = [
   "#1b2028",
@@ -82,14 +86,17 @@ export const UI_GALLERY_PALETTES: Readonly<Record<UiGalleryPaletteName, Terminal
   light: terminalPalette(ANSI_LIGHT, "#17201e", "#eef2f1"),
 }
 
-export async function renderUiStory(story: UiStory): Promise<RenderedUiStory> {
+export async function renderUiStory(
+  story: UiStory,
+  paletteName: UiGalleryPaletteName,
+): Promise<RenderedUiStory> {
   const setup = await createTestRenderer({
     width: story.viewport.cols,
     height: story.viewport.rows,
     kittyKeyboard: true,
     exitOnCtrlC: false,
   })
-  const palette = UI_GALLERY_PALETTES[story.palette]
+  const palette = UI_GALLERY_PALETTES[paletteName]
   const canvas = new BoxRenderable(setup.renderer, {
     id: `ui-gallery-canvas-${story.id}`,
     width: "100%",
@@ -123,7 +130,7 @@ export async function renderUiStory(story: UiStory): Promise<RenderedUiStory> {
       title: story.title,
       description: story.description,
       viewport: story.viewport,
-      palette: story.palette,
+      palette: paletteName,
       expectedText: story.expectedText,
       frame: setup.captureSpans(),
       text,
@@ -137,9 +144,12 @@ export async function renderUiStory(story: UiStory): Promise<RenderedUiStory> {
   }
 }
 
-export async function renderUiStories(stories: readonly UiStory[]): Promise<RenderedUiStory[]> {
+export async function renderUiStories(
+  stories: readonly UiStory[],
+  palette: UiGalleryPaletteName,
+): Promise<RenderedUiStory[]> {
   const rendered: RenderedUiStory[] = []
-  for (const story of stories) rendered.push(await renderUiStory(story))
+  for (const story of stories) rendered.push(await renderUiStory(story, palette))
   return rendered
 }
 

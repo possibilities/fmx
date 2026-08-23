@@ -1,14 +1,20 @@
 import { UI_STORIES } from "./stories.ts"
-import { renderUiStories, UI_GALLERY_COMPONENTS, type RenderedUiStory, type UiStory } from "./story.ts"
+import {
+  renderUiStories,
+  UI_GALLERY_COMPONENTS,
+  type UiGalleryStoriesByPalette,
+  type UiStory,
+} from "./story.ts"
 
 export type UiGalleryBuild = {
-  stories: RenderedUiStory[]
+  stories: UiGalleryStoriesByPalette
 }
 
 export async function buildUiGallery(stories: readonly UiStory[] = UI_STORIES): Promise<UiGalleryBuild> {
   validateUiStories(stories)
-  const rendered = await renderUiStories(stories)
-  return { stories: rendered }
+  const dark = await renderUiStories(stories, "dark")
+  const light = await renderUiStories(stories, "light")
+  return { stories: { dark, light } }
 }
 
 export function validateUiStories(stories: readonly UiStory[]): void {

@@ -9,39 +9,64 @@ import {
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
-import { UI_GALLERY_PALETTES, type RenderedUiStory, type UiGalleryComponent } from "./story.ts"
+import {
+  UI_GALLERY_COMPONENTS,
+  UI_GALLERY_PALETTES,
+  type RenderedUiStory,
+  type UiGalleryComponent,
+  type UiGalleryPaletteName,
+  type UiGalleryStoriesByPalette,
+} from "./story.ts"
 
-const RAIL_WIDTH = 34
-const RAIL_MIN_WIDTH = 24
+const RAIL_WIDTH = 30
+const RAIL_MIN_WIDTH = 22
 const PREVIEW_MIN_WIDTH = 30
-const SELECTED_BACKGROUND = "#2a3640"
 
-const FOREGROUND = RGBA.fromIndex(7)
-const DIM = RGBA.fromIndex(8)
-const ACCENT = RGBA.fromIndex(6)
-const SIGNAL = RGBA.fromIndex(3)
+type GalleryTheme = {
+  background: RGBA
+  foreground: RGBA
+  dim: RGBA
+  accent: RGBA
+  signal: RGBA
+  selectedBackground: RGBA
+}
 
 export class UiGalleryApp {
   readonly root: BoxRenderable
 
+  private readonly components: readonly UiGalleryComponent[]
   private readonly rail: BoxRenderable
-  private readonly storyList: ScrollBoxRenderable
-  private readonly storyRows = new Map<string, BoxRenderable>()
-  private readonly storyLabels = new Map<string, TextRenderable>()
+  private readonly identity: TextRenderable
+  private readonly componentList: ScrollBoxRenderable
+  private readonly componentRows = new Map<UiGalleryComponent, BoxRenderable>()
+  private readonly componentLabels = new Map<UiGalleryComponent, TextRenderable>()
+  private readonly hints: TextRenderable
+  private readonly divider: BoxRenderable
+  private readonly preview: BoxRenderable
   private readonly previewHeading: TextRenderable
   private readonly previewDescription: TextRenderable
   private readonly previewScroll: ScrollBoxRenderable
+  private readonly stateByComponent = new Map<UiGalleryComponent, number>()
   private frame: BoxRenderable | null = null
-  private selected = 0
+  private palette: UiGalleryPaletteName = "dark"
+  private selectedComponent = 0
   private closed = false
   private readonly done: Promise<void>
   private resolveDone!: () => void
 
   constructor(
     private readonly renderer: CliRenderer,
-    private readonly stories: readonly RenderedUiStory[],
+    private readonly storiesByPalette: UiGalleryStoriesByPalette,
   ) {
-    if (stories.length === 0) throw new Error("the UI gallery needs at least one story")
+    if (storiesByPalette.dark.length === 0 || storiesByPalette.light.length === 0) {
+      throw new Error("the UI gallery needs at least one state in each theme")
+    }
+    const darkIds = storiesByPalette.dark.map((story) => story.id).join("\0")
+    const lightIds = storiesByPalette.light.map((story) => story.id).join("\0")
+    if (darkIds !== lightIds) throw new Error("the UI gallery themes must contain the same states")
+    this.components = UI_GALLERY_COMPONENTS.filter((component) =>
+      storiesByPalette.dark.some((story) => story.component === component),
+    )
     this.done = new Promise((resolve) => {
       this.resolveDone = resolve
     })
@@ -61,19 +86,15 @@ export class UiGalleryApp {
       paddingLeft: 1,
       paddingRight: 1,
     })
-    const identity = new TextRenderable(renderer, {
+    this.identity = new TextRenderable(renderer, {
       id: "ui-gallery-identity",
       height: 3,
       flexShrink: 0,
       selectable: false,
-      content: new StyledText([
-        textChunk("UI GALLERY", ACCENT, undefined, TextAttributes.BOLD),
-        textChunk(`\n${stories.length} examples`, FOREGROUND),
-        textChunk(` · ${new Set(stories.map((story) => story.component)).size} components`, DIM),
-      ]),
+      content: "",
     })
-    this.storyList = new ScrollBoxRenderable(renderer, {
-      id: "ui-gallery-story-list",
+    this.componentList = new ScrollBoxRenderable(renderer, {
+      id: "ui-gallery-component-list",
       width: "100%",
       flexGrow: 1,
       flexShrink: 1,
@@ -82,34 +103,27 @@ export class UiGalleryApp {
       viewportCulling: true,
       contentOptions: { flexDirection: "column" },
     })
-    const hints = new TextRenderable(renderer, {
+    this.hints = new TextRenderable(renderer, {
       id: "ui-gallery-hints",
-      height: 2,
+      height: 4,
       flexShrink: 0,
       selectable: false,
-      content: new StyledText([
-        textChunk("↑↓", ACCENT, undefined, TextAttributes.BOLD),
-        textChunk(" browse   ", DIM),
-        textChunk("←→", ACCENT, undefined, TextAttributes.BOLD),
-        textChunk(" frame", DIM),
-        textChunk("\npgup/pgdn scroll   q close", DIM),
-      ]),
+      content: "",
     })
-    this.rail.add(identity)
-    this.rail.add(this.storyList)
-    this.rail.add(hints)
-    this.buildStoryList()
+    this.rail.add(this.identity)
+    this.rail.add(this.componentList)
+    this.rail.add(this.hints)
+    this.buildComponentList()
 
-    const divider = new BoxRenderable(renderer, {
+    this.divider = new BoxRenderable(renderer, {
       id: "ui-gallery-divider",
       width: 1,
       height: "100%",
       flexShrink: 0,
       border: ["left"],
       borderStyle: "single",
-      borderColor: DIM,
     })
-    const preview = new BoxRenderable(renderer, {
+    this.preview = new BoxRenderable(renderer, {
       id: "ui-gallery-preview",
       flexGrow: 1,
       flexShrink: 1,
@@ -130,7 +144,6 @@ export class UiGalleryApp {
       height: 2,
       flexShrink: 0,
       selectable: false,
-      fg: DIM,
       content: "",
     })
     this.previewScroll = new ScrollBoxRenderable(renderer, {
@@ -145,20 +158,29 @@ export class UiGalleryApp {
       paddingBottom: 1,
       contentOptions: { flexDirection: "column" },
     })
-    preview.add(this.previewHeading)
-    preview.add(this.previewDescription)
-    preview.add(this.previewScroll)
+    this.preview.add(this.previewHeading)
+    this.preview.add(this.previewDescription)
+    this.preview.add(this.previewScroll)
 
     this.root.add(this.rail)
-    this.root.add(divider)
-    this.root.add(preview)
+    this.root.add(this.divider)
+    this.root.add(this.preview)
     renderer.root.add(this.root)
     renderer.keyInput.on("keypress", this.keypressHandler)
-    this.showStory(0)
+    this.applyTheme()
+    this.showComponent(0)
   }
 
   get activeStoryId(): string {
-    return this.stories[this.selected]!.id
+    return this.activeStory.id
+  }
+
+  get activePalette(): UiGalleryPaletteName {
+    return this.palette
+  }
+
+  get activeComponent(): UiGalleryComponent {
+    return this.components[this.selectedComponent]!
   }
 
   waitUntilDone(): Promise<void> {
@@ -177,6 +199,15 @@ export class UiGalleryApp {
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
+  private get stories(): readonly RenderedUiStory[] {
+    return this.storiesByPalette[this.palette]
+  }
+
+  private get activeStory(): RenderedUiStory {
+    const states = this.statesFor(this.activeComponent)
+    return states[this.stateIndex(this.activeComponent)]!
+  }
+
   private readonly keypressHandler = (key: KeyEvent): void => {
     if (key.name === "escape" || key.name === "q" || (key.ctrl === true && key.name === "c")) {
       this.swallow(key)
@@ -185,30 +216,47 @@ export class UiGalleryApp {
     }
     if (key.name === "down" || key.name === "j") {
       this.swallow(key)
-      this.showStory(this.selected + 1)
+      this.showComponent(this.selectedComponent + 1)
       return
     }
     if (key.name === "up" || key.name === "k") {
       this.swallow(key)
-      this.showStory(this.selected - 1)
+      this.showComponent(this.selectedComponent - 1)
       return
     }
     if (key.name === "home") {
       this.swallow(key)
-      this.showStory(0)
+      this.showComponent(0)
       return
     }
     if (key.name === "end") {
       this.swallow(key)
-      this.showStory(this.stories.length - 1)
+      this.showComponent(this.components.length - 1)
       return
     }
     if (key.name === "left" || key.name === "h") {
       this.swallow(key)
-      this.previewScroll.scrollBy({ x: -4, y: 0 }, "absolute")
+      this.cycleState(-1)
       return
     }
     if (key.name === "right" || key.name === "l") {
+      this.swallow(key)
+      this.cycleState(1)
+      return
+    }
+    if (key.name === "t") {
+      this.swallow(key)
+      this.palette = this.palette === "dark" ? "light" : "dark"
+      this.applyTheme()
+      this.showActiveStory()
+      return
+    }
+    if (key.name === "[") {
+      this.swallow(key)
+      this.previewScroll.scrollBy({ x: -4, y: 0 }, "absolute")
+      return
+    }
+    if (key.name === "]") {
       this.swallow(key)
       this.previewScroll.scrollBy({ x: 4, y: 0 }, "absolute")
       return
@@ -224,72 +272,73 @@ export class UiGalleryApp {
     }
   }
 
-  private buildStoryList(): void {
-    let component: UiGalleryComponent | null = null
-    for (const [index, story] of this.stories.entries()) {
-      if (story.component !== component) {
-        component = story.component
-        this.storyList.add(
-          new TextRenderable(this.renderer, {
-            id: `ui-gallery-group-${slug(component)}`,
-            height: 2,
-            flexShrink: 0,
-            paddingTop: 1,
-            selectable: false,
-            content: new StyledText([textChunk(component.toUpperCase(), SIGNAL, undefined, TextAttributes.BOLD)]),
-          }),
-        )
-      }
+  private buildComponentList(): void {
+    for (const [index, component] of this.components.entries()) {
       const label = new TextRenderable(this.renderer, {
-        id: `ui-gallery-story-label-${story.id}`,
+        id: `ui-gallery-component-label-${slug(component)}`,
         content: "",
         height: 1,
         selectable: false,
       })
       const row = new BoxRenderable(this.renderer, {
-        id: `ui-gallery-story-${story.id}`,
+        id: `ui-gallery-component-${slug(component)}`,
         width: "100%",
         height: 1,
         flexShrink: 0,
         onMouseDown: (event) => {
           event.preventDefault()
           event.stopPropagation()
-          this.showStory(index)
+          this.showComponent(index)
         },
       })
       row.add(label)
-      this.storyLabels.set(story.id, label)
-      this.storyRows.set(story.id, row)
-      this.storyList.add(row)
+      this.componentLabels.set(component, label)
+      this.componentRows.set(component, row)
+      this.componentList.add(row)
     }
   }
 
-  private showStory(index: number): void {
-    const normalized = Math.max(0, Math.min(this.stories.length - 1, index))
-    this.selected = normalized
-    const story = this.stories[normalized]!
-    this.paintStoryList()
-    this.storyList.scrollChildIntoView(`ui-gallery-story-${story.id}`)
-    this.previewScroll.scrollTo({ x: 0, y: 0 })
+  private showComponent(index: number): void {
+    this.selectedComponent = Math.max(0, Math.min(this.components.length - 1, index))
+    const component = this.activeComponent
+    if (!this.stateByComponent.has(component)) this.stateByComponent.set(component, 0)
+    this.paintComponentList()
+    this.componentList.scrollChildIntoView(`ui-gallery-component-${slug(component)}`)
+    this.showActiveStory()
+  }
 
+  private cycleState(offset: number): void {
+    const component = this.activeComponent
+    const states = this.statesFor(component)
+    const next = (this.stateIndex(component) + offset + states.length) % states.length
+    this.stateByComponent.set(component, next)
+    this.showActiveStory()
+  }
+
+  private showActiveStory(): void {
+    const story = this.activeStory
+    const states = this.statesFor(story.component)
+    const theme = galleryTheme(this.palette)
+    this.previewScroll.scrollTo({ x: 0, y: 0 })
     this.previewHeading.content = new StyledText([
-      textChunk(story.title, FOREGROUND, undefined, TextAttributes.BOLD),
-      textChunk(`\n${story.component}`, ACCENT, undefined, TextAttributes.BOLD),
-      textChunk(` · ${story.palette} · ${story.frame.cols}×${story.frame.rows}`, DIM),
+      textChunk(story.component, theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(` · state ${this.stateIndex(story.component) + 1}/${states.length}`, theme.dim),
+      textChunk(`\n${story.title}`, theme.foreground, undefined, TextAttributes.BOLD),
+      textChunk(` · ${story.frame.cols}×${story.frame.rows}`, theme.dim),
     ])
+    this.previewDescription.fg = theme.dim
     this.previewDescription.content = story.description
 
     if (this.frame) {
       this.previewScroll.remove(this.frame)
       this.frame.destroyRecursively()
     }
-    const background = UI_GALLERY_PALETTES[story.palette].defaultBackground ?? "#171c23"
     this.frame = new BoxRenderable(this.renderer, {
       id: "ui-gallery-frame",
       width: story.frame.cols,
       height: story.frame.rows,
       flexShrink: 0,
-      backgroundColor: background,
+      backgroundColor: theme.background,
     })
     this.frame.add(
       new TextRenderable(this.renderer, {
@@ -298,25 +347,66 @@ export class UiGalleryApp {
         height: story.frame.rows,
         flexShrink: 0,
         selectable: true,
-        content: frameText(story),
+        content: frameText(story, theme.foreground),
       }),
     )
     this.previewScroll.add(this.frame)
     this.renderer.requestRender()
   }
 
-  private paintStoryList(): void {
-    for (const [index, story] of this.stories.entries()) {
-      const active = index === this.selected
-      const row = this.storyRows.get(story.id)
-      const label = this.storyLabels.get(story.id)
+  private applyTheme(): void {
+    const theme = galleryTheme(this.palette)
+    this.root.backgroundColor = theme.background
+    this.rail.backgroundColor = theme.background
+    this.componentList.backgroundColor = theme.background
+    this.divider.backgroundColor = theme.background
+    this.divider.borderColor = theme.dim
+    this.preview.backgroundColor = theme.background
+    this.previewScroll.backgroundColor = theme.background
+    this.previewDescription.fg = theme.dim
+    this.identity.content = new StyledText([
+      textChunk("UI GALLERY", theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(`  ${this.palette.toUpperCase()}`, theme.signal, undefined, TextAttributes.BOLD),
+      textChunk(`\n${this.components.length} components`, theme.foreground),
+      textChunk(` · ${this.stories.length} states`, theme.dim),
+    ])
+    this.hints.content = new StyledText([
+      textChunk("↑↓", theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(" component", theme.dim),
+      textChunk("\n←→", theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(" state", theme.dim),
+      textChunk("\npgup/pgdn scroll", theme.dim),
+      textChunk("\n[ ] pan · ", theme.dim),
+      textChunk("t", theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(" theme · q close", theme.dim),
+    ])
+    this.paintComponentList()
+    this.renderer.requestRender()
+  }
+
+  private paintComponentList(): void {
+    const theme = galleryTheme(this.palette)
+    for (const [index, component] of this.components.entries()) {
+      const active = index === this.selectedComponent
+      const row = this.componentRows.get(component)
+      const label = this.componentLabels.get(component)
       if (!row || !label) continue
-      row.backgroundColor = active ? SELECTED_BACKGROUND : undefined
+      const count = this.statesFor(component).length
+      row.backgroundColor = active ? theme.selectedBackground : theme.background
       label.content = new StyledText([
-        textChunk(active ? "▎ " : "  ", active ? ACCENT : DIM, undefined, active ? TextAttributes.BOLD : 0),
-        textChunk(truncate(story.title, Math.max(4, this.railWidth() - 4)), active ? FOREGROUND : DIM),
+        textChunk(active ? "▎ " : "  ", active ? theme.accent : theme.dim, undefined, active ? TextAttributes.BOLD : 0),
+        textChunk(truncate(component, Math.max(4, this.railWidth() - 10)), active ? theme.foreground : theme.dim),
+        textChunk(` · ${count}`, active ? theme.signal : theme.dim),
       ])
     }
+  }
+
+  private statesFor(component: UiGalleryComponent): readonly RenderedUiStory[] {
+    return this.stories.filter((story) => story.component === component)
+  }
+
+  private stateIndex(component: UiGalleryComponent): number {
+    return this.stateByComponent.get(component) ?? 0
   }
 
   private railWidth(): number {
@@ -329,7 +419,7 @@ export class UiGalleryApp {
   }
 }
 
-function frameText(story: RenderedUiStory): StyledText {
+function frameText(story: RenderedUiStory, foreground: RGBA): StyledText {
   const chunks: TextChunk[] = []
   for (const [lineIndex, line] of story.frame.lines.entries()) {
     for (const span of line.spans) {
@@ -339,13 +429,25 @@ function frameText(story: RenderedUiStory): StyledText {
       chunks.push(
         textChunk(
           "\n",
-          FOREGROUND,
+          foreground,
           RGBA.fromHex(UI_GALLERY_PALETTES[story.palette].defaultBackground ?? "#171c23"),
         ),
       )
     }
   }
   return new StyledText(chunks)
+}
+
+function galleryTheme(name: UiGalleryPaletteName): GalleryTheme {
+  const palette = UI_GALLERY_PALETTES[name]
+  return {
+    background: RGBA.fromHex(palette.defaultBackground ?? "#171c23"),
+    foreground: RGBA.fromHex(palette.defaultForeground ?? "#dbe3eb"),
+    dim: RGBA.fromHex(palette.palette[8] ?? "#687384"),
+    accent: RGBA.fromHex(palette.palette[6] ?? "#67c7c2"),
+    signal: RGBA.fromHex(palette.palette[3] ?? "#e5c07b"),
+    selectedBackground: RGBA.fromHex(name === "dark" ? "#2a3640" : "#d5dfde"),
+  }
 }
 
 function textChunk(text: string, foreground: RGBA, background?: RGBA, attributes = 0): TextChunk {

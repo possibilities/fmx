@@ -48,7 +48,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Empty state",
     description: "The chromeless shell before the Home has an Agent.",
     viewport: { cols: 80, rows: 24 },
-    palette: "dark",
     expectedText: ["prefix+c to create agent", "prefix+l to prompt agent"],
     arrange: mountMultiplexer(),
   },
@@ -58,7 +57,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Key reference",
     description: "The help modal over the empty shell, reached through the same control path as the key.",
     viewport: { cols: 80, rows: 24 },
-    palette: "light",
     expectedText: ["keys", "new agent", "toggle tools", "ctrl+b"],
     arrange: mountMultiplexer(async (multiplexer) => {
       await multiplexer.control.handle("keys", { show: true }, NEVER)
@@ -70,7 +68,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Agent start failure",
     description: "A failed direct start leaves no provisional Agent and explains the failure in a modal.",
     viewport: { cols: 88, rows: 24 },
-    palette: "dark",
     expectedText: ["error", "fx did not start", "ENOENT: fx executable was not found"],
     arrange: mountMultiplexer(
       async (_multiplexer, context) => {
@@ -87,7 +84,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Working Agent",
     description: "ANSI output, emphasis, and an established input cursor inside the embedded terminal.",
     viewport: { cols: 76, rows: 20 },
-    palette: "dark",
     expectedText: ["FMX AGENT 1", "Working", "Inspect the restore path", "Read 12 files"],
     arrange(context) {
       const terminal = new FxTerminalRenderable(context.setup.renderer, {
@@ -118,7 +114,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Light host palette",
     description: "The same embedded emulator under a light terminal palette with status colors intact.",
     viewport: { cols: 62, rows: 14 },
-    palette: "light",
     expectedText: ["Review complete", "3 files changed", "Ready for the next instruction"],
     arrange(context) {
       const terminal = new FxTerminalRenderable(context.setup.renderer, {
@@ -145,7 +140,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Status atlas",
     description: "Every Agent state and each blocked attention glyph aligned in one branch.",
     viewport: { cols: 36, rows: 15 },
-    palette: "dark",
     expectedText: ["? waiting-for-answer", "↻ recovering-transport", "◐ implement-gallery", "✓ review-complete", "○ available", "· starting"],
     arrange(context) {
       mountSessionList(context, [
@@ -165,7 +159,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Projects, branches, and Subagents",
     description: "The active path, recursive Subagent rows, and an untracked Agent in a second project.",
     viewport: { cols: 42, rows: 16 },
-    palette: "light",
     expectedText: ["fmx", "feature/ui-gallery", "coordinate-the-review", "reviewer", "test-reader", "(untracked)"],
     arrange(context) {
       mountSessionList(context, [
@@ -202,7 +195,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Narrow tray",
     description: "Long project, branch, and Slug values truncate only at their right edge.",
     viewport: { cols: 20, rows: 8 },
-    palette: "dark",
     expectedText: ["agentbrain-worktree", "feature/componen…", "◐ gallery-with…"],
     arrange(context) {
       mountSessionList(
@@ -226,7 +218,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "New launch",
     description: "The default launch dialog opens on the Prompt editor and the most-used project.",
     viewport: { cols: 88, rows: 26 },
-    palette: "dark",
     expectedText: ["launch", "what should the agent do?", "~/code/fmx", "worktree  no", "gpt-5.6-sol", "effort    high"],
     arrange(context) {
       mountLaunchDialog(context)
@@ -238,7 +229,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Multiline Worktree launch",
     description: "A prepared draft with a multiline Launch prompt, Worktree enabled, and an explicit launch level.",
     viewport: { cols: 92, rows: 28 },
-    palette: "light",
     expectedText: ["Build the gallery", "Keep every state deterministic", "worktree  yes", "gpt-5.6-terra", "effort    xhigh"],
     arrange(context) {
       const dialog = mountLaunchDialog(context, {
@@ -257,7 +247,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Unavailable Worktree",
     description: "The Worktree row explains why it cannot be enabled for an untracked project.",
     viewport: { cols: 84, rows: 24 },
-    palette: "dark",
     expectedText: ["~/code/zmax", "unavailable — not a repository"],
     arrange(context) {
       const dialog = mountLaunchDialog(context, { directory: PROJECTS[4]!.directory })
@@ -270,7 +259,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Filtered project picker",
     description: "The project chooser filters by subsequence and keeps the best match highlighted.",
     viewport: { cols: 88, rows: 26 },
-    palette: "dark",
     expectedText: ["project", "> api", "~/code/agent-api"],
     async arrange(context) {
       mountLaunchDialog(context)
@@ -285,7 +273,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Model catalog",
     description: "The model picker presents each local model with the efforts it supports.",
     viewport: { cols: 92, rows: 26 },
-    palette: "light",
     expectedText: ["model", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "low/medium/high/xhigh"],
     arrange(context) {
       mountLaunchDialog(context)
@@ -301,7 +288,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Empty Prompt editor",
     description: "The real line editor at rest, including its instructional placeholder and cursor.",
     viewport: { cols: 58, rows: 10 },
-    palette: "dark",
     expectedText: ["what should the agent do?"],
     async arrange(context) {
       await mountPromptEditor(context, "")
@@ -313,7 +299,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Wrapped multiline Prompt",
     description: "A long Launch prompt wraps and grows while retaining the editor's capped viewport.",
     viewport: { cols: 54, rows: 14 },
-    palette: "light",
     expectedText: ["Generate a gallery of every", "Include narrow widths, failures,", "light palettes."],
     async arrange(context) {
       await mountPromptEditor(
@@ -329,7 +314,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "No active Agent",
     description: "Configured tools are visible, but the panel waits for an active Agent context.",
     viewport: { cols: 54, rows: 16 },
-    palette: "dark",
     expectedText: ["Diff", "Tests", "no active agent"],
     async arrange(context) {
       await mountToolPanel(context, new GalleryPanelSessions("ready"), false)
@@ -341,7 +325,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Tool loading",
     description: "The selected tool owns the body while its terminal transport is opening.",
     viewport: { cols: 54, rows: 16 },
-    palette: "dark",
     expectedText: ["Diff", "Tests", "loading Diff…"],
     async arrange(context) {
       await mountToolPanel(context, new GalleryPanelSessions("loading"))
@@ -353,7 +336,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Running test tool",
     description: "A live tool terminal beneath the link rail, with the selected link underlined.",
     viewport: { cols: 66, rows: 18 },
-    palette: "light",
     expectedText: ["Diff", "Tests", "bun test v1.4.0", "214 pass", "Watching for changes"],
     async arrange(context) {
       await mountToolPanel(
@@ -373,7 +355,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Tool exited",
     description: "An ended tool explains its status and the exact action that restarts it.",
     viewport: { cols: 72, rows: 14 },
-    palette: "dark",
     expectedText: ["Diff exited (code 7); select its link to restart"],
     async arrange(context) {
       const sessions = new GalleryPanelSessions("ready", "diff output\r\n")
@@ -387,7 +368,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Tool disconnected",
     description: "A lost transport is distinguished from a tool process ending and offers a retry.",
     viewport: { cols: 78, rows: 14 },
-    palette: "dark",
     expectedText: ["Diff disconnected: socket closed during restore; select its link to retry"],
     async arrange(context) {
       const sessions = new GalleryPanelSessions("ready", "diff output\r\n")
@@ -401,7 +381,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Tool start failure",
     description: "A command failure remains inside the panel with a direct retry affordance.",
     viewport: { cols: 72, rows: 14 },
-    palette: "light",
     expectedText: ["could not start Diff: command not found"],
     async arrange(context) {
       await mountToolPanel(context, new GalleryPanelSessions("failed"))
@@ -413,7 +392,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Empty frame tail",
     description: "The diagnostic surface identifies its Agent socket and keeps clear visible before frames arrive.",
     viewport: { cols: 52, rows: 14 },
-    palette: "dark",
     expectedText: ["agent socket · /tmp/fmx-ui-gallery.sock", "[clear]"],
     arrange(context) {
       mountDebugPanel(context)
@@ -425,7 +403,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Decoded and malformed frames",
     description: "Recent Agent-socket frames retain their headers, indented payloads, and malformed distinction.",
     viewport: { cols: 58, rows: 30 },
-    palette: "light",
     expectedText: ["\"method\": \"pane.report_agent\"", "\"state\": \"working\"", "p_gallery pane.rename", "malformed", "{not-json"],
     arrange(context) {
       const panel = mountDebugPanel(context)
@@ -453,7 +430,6 @@ export const UI_STORIES: readonly UiStory[] = [
     title: "Narrow lifecycle notice",
     description: "A long lifecycle notice truncates inside the safe horizontal inset.",
     viewport: { cols: 34, rows: 10 },
-    palette: "dark",
     expectedText: ["fmx / feature/ui-gallery / …"],
     arrange(context) {
       mountToast(context, "fmx / feature/ui-gallery / coordinate-the-review started", "success")
@@ -586,7 +562,6 @@ function toastStory(tone: ToastTone): UiStory {
     title: `${tone[0]!.toUpperCase()}${tone.slice(1)} notice`,
     description: `${tone} lifecycle tone using colors derived from the host palette.`,
     viewport: { cols: 62, rows: 12 },
-    palette: tone === "neutral" ? "light" : "dark",
     expectedText: [content],
     arrange(context) {
       mountToast(context, content, tone, tone === "neutral" ? ["steady-moon"] : [])
