@@ -7,6 +7,7 @@ import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
+const FAILING_FX = fileURLToPath(new URL("./fixtures/failing-fx.sh", import.meta.url))
 
 test("reports an fx spawn failure after removing its provisional instance", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
@@ -99,6 +100,67 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
     setup.mockInput.pressKey("c", { ctrl: true })
     await within(multiplexer.waitUntilDone(), 2_000)
     expect(done).toBe(true)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("toasts successful Instance starts and natural exits", async () => {
+  const setup = await createTestRenderer({
+    width: 80,
+    height: 24,
+    kittyKeyboard: true,
+    exitOnCtrlC: false,
+  })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    toastDurationMs: 30,
+  })
+
+  try {
+    multiplexer.start()
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("c")
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined, 2_000)
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("agent 1 started")
+
+    await Bun.sleep(40)
+    const terminal = setup.renderer.root.findDescendantById("fx-1")
+    expect(terminal).toBeInstanceOf(FxTerminalRenderable)
+    if (!(terminal instanceof FxTerminalRenderable)) return
+    terminal.onData?.(Uint8Array.of(3, 3), "input")
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
+    await setup.renderOnce()
+
+    expect(setup.captureCharFrame()).toContain("agent 1 exited")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("includes a nonzero exit code in the queued Toast", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: FAILING_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    toastDurationMs: 30,
+  })
+
+  try {
+    multiplexer.start()
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("c")
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("agent 1 started")
+
+    await Bun.sleep(40)
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("agent 1 exited · code 7")
   } finally {
     await multiplexer.shutdown()
   }

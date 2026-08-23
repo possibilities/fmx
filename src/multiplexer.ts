@@ -77,6 +77,7 @@ import type { SocketFrame } from "./socket-frames.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
+import { Toast } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
 
 /** The sidebar the embedded terminal sits beside; exported so tests can
@@ -147,6 +148,8 @@ type MultiplexerOptions = {
   slug?: SlugSettings
   /** Where `fmx control <command>` reaches this fmx; handed to every instance. */
   controlSocketPath?: string
+  /** How long each lifecycle Toast remains; overridden only by renderer tests. */
+  toastDurationMs?: number
 }
 
 /** Default states `instance wait` waits for: any that needs someone. */
@@ -431,6 +434,7 @@ export class Multiplexer {
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
+  private readonly toast: Toast
   private readonly keybindings: Keybindings
   private readonly instances: FxInstance[] = []
   private activeIndex = -1
@@ -617,6 +621,8 @@ export class Multiplexer {
     this.modalBackdrop.add(this.modal)
     this.applyModalPalette(this.hostPalette)
 
+    this.toast = new Toast(renderer, { durationMs: options.toastDurationMs })
+
     this.projectLaunches = new Map(Object.entries(options.initialProjectLaunches ?? {}))
     this.launchDialog = new LaunchDialog(renderer, {
       onLaunch: (request) => void this.startLaunch(request),
@@ -628,6 +634,7 @@ export class Multiplexer {
     })
 
     this.renderer.root.add(this.stage)
+    this.renderer.root.add(this.toast.root)
     this.renderer.root.add(this.modalBackdrop)
     this.renderer.root.add(this.launchDialog.root)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
@@ -681,6 +688,7 @@ export class Multiplexer {
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const instance of this.instances) instance.destroy()
+      this.toast.destroy()
     } finally {
       this.instances.length = 0
       this.renderer.destroy()
@@ -716,7 +724,7 @@ export class Multiplexer {
         onTitleChange: (candidate) => {
           if (this.activeInstance() === candidate) this.refreshTerminalTitle()
         },
-        onExit: (candidate) => this.handleInstanceExit(candidate),
+        onExit: (candidate, exitCode) => this.handleInstanceExit(candidate, exitCode),
       },
     )
     instance.setPendingPrompt(prompt)
@@ -729,6 +737,7 @@ export class Multiplexer {
     this.refreshSessionList()
     try {
       instance.start()
+      this.toast.show(`agent ${instance.id} started`, "success")
     } catch (error) {
       this.removeInstance(instance)
       throw error
@@ -736,8 +745,12 @@ export class Multiplexer {
     return instance
   }
 
-  private handleInstanceExit(instance: FxInstance): void {
+  private handleInstanceExit(instance: FxInstance, exitCode: number): void {
     if (this.shuttingDown) return
+    this.toast.show(
+      exitCode === 0 ? `agent ${instance.id} exited` : `agent ${instance.id} exited · code ${exitCode}`,
+      exitCode === 0 ? "neutral" : "error",
+    )
     this.removeInstance(instance)
   }
 
@@ -966,6 +979,7 @@ export class Multiplexer {
     this.applyDebugPanelWidth()
     this.applySidebarWidth(requestedSidebarWidth)
     this.launchDialog.layout()
+    this.toast.layout()
   }
 
   private applyDebugPanelWidth(): void {
@@ -993,6 +1007,7 @@ export class Multiplexer {
     this.hostPalette = colors
     this.applyModalPalette(colors)
     this.applyDividerPalette(colors)
+    this.toast.applyPalette(colors)
     this.refreshEmptyState()
     const themeMode = this.renderer.themeMode
     for (const instance of this.instances) instance.updateHostPalette(colors, themeMode)
