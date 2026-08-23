@@ -8,6 +8,8 @@
     "fmx": "./src/index.ts"
   },
   "scripts": {
+    "gallery": "bun ui-gallery/cli.ts",
+    "gallery:check": "bun ui-gallery/cli.ts --check",
     "release:build": "scripts/build-release.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test",

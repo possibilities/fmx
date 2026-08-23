@@ -231,8 +231,16 @@ bun install --frozen-lockfile
 bun link  # ~/.bun/bin/fmx runs this checkout's src/index.ts
 bun test
 bun run typecheck
+bun run gallery        # browse every UI example in an interactive TUI
+bun run gallery:check  # render and assert the same catalog headlessly
 bun run test:pty  # requires a host that permits PTY allocation, and the companion
 ```
+
+The UI gallery is an executable catalog of fmx's OpenTUI surfaces. Its left
+column groups examples by component; up/down chooses an example, left/right
+and page up/page down move around a frame larger than the available preview,
+and `q` closes it. Stories use deterministic transports and palettes, so the
+interactive gallery and the headless check exercise the same visible states.
 
 Running fmx from a checkout needs the companion daemon, which a release
 bundles as `fmx-zmx`. A linked checkout finds it on `PATH`:
