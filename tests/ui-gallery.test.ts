@@ -30,6 +30,18 @@ test(
       )
       expect(built.stories[palette].every((story) => story.palette === palette)).toBe(true)
       expect(built.stories[palette].every((story) => story.frame.cols > 0 && story.frame.rows > 0)).toBe(true)
+
+      const multiplexer = new Map(
+        built.stories[palette]
+          .filter((story) => story.component === "Multiplexer")
+          .map((story) => [story.id, story.text.split("\n")]),
+      )
+      expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("prefix+c to create agent")
+      expect(multiplexer.get("multiplexer-empty")?.[12]).toContain("prefix+l to prompt agent")
+      expect(multiplexer.get("multiplexer-working")?.[0]).toContain("Working on the UI gallery")
+      expect(multiplexer.get("multiplexer-working")?.[23]).toContain("│")
+      expect(multiplexer.get("multiplexer-tools")?.[0]).toContain("Diff  Tests")
+      expect(multiplexer.get("multiplexer-tools")?.[23]).toContain("│")
     }
 
     const setup = await createTestRenderer({ width: 112, height: 34, kittyKeyboard: true, exitOnCtrlC: false })

@@ -74,8 +74,13 @@ export class UiStorySession {
       exitOnCtrlC: false,
     })
     const palette = UI_GALLERY_PALETTES[paletteName]
+    // Some stories mount root-owned surfaces beside this background. Keep it
+    // out of root flow so both still measure against the full viewport.
     const canvas = new BoxRenderable(setup.renderer, {
       id: `ui-gallery-canvas-${story.id}`,
+      position: "absolute",
+      top: 0,
+      left: 0,
       width: "100%",
       height: "100%",
       backgroundColor: palette.defaultBackground ?? "#171c23",
