@@ -22,6 +22,7 @@ import { Multiplexer } from "./multiplexer.ts"
 import { expandTilde } from "./projects.ts"
 import { loadState, saveState, type PersistedState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
+import { CompanionPanelSessions } from "./panel-session.ts"
 import { CompanionCommand } from "./zmx-command.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
@@ -107,6 +108,7 @@ async function main(): Promise<void> {
   const agentSocket = new AgentSocket({ homeId: home })
   let controlSocket: ControlSocket | null = null
   let transport: CompanionTransportFactory | null = null
+  let panelSessions: CompanionPanelSessions | null = null
   let manifest: InstanceManifest | null = null
 
   try {
@@ -128,6 +130,21 @@ async function main(): Promise<void> {
     manifest = await InstanceManifest.open(manifestPath(), home)
     const survivors = await reconcileAtStartup(manifest, companion)
     transport = new CompanionTransportFactory(companion, home)
+    const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
+    panelSessions = new CompanionPanelSessions(
+      companion,
+      home,
+      controlSocketPath,
+      loadedConfig.panels,
+    )
+    try {
+      const outcome = await panelSessions.reconcile(manifest.entries.map((entry) => entry.instanceId))
+      if (outcome.unresolved.length > 0) {
+        process.stderr.write(`fmx: ${outcome.unresolved.length} Tool panel session(s) unreachable; left for the next start\n`)
+      }
+    } catch (error) {
+      process.stderr.write(`fmx: could not reconcile Tool panel sessions: ${errorMessage(error)}\n`)
+    }
     // Constructing the renderer starts its input parser but does not expose the
     // alternate screen. That gives a responsive host one frame to answer the
     // palette query before any fmx surface can be painted.
@@ -171,10 +188,12 @@ async function main(): Promise<void> {
       survivors,
       agentSocket,
       debugPanel,
+      panels: loadedConfig.panels,
+      panelSessions,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
       slug: loadedConfig.slug,
-      controlSocketPath: ControlSocket.pathFor(agentSocket.path),
+      controlSocketPath,
       initialSidebarWidth: persistedState.sidebarWidth,
       initialSidebarHidden: persistedState.sidebarHidden,
       initialActiveInstanceId: persistedState.activeInstanceId,
@@ -192,6 +211,21 @@ async function main(): Promise<void> {
       onSidebarHiddenChange: (hidden) => {
         if (hidden) persistedState.sidebarHidden = true
         else delete persistedState.sidebarHidden
+        persistState()
+      },
+      initialPanelWidth: persistedState.panelWidth,
+      onPanelWidthChange: (width) => {
+        persistedState.panelWidth = width
+        persistState()
+      },
+      initialPanelVisible: persistedState.panelVisible,
+      onPanelVisibleChange: (visible) => {
+        persistedState.panelVisible = visible
+        persistState()
+      },
+      initialPanelId: persistedState.activePanelId,
+      onPanelIdChange: (id) => {
+        persistedState.activePanelId = id
         persistState()
       },
       onActiveInstanceChange: (instanceId) => {
@@ -247,6 +281,7 @@ async function main(): Promise<void> {
     // Nothing the Companion is still being asked about is waited for; what
     // is not consumed is the next start's. The Manifest's last write is.
     transport?.close()
+    panelSessions?.close()
     await manifest?.settled()
     await stateSave
     controlSocket?.close()

@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import { buildHostPaletteSequence } from "./host-palette.ts"
 
-type FxTerminalOptions = Omit<EmbeddedTerminalOptions, "selectable">
+type FmxTerminalOptions = Omit<EmbeddedTerminalOptions, "selectable">
 
 // fx requests Kitty's disambiguate flag and no other progressive-enhancement
 // flags. The host terminal must use the same mode so raw key reports can pass
@@ -24,27 +24,21 @@ export const FX_KEYBOARD_PROTOCOL = {
 } satisfies KittyKeyboardOptions
 
 /**
- * Compose terminal-style selection with fx mouse handling:
+ * Compose terminal-style selection with an embedded child's mouse handling:
  *
  * - without child mouse reporting, OpenTUI owns an ordinary drag;
- * - with child mouse reporting, fx owns the click and drag exclusively;
+ * - with child mouse reporting, the child owns the click and drag exclusively;
  * - the outer terminal can still reserve Shift-drag as its native override.
  *
  * OpenTUI starts selection before its embedded terminal tries to encode the
  * mouse press. A prevented press means the native encoder produced a child
  * mouse report, so clear that provisional selection in the same event turn.
  */
-export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
-  // A fresh emulator reports a visible cursor at the origin, and fmx focuses a
-  // new instance before fx has drawn anything. Control-only startup output can
-  // leave that provisional cursor untouched, so bytes arriving are not proof
-  // that fx owns its position. Keep it concealed until the emulator reports a
-  // visible cursor away from the origin; from then on its state is truth.
-  private cursorPositionEstablished = false
+export class FmxTerminalRenderable extends EmbeddedTerminalRenderable {
   private selectionGesture: Selection | null = null
   private selectionActivated = false
 
-  constructor(renderer: CliRenderer, options: FxTerminalOptions) {
+  constructor(renderer: CliRenderer, options: FmxTerminalOptions) {
     const onMouseDown = options.onMouseDown
     super(renderer, {
       ...options,
@@ -88,6 +82,22 @@ export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
     return super.onSelectionChanged(selection)
   }
 
+  public applyHostPalette(colors: TerminalColors): boolean {
+    const sequence = buildHostPaletteSequence(colors)
+    if (!sequence) return false
+    this.write(sequence)
+    return true
+  }
+}
+
+/** fx alone shares the host's exact Kitty keyboard flags, so its reports can
+ * pass through without being re-encoded by the embedded terminal emulator. */
+export class FxTerminalRenderable extends FmxTerminalRenderable {
+  // A fresh emulator reports a visible cursor at the origin, and fmx focuses a
+  // new Instance before fx has drawn anything. Control-only startup output can
+  // leave that provisional cursor untouched, so conceal it until fx places it.
+  private cursorPositionEstablished = false
+
   protected override renderSelf(buffer: OptimizedBuffer): void {
     super.renderSelf(buffer)
     if (!this.focused || this.cursorPositionEstablished) return
@@ -97,13 +107,6 @@ export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
       return
     }
     this._ctx.setCursorPosition(0, 0, false)
-  }
-
-  public applyHostPalette(colors: TerminalColors): boolean {
-    const sequence = buildHostPaletteSequence(colors)
-    if (!sequence) return false
-    this.write(sequence)
-    return true
   }
 
   public override encodeKey(key: KeyEvent): Uint8Array {

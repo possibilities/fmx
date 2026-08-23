@@ -8,11 +8,12 @@ import {
   resolveKeybindings,
 } from "../src/keybindings.ts"
 
-const key = (overrides: Partial<KeyEvent> = {}): KeyEvent =>
-  ({
-    name: "r",
-    sequence: "r",
-    raw: "r",
+const key = (overrides: Partial<KeyEvent> = {}): KeyEvent => {
+  const name = overrides.name ?? "r"
+  return {
+    name,
+    sequence: overrides.sequence ?? name,
+    raw: overrides.raw ?? name,
     shift: false,
     ctrl: false,
     meta: false,
@@ -20,7 +21,8 @@ const key = (overrides: Partial<KeyEvent> = {}): KeyEvent =>
     super: false,
     hyper: false,
     ...overrides,
-  }) as KeyEvent
+  } as KeyEvent
+}
 
 describe("keybindings", () => {
   test("provides default bindings for every supported action", () => {
@@ -31,8 +33,13 @@ describe("keybindings", () => {
     expect(keybindings.new_tab.map((binding) => binding.label)).toEqual(["prefix+c"])
     expect(keybindings.launch.map((binding) => binding.label)).toEqual(["prefix+l"])
     expect(keybindings.toggle_sidebar.map((binding) => binding.label)).toEqual(["prefix+b"])
+    expect(keybindings.toggle_panel.map((binding) => binding.label)).toEqual(["prefix+r"])
+    expect(keybindings.focus_panel.map((binding) => binding.label)).toEqual(["prefix+o"])
+    expect(keybindings.previous_panel.map((binding) => binding.label)).toEqual(["prefix+["])
+    expect(keybindings.next_panel.map((binding) => binding.label)).toEqual(["prefix+]"])
     expect(actionForKey(keybindings, key({ name: "d" }), "prefix")).toEqual({ name: "detach" })
     expect(actionForKey(keybindings, key({ name: "b" }), "prefix")).toEqual({ name: "toggle_sidebar" })
+    expect(actionForKey(keybindings, key({ name: "r" }), "prefix")).toEqual({ name: "toggle_panel" })
   })
 
   test("resolves the launch action from its own binding", () => {

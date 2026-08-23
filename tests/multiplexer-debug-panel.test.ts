@@ -59,7 +59,7 @@ test("claims the right third of the screen when enabled", async () => {
   try {
     await setup.renderOnce()
     const panel = find("fmx-debug-panel")!
-    const divider = find("fmx-debug-divider")!
+    const divider = find("fmx-tool-panel-divider")!
     const content = find("fmx-content")!
 
     expect(panel.width).toBe(30)

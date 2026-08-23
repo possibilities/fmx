@@ -1,17 +1,13 @@
 import type { ManifestEntry } from "./instance-manifest.ts"
 
 /**
- * The terminal seam: what an Instance's renderer needs from whatever holds
- * the fx process and its PTY, and nothing about how it is held. Bytes go in
- * and out, the size follows the terminal, and the two ways it ends are
- * told apart — fx ending, with a status, against the transport itself
- * ending, which says nothing about fx at all.
- *
- * One implementation ships: the Companion's, in `companion-transport.ts`.
- * The tests keep a Bun PTY behind the same seam so the renderer's behaviour
- * can be exercised without a Companion on the machine.
+ * The terminal seam shared by an Instance and a Tool panel runtime: bytes in
+ * and out, size, and the distinction between the child ending and only its
+ * connection ending. How the child is held belongs to the lifecycle above
+ * this seam. Instances still ship exactly one factory — the Companion's —
+ * while a non-persistent configured tool may deliberately own a local PTY.
  */
-export interface InstanceTransport {
+export interface TerminalTransport {
   /**
    * Wire the consumer. Whatever arrived before this call is delivered now,
    * in order, so a transport that was attached before its Instance was
@@ -20,9 +16,13 @@ export interface InstanceTransport {
   bind(handlers: TransportHandlers): void
   write(bytes: Uint8Array): void
   resize(size: TerminalSize): void
-  /** Stop watching. fx keeps running; nothing is sent to it. */
+  /** Stop watching. A persistent owner keeps the child running; a local owner may end it. */
   detach(): void
 }
+
+/** The terminal transport used specifically for an Instance. Its production
+ * factory remains CompanionTransportFactory. */
+export type InstanceTransport = TerminalTransport
 
 export type TransportHandlers = {
   /** Terminal bytes from fx, restored or live. */

@@ -21,7 +21,12 @@ import { AgentRegistry, type DisplayState, displayStateFor, shortSessionId } fro
 import type { AgentSocket } from "./agent-socket.ts"
 import { VERSION } from "./cli.ts"
 import { CODEX_MODELS, codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
-import { DEFAULT_WORKTREE_ROOT, defaultSlugSettings, type SlugSettings } from "./config.ts"
+import {
+  DEFAULT_WORKTREE_ROOT,
+  defaultSlugSettings,
+  type PanelDefinition,
+  type SlugSettings,
+} from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
@@ -30,6 +35,7 @@ import {
   type CatalogInfo,
   type KeysInfo,
   type LaunchChoices,
+  type PanelInfo,
   optionalBoolean,
   optionalInteger,
   optionalString,
@@ -45,7 +51,7 @@ import {
 } from "./control-protocol.ts"
 import { afterControlReply, type ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
-import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
+import { debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } from "./fx-environment.ts"
 import type { InstanceManifest, ManifestEntry } from "./instance-manifest.ts"
 import {
@@ -95,12 +101,16 @@ import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { Toast } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
+import type { PanelSessionController } from "./panel-session.ts"
+import { ToolPanel } from "./tool-panel.ts"
 
 /** The sidebar the embedded terminal sits beside; exported so tests can
  * address the terminal by its real screen column rather than a guess. */
 export const SIDEBAR_DEFAULT_WIDTH = 26
 const SIDEBAR_MIN_WIDTH = 16
 const SIDEBAR_MAX_SCREEN_FRACTION = 1 / 3
+const TOOL_PANEL_MIN_WIDTH = 16
+const TOOL_PANEL_MAX_SCREEN_FRACTION = 1 / 3
 // Blending the background slightly toward the foreground keeps the divider a
 // faint hairline in any theme; a full palette gray reads visibly heavier.
 const DIVIDER_BLEND = 0.2
@@ -154,6 +164,17 @@ type MultiplexerOptions = {
   survivors?: readonly ManifestEntry[]
   agentSocket?: AgentSocket | null
   debugPanel?: boolean
+  /** Ordered configured tools available in the active Instance's Tool panel. */
+  panels?: readonly PanelDefinition[]
+  /** Owns configured tool processes and their terminal transports. */
+  panelSessions?: PanelSessionController | null
+  initialPanelWidth?: number
+  onPanelWidthChange?: (width: number) => void
+  /** Undefined means the normal default: hidden, except for the opt-in legacy diagnostic. */
+  initialPanelVisible?: boolean
+  onPanelVisibleChange?: (visible: boolean) => void
+  initialPanelId?: string
+  onPanelIdChange?: (id: string) => void
   initialSidebarWidth?: number
   onSidebarWidthChange?: (width: number) => void
   initialSidebarHidden?: boolean
@@ -202,6 +223,7 @@ type InstanceEvents = {
   onExit: (instance: FxInstance, exit: InstanceExit) => void
   /** The transport went away under a running fx; nothing is known until asked. */
   onLost: (instance: FxInstance, error: Error) => void
+  onFocus: (instance: FxInstance) => void
 }
 
 /** RIS. Everything — screen, scrollback, modes — so a restore lands on nothing. */
@@ -269,6 +291,7 @@ class FxInstance {
       maxScrollback: MAX_SCROLLBACK_BYTES,
       onData: (data, source) => this.writeInput(data, source),
       onTerminalResize: (cols, rows) => this.resizePty(cols, rows),
+      onMouseDown: () => this.events.onFocus(this),
     })
     if (hostPalette) this.terminal.applyHostPalette(hostPalette)
   }
@@ -454,8 +477,8 @@ export class Multiplexer {
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
   private readonly emptyState: TextRenderable
-  private readonly debugDivider: BoxRenderable | null = null
-  private readonly debugPanel: DebugPanel | null = null
+  private readonly panelDivider: BoxRenderable | null = null
+  private readonly toolPanel: ToolPanel | null = null
   private readonly agentSocket: AgentSocket | null
   private readonly registry = new AgentRegistry()
   private readonly sessionList: SessionList
@@ -472,6 +495,11 @@ export class Multiplexer {
   private sidebarHidden = false
   private dividerDragging = false
   private dragStartWidth = SIDEBAR_DEFAULT_WIDTH
+  private panelWidth = 1
+  private panelVisible = false
+  private panelDividerDragging = false
+  private panelDragStartWidth = 1
+  private focusOwner: "instance" | "panel" = "instance"
   private readonly launchDialog: LaunchDialog
   private readonly projectLaunches: Map<string, number>
   private readonly modalBackdrop: BoxRenderable
@@ -516,7 +544,7 @@ export class Multiplexer {
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
   private readonly pasteHandler = () => this.launchDialog.handlePaste()
   private readonly resizeHandler = () => this.applyLayout()
-  private readonly frameHandler = (frame: SocketFrame) => this.debugPanel?.append(frame)
+  private readonly frameHandler = (frame: SocketFrame) => this.toolPanel?.appendDebug(frame)
   private readonly registryHandler = (frame: SocketFrame) => {
     this.registry.apply(frame)
     // A session id is the first thing fx reports that naming can act on, and
@@ -560,6 +588,7 @@ export class Multiplexer {
     this.keybindings = options.keybindings
     this.sidebarWidth = options.initialSidebarWidth ?? SIDEBAR_DEFAULT_WIDTH
     this.sidebarHidden = options.initialSidebarHidden ?? false
+    this.panelWidth = options.initialPanelWidth ?? debugPanelWidth(renderer.width)
     this.slugNamer = new SlugNamer({
       fxPath: options.fxPath,
       settings: options.slug ?? defaultSlugSettings(),
@@ -624,19 +653,46 @@ export class Multiplexer {
     this.agentSocket = options.agentSocket ?? null
     this.sessionList = new SessionList(renderer, (instanceId) => this.selectInstance(instanceId))
     this.sidebar.add(this.sessionList.root)
-    if (options.debugPanel && this.agentSocket) {
-      this.debugDivider = new BoxRenderable(renderer, {
-        id: "fmx-debug-divider",
+    const panelDefinitions = options.panels ?? []
+    const debugSocketPath = options.debugPanel && this.agentSocket ? this.agentSocket.path : null
+    if (panelDefinitions.length > 0 && !options.panelSessions) {
+      throw new Error("configured Tool panels need a session controller")
+    }
+    if (panelDefinitions.length > 0 || debugSocketPath) {
+      this.panelDivider = new BoxRenderable(renderer, {
+        id: "fmx-tool-panel-divider",
         width: 1,
         height: "100%",
         flexShrink: 0,
         border: ["left"],
         borderStyle: "single",
         borderColor: DIVIDER_UNREVEALED_COLOR,
+        visible: false,
+        onMouseDown: (event) => this.beginPanelDividerDrag(event),
+        onMouseDrag: (event) => this.continuePanelDividerDrag(event),
+        onMouseUp: () => this.endPanelDividerDrag(),
+        onMouseDragEnd: () => this.endPanelDividerDrag(),
       })
-      this.debugPanel = new DebugPanel(renderer, this.agentSocket.path)
-      this.stage.add(this.debugDivider)
-      this.stage.add(this.debugPanel.root)
+      this.toolPanel = new ToolPanel(renderer, {
+        definitions: panelDefinitions,
+        sessions: options.panelSessions ?? null,
+        debugSocketPath,
+        initialSelectedId: options.initialPanelId,
+        onSelectedChange: (id) => {
+          options.onPanelIdChange?.(id)
+          if (this.focusOwner === "panel" && !this.toolPanel?.focusable) this.setFocusOwner("instance")
+        },
+        onFocusRequest: () => this.setFocusOwner("panel"),
+        onFocusLost: () => {
+          if (this.focusOwner === "panel") this.setFocusOwner("instance")
+        },
+      })
+      // FMX_DEBUG_PANEL used to open its fixed right column immediately. Keep
+      // that explicit diagnostic request visible unless state says otherwise;
+      // configured terminal tools alone start hidden.
+      this.panelVisible = options.initialPanelVisible ?? Boolean(debugSocketPath)
+      this.stage.add(this.panelDivider)
+      this.stage.add(this.toolPanel.root)
     }
 
     this.modalBackdrop = new BoxRenderable(renderer, {
@@ -687,7 +743,7 @@ export class Multiplexer {
     this.launchDialog = new LaunchDialog(renderer, {
       onLaunch: (request) => void this.startLaunch(request),
       onClose: (outcome) => {
-        if (!this.shuttingDown) this.activeInstance()?.terminal.focus()
+        if (!this.shuttingDown) this.restoreFocus()
         this.closeDraft(outcome)
       },
       onProjectChange: (directory) => this.answerWorktreeAvailability(directory),
@@ -703,8 +759,9 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
-    if (this.debugPanel) this.agentSocket?.addFrameListener(this.frameHandler)
+    if (debugSocketPath) this.agentSocket?.addFrameListener(this.frameHandler)
     this.agentSocket?.addFrameListener(this.registryHandler)
+    this.refreshPanelChrome()
     this.applyLayout()
     this.refreshTerminalTitle()
   }
@@ -776,6 +833,7 @@ export class Multiplexer {
       // Let go, never end: fx and its terminal are the Companion's, and the
       // next fmx for this Home finds them where this one left them.
       for (const instance of this.instances) instance.detach()
+      this.toolPanel?.destroy()
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
       this.renderer.keyInput.off("paste", this.pasteHandler)
@@ -928,6 +986,9 @@ export class Multiplexer {
       },
       onExit: (candidate, exit) => this.handleInstanceExit(candidate, exit),
       onLost: (candidate, error) => void this.recoverInstance(candidate, error),
+      onFocus: (candidate) => {
+        if (this.activeInstance() === candidate) this.setFocusOwner("instance")
+      },
     })
     this.instances.push(instance)
     this.content.add(instance.terminal)
@@ -947,6 +1008,7 @@ export class Multiplexer {
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
     void this.options.manifest.remove(instance.entry.instanceId).catch(() => {})
+    void this.options.panelSessions?.stopInstance(instance.entry.instanceId).catch(() => {})
     if (this.shuttingDown) return
     const identity = this.slugOf(instance) ?? `agent ${instance.id}`
     // The shell's number for a signal, so a notice reads the way `$?` would.
@@ -1017,6 +1079,7 @@ export class Multiplexer {
     if (index === -1) return false
     const wasActive = this.activeInstance() === instance
     this.content.remove(instance.terminal)
+    this.toolPanel?.forgetContext(instance.entry.instanceId)
     instance.destroy()
     this.instances.splice(index, 1)
     this.registry.forget(this.paneIdFor(instance))
@@ -1030,6 +1093,8 @@ export class Multiplexer {
 
     if (this.instances.length === 0) {
       this.activeIndex = -1
+      this.focusOwner = "instance"
+      this.toolPanel?.setContext(null)
       this.options.onActiveInstanceChange?.(null)
       this.refreshTerminalTitle()
       this.refreshSessionList()
@@ -1046,6 +1111,8 @@ export class Multiplexer {
     this.renderer.clearSelection()
     if (this.instances.length === 0) {
       this.activeIndex = -1
+      this.focusOwner = "instance"
+      this.toolPanel?.setContext(null)
       this.options.onActiveInstanceChange?.(null)
       this.refreshTerminalTitle()
       return
@@ -1063,9 +1130,14 @@ export class Multiplexer {
     this.options.onActiveInstanceChange?.(active.entry.instanceId)
     active.terminal.visible = true
     active.terminal.setHostSelectionEnabled(true)
+    this.toolPanel?.setContext({
+      instanceId: active.entry.instanceId,
+      displayId: active.id,
+      cwd: active.cwd,
+    })
     // A surface drawn over fx keeps the keys; it hands them back when it
     // closes, so an instance shown behind it must not take them now.
-    if (!this.launchDialog.isOpen() && !this.modalKind) active.terminal.focus()
+    if (!this.launchDialog.isOpen() && !this.modalKind) this.restoreFocus()
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
@@ -1090,6 +1162,49 @@ export class Multiplexer {
     this.sidebarHidden = hidden
     this.refreshInstanceChrome()
     this.options.onSidebarHiddenChange?.(this.sidebarHidden)
+  }
+
+  private setPanelVisible(visible: boolean): boolean {
+    if (!this.toolPanel || visible === this.panelVisible) {
+      if (visible) this.toolPanel?.setVisible(true)
+      return this.toolPanel !== null
+    }
+    this.panelVisible = visible
+    if (!visible && this.focusOwner === "panel") this.setFocusOwner("instance")
+    this.refreshPanelChrome()
+    this.applyLayout()
+    this.options.onPanelVisibleChange?.(visible)
+    return true
+  }
+
+  private refreshPanelChrome(): void {
+    const visible = Boolean(this.toolPanel && this.panelVisible)
+    this.panelDivider && (this.panelDivider.visible = visible)
+    this.toolPanel?.setVisible(visible)
+  }
+
+  private setFocusOwner(owner: "instance" | "panel"): boolean {
+    if (owner === "panel") {
+      if (!this.toolPanel?.focus()) return false
+      this.focusOwner = "panel"
+      this.activeInstance()?.terminal.blur()
+      return true
+    }
+    this.focusOwner = "instance"
+    this.toolPanel?.blur()
+    if (!this.launchDialog.isOpen() && !this.modalKind) this.activeInstance()?.terminal.focus()
+    return true
+  }
+
+  private restoreFocus(): void {
+    if (this.launchDialog.isOpen() || this.modalKind) return
+    if (this.focusOwner === "panel" && this.toolPanel?.focus()) {
+      this.activeInstance()?.terminal.blur()
+      return
+    }
+    this.focusOwner = "instance"
+    this.toolPanel?.blur()
+    this.activeInstance()?.terminal.focus()
   }
 
   private refreshInstanceChrome(): void {
@@ -1254,6 +1369,31 @@ export class Multiplexer {
     }
   }
 
+  private beginPanelDividerDrag(event: MouseEvent): void {
+    if (!this.panelDivider) return
+    event.preventDefault()
+    event.stopPropagation()
+    this.panelDividerDragging = true
+    this.panelDragStartWidth = this.panelWidth
+    this.captureMouse(this.panelDivider)
+  }
+
+  private continuePanelDividerDrag(event: MouseEvent): void {
+    if (!this.panelDividerDragging) return
+    event.preventDefault()
+    event.stopPropagation()
+    this.applyPanelWidth(this.renderer.width - event.x - 1)
+    this.applySidebarWidth()
+  }
+
+  private endPanelDividerDrag(): void {
+    if (!this.panelDividerDragging) return
+    this.panelDividerDragging = false
+    if (this.panelWidth !== this.panelDragStartWidth) {
+      this.options.onPanelWidthChange?.(this.panelWidth)
+    }
+  }
+
   private captureMouse(renderable: BoxRenderable): void {
     // Not in CliRenderer's public typings; the renderer clears it on mouse-up.
     const capturer = this.renderer as unknown as {
@@ -1263,21 +1403,24 @@ export class Multiplexer {
   }
 
   private applyLayout(requestedSidebarWidth = this.sidebarWidth): void {
-    this.applyDebugPanelWidth()
+    this.applyPanelWidth(this.panelWidth)
     this.applySidebarWidth(requestedSidebarWidth)
     this.launchDialog.layout()
     this.toast.layout()
   }
 
-  private applyDebugPanelWidth(): void {
-    this.debugPanel?.setWidth(debugPanelWidth(this.renderer.width))
+  private applyPanelWidth(requested = this.panelWidth): void {
+    const max = Math.max(1, Math.floor(this.renderer.width * TOOL_PANEL_MAX_SCREEN_FRACTION))
+    const min = Math.min(TOOL_PANEL_MIN_WIDTH, max)
+    this.panelWidth = Math.max(min, Math.min(max, requested))
+    this.toolPanel?.setWidth(this.panelWidth)
   }
 
   private applySidebarWidth(requested = this.sidebarWidth): void {
-    // The sidebar's third is measured against the space the debug panel leaves
+    // The sidebar's third is measured against the space the Tool panel leaves
     // behind, so the embedded terminal keeps the middle rather than being
     // squeezed between two fixed columns.
-    const available = this.renderer.width - this.reservedDebugWidth()
+    const available = this.renderer.width - this.reservedPanelWidth()
     const max = Math.max(1, Math.floor(available * SIDEBAR_MAX_SCREEN_FRACTION))
     const min = Math.min(SIDEBAR_MIN_WIDTH, max)
     this.sidebarWidth = Math.max(min, Math.min(max, requested))
@@ -1285,9 +1428,9 @@ export class Multiplexer {
     this.refreshSessionList()
   }
 
-  private reservedDebugWidth(): number {
-    if (!this.debugPanel) return 0
-    return debugPanelWidth(this.renderer.width) + 1
+  private reservedPanelWidth(): number {
+    if (!this.toolPanel || !this.panelVisible) return 0
+    return this.panelWidth + 1
   }
 
   private onPalette(colors: TerminalColors): void {
@@ -1305,12 +1448,12 @@ export class Multiplexer {
       const color = dividerColor(colors)
       this.divider.borderColor = color
       this.divider.focusedBorderColor = color
-      if (this.debugDivider) {
-        this.debugDivider.borderColor = color
-        this.debugDivider.focusedBorderColor = color
+      if (this.panelDivider) {
+        this.panelDivider.borderColor = color
+        this.panelDivider.focusedBorderColor = color
       }
     }
-    this.debugPanel?.applyPalette(colors)
+    this.toolPanel?.applyPalette(colors, this.renderer.themeMode)
     this.launchDialog.applyPalette(colors)
     this.sessionList.applyPalette(colors, this.startupChromeLocked)
     this.refreshSessionList()
@@ -1454,6 +1597,24 @@ export class Multiplexer {
       case "toggle_sidebar":
         this.setSidebarHidden(!this.sidebarHidden)
         return
+      case "toggle_panel":
+        this.setPanelVisible(!this.panelVisible)
+        return
+      case "focus_panel":
+        if (this.focusOwner === "panel") {
+          this.setFocusOwner("instance")
+          return
+        }
+        if (!this.toolPanel) return
+        this.setPanelVisible(true)
+        this.setFocusOwner("panel")
+        return
+      case "previous_panel":
+        this.toolPanel?.step(-1)
+        return
+      case "next_panel":
+        this.toolPanel?.step(1)
+        return
     }
   }
 
@@ -1514,6 +1675,7 @@ export class Multiplexer {
     this.forgetOldDrafts()
     this.launchDialog.show(projects, prefill.directory ?? active?.cwd ?? this.options.cwd, prefill)
     active?.terminal.blur()
+    this.toolPanel?.suspendFocus()
     return draft
   }
 
@@ -1643,6 +1805,7 @@ export class Multiplexer {
     this.modalBackdrop.visible = true
     this.modal.visible = true
     this.activeInstance()?.terminal.blur()
+    this.toolPanel?.suspendFocus()
   }
 
   private resizeModal(width: number, height: number): void {
@@ -1657,7 +1820,7 @@ export class Multiplexer {
     this.modalKind = null
     this.modal.visible = false
     this.modalBackdrop.visible = false
-    if (!this.shuttingDown) this.activeInstance()?.terminal.focus()
+    if (!this.shuttingDown) this.restoreFocus()
   }
 
   private swallow(key: KeyEvent): void {
@@ -1769,6 +1932,57 @@ export class Multiplexer {
         if (hidden !== undefined) this.setSidebarHidden(hidden)
         else if (optionalBoolean(params, "toggle")) this.setSidebarHidden(!this.sidebarHidden)
         return this.sidebarInfo()
+      }
+      case "panel": {
+        const width = optionalInteger(params, "width")
+        const hidden = optionalBoolean(params, "hidden")
+        const toggle = optionalBoolean(params, "toggle")
+        const select = optionalString(params, "select")
+        const step = optionalString(params, "step")
+        const focus = optionalString(params, "focus")
+        const mutates =
+          width !== undefined ||
+          hidden !== undefined ||
+          toggle === true ||
+          select !== undefined ||
+          step !== undefined ||
+          focus !== undefined
+        if (!this.toolPanel) {
+          if (mutates) throw new ControlFailure("not_found", "no Tool panel is configured")
+          return this.panelInfo()
+        }
+        if (width !== undefined) {
+          if (width < 1) throw new ControlFailure("invalid_params", "width must be at least 1")
+          this.applyPanelWidth(width)
+          this.applySidebarWidth()
+          this.options.onPanelWidthChange?.(this.panelWidth)
+        }
+        if (select !== undefined && !this.toolPanel.select(select)) {
+          throw new ControlFailure("not_found", `no Tool panel item ${select}`)
+        }
+        if (step !== undefined) {
+          if (step !== "next" && step !== "previous") {
+            throw new ControlFailure("invalid_params", "step must be next or previous")
+          }
+          this.toolPanel.step(step === "next" ? 1 : -1)
+        }
+        if (hidden !== undefined) this.setPanelVisible(!hidden)
+        else if (toggle) this.setPanelVisible(!this.panelVisible)
+        if (focus !== undefined) {
+          if (focus !== "panel" && focus !== "instance" && focus !== "toggle") {
+            throw new ControlFailure("invalid_params", "focus must be panel, instance, or toggle")
+          }
+          const desired = focus === "toggle" ? (this.focusOwner === "panel" ? "instance" : "panel") : focus
+          if (desired === "panel") {
+            this.setPanelVisible(true)
+            if (!this.setFocusOwner("panel")) {
+              throw new ControlFailure("not_found", "the selected Tool panel item has no terminal for the active Instance")
+            }
+          } else {
+            this.setFocusOwner("instance")
+          }
+        }
+        return this.panelInfo()
       }
       case "keys": {
         if (optionalBoolean(params, "show")) {
@@ -2049,6 +2263,7 @@ export class Multiplexer {
       active: this.activeInstance()?.id ?? null,
       instances: this.instances.map((instance) => this.instanceInfo(instance)),
       sidebar: { ...this.sidebarInfo(), rows },
+      panel: this.panelInfo(),
       surface: this.surface(),
     }
   }
@@ -2057,6 +2272,18 @@ export class Multiplexer {
    * empty fmx keeps without showing. */
   private sidebarInfo(): { visible: boolean; hidden: boolean; width: number } {
     return { visible: this.sidebar.visible, hidden: this.sidebarHidden, width: this.sidebarWidth }
+  }
+
+  private panelInfo(): PanelInfo {
+    return {
+      available: this.toolPanel !== null,
+      visible: this.toolPanel?.isVisible ?? false,
+      hidden: !this.panelVisible,
+      width: this.panelWidth,
+      selected: this.toolPanel?.selected ?? null,
+      focused: this.focusOwner,
+      tabs: this.toolPanel?.tabs ?? [],
+    }
   }
 
   private keysInfo(): KeysInfo {
@@ -2068,9 +2295,25 @@ export class Multiplexer {
       previous_tab: "fmx control focus previous",
       next_tab: "fmx control focus next",
       toggle_sidebar: "fmx control sidebar --toggle",
+      toggle_panel: "fmx control panel --toggle",
+      focus_panel: "fmx control panel --focus toggle",
+      previous_panel: "fmx control panel --previous",
+      next_panel: "fmx control panel --next",
     }
     const bindings: KeysInfo["bindings"] = {}
-    for (const action of ["help", "detach", "new_tab", "launch", "previous_tab", "next_tab", "toggle_sidebar"] as const) {
+    for (const action of [
+      "help",
+      "detach",
+      "new_tab",
+      "launch",
+      "previous_tab",
+      "next_tab",
+      "toggle_sidebar",
+      "toggle_panel",
+      "focus_panel",
+      "previous_panel",
+      "next_panel",
+    ] as const) {
       bindings[action] = {
         keys: this.keybindings[action].map((binding) => binding.label),
         command: commands[action]!,
@@ -2109,6 +2352,10 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
     [bindingLabel(keybindings.previous_tab), "prev agent"],
     [bindingLabel(keybindings.next_tab), "next agent"],
     [bindingLabel(keybindings.toggle_sidebar), "toggle sidebar"],
+    [bindingLabel(keybindings.toggle_panel), "toggle Tool panel"],
+    [bindingLabel(keybindings.focus_panel), "focus Tool panel"],
+    [bindingLabel(keybindings.previous_panel), "previous tool"],
+    [bindingLabel(keybindings.next_panel), "next tool"],
   ]
 }
 

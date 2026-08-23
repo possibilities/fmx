@@ -64,19 +64,8 @@ export function createFxEnvironment(
   controlSocketPath: string | null = null,
   launchLevel: FxLaunchLevel | null = null,
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...parent,
-    PWD: cwd,
-    TERM: "xterm-256color",
-    COLORTERM: "truecolor",
-    TERM_PROGRAM: "fmx",
-    FMX_INSTANCE_ID: String(instanceId),
-  }
-
-  const inheritedScreenSession = env.STY !== undefined
-  for (const variable of OUTER_MULTIPLEXER_VARIABLES) delete env[variable]
-  if (inheritedScreenSession) delete env.WINDOW
-  delete env.TERM_PROGRAM_VERSION
+  const env = createEmbeddedEnvironment(parent, cwd)
+  env.FMX_INSTANCE_ID = String(instanceId)
 
   if (agentSocket) {
     env.HERDR_SOCKET_PATH = agentSocket.socketPath
@@ -90,5 +79,38 @@ export function createFxEnvironment(
     env.FX_MODEL = launchLevel.model
     env.FX_EFFORT = launchLevel.effort
   }
+  return env
+}
+
+/** A configured terminal tool runs in the active Instance's context but is not
+ * itself an fx and must never report on the Agent socket. */
+export function createPanelEnvironment(
+  parent: NodeJS.ProcessEnv,
+  instanceId: number,
+  cwd: string,
+  controlSocketPath: string | null,
+  panelId: string,
+): NodeJS.ProcessEnv {
+  const env = createEmbeddedEnvironment(parent, cwd)
+  env.FMX_INSTANCE_ID = String(instanceId)
+  env.FMX_PANEL_ID = panelId
+  if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
+  else delete env[CONTROL_SOCKET_ENV_VAR]
+  return env
+}
+
+function createEmbeddedEnvironment(parent: NodeJS.ProcessEnv, cwd: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...parent,
+    PWD: cwd,
+    TERM: "xterm-256color",
+    COLORTERM: "truecolor",
+    TERM_PROGRAM: "fmx",
+  }
+  const inheritedScreenSession = env.STY !== undefined
+  for (const variable of OUTER_MULTIPLEXER_VARIABLES) delete env[variable]
+  if (inheritedScreenSession) delete env.WINDOW
+  delete env.TERM_PROGRAM_VERSION
+  delete env.FMX_PANEL_ID
   return env
 }

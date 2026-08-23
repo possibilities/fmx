@@ -66,6 +66,40 @@ With no roots configured fmx exits 1 and names this setting and the config
 file that needs it. The first root is fmx's default working directory, including
 for agents started with `ctrl-b c`.
 
+### Tool panel
+
+The Tool panel is a resizable dock on the right for terminal tools that belong
+to the Instance in the center. It starts hidden; `ctrl-b r` toggles it and
+`ctrl-b o` hands keyboard focus between the Instance and its selected tool.
+When several tools are configured, a one-line link rail switches between them;
+`ctrl-b [` and `ctrl-b ]` select the previous and next link. Switching Instances
+switches the tools to that Instance's directory and identity too.
+
+Configure tools as argv arrays — no shell evaluates them:
+
+```toml
+[[panels]]
+id = "diff"
+label = "Diff"
+command = ["hunk", "diff", "--watch"]
+# persistent = true  # the default
+
+[[panels]]
+id = "tests"
+label = "Tests"
+command = ["bun", "test", "--watch"]
+persistent = false
+```
+
+The panel exists only when at least one tool is configured (or the diagnostic
+`FMX_DEBUG_PANEL` is requested). Its visibility, width, and selected link are
+kept in `state.json`, just like the Session list's visibility and width.
+Persistent tools run in Companion-owned terminals: Detach leaves them running,
+and the next fmx attaches to the same terminal. A non-persistent tool belongs
+to the current fmx process; Detach ends it, and reattaching starts it naturally
+when its link is shown again. Hiding the dock or switching links does not end a
+tool during the current fmx run.
+
 ### Agents outlive fmx
 
 An agent is not fmx's process. fmx hands each one to a bundled companion
@@ -91,12 +125,14 @@ line reaches the agents directly when fmx cannot — to look at one from a
 plain terminal, or to end one fmx no longer shows:
 
 ```sh
-fmx-zmx list                     # every agent the companion holds, live or ended
+fmx-zmx list                     # every Instance or persistent tool, live or ended
 fmx-zmx attach fmx-<id>          # the agent's terminal, as it stands (ctrl-\ detaches)
 fmx-zmx kill fmx-<id>            # end an agent
 ```
 
 Names are `fmx-` followed by the agent's id, as `fmx-zmx list` shows them.
+Persistent Tool panel terminals have opaque `fmxp-...` names in the same list;
+use the exact name shown to attach to or end one by hand.
 The companion keeps its sessions in its own directory, `/tmp/fmx-<uid>/zmx`,
 private to the user and separate from any zmx of your own, so these commands
 need no configuration and never touch your own sessions. A `zmx` you have
@@ -154,13 +190,16 @@ fmx control instance list
 fmx control instance wait 3 --state done,blocked --timeout 600000
 fmx control instance send 3 "now run them"
 fmx control sidebar --width 30 --hide       # or --show, --toggle
+fmx control panel --show --select diff --focus panel
+fmx control panel --width 40 --next         # also --previous, --hide, --toggle
 fmx control keys                        # every binding and the command it stands for
 fmx control catalog                     # the models and efforts the dialog offers
 ```
 
 `orient` answers with `you` — the caller's own instance: directory, project,
 branch, slug, state, its subagents, and whether it is the one on screen — alongside every
-instance, the sidebar's rows as they are drawn, and whatever surface is open.
+instance, the sidebar's rows as they are drawn, the Tool panel's availability,
+links, selection, size, visibility, and focus owner, and whatever surface is open.
 Reading never marks an instance seen; `focus` does, as clicking its row does.
 Subagents recorded by fx appear as non-selectable status rows nested beneath
 their parent instance, in both the sidebar and `orient`.

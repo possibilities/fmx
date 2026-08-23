@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test"
 import { existsSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { defaultSocketPath } from "../src/agent-socket.ts"
+import type { Command } from "../src/cli.ts"
 import { runCommand } from "../src/control-client.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { ControlSocket } from "../src/control-socket.ts"
@@ -16,6 +18,7 @@ import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FAKE_FX = resolve(ROOT, "tests/fixtures/fake-fx.ts")
+const FAKE_PANEL = resolve(ROOT, "tests/fixtures/fake-panel.ts")
 const FMX_COMMAND = process.env.FMX_BINARY_PATH
   ? [resolve(ROOT, process.env.FMX_BINARY_PATH)]
   : [process.execPath, resolve(ROOT, "src/index.ts")]
@@ -53,7 +56,8 @@ const PTY_TEST_ENABLED =
  * system temp directory, because a socket path is capped near 104 bytes and
  * a session name alone is 36 of them.
  */
-const companionDirectoryFor = (tempDirectory: string) => `/tmp/fmxz-e2e-${basename(tempDirectory)}`
+const companionDirectoryFor = (tempDirectory: string) =>
+  `/tmp/fmxz-${createHash("sha256").update(basename(tempDirectory)).digest("hex").slice(0, 12)}`
 
 /** The environment that keeps one fmx run private to its temp directory. */
 function privateHome(tempDirectory: string): Record<string, string> {
@@ -823,6 +827,139 @@ test.skipIf(!PTY_TEST_ENABLED)(
   15_000,
 )
 
+test.skipIf(!PTY_TEST_ENABLED)(
+  "persistent Tool panels reattach while non-persistent tools restart naturally",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-panel-restore-e2e-"))
+    const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const panelLog = join(tempDirectory, "panels.log")
+    const configFile = join(tempDirectory, "config.toml")
+    const stateFile = join(tempDirectory, "state.json")
+    await writeFile(
+      configFile,
+      [
+        `project_roots = [${JSON.stringify(ROOT)}]`,
+        "[[panels]]",
+        'id = "persistent"',
+        'label = "Persistent"',
+        `command = [${[process.execPath, FAKE_PANEL, panelLog, "persistent"].map((value) => JSON.stringify(value)).join(", ")}]`,
+        "[[panels]]",
+        'id = "transient"',
+        'label = "Transient"',
+        `command = [${[process.execPath, FAKE_PANEL, panelLog, "transient"].map((value) => JSON.stringify(value)).join(", ")}]`,
+        "persistent = false",
+        "",
+      ].join("\n"),
+    )
+    const env = {
+      ...process.env,
+      FMX_FX_PATH: FAKE_FX,
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      FMX_CONFIG_PATH: configFile,
+      FMX_STATE_PATH: stateFile,
+      ...privateHome(tempDirectory),
+      FMX_TEST_LOG: lifecycleLog,
+    }
+    const spawnFmx = (sink: { output: string }) => {
+      const decoder = new TextDecoder()
+      return Bun.spawn(FMX_COMMAND, {
+        cwd: ROOT,
+        env,
+        terminal: {
+          cols: 100,
+          rows: 24,
+          data: (_terminal, bytes) => {
+            sink.output += decoder.decode(bytes, { stream: true })
+          },
+        },
+      })
+    }
+
+    const firstOutput = { output: "" }
+    const first = spawnFmx(firstOutput)
+    let replacement: ReturnType<typeof spawnFmx> | null = null
+    try {
+      await waitUntil(() => firstOutput.output.includes("prefix+c"), 8_000, () => firstOutput.output)
+      first.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
+
+      await panelCommand(tempDirectory, env, { hidden: false })
+      await waitUntil(
+        async () => countOccurrences(await readLifecycle(panelLog), "start persistent ") === 1,
+        8_000,
+        () => firstOutput.output,
+      )
+      await panelCommand(tempDirectory, env, { select: "transient" })
+      await waitUntil(
+        async () => countOccurrences(await readLifecycle(panelLog), "start transient ") === 1,
+        8_000,
+        () => firstOutput.output,
+      )
+      await panelCommand(tempDirectory, env, { select: "persistent" })
+      await waitUntil(
+        async () => (await orientation(tempDirectory, env))?.panel.selected === "persistent",
+        5_000,
+        () => firstOutput.output,
+      )
+
+      first.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(first.exited, 6_000, "first fmx did not detach with Tool panels")).toBe(0)
+      first.terminal?.close()
+
+      await Bun.sleep(200)
+      const settled = await readLifecycle(panelLog)
+      const persistentAlive = countOccurrences(settled, "alive persistent ")
+      const transientAlive = countOccurrences(settled, "alive transient ")
+      await Bun.sleep(200)
+      const detached = await readLifecycle(panelLog)
+      expect(countOccurrences(detached, "alive persistent ")).toBeGreaterThan(persistentAlive)
+      expect(countOccurrences(detached, "alive transient ")).toBe(transientAlive)
+
+      const secondOutput = { output: "" }
+      replacement = spawnFmx(secondOutput)
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.instances.length === 1 && snapshot.panel.visible && snapshot.panel.selected === "persistent"
+        },
+        10_000,
+        () => secondOutput.output,
+      )
+      const companion = new CompanionCommand(companionDirectoryFor(tempDirectory), process.env, COMPANION!)
+      await waitUntil(
+        async () =>
+          (await companion.list()).some(
+            (session) => session.labels.kind === "panel" && session.labels.panel === "persistent" && (session.clients ?? 0) > 0,
+          ),
+        8_000,
+        () => secondOutput.output,
+      )
+      expect(countOccurrences(await readLifecycle(panelLog), "start persistent ")).toBe(1)
+
+      await panelCommand(tempDirectory, env, { select: "transient" })
+      await waitUntil(
+        async () => countOccurrences(await readLifecycle(panelLog), "start transient ") === 2,
+        8_000,
+        () => secondOutput.output,
+      )
+
+      replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
+      replacement.terminal?.close()
+    } finally {
+      if (first.exitCode === null) first.kill("SIGKILL")
+      first.terminal?.close()
+      if (replacement && replacement.exitCode === null) replacement.kill("SIGKILL")
+      replacement?.terminal?.close()
+      await endSurvivors(tempDirectory)
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  30_000,
+)
+
 for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
   test.skipIf(!PTY_TEST_ENABLED)(
     `${signal} leaves every fx running, and the next fmx restores them`,
@@ -962,6 +1099,20 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
     },
     40_000,
   )
+}
+
+async function panelCommand(
+  tempDirectory: string,
+  env: NodeJS.ProcessEnv,
+  fields: Omit<Extract<Command, { name: "panel" }>, "name">,
+): Promise<void> {
+  const socket = ControlSocket.pathFor(defaultSocketPath(homeOf(tempDirectory)))
+  const outcome = await runCommand({ name: "panel", ...fields }, socket, {
+    env,
+    cwd: ROOT,
+    readStdin: async () => "",
+  })
+  if (outcome.exitCode !== 0) throw new Error(outcome.error?.message ?? "Tool panel control failed")
 }
 
 function createHostPaletteResponder(

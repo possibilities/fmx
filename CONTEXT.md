@@ -81,12 +81,21 @@ identical every time, and say nothing about fx.
 _Avoid_: message, packet, event.
 
 **Debug panel** — the scrollable column of frames down the right third of the
-screen, present only when `FMX_DEBUG_PANEL` is set. Payloads are re-indented
-two spaces per level for reading; the frame keeps the raw wire line. An
-observation surface: it reads frames and never writes to the socket or to fx.
-Its `[clear]` button empties the view alone; the socket keeps running and later
-frames still arrive.
+Tool panel, available as a diagnostic tool only when `FMX_DEBUG_PANEL` is set.
+Payloads are re-indented two spaces per level for reading; the frame keeps the
+raw wire line. An observation surface: it reads frames and never writes to the
+socket or to fx. Its `[clear]` button empties the view alone; the socket keeps
+running and later frames still arrive.
 _Avoid_: log pane, console, inspector.
+
+**Tool panel** — the resizable terminal dock to the right of the active
+Instance. Its configured terminal tools run in that Instance's directory and
+identity, switch context with it, and appear as a one-line link rail when more
+than one is available. The dock starts hidden, remembers its visibility,
+width, and selected tool, and does not exist when no configured or diagnostic
+tool is available. Persistent tools are owned by the Companion across Detach;
+non-persistent tools are recreated naturally with fmx.
+_Avoid_: right-hand panel, utility pane, inspector, global panel.
 
 **Toast** — a transient, bottom-center notice drawn over the active surface.
 Toasts use the terminal's detected palette with fallbacks, appear one at a

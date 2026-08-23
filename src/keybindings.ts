@@ -11,6 +11,10 @@ type KeysConfig = {
   previous_tab: BindingConfig
   next_tab: BindingConfig
   toggle_sidebar: BindingConfig
+  toggle_panel: BindingConfig
+  focus_panel: BindingConfig
+  previous_panel: BindingConfig
+  next_panel: BindingConfig
 }
 
 const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
@@ -22,6 +26,10 @@ const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   previous_tab: "prefix+p",
   next_tab: "prefix+n",
   toggle_sidebar: "prefix+b",
+  toggle_panel: "prefix+r",
+  focus_panel: "prefix+o",
+  previous_panel: "prefix+[",
+  next_panel: "prefix+]",
 }
 
 const KEY_CONFIG_FIELDS = [
@@ -33,6 +41,10 @@ const KEY_CONFIG_FIELDS = [
   "previous_tab",
   "next_tab",
   "toggle_sidebar",
+  "toggle_panel",
+  "focus_panel",
+  "previous_panel",
+  "next_panel",
 ] as const
 
 type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
@@ -66,6 +78,10 @@ export type Keybindings = {
   previous_tab: ResolvedBinding[]
   next_tab: ResolvedBinding[]
   toggle_sidebar: ResolvedBinding[]
+  toggle_panel: ResolvedBinding[]
+  focus_panel: ResolvedBinding[]
+  previous_panel: ResolvedBinding[]
+  next_panel: ResolvedBinding[]
 }
 
 export type KeyAction = { name: KeyActionName }
@@ -179,6 +195,10 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
     previous_tab: [],
     next_tab: [],
     toggle_sidebar: [],
+    toggle_panel: [],
+    focus_panel: [],
+    previous_panel: [],
+    next_panel: [],
   }
 
   const registry = new Map<string, RegisteredBinding>()

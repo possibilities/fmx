@@ -9,6 +9,7 @@ import {
   type InstanceLaunch,
   type InstanceTransport,
   type InstanceTransportFactory,
+  type TerminalTransport,
   type TerminalSize,
   type TransportHandlers,
 } from "./instance-transport.ts"
@@ -102,12 +103,10 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
   }
 
   private async connect(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<InstanceTransport> {
-    const connection = await CompanionConnection.connect(socketPath, { client: this.options.client ?? "fmx" })
-    // Listeners first, then the attach: the restore the daemon answers with
-    // must have somewhere to go before it is asked for.
-    const transport = new CompanionTransport(connection, () => this.reap(entry))
-    connection.attach({ rows: size.rows, cols: size.cols })
-    return transport
+    return connectCompanionTerminal(socketPath, size, {
+      client: this.options.client ?? "fmx",
+      onExited: () => this.reap(entry),
+    })
   }
 
   /**
@@ -127,7 +126,26 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
   }
 }
 
-class CompanionTransport implements InstanceTransport {
+export type CompanionTerminalOptions = {
+  client?: string
+  onExited?: () => Promise<void>
+}
+
+/** Attach the shared terminal transport to any live Companion session. */
+export async function connectCompanionTerminal(
+  socketPath: string,
+  size: TerminalSize,
+  options: CompanionTerminalOptions = {},
+): Promise<TerminalTransport> {
+  const connection = await CompanionConnection.connect(socketPath, { client: options.client ?? "fmx" })
+  // Listeners first, then the attach: the restore the daemon answers with must
+  // have somewhere to go before it is asked for.
+  const transport = new CompanionTransport(connection, options.onExited ?? (async () => {}))
+  connection.attach({ rows: size.rows, cols: size.cols })
+  return transport
+}
+
+class CompanionTransport implements TerminalTransport {
   private readonly relay = new HandlerRelay()
   private exited = false
   private detached = false

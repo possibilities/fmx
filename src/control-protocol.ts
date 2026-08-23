@@ -56,6 +56,7 @@ export const CONTROL_METHODS = [
   "draft.cancel",
   "draft.wait",
   "sidebar",
+  "panel",
   "keys",
   "catalog",
 ] as const
@@ -169,7 +170,18 @@ export type Snapshot = {
   active: number | null
   instances: InstanceInfo[]
   sidebar: { visible: boolean; hidden: boolean; width: number; rows: SidebarRow[] }
+  panel: PanelInfo
   surface: Surface
+}
+
+export type PanelInfo = {
+  available: boolean
+  visible: boolean
+  hidden: boolean
+  width: number
+  selected: string | null
+  focused: "instance" | "panel"
+  tabs: { id: string; label: string; persistent: boolean; diagnostic?: boolean }[]
 }
 
 /** The model catalog the launch dialog offers, in picker order. */

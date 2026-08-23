@@ -469,6 +469,10 @@ test("lists the keys with their command equivalents, and resizes the sidebar", a
         previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
         next_tab: { keys: ["prefix+n"], command: "fmx control focus next" },
         toggle_sidebar: { keys: ["prefix+b"], command: "fmx control sidebar --toggle" },
+        toggle_panel: { keys: ["prefix+r"], command: "fmx control panel --toggle" },
+        focus_panel: { keys: ["prefix+o"], command: "fmx control panel --focus toggle" },
+        previous_panel: { keys: ["prefix+["], command: "fmx control panel --previous" },
+        next_panel: { keys: ["prefix+]"], command: "fmx control panel --next" },
       },
     })
     expect(await h.control("sidebar", { hidden: true })).toEqual({ visible: false, hidden: true, width: 26 })
