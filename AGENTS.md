@@ -79,6 +79,8 @@
   renderer destroyed under it never settles the query; `index.ts` races it
   against shutdown so a signal in that window still reaches the socket
   cleanup. Do not await anything renderer-bound in `main` without that race.
+  Session names use indexed ANSI gray rather than a guessed RGB fallback, so
+  they must not be restyled when that late palette answer arrives.
 - The agent socket speaks the protocol fx already speaks unprompted, which is
   Herdr's. That is why `src/fx-environment.ts` sets `HERDR_SOCKET_PATH` and
   `HERDR_PANE_ID` literally — fx reads those names and no others, so they are

@@ -4,6 +4,7 @@ import {
   type CliRenderer,
   fg,
   italic,
+  RGBA,
   StyledText,
   type TerminalColors,
   type TextChunk,
@@ -21,6 +22,9 @@ const VIRTUAL_LABEL_BACKGROUND_BLEND = 0.22
 const ROW_PADDING_LEFT = 1
 const ICON_COLUMN = 2
 const MISSING_SESSION = "—"
+/** Let the terminal render its own ANSI gray from the first frame. Unlike an
+ * RGB fallback, this does not change when palette detection finishes. */
+const SESSION_COLOR = RGBA.fromIndex(8)
 
 const FALLBACK_COLORS = {
   foreground: "#d8dee9",
@@ -29,7 +33,7 @@ const FALLBACK_COLORS = {
   done: "#2dd4bf",
   idle: "#4ade80",
   unknown: "#6b7280",
-  session: "#9aa5b1",
+  session: SESSION_COLOR,
   virtual: "#b0b6c2",
   activeBackground: "#2a2f3a",
 }
@@ -190,7 +194,7 @@ function listColors(colors: TerminalColors | null): ListColors {
     done: ansi(colors, 6, 14) ?? FALLBACK_COLORS.done,
     idle: ansi(colors, 2, 10) ?? FALLBACK_COLORS.idle,
     unknown: ansi(colors, 8, 7) ?? FALLBACK_COLORS.unknown,
-    session: ansi(colors, 8, 7) ?? FALLBACK_COLORS.session,
+    session: SESSION_COLOR,
     virtual:
       background && colorBrightness(background) < colorBrightness(foreground)
         ? mixHexColors(foreground, background, VIRTUAL_LABEL_BACKGROUND_BLEND)

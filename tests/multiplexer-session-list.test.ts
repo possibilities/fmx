@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, TextAttributes, TextRenderable } from "@opentui/core"
+import { BoxRenderable, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
@@ -57,6 +57,40 @@ test("cuts a row only at its right-hand end", () => {
 test("shows a placeholder until fx reports its session", () => {
   const [, , agent] = buildTree([entry({ sessionId: null })])
   expect(rowText(agent!, 26)).toBe("—")
+})
+
+test("keeps session names in the terminal's gray before and after palette detection", async () => {
+  const { setup, list } = await createList(30, 10)
+  const palette: TerminalColors = {
+    palette: Array.from({ length: 16 }, (_, index) => `#${index.toString(16).repeat(6)}`),
+    defaultForeground: "#eeeeee",
+    defaultBackground: "#111111",
+    cursorColor: null,
+    mouseForeground: null,
+    mouseBackground: null,
+    tekForeground: null,
+    tekBackground: null,
+    highlightBackground: null,
+    highlightForeground: null,
+  }
+  const sessionColor = () => {
+    const text = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
+    return text.chunks.find((chunk) => chunk.text === SESSION_ID)?.fg
+  }
+
+  try {
+    list.render(buildTree([entry()]), 26)
+    expect(sessionColor()?.intent).toBe("indexed")
+    expect(sessionColor()?.slot).toBe(8)
+
+    list.applyPalette(palette)
+    list.render(buildTree([entry()]), 26)
+    expect(sessionColor()?.intent).toBe("indexed")
+    expect(sessionColor()?.slot).toBe(8)
+  } finally {
+    list.root.destroy()
+    setup.renderer.destroy()
+  }
 })
 
 async function createList(width: number, height: number) {
