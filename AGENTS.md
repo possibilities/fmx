@@ -197,7 +197,11 @@
   compare it whole.
 - Moving the pin is a release act: land the fork change on `integration`,
   push, put the commit and `<fork version>+fmx.<12 hex>` in
-  `companion.json`, re-check the Companion notices, release the pair. A
+  `companion.json`, re-check the Companion notices, release the pair. The
+  pinned build is always made by `scripts/build-companion.sh` — the release
+  script, `scripts/install-companion.sh` (the editable checkout's
+  `~/.local/bin/fmx-zmx`, which agentstart installs and zmax's pin step
+  refreshes), and nothing else; one build path, one set of flags. A
   protocol bump will also need a plan for daemons still running the old
   build when the new pair is installed — today there is none, because the
   protocol has not moved.

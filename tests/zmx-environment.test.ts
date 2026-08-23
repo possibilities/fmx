@@ -48,7 +48,8 @@ test("the Companion is FMX_ZMX_PATH, else fmx-zmx beside fmx, else fmx-zmx on PA
     }
 
     await expect(resolveCompanion({ FMX_ZMX_PATH: "/nonexistent/fmx-zmx" }, install)).rejects.toThrow("not executable")
-    expect(await resolveCompanion({ FMX_ZMX_PATH: "/bin/sh", PATH: elsewhere }, install)).toEqual({ path: "/bin/sh", origin: "override" })
+    // The override is taken as given (a path that is its own realpath, so the comparison holds on every OS).
+    expect(await resolveCompanion({ FMX_ZMX_PATH: join(elsewhere, "zmx"), PATH: "/nonexistent" }, install)).toEqual({ path: join(elsewhere, "zmx"), origin: "override" })
     // A bare name is looked up on the given PATH, and an empty override is none.
     expect(await resolveCompanion({ FMX_ZMX_PATH: "zmx", PATH: elsewhere }, install)).toEqual({ path: join(elsewhere, "zmx"), origin: "override" })
     await expect(resolveCompanion({ FMX_ZMX_PATH: "zmx", PATH: "/nonexistent" }, install)).rejects.toThrow("not found: zmx (FMX_ZMX_PATH)")

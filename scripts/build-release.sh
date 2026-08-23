@@ -47,8 +47,8 @@ if [[ "$(uname -s)" != "$expected_os" || "$(uname -m)" != "$expected_arch" ]]; t
   exit 1
 fi
 
-# zig and git are the Companion's: the fork is fetched at its pinned commit
-# and built here, natively, beside fmx.
+# zig and git are the Companion's (scripts/build-companion.sh): the fork is
+# built at its pinned commit here, beside fmx.
 for command in bun file tar gzip xz git zig; do
   if ! command -v "$command" >/dev/null 2>&1; then
     printf 'fmx release: required command not found: %s\n' "$command" >&2
@@ -65,7 +65,6 @@ fi
 # The Companion pin: the fork commit this release ships, and the build string
 # a Companion built from it reports. companion.json is also compiled into fmx,
 # which refuses any other build it finds beside itself.
-companion_repository="$(bun -e 'const pin = await Bun.file("companion.json").json(); console.log(pin.repository)')"
 companion_commit="$(bun -e 'const pin = await Bun.file("companion.json").json(); console.log(pin.commit)')"
 companion_build="$(bun -e 'const pin = await Bun.file("companion.json").json(); console.log(pin.build)')"
 if [[ ! "$companion_commit" =~ ^[0-9a-f]{40}$ ]]; then
@@ -90,59 +89,9 @@ trap cleanup EXIT
 
 # --- the Companion -----------------------------------------------------------
 
-# The fork's source at the pinned commit: a checkout the caller names, which
-# must sit exactly at the pin with nothing modified, or else a fetch of that
-# one commit into the work directory.
-companion_source="${FMX_COMPANION_CHECKOUT:-}"
-if [[ -n "$companion_source" ]]; then
-  if [[ "$(git -C "$companion_source" rev-parse HEAD 2>/dev/null)" != "$companion_commit" ]]; then
-    printf 'fmx release: FMX_COMPANION_CHECKOUT %s is not at the pinned commit %s\n' "$companion_source" "$companion_commit" >&2
-    exit 1
-  fi
-  if [[ -n "$(git -C "$companion_source" status --porcelain --untracked-files=no)" ]]; then
-    printf 'fmx release: FMX_COMPANION_CHECKOUT %s has uncommitted changes\n' "$companion_source" >&2
-    exit 1
-  fi
-else
-  companion_source="$work_dir/companion-src"
-  mkdir -p "$companion_source"
-  git -C "$companion_source" init -q
-  git -C "$companion_source" fetch -q --depth 1 "$companion_repository" "$companion_commit"
-  git -C "$companion_source" checkout -q --detach FETCH_HEAD
-  if [[ "$(git -C "$companion_source" rev-parse HEAD)" != "$companion_commit" ]]; then
-    printf 'fmx release: fetched %s but HEAD is not the pinned commit\n' "$companion_repository" >&2
-    exit 1
-  fi
-fi
-
-# The build string is the fork's own version plus build metadata naming the
-# commit; the fork's version comes from its build.zig.zon, so the two are
-# checked against each other rather than trusted.
-companion_version="$( (grep -m 1 -E '^[[:space:]]*\.version = "' "$companion_source/build.zig.zon" || true) | sed 's/^[[:space:]]*\.version = "\([^"]*\)",.*/\1/')"
-if [[ -z "$companion_version" ]]; then
-  printf 'fmx release: no .version in %s/build.zig.zon\n' "$companion_source" >&2
-  exit 1
-fi
-if [[ "$companion_build" != "$companion_version+fmx.${companion_commit:0:12}" ]]; then
-  printf 'fmx release: companion.json build %s is not %s+fmx.%s (the fork at the pin is version %s)\n' \
-    "$companion_build" "$companion_version" "${companion_commit:0:12}" "$companion_version" >&2
-  exit 1
-fi
-minimum_zig="$( (grep -m 1 -E '^[[:space:]]*\.minimum_zig_version = "' "$companion_source/build.zig.zon" || true) | sed 's/^[[:space:]]*\.minimum_zig_version = "\([^"]*\)",.*/\1/')"
-if [[ -z "$minimum_zig" ]]; then
-  printf 'fmx release: no .minimum_zig_version in %s/build.zig.zon\n' "$companion_source" >&2
-  exit 1
-fi
-zig_series="${minimum_zig%.*}"
-if [[ "$(zig version)" != "$zig_series".* ]]; then
-  printf 'fmx release: the Companion builds with zig %s.x (found %s)\n' "$zig_series" "$(zig version)" >&2
-  exit 1
-fi
-
-companion_prefix="$work_dir/companion"
-(cd "$companion_source" && zig build -Dcompanion -Doptimize=ReleaseFast -Dversion="$companion_build" -Dtarget="$companion_target" --prefix "$companion_prefix")
-cp "$companion_prefix/bin/zmx" "$companion_binary"
-chmod 0755 "$companion_binary"
+# Built by scripts/build-companion.sh from the pinned commit, for this
+# platform's baseline target rather than the build host's CPU.
+"$root_dir/scripts/build-companion.sh" --output "$companion_binary" --target "$companion_target"
 
 # --- fmx ---------------------------------------------------------------------
 

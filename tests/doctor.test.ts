@@ -6,6 +6,14 @@ import { VERSION } from "../src/cli.ts"
 import { PROTOCOL_VERSION } from "../src/zmx-protocol.ts"
 import { COMPANION_PIN, homeIdFor } from "../src/zmx-environment.ts"
 
+/** An fx that does nothing: a fixture path that is its own realpath on every OS, unlike /bin/sh. */
+async function fakeFx(directory: string): Promise<string> {
+  const path = join(directory, "fx")
+  await writeFile(path, "#!/bin/sh\nexit 0\n")
+  await chmod(path, 0o755)
+  return path
+}
+
 /** A Companion that answers `version` with whatever build it is told to claim. */
 async function fakeCompanion(directory: string, build: string): Promise<string> {
   const path = join(directory, "fmx-zmx")
@@ -18,12 +26,13 @@ test("doctor reports a paired installation and judges only the Companion", async
   const root = await realpath(await mkdtemp("/tmp/fmx-doctor-"))
   try {
     const companion = await fakeCompanion(root, COMPANION_PIN.build)
+    const fx = await fakeFx(root)
     const directory = join(root, "zmx")
     const env = {
       PATH: root,
       FMX_ZMX_DIR: directory,
       XDG_CONFIG_HOME: join(root, "config"),
-      FMX_FX_PATH: "/bin/sh",
+      FMX_FX_PATH: fx,
     }
     const report = await doctor(env)
     expect(report.ok).toBe(true)
@@ -33,10 +42,11 @@ test("doctor reports a paired installation and judges only the Companion", async
     expect(report.lines).toContain(`build      ${COMPANION_PIN.build} (the build this fmx was released with)`)
     expect(report.lines).toContain(`protocol   ${PROTOCOL_VERSION}`)
     expect(report.lines).toContain(`home       ${homeIdFor(join(root, "config", "fmx"))} (${join(root, "config", "fmx")})`)
-    expect(report.lines).toContain("fx         /bin/sh")
+    expect(report.lines).toContain(`fx         ${fx}`)
 
     // fx missing is said, not judged: it is a separate install.
-    const withoutFx = await doctor({ ...env, FMX_FX_PATH: undefined, PATH: root })
+    await rm(fx)
+    const withoutFx = await doctor({ ...env, FMX_FX_PATH: undefined })
     expect(withoutFx.ok).toBe(true)
     expect(withoutFx.lines.find((line) => line.startsWith("fx "))).toContain("fx executable not found: fx (set FMX_FX_PATH); install it from https://fx.sh/")
   } finally {
@@ -47,7 +57,7 @@ test("doctor reports a paired installation and judges only the Companion", async
 test("doctor fails on a missing Companion or one that is not the pinned build, except under the override", async () => {
   const root = await realpath(await mkdtemp("/tmp/fmx-doctor-"))
   try {
-    const env = { PATH: "/nonexistent", FMX_ZMX_DIR: join(root, "zmx"), XDG_CONFIG_HOME: join(root, "config"), FMX_FX_PATH: "/bin/sh" }
+    const env = { PATH: "/nonexistent", FMX_ZMX_DIR: join(root, "zmx"), XDG_CONFIG_HOME: join(root, "config"), FMX_FX_PATH: await fakeFx(root) }
     const missing = await doctor(env)
     expect(missing.ok).toBe(false)
     expect(missing.lines.find((line) => line.startsWith("companion "))).toContain("Companion executable not found")
@@ -76,7 +86,7 @@ test("doctor fails on a Companion directory that is not ours, and does not run t
     const directory = join(root, "zmx")
     await Bun.write(join(directory, ".keep"), "")
     await chmod(directory, 0o755)
-    const report = await doctor({ PATH: root, FMX_ZMX_DIR: directory, XDG_CONFIG_HOME: join(root, "config"), FMX_FX_PATH: "/bin/sh" })
+    const report = await doctor({ PATH: root, FMX_ZMX_DIR: directory, XDG_CONFIG_HOME: join(root, "config"), FMX_FX_PATH: await fakeFx(root) })
     expect(report.ok).toBe(false)
     expect(report.lines.find((line) => line.startsWith("directory "))).toContain("readable or writable by others")
     expect(report.lines.find((line) => line.startsWith("build "))).toBe(`build      not checked: the directory is unusable (expected ${COMPANION_PIN.build})`)

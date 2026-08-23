@@ -33,7 +33,7 @@ const dragAcross = (columns: number, row = 1) => {
  * Everything an fmx here touches — Home, Manifest, Companion directory — is
  * under the test's temp directory, so nothing can meet a human's fmx.
  */
-const COMPANION = process.env.FMX_ZMX_PATH ?? Bun.which(COMPANION_BINARY_NAME)
+const COMPANION = process.env.FMX_ZMX_PATH ? resolve(ROOT, process.env.FMX_ZMX_PATH) : Bun.which(COMPANION_BINARY_NAME)
 const PTY_TEST_ENABLED =
   process.env.FMX_RUN_PTY_TESTS === "1" && typeof Bun.Terminal === "function" && Boolean(COMPANION && existsSync(COMPANION))
 

@@ -102,6 +102,9 @@ jobs:
             brew install xz
           fi
 
+      - name: Install Zig for the Companion
+        run: ./scripts/ci-install-zig.sh
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -113,9 +116,10 @@ jobs:
       - name: Compile, minimize, and package
         run: ./scripts/build-release.sh "${{ matrix.platform }}"
 
-      - name: Test compiled binary in a PTY
+      - name: Test compiled pair in a PTY
         env:
           FMX_BINARY_PATH: dist/fmx
+          FMX_ZMX_PATH: dist/fmx-zmx
           FMX_RUN_PTY_TESTS: "1"
         run: bun test tests/multiplexer.e2e.test.ts
 

@@ -188,23 +188,37 @@ bun run test:pty  # requires a host that permits PTY allocation, and the compani
 ```
 
 Running fmx from a checkout needs the companion daemon, which a release
-bundles as `fmx-zmx`. Point `FMX_ZMX_PATH` at a build of it (the fork of
-zmx at `possibilities/zmx`, branch `integration`: `zig build`, then
-`zig-out/bin/zmx`); `test:pty` and the Companion tests read the same
-variable and skip without it. A build named that way may be any build —
-fmx says so at start when it is not the pinned one — where a companion
-found beside fmx or on `PATH` must be the pinned build exactly.
+bundles as `fmx-zmx`. A linked checkout finds it on `PATH`:
+
+```sh
+scripts/install-companion.sh  # builds the pinned companion into ~/.local/bin/fmx-zmx
+```
+
+It builds exactly the commit `companion.json` pins — from `~/src/zmx` when
+that checkout has the commit, else fetched — and is a no-op while the
+installed one already reports the pinned build; rerun it after the pin moves
+(`FMX_COMPANION_INSTALL_DIR` chooses another directory). Developing the fork
+itself is the other way round: point `FMX_ZMX_PATH` at your own build
+(`zig build` in the fork, then `zig-out/bin/zmx`). A build named that way
+may be any build — fmx says so at start when it is not the pinned one —
+where a companion found beside fmx or on `PATH` must be the pinned build
+exactly. `test:pty` and the Companion tests read `FMX_ZMX_PATH`, else
+`fmx-zmx` on `PATH`, and skip without either.
 
 ### The companion pin
 
 `companion.json` names the fork commit a release is built from and the build
 string a companion built from it reports (`fmx-zmx version`, first line:
-`<fork version>+fmx.<12 hex of the commit>`). `scripts/build-release.sh
-<platform>` fetches that commit — or builds `FMX_COMPANION_CHECKOUT`, a
-local checkout that must sit exactly at it — with `zig build -Dcompanion
--Doptimize=ReleaseFast -Dversion=<build>`, and ships it beside fmx in both
-archives; the release host needs Zig 0.16 and git as well as Bun. To move
-the pin: land the fork change on `integration` and push it, put the new
-commit and build string in `companion.json`, re-check the companion's
-notices in `THIRD_PARTY_NOTICES.md` against the fork's dependencies, and
-release both together.
+`<fork version>+fmx.<12 hex of the commit>`). `scripts/build-companion.sh`
+builds exactly that commit — through a detached worktree of
+`FMX_COMPANION_CHECKOUT` (default `~/src/zmx`) when that repository has it,
+else a shallow fetch from the pin's repository — with `zig build -Dcompanion
+-Doptimize=ReleaseFast -Dversion=<build>`, and proves the binary reports the
+build. `scripts/build-release.sh <platform>` uses it for the platform's
+baseline target and ships the result beside fmx in both archives; releases
+are built by the GitHub workflow on four native runners, each given the
+pinned Zig by `scripts/ci-install-zig.sh`. To move the pin: land the fork
+change on `integration` and push it, put the new commit and build string in
+`companion.json` (zmax's `scripts/pin-companion.sh` does this, proven), re-check
+the companion's notices in `THIRD_PARTY_NOTICES.md` against the fork's
+dependencies, and release both together.
