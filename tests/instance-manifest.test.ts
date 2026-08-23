@@ -97,11 +97,20 @@ test("creation is written before it is acknowledged, and acknowledged in place",
   })
 })
 
+test("an adopted Instance's arguments may be unknown, and that survives a reload", async () => {
+  await withDirectory(async (dir) => {
+    const path = join(dir, "m.json")
+    const manifest = await InstanceManifest.open(path, HOME)
+    await manifest.adopt({ ...params(), fxArgs: null, identity: mintIdentity() })
+    expect((await loadManifest(path, HOME)).instances[0]!.fxArgs).toBeNull()
+  })
+})
+
 test("a snapshot handed out does not alias the manifest", async () => {
   await withDirectory(async (dir) => {
     const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
     const entry = await manifest.beginCreate({ ...params(), fxArgs: ["a"] })
-    entry.fxArgs.push("b")
+    entry.fxArgs!.push("b")
     entry.phase = "running"
     expect(manifest.get(entry.instanceId)).toMatchObject({ fxArgs: ["a"], phase: "creating" })
   })

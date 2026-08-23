@@ -21,6 +21,7 @@ const entry = (instanceId: string, phase: ManifestEntry["phase"] = "running"): M
   phase,
 })
 
+const { join: joinPath } = await import("node:path")
 const session = (
   instanceId: string,
   state: SessionEntry["state"] = "live",
@@ -99,12 +100,18 @@ test("an exited session with a malformed record still counts as ended", () => {
   expect(plan.remove[0]?.session?.detail).toBe("MalformedExitRecord")
 })
 
+const FAIL = [] as SessionEntry[]
+
 /** A Companion that answers from a script of `list` results and records what was forgotten. */
 function fakeCompanion(lists: SessionEntry[][]) {
   const forgotten: string[] = []
   let calls = 0
   const companion = {
-    list: async () => lists[Math.min(calls++, lists.length - 1)] ?? [],
+    list: async () => {
+      const answer = lists[Math.min(calls++, lists.length - 1)] ?? []
+      if (answer === FAIL) throw new Error("list failed")
+      return answer
+    },
     forget: async (name: string) => {
       forgotten.push(name)
     },
@@ -125,8 +132,9 @@ test("reconcileInstances applies the join: adopts, removes, consumes exit record
     expect(outcome.attached.map((item) => item.instanceId)).toEqual([ID_A])
     expect(outcome.attached[0]?.phase).toBe("running")
     expect(manifest.get(ID_A)?.phase).toBe("running")
+    // The Companion's cmd is a truncated display string: the executable is trusted, the arguments are not.
     expect(outcome.adopted.map((item) => [item.instanceId, item.cwd, item.fxPath, item.fxArgs, item.displayId])).toEqual([
-      [ID_C, "/adopted", "/fx", ["--x"], 3],
+      [ID_C, "/adopted", "/fx", null, 3],
     ])
     expect(outcome.removed.map((item) => item.entry.instanceId)).toEqual([ID_B])
     expect(forgotten).toEqual([identityFor(ID_B).zmxName])
@@ -153,7 +161,7 @@ test("reconcileInstances waits for a refused session to settle, then decides", a
   }
 })
 
-test("a session that never settles is left for the next start, entry intact", async () => {
+test("unreachable after the settle window is left for the next start, entry intact", async () => {
   const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
   try {
     const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
@@ -162,6 +170,59 @@ test("a session that never settles is left for the next start, entry intact", as
     let clock = 0
     const outcome = await reconcileInstances(manifest, companion, { settleMs: 100, now: () => (clock += 60) })
     expect(outcome.unresolved.map((item) => item.name)).toEqual([identityFor(ID_A).zmxName])
+    expect(manifest.entries).toHaveLength(1)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("refused after the settle window is a dead socket: entry removed, file cleared, nothing held forever", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  try {
+    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({ cwd: "/work", fxPath: "/fx", fxArgs: [], createdAt: 0, identity: identityFor(ID_A) })
+    const socketPath = joinPath(dir, identityFor(ID_A).zmxName)
+    await Bun.write(socketPath, "")
+    const strangerPath = joinPath(dir, identityFor(ID_B).zmxName)
+    await Bun.write(strangerPath, "")
+    const { companion } = fakeCompanion([
+      [session(ID_A, "refused", { labels: {}, socketPath }), session(ID_B, "refused", { labels: {}, socketPath: strangerPath })],
+    ])
+    let clock = 0
+    const outcome = await reconcileInstances(manifest, companion, { settleMs: 100, now: () => (clock += 60) })
+    expect(outcome.removed.map((item) => item.entry.instanceId)).toEqual([ID_A])
+    expect(outcome.cleared.map((item) => item.name).sort()).toEqual([identityFor(ID_A).zmxName, identityFor(ID_B).zmxName])
+    expect(outcome.unresolved).toEqual([])
+    expect(manifest.entries).toEqual([])
+    expect(await Bun.file(socketPath).exists()).toBe(false)
+    expect(await Bun.file(strangerPath).exists()).toBe(false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("an exit record of ours that no entry claims is consumed, not carried forever", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  try {
+    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    const { companion, forgotten } = fakeCompanion([[session(ID_A, "exited"), session(ID_B, "exited", { labels: ownershipLabels("other", ID_B) })]])
+    const plan = reconcile([], await companion.list(), HOME)
+    expect(plan.forget.map((item) => item.name)).toEqual([identityFor(ID_A).zmxName])
+    expect(plan.ignored.map((item) => item.name)).toEqual([identityFor(ID_B).zmxName])
+    await reconcileInstances(manifest, companion)
+    expect(forgotten).toEqual([identityFor(ID_A).zmxName])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("a Companion that cannot list is an error, never an empty Companion", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  try {
+    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({ cwd: "/work", fxPath: "/fx", fxArgs: [], createdAt: 0, identity: identityFor(ID_A) })
+    const { companion } = fakeCompanion([FAIL])
+    await expect(reconcileInstances(manifest, companion)).rejects.toThrow("list failed")
     expect(manifest.entries).toHaveLength(1)
   } finally {
     await rm(dir, { recursive: true, force: true })

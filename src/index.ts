@@ -15,7 +15,7 @@ import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 import { loadState, saveState } from "./state.ts"
 import { CompanionCommand } from "./zmx-command.ts"
-import { companionDirectory, companionEnvironment, homeId, resolveCompanion } from "./zmx-environment.ts"
+import { companionDirectory, homeId, resolveCompanion } from "./zmx-environment.ts"
 
 async function main(): Promise<void> {
   let options
@@ -60,7 +60,6 @@ async function main(): Promise<void> {
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
   const persistedState = await loadState()
   const home = homeId()
-  await reconcileAtStartup(home)
 
   let renderer: CliRenderer | null = null
   let app: Multiplexer | null = null
@@ -70,7 +69,10 @@ async function main(): Promise<void> {
   let controlSocket: ControlSocket | null = null
 
   try {
+    // The socket is the Home's singleton; only its holder may touch the
+    // Manifest, so the join runs after the bind and before anything is drawn.
     await agentSocket.start()
+    await reconcileAtStartup(home)
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: [],
@@ -143,8 +145,9 @@ async function main(): Promise<void> {
  * drawn: adopt what a crash left unrecorded, drop what has ended, and say
  * what survived. Attaching survivors to visible terminals is the next
  * tranche; until then fmx reports them and starts as it always has. A
- * Companion that cannot be found is reported, not fatal, for the same
- * reason.
+ * Companion that cannot be found, or a join that fails, is reported and
+ * changes nothing: fmx started before any of this existed, and a failed
+ * read must never be taken for an empty Companion.
  */
 async function reconcileAtStartup(home: string): Promise<ReconcileOutcome | null> {
   let companionPath: string
@@ -154,18 +157,27 @@ async function reconcileAtStartup(home: string): Promise<ReconcileOutcome | null
     process.stderr.write(`fmx: ${errorMessage(error)}; instances will not survive this fmx\n`)
     return null
   }
-  const directory = companionDirectory()
-  const companion = new CompanionCommand(directory, companionEnvironment(process.env, directory), companionPath)
-  const manifest = await InstanceManifest.open(manifestPath(), home)
-  const outcome = await reconcileInstances(manifest, companion)
+  let outcome: ReconcileOutcome
+  try {
+    const directory = companionDirectory()
+    const companion = new CompanionCommand(directory, process.env, companionPath)
+    const manifest = await InstanceManifest.open(manifestPath(), home)
+    outcome = await reconcileInstances(manifest, companion)
+  } catch (error) {
+    process.stderr.write(`fmx: could not reconcile instances: ${errorMessage(error)}\n`)
+    return null
+  }
   const survivors = outcome.attached.length + outcome.adopted.length
   if (survivors > 0) {
     process.stderr.write(
       `fmx: ${survivors} surviving instance(s) in the Companion (${outcome.adopted.length} adopted); attaching them is not yet supported\n`,
     )
   }
+  if (outcome.cleared.length > 0) {
+    process.stderr.write(`fmx: cleared ${outcome.cleared.length} stale Companion socket(s)\n`)
+  }
   if (outcome.unresolved.length > 0) {
-    process.stderr.write(`fmx: ${outcome.unresolved.length} Companion session(s) unreadable; left for the next start\n`)
+    process.stderr.write(`fmx: ${outcome.unresolved.length} Companion session(s) unreachable; left for the next start\n`)
   }
   return outcome
 }

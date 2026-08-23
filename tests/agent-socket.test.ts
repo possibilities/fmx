@@ -147,6 +147,39 @@ test("the default path is stable per Home and user, not per process", () => {
   expect(new AgentSocket({ homeId: "abc123" }).path).toBe(defaultSocketPath("abc123"))
 })
 
+test("two fmx starting in the same instant: one binds, the other is refused, the socket survives the loser", async () => {
+  const path = socketPath("race")
+  const a = new AgentSocket({ path })
+  const b = new AgentSocket({ path })
+  const results = await Promise.allSettled([a.start(), b.start()])
+  const refused = results.filter((result) => result.status === "rejected")
+  expect(refused).toHaveLength(1)
+  expect((refused[0] as PromiseRejectedResult).reason).toBeInstanceOf(AgentSocketActiveError)
+  expect(await listenerAnswers(path)).toBe(true)
+  // The loser's close must not take the winner's file.
+  a.close()
+  b.close()
+  expect(await listenerAnswers(path)).toBe(false)
+  expect(existsSync(path)).toBe(false)
+})
+
+test("the lock is held by the process, so a second process is refused without probing", async () => {
+  const path = socketPath("lock")
+  const first = new AgentSocket({ path })
+  await first.start()
+  try {
+    const probe = Bun.spawnSync([
+      "bun",
+      "-e",
+      `import { AgentSocket } from ${JSON.stringify(new URL("../src/agent-socket.ts", import.meta.url).pathname)}; const s = new AgentSocket({ path: ${JSON.stringify(path)} }); s.start().then(() => { console.log("bound"); s.close() }, (e) => console.log(e.constructor.name))`,
+    ])
+    expect(probe.stdout.toString().trim()).toBe("AgentSocketActiveError")
+    expect(await listenerAnswers(path)).toBe(true)
+  } finally {
+    first.close()
+  }
+})
+
 test("a stale socket file is replaced; a live listener is refused and left alone", async () => {
   const path = socketPath("singleton")
   const first = new AgentSocket({ path })

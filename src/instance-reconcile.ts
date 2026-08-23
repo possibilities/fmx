@@ -1,3 +1,4 @@
+import { unlink } from "node:fs/promises"
 import { identityFor, isInstanceId, type InstanceManifest, type ManifestEntry } from "./instance-manifest.ts"
 import type { CompanionCommand, SessionEntry } from "./zmx-command.ts"
 
@@ -31,14 +32,16 @@ export type Reconciliation = {
   adopt: { instanceId: string; session: SessionEntry }[]
   /** Manifest entry whose session ended or never existed; `session` carries the exit record when there is one. */
   remove: { entry: ManifestEntry; session: SessionEntry | null }[]
-  /** Owned sessions (with or without an entry) that cannot be read yet: refused or unreachable. Ask again. */
+  /** Exit records of this Home's sessions that no entry claims: a crash between `remove` and `forget`, or a lost Manifest. Consume them. */
+  forget: SessionEntry[]
+  /** Sessions under our naming (with or without an entry) that cannot be read yet: refused or unreachable. Ask again. */
   unresolved: { entry: ManifestEntry | null; session: SessionEntry }[]
   /** Sessions that are not this Home's. Never touched. */
   ignored: SessionEntry[]
 }
 
 export function reconcile(entries: readonly ManifestEntry[], sessions: readonly SessionEntry[], homeId: string): Reconciliation {
-  const result: Reconciliation = { attach: [], adopt: [], remove: [], unresolved: [], ignored: [] }
+  const result: Reconciliation = { attach: [], adopt: [], remove: [], forget: [], unresolved: [], ignored: [] }
   const byName = new Map<string, SessionEntry>()
   for (const session of sessions) byName.set(session.name, session)
 
@@ -78,6 +81,7 @@ export function reconcile(entries: readonly ManifestEntry[], sessions: readonly 
     }
     const instanceId = ownedInstanceId(session, homeId)
     if (session.state === "live" && instanceId) result.adopt.push({ instanceId, session })
+    else if (session.state === "exited" && instanceId) result.forget.push(session)
     else result.ignored.push(session)
   }
   return result
@@ -87,7 +91,9 @@ export type ReconcileOutcome = {
   attached: ManifestEntry[]
   adopted: ManifestEntry[]
   removed: { entry: ManifestEntry; session: SessionEntry | null }[]
-  /** Still unreadable after the settle window; left for the next start. */
+  /** Stale sockets cleared after the settle window: nothing held them, so nothing can come back. */
+  cleared: SessionEntry[]
+  /** Still unreachable after the settle window; left for the next start. */
   unresolved: SessionEntry[]
   ignored: SessionEntry[]
 }
@@ -110,7 +116,7 @@ export async function reconcileInstances(
 ): Promise<ReconcileOutcome> {
   const settleMs = options.settleMs ?? 3000
   const now = options.now ?? Date.now
-  const outcome: ReconcileOutcome = { attached: [], adopted: [], removed: [], unresolved: [], ignored: [] }
+  const outcome: ReconcileOutcome = { attached: [], adopted: [], removed: [], cleared: [], unresolved: [], ignored: [] }
 
   let sessions = await companion.list()
   let plan = reconcile(manifest.entries, sessions, manifest.homeId)
@@ -126,13 +132,15 @@ export async function reconcileInstances(
     outcome.attached.push(entry.phase === "creating" ? await manifest.markRunning(entry.instanceId) : entry)
   }
   for (const { instanceId, session } of plan.adopt) {
-    const [fxPath = "", ...fxArgs] = session.command ?? []
+    // The Companion's `cmd` is a display string, truncated past 256 bytes;
+    // the executable is its first word, the arguments are not to be trusted.
+    const [fxPath = ""] = session.command ?? []
     outcome.adopted.push(
       await manifest.adopt({
         identity: identityFor(instanceId),
         cwd: session.cwd ?? "/",
         fxPath: fxPath || "fx",
-        fxArgs,
+        fxArgs: null,
         createdAt: (session.createdAt ?? Math.floor(now() / 1000)) * 1000,
       }),
     )
@@ -148,7 +156,30 @@ export async function reconcileInstances(
     }
     outcome.removed.push({ entry, session })
   }
-  outcome.unresolved = plan.unresolved.map(({ session }) => session)
+  for (const session of plan.forget) {
+    try {
+      await companion.forget(session.name)
+    } catch {
+      // Advisory; the next start sees it again.
+    }
+  }
+  for (const { entry, session } of plan.unresolved) {
+    // `refused` after the settle window is a socket nothing holds: the
+    // daemon was killed without cleaning up. It cannot come back, and
+    // without a daemon no exit record will ever appear. The Companion's
+    // interactive `list` sweeps the same thing; here it is done by name.
+    // `unreachable` (a connect that hung) stays for the next start.
+    if (session.state !== "refused") {
+      outcome.unresolved.push(session)
+      continue
+    }
+    if (entry) {
+      await manifest.remove(entry.instanceId)
+      outcome.removed.push({ entry, session })
+    }
+    if (session.socketPath) await unlink(session.socketPath).catch(() => {})
+    outcome.cleared.push(session)
+  }
   outcome.ignored = plan.ignored
   return outcome
 }

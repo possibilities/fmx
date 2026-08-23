@@ -12,7 +12,6 @@ import {
   splitShellWords,
   type SpawnResult,
 } from "../src/zmx-command.ts"
-import { companionEnvironment } from "../src/zmx-environment.ts"
 
 test("decodes the Companion's OSC 7 cwd into a path, and only a local one", () => {
   expect(decodeOsc7Cwd("file://greybird.local/Users/me/src")).toBe("/Users/me/src")
@@ -60,22 +59,27 @@ function scripted(answers: [string[], SpawnResult][]) {
 test("create passes identity, labels, the command after `--`, and the Companion's own environment", async () => {
   const { spawner, calls } = scripted([
     [["create"], { exitCode: 0, stdout: '{"ok":true,"name":"fmx-1","socketPath":"/d/fmx-1","pid":5,"createdAt":10}\n', stderr: "" }],
+    [["list"], { exitCode: 0, stdout: "[]", stderr: "" }],
   ])
-  const companion = new CompanionCommand("/tmp/fmx-cmd-test-dir", { ZMX_DIR: "/d", ZMX_NO_DETACH_KEY: "1" }, spawner)
+  // fmx's own environment carries an outer surface's names; the fx environment built for the
+  // instance must win, with only the Companion's variables replaced.
+  const companion = new CompanionCommand("/tmp/fmx-cmd-test-dir", { PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer" }, spawner)
   const created = await companion.create({
     name: "fmx-1",
     command: ["/fx", "--x"],
     cwd: "/work",
-    env: { PATH: "/bin", ZMX_DIR: "/theirs" },
+    env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/theirs", ZMX_SESSION: "theirs" },
     labels: { owner: "fmx" },
     timeoutMs: 500,
   })
   expect(created).toEqual({ name: "fmx-1", socketPath: "/d/fmx-1", pid: 5, createdAt: 10 })
-  expect(calls[0]).toMatchObject({
+  expect(calls[0]).toEqual({
     args: ["create", "--json", "--labels", "owner=fmx", "--timeout-ms", "500", "fmx-1", "--", "/fx", "--x"],
     cwd: "/work",
-    env: { PATH: "/bin", ZMX_DIR: "/d", ZMX_NO_DETACH_KEY: "1" },
+    env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/tmp/fmx-cmd-test-dir", ZMX_NO_DETACH_KEY: "1" },
   })
+  await companion.list()
+  expect(calls[1]?.env).toEqual({ PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer", ZMX_DIR: "/tmp/fmx-cmd-test-dir", ZMX_NO_DETACH_KEY: "1" })
   await rm("/tmp/fmx-cmd-test-dir", { recursive: true, force: true })
 })
 
@@ -102,13 +106,15 @@ test("a refused create is a typed error; only Timeout may have left a session", 
   await rm("/tmp/fmx-cmd-test-dir2", { recursive: true, force: true })
 })
 
-test("list with no sessions is empty, and --where is passed through", async () => {
+test("list passes --where through, and a Companion that cannot list is an error, not an empty list", async () => {
   const { spawner, calls } = scripted([
     [["list", "--json", "--where"], { exitCode: 0, stdout: '[{"name":"a","state":"live","labels":{"owner":"fmx"}}]', stderr: "" }],
-    [["list"], { exitCode: 1, stdout: "", stderr: "no sessions found in /d" }],
+    [["list"], { exitCode: 1, stdout: "", stderr: "error: AccessDenied" }],
   ])
   const companion = new CompanionCommand("/d", {}, spawner)
-  expect(await companion.list()).toEqual([])
+  const failure = await companion.list().catch((error) => error)
+  expect(failure).toBeInstanceOf(CompanionError)
+  expect(failure.message).toContain("AccessDenied")
   expect((await companion.list({ owner: "fmx" })).map((entry) => entry.name)).toEqual(["a"])
   expect(calls[1]?.args).toEqual(["list", "--json", "--where", "owner=fmx"])
 })
@@ -138,7 +144,7 @@ const created: string[] = []
 beforeAll(async () => {
   if (!ENABLED) return
   dir = await mkdtemp("/tmp/fmxz-cmd-")
-  live = new CompanionCommand(dir, companionEnvironment({ PATH: process.env.PATH, HOME: process.env.HOME, TERM: "xterm" }, dir), ZMX!)
+  live = new CompanionCommand(dir, { PATH: process.env.PATH, HOME: process.env.HOME, TERM: "xterm" }, ZMX!)
 })
 
 afterAll(async () => {

@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises"
+import { companionEnvironment } from "./zmx-environment.ts"
 
 /**
  * The Companion's supervisor surface: `create`, `list`, `inspect`, `forget`,
@@ -117,18 +118,23 @@ export const spawnCompanion =
 export class CompanionCommand {
   private readonly run: Spawner
 
+  /** The environment for commands that start nothing: fmx's own, made safe. */
+  private readonly environment: Record<string, string>
+
   constructor(
     readonly directory: string,
-    private readonly environment: Record<string, string>,
+    parentEnvironment: NodeJS.ProcessEnv,
     runner: Spawner | string,
   ) {
+    this.environment = companionEnvironment(parentEnvironment, directory)
     this.run = typeof runner === "string" ? spawnCompanion(runner) : runner
   }
 
   /**
    * Start a session and return once its command is running. The request's
-   * environment is the child's; the Companion's own variables are layered on
-   * top so the child can never be created into an inherited zmx.
+   * environment is the child's, exactly as the caller built it for fx, with
+   * only the Companion's own variables replaced so the child can never be
+   * created into an inherited zmx.
    */
   async create(request: CreateRequest): Promise<Created> {
     await mkdir(this.directory, { recursive: true })
@@ -141,8 +147,7 @@ export class CompanionCommand {
       args.push("--scrollback-lines", String(request.scrollbackLines))
     }
     args.push(request.name, "--", ...request.command)
-    const env = { ...request.env, ...this.environment }
-    const result = await this.run(args, { cwd: request.cwd, env })
+    const result = await this.run(args, { cwd: request.cwd, env: companionEnvironment(request.env, this.directory) })
     const document = parseJson(result, "create")
     if (!isRecord(document)) throw malformed("create", result)
     if (document.ok === true) {
@@ -158,15 +163,16 @@ export class CompanionCommand {
     )
   }
 
-  /** Every session in the directory, as found, deleting nothing. */
+  /**
+   * Every session in the directory, as found, deleting nothing. An empty or
+   * missing directory is `[]`; anything that is not a JSON array is a
+   * failure, never "no sessions" — a reconciliation that believed it would
+   * drop every Instance.
+   */
   async list(where: Record<string, string> = {}): Promise<SessionEntry[]> {
     const args = ["list", "--json"]
     for (const [key, value] of Object.entries(where)) args.push("--where", `${key}=${value}`)
     const result = await this.run(args, { env: this.environment })
-    if (result.exitCode !== 0 && result.stdout.trim() === "") {
-      // An empty or missing directory is a Companion without sessions.
-      return []
-    }
     const document = parseJson(result, "list")
     if (!Array.isArray(document)) throw malformed("list", result)
     return document.map(readEntry).filter((entry): entry is SessionEntry => entry !== null)
@@ -241,9 +247,11 @@ export function decodeOsc7Cwd(value: string, hostname: string | null = null): st
 }
 
 /**
- * The inverse of the Companion's `shellQuote`: every argument arrives in
- * single quotes with `'\''` for a literal quote. Anything else (a hand-started
- * session) is split on whitespace, which is the best a reader can do.
+ * The inverse of the Companion's `shellQuote`: an argument that needs it
+ * arrives in single quotes with `'\''` for a literal quote, the rest bare.
+ * The Companion caps the whole string at 256 bytes and ends a longer one with
+ * `...`, so what comes back is for display: a reader must not trust it as
+ * the argv.
  */
 export function splitShellWords(text: string): string[] {
   const words: string[] = []

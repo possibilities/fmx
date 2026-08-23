@@ -122,7 +122,7 @@ try {
   const again = await reconcileInstances(manifest, companion)
   say(`attached ${again.attached.length}, adopted ${again.adopted.length}, removed ${again.removed.length}`)
 
-  await step("a daemon killed -9 leaves a socket that refuses: held, never deleted")
+  await step("a daemon killed -9 leaves a socket that refuses: given a settle window, then cleared")
   const unresolvedId = manifest.entries.find((e) => e.instanceId === half.instanceId)!
   const daemon = Bun.spawnSync(["pgrep", "-f", `create --json --labels owner=fmx home=${home} instance=${unresolvedId.instanceId}`])
   const daemonPid = Number(daemon.stdout.toString().trim().split("\n")[0])
@@ -130,10 +130,11 @@ try {
   process.kill(daemonPid, "SIGKILL")
   process.kill(child, "SIGKILL")
   await sleep(300)
+  say(`before: inspect says ${(await companion.inspect(unresolvedId.zmxName)).state}`)
   const held = await reconcileInstances(manifest, companion, { settleMs: 500 })
-  say(`unresolved: ${held.unresolved.map((s) => `${s.name.replace(/^fmx-(.{8}).*/, "fmx-$1…")} ${s.state}`).join(", ")}`)
+  say(`cleared: ${held.cleared.map((s) => `${s.name.replace(/^fmx-(.{8}).*/, "fmx-$1…")} (was ${s.state})`).join(", ")}; removed #${held.removed.map((r) => r.entry.displayId).join(" #")}`)
   await showManifest()
-  say(`entry #${unresolvedId.displayId} kept; socket still on disk: ${existsSync(join(dir, "zmx", unresolvedId.zmxName))}`)
+  say(`socket still on disk: ${existsSync(join(dir, "zmx", unresolvedId.zmxName))}; inspect now says ${(await companion.inspect(unresolvedId.zmxName)).state}`)
 
   await step("one fmx per Home: the agent socket refuses a second listener and leaves the first alone")
   const socketPath = `/tmp/fmx-demo-${process.pid}.sock`

@@ -34,7 +34,8 @@ export type ManifestEntry = InstanceIdentity & {
   displayId: number
   cwd: string
   fxPath: string
-  fxArgs: string[]
+  /** `null` when unknown: an adopted Instance's argv comes from a display string the Companion truncates. */
+  fxArgs: string[] | null
   createdAt: number
   fxSessionId: string | null
   /**
@@ -127,7 +128,7 @@ function readEntry(raw: unknown): ManifestEntry | null {
   if (typeof displayId !== "number" || !Number.isInteger(displayId) || displayId <= 0) return null
   if (typeof cwd !== "string" || !cwd.startsWith("/")) return null
   if (typeof fxPath !== "string" || fxPath.length === 0) return null
-  if (!Array.isArray(fxArgs) || !fxArgs.every((arg) => typeof arg === "string")) return null
+  if (fxArgs !== null && (!Array.isArray(fxArgs) || !fxArgs.every((arg) => typeof arg === "string"))) return null
   if (typeof createdAt !== "number" || !Number.isFinite(createdAt)) return null
   if (fxSessionId !== null && fxSessionId !== undefined && typeof fxSessionId !== "string") return null
   if (phase !== "creating" && phase !== "running") return null
@@ -136,7 +137,7 @@ function readEntry(raw: unknown): ManifestEntry | null {
     displayId,
     cwd,
     fxPath,
-    fxArgs: [...(fxArgs as string[])],
+    fxArgs: fxArgs === null ? null : [...(fxArgs as string[])],
     createdAt,
     fxSessionId: typeof fxSessionId === "string" && fxSessionId.length > 0 ? fxSessionId : null,
     phase,
@@ -164,7 +165,8 @@ export async function saveManifest(manifest: Manifest, path: string): Promise<vo
 export type CreateParams = {
   cwd: string
   fxPath: string
-  fxArgs: string[]
+  /** `null` when unknown: an adopted Instance's argv comes from a display string the Companion truncates. */
+  fxArgs: string[] | null
   createdAt: number
   identity?: InstanceIdentity
 }
@@ -191,12 +193,12 @@ export class InstanceManifest {
   }
 
   get entries(): readonly ManifestEntry[] {
-    return this.manifest.instances.map((entry) => ({ ...entry, fxArgs: [...entry.fxArgs] }))
+    return this.manifest.instances.map(copy)
   }
 
   get(instanceId: string): ManifestEntry | null {
     const entry = this.manifest.instances.find((candidate) => candidate.instanceId === instanceId)
-    return entry ? { ...entry, fxArgs: [...entry.fxArgs] } : null
+    return entry ? copy(entry) : null
   }
 
   /** Step 1 of creation: the claim is on disk before the Companion is asked. */
@@ -211,13 +213,13 @@ export class InstanceManifest {
         displayId: manifest.nextDisplayId++,
         cwd: params.cwd,
         fxPath: params.fxPath,
-        fxArgs: [...params.fxArgs],
+        fxArgs: params.fxArgs && [...params.fxArgs],
         createdAt: params.createdAt,
         fxSessionId: null,
         phase: "creating",
       }
       manifest.instances.push(entry)
-      return { ...entry, fxArgs: [...entry.fxArgs] }
+      return copy(entry)
     })
   }
 
@@ -226,7 +228,7 @@ export class InstanceManifest {
     return this.mutate((manifest) => {
       const entry = find(manifest, instanceId)
       entry.phase = "running"
-      return { ...entry, fxArgs: [...entry.fxArgs] }
+      return copy(entry)
     })
   }
 
@@ -234,19 +236,19 @@ export class InstanceManifest {
   adopt(params: CreateParams & { identity: InstanceIdentity; fxSessionId?: string | null }): Promise<ManifestEntry> {
     return this.mutate((manifest) => {
       const existing = manifest.instances.find((entry) => entry.instanceId === params.identity.instanceId)
-      if (existing) return { ...existing, fxArgs: [...existing.fxArgs] }
+      if (existing) return copy(existing)
       const entry: ManifestEntry = {
         ...params.identity,
         displayId: manifest.nextDisplayId++,
         cwd: params.cwd,
         fxPath: params.fxPath,
-        fxArgs: [...params.fxArgs],
+        fxArgs: params.fxArgs && [...params.fxArgs],
         createdAt: params.createdAt,
         fxSessionId: params.fxSessionId ?? null,
         phase: "running",
       }
       manifest.instances.push(entry)
-      return { ...entry, fxArgs: [...entry.fxArgs] }
+      return copy(entry)
     })
   }
 
@@ -269,7 +271,7 @@ export class InstanceManifest {
     const run = this.queue.then(async () => {
       const next: Manifest = {
         ...this.manifest,
-        instances: this.manifest.instances.map((entry) => ({ ...entry, fxArgs: [...entry.fxArgs] })),
+        instances: this.manifest.instances.map(copy),
       }
       const result = change(next)
       await saveManifest(next, this.path)
@@ -280,6 +282,10 @@ export class InstanceManifest {
     this.queue = run.catch(() => {})
     return run
   }
+}
+
+function copy(entry: ManifestEntry): ManifestEntry {
+  return { ...entry, fxArgs: entry.fxArgs && [...entry.fxArgs] }
 }
 
 function find(manifest: Manifest, instanceId: string): ManifestEntry {

@@ -1,5 +1,6 @@
 import { unlinkSync } from "node:fs"
 import { userInfo } from "node:os"
+import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
 import { homeId } from "./zmx-environment.ts"
 import {
   decodeFrame,
@@ -44,6 +45,8 @@ export type FrameListener = (frame: SocketFrame) => void
 export class AgentSocket {
   readonly path: string
   private listener: SocketListener | null = null
+  /** Held from start to close: the right to probe, unlink, and bind the path. */
+  private lock: HeldLock | null = null
   private readonly assemblers = new WeakMap<object, LineAssembler>()
   private readonly listeners = new Set<FrameListener>()
   private seq = 0
@@ -63,7 +66,17 @@ export class AgentSocket {
    */
   async start(): Promise<void> {
     if (this.listener) return
-    if (await listenerAnswers(this.path)) throw new AgentSocketActiveError(this.path)
+    // The lock closes the window between "nothing answers" and "bound", in
+    // which a second fmx would otherwise unlink what the first just bound.
+    // It is held until close, so a live fmx is refused at the lock before
+    // its socket is ever probed.
+    const lock = acquireExclusiveLock(lockPathFor(this.path))
+    if (lock === null) throw new AgentSocketActiveError(this.path)
+    this.lock = lock ?? null
+    if (await listenerAnswers(this.path)) {
+      this.releaseLock()
+      throw new AgentSocketActiveError(this.path)
+    }
     removeSocketFile(this.path)
     try {
       this.listener = Bun.listen({
@@ -75,8 +88,9 @@ export class AgentSocket {
         },
       })
     } catch (error) {
-      // Two fmx starting in the same instant can both find the path stale;
-      // the one that loses the bind is the second fmx.
+      this.releaseLock()
+      // Without a working flock, two fmx starting in the same instant can
+      // both find the path stale; the one that loses the bind is the second.
       if (isAddressInUse(error)) throw new AgentSocketActiveError(this.path)
       throw error
     }
@@ -88,6 +102,12 @@ export class AgentSocket {
     this.listener.stop(true)
     this.listener = null
     removeSocketFile(this.path)
+    this.releaseLock()
+  }
+
+  private releaseLock(): void {
+    this.lock?.release()
+    this.lock = null
   }
 
   /**
@@ -163,6 +183,10 @@ export class AgentSocket {
  */
 export function defaultSocketPath(homeId: string, uid: number = userInfo().uid): string {
   return `/tmp/fmx-${uid}-${homeId}.sock`
+}
+
+export function lockPathFor(socketPath: string): string {
+  return socketPath.replace(/\.sock$/, "") + ".lock"
 }
 
 /** Whether something accepts connections at `path`. Absent or refused is `false`. */

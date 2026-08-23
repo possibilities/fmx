@@ -94,10 +94,13 @@
   frame; clear it nowhere else.
 - The agent socket's path is stable per Home (`/tmp/fmx-<uid>-<home id>.sock`)
   so an fx that outlives the fmx that started it reports to the next one.
-  `AgentSocket.start` therefore probes before it binds: a path something
-  answers on is another fmx for this Home, refused with exit code 2, and
-  never unlinked — only the process that bound the socket removes it. Only
-  a path nothing answers on is the residue of a crash and replaced.
+  `AgentSocket.start` therefore takes a flock on `<path minus .sock>.lock`
+  for the life of the process, and only under it probes, unlinks, and binds:
+  a path something answers on is another fmx for this Home, refused with
+  exit code 2, and never unlinked — only the process that bound the socket
+  removes it. Only a path nothing answers on is the residue of a crash and
+  replaced. The join runs after the bind, because only the socket's holder
+  may write the Manifest.
 - The Manifest is written before the Companion is asked to create (`creating`),
   and marked `running` on the acknowledgement, so a crash anywhere in between
   leaves something for the next start's join to resolve. The join
@@ -108,10 +111,18 @@
   running. `CompanionCreateError.sessionMayExist` is the only error that says
   so; `inspect` it, never assume. And `kill` returns when the daemon accepts,
   not when it is gone — the name reads `refused` until then, which the join
-  holds as unresolved and `settle` waits out.
+  holds as unresolved and `settle` waits out. A socket still `refused` after
+  the settle window has no daemon behind it and never will: the join removes
+  its entry and unlinks the file. `unreachable` (a connect that hung) is the
+  one state left for the next start.
+- `list --json` returning anything but a JSON array is a `CompanionError`,
+  never an empty Companion: a join that believed an empty answer would drop
+  every Instance. `reconcileAtStartup` reports the failure and changes
+  nothing.
 - The Companion reports a session's `cwd` in OSC 7 form (`file://<host><path>`)
-  as the daemon's realpath, and its `cmd` single-quoted; `zmx-command.ts`
-  decodes both. A session that is not `live` has no readable labels, so
+  as the daemon's realpath, and its `cmd` shell-quoted and cut at 256 bytes;
+  `zmx-command.ts` decodes both, but `cmd` is for display — an adopted
+  Instance takes its executable from it and records `fxArgs: null`. A session that is not `live` has no readable labels, so
   `list --where` never shows it — enumerate unfiltered when deciding
   ownership.
 - The Companion's directory is under `/tmp/fmx-<uid>/zmx`, not the config
