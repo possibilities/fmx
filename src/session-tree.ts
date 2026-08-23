@@ -1,4 +1,5 @@
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
+import { UNTRACKED_TREE_NAME } from "./git-context.ts"
 import type { SubagentEntry } from "./subagents.ts"
 
 /**
@@ -64,7 +65,7 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
       rows.push({
         kind: "branch",
         depth: 1,
-        label: branch ?? "(untracked)",
+        label: branch ?? UNTRACKED_TREE_NAME,
         instanceId: null,
         state: "unknown",
         attention: null,

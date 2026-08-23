@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type RGBA, type TerminalColors, TextRenderable } from "@opentui/core"
+import {
+  BoxRenderable,
+  type RGBA,
+  type TerminalColors,
+  TextAttributes,
+  TextRenderable,
+} from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
@@ -183,6 +189,33 @@ test("falls back to the Instance id and includes a nonzero exit code", async () 
   }
 })
 
+test("shows an untracked tree in italics outside Git", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
+  const cwd = await mkdtemp(join(tmpdir(), "fmx-untracked-"))
+  const multiplexer = new Multiplexer(setup.renderer, {
+    fxPath: FAKE_FX,
+    cwd,
+    keybindings: resolveKeybindings().keybindings,
+    toastDurationMs: 100,
+  })
+
+  try {
+    multiplexer.start()
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("c")
+    await waitForText(setup, `${basename(cwd)} / (untracked) / agent 1 started`, 2_000)
+
+    const text = setup.renderer.root.findDescendantById("fmx-toast-text")
+    expect(text).toBeInstanceOf(TextRenderable)
+    if (!(text instanceof TextRenderable)) return
+    const untracked = text.chunks.find((chunk) => chunk.text === "(untracked)")
+    expect((untracked?.attributes ?? 0) & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
+  } finally {
+    await multiplexer.shutdown()
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
 function hostPalette(error: string): TerminalColors {
   const palette: Array<string | null> = Array(16).fill(null)
   palette[1] = error
@@ -228,7 +261,7 @@ async function waitForText(
 
 async function lifecycleLocation(cwd: string): Promise<string> {
   const context = await readGitContext(cwd)
-  return `${projectNameFor(context, cwd)} / ${treeNameFor(context, cwd)}`
+  return `${projectNameFor(context, cwd)} / ${treeNameFor(context)}`
 }
 
 async function sendFrame(agentSocket: AgentSocket, payload: string): Promise<void> {

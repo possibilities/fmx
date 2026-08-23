@@ -65,17 +65,14 @@ test("names a project by its repository, falling back to the directory", () => {
 
 test("names a linked Worktree by its own root and the main tree by its branch", () => {
   expect(
-    treeNameFor(
-      { root: "/trees/agentbrain-1", mainRoot: "/work/agentbrain", branch: "agentbrain-1" },
-      "/trees/agentbrain-1/src",
-    ),
+    treeNameFor({
+      root: "/trees/agentbrain-1",
+      mainRoot: "/work/agentbrain",
+      branch: "agentbrain-1",
+    }),
   ).toBe("agentbrain-1")
   expect(
-    treeNameFor(
-      { root: "/work/agentbrain", mainRoot: "/work/agentbrain", branch: "main" },
-      "/work/agentbrain/src",
-    ),
+    treeNameFor({ root: "/work/agentbrain", mainRoot: "/work/agentbrain", branch: "main" }),
   ).toBe("main")
-  expect(treeNameFor(null, "/work/loose-files")).toBe("loose-files")
-  expect(treeNameFor(null, "/")).toBe("workspace")
+  expect(treeNameFor(null)).toBe("(untracked)")
 })
