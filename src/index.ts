@@ -112,7 +112,6 @@ async function main(): Promise<void> {
       exitSignals: [],
       useKittyKeyboard: FX_KEYBOARD_PROTOCOL,
     })
-    renderer.start()
     app = new Multiplexer(renderer, {
       fxPath,
       cwd: workspace,
@@ -163,12 +162,21 @@ async function main(): Promise<void> {
     controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(agentSocket.path))
     controlSocket.start()
 
+    // `start` chooses the first surface synchronously, before its first
+    // attach waits: either the empty state when the join found nothing, or
+    // the first restored Instance. Only then may OpenTUI expose a frame.
+    // Restoration and palette detection continue together after that first
+    // truthful frame instead of making either settled outcome wait on the
+    // other.
+    const startup = app.start()
+    renderer.start()
+
     // Detection takes seconds in a terminal that never answers, and a
     // renderer destroyed under it never settles the query: a shutdown in
     // that window must still reach the cleanup below.
     const hostPalette = await Promise.race([detectHostPalette(renderer), app.waitUntilDone().then(() => null)])
     if (hostPalette) app.setHostPalette(hostPalette)
-    await app.start()
+    await startup
     await app.waitUntilDone()
   } catch (error) {
     if (app) await app.shutdown(1)

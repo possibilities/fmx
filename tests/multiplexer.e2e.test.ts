@@ -481,6 +481,9 @@ for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
         two = spawnFmx(second)
         await waitUntil(() => readyBanners(second.output) >= 1, 10_000, () => second.output)
         await Bun.sleep(300)
+        // The restored Instance is the first surface the renderer exposes:
+        // the empty state belongs only to a Home the join found empty.
+        expect(second.output).not.toContain("prefix+c to create agent")
         expect(await readLifecycle(lifecycleLog)).not.toContain("start 3")
         expect(countOccurrences(await readLifecycle(lifecycleLog), "start ")).toBe(2)
 
