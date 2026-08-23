@@ -102,7 +102,7 @@ test("measures the sidebar's third against what the panel leaves behind", async 
 test("appends a scrollable entry per frame crossing the socket", async () => {
   const { setup, multiplexer, agentSocket, find } = await createMultiplexer(90, 24, true)
   try {
-    agentSocket.start()
+    await agentSocket.start()
     await sendFrame(agentSocket, WORKING_REPORT)
 
     await setup.renderOnce()
@@ -133,7 +133,7 @@ test("sizes the panel to a third at any width", () => {
 test("clicking clear empties the tail without stopping the socket", async () => {
   const { setup, multiplexer, agentSocket, find } = await createMultiplexer(90, 24, true)
   try {
-    agentSocket.start()
+    await agentSocket.start()
     await sendFrame(agentSocket, WORKING_REPORT)
     await setup.renderOnce()
 

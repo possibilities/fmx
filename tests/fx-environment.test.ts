@@ -94,3 +94,10 @@ test("applies model and effort to one instance without changing unrelated launch
   expect(selected.FX_MODEL).toBe("gpt-5.6-luna")
   expect(selected.FX_EFFORT).toBe("max")
 })
+
+test("an inherited Companion session is not handed on to fx", () => {
+  const env = createFxEnvironment({ ZMX_DIR: "/theirs", ZMX_SESSION: "theirs", ZMX_SESSION_PREFIX: "x" }, 1, "/work")
+  expect(env.ZMX_DIR).toBeUndefined()
+  expect(env.ZMX_SESSION).toBeUndefined()
+  expect(env.ZMX_SESSION_PREFIX).toBeUndefined()
+})

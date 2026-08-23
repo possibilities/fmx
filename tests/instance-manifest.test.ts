@@ -1,0 +1,156 @@
+import { expect, test } from "bun:test"
+import { readdirSync } from "node:fs"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { join } from "node:path"
+import {
+  identityFor,
+  InstanceManifest,
+  isInstanceId,
+  loadManifest,
+  manifestPath,
+  mintIdentity,
+  parseManifest,
+} from "../src/instance-manifest.ts"
+
+const HOME = "abc123def456"
+const withDirectory = async (run: (dir: string) => Promise<void>) => {
+  const dir = await mkdtemp("/tmp/fmx-manifest-test-")
+  try {
+    await run(dir)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+const params = (cwd = "/work") => ({ cwd, fxPath: "/usr/local/bin/fx", fxArgs: [], createdAt: 1_787_420_000_000 })
+
+test("an identity carries one token under three names", () => {
+  const identity = mintIdentity()
+  expect(isInstanceId(identity.instanceId)).toBe(true)
+  expect(identity.paneId).toBe(`p_${identity.instanceId}`)
+  expect(identity.zmxName).toBe(`fmx-${identity.instanceId}`)
+  expect(mintIdentity().instanceId).not.toBe(identity.instanceId)
+  expect(identityFor("0".repeat(32)).zmxName).toBe(`fmx-${"0".repeat(32)}`)
+})
+
+test("manifest path honors the override and otherwise sits beside state.json", () => {
+  expect(manifestPath({ FMX_MANIFEST_PATH: "/x/m.json" }, "/home/u")).toBe("/x/m.json")
+  expect(manifestPath({}, "/home/u")).toBe("/home/u/.config/fmx/instances.json")
+  expect(manifestPath({ XDG_CONFIG_HOME: "/cfg" }, "/home/u")).toBe("/cfg/fmx/instances.json")
+})
+
+test("parsing keeps valid entries and drops each bad one on its own", () => {
+  const good = identityFor("a".repeat(32))
+  const other = identityFor("b".repeat(32))
+  const document = {
+    version: 1,
+    homeId: HOME,
+    nextDisplayId: 2,
+    instances: [
+      { ...good, displayId: 4, cwd: "/w", fxPath: "/fx", fxArgs: ["--x"], createdAt: 1, fxSessionId: "s1", phase: "running" },
+      { ...other, paneId: "p_wrong", displayId: 5, cwd: "/w", fxPath: "/fx", fxArgs: [], createdAt: 1, phase: "running" },
+      { ...identityFor("c".repeat(32)), displayId: 4, cwd: "/w", fxPath: "/fx", fxArgs: [], createdAt: 1, phase: "creating" },
+      { ...identityFor("d".repeat(32)), displayId: 7, cwd: "relative", fxPath: "/fx", fxArgs: [], createdAt: 1, phase: "creating" },
+      { ...identityFor("e".repeat(32)), displayId: 8, cwd: "/w", fxPath: "/fx", fxArgs: [1], createdAt: 1, phase: "creating" },
+      { ...identityFor("f".repeat(32)), displayId: 9, cwd: "/w", fxPath: "/fx", fxArgs: [], createdAt: 1, phase: "dancing" },
+      "garbage",
+    ],
+  }
+  const manifest = parseManifest(JSON.stringify(document), HOME)
+  expect(manifest.instances.map((entry) => entry.instanceId)).toEqual([good.instanceId])
+  expect(manifest.instances[0]!.fxSessionId).toBe("s1")
+  // The counter never hands out a number an entry already holds.
+  expect(manifest.nextDisplayId).toBe(5)
+})
+
+test("another Home's manifest, an old version, or garbage reads as empty", () => {
+  expect(parseManifest("not json", HOME).instances).toEqual([])
+  expect(parseManifest(JSON.stringify({ version: 0, homeId: HOME, instances: [] }), HOME).instances).toEqual([])
+  const foreign = { version: 1, homeId: "other", nextDisplayId: 9, instances: [] }
+  const manifest = parseManifest(JSON.stringify(foreign), HOME)
+  expect(manifest.homeId).toBe(HOME)
+  expect(manifest.nextDisplayId).toBe(1)
+})
+
+test("creation is written before it is acknowledged, and acknowledged in place", async () => {
+  await withDirectory(async (dir) => {
+    const path = join(dir, "instances.json")
+    const manifest = await InstanceManifest.open(path, HOME)
+    const entry = await manifest.beginCreate(params())
+    expect(entry.phase).toBe("creating")
+    expect(entry.displayId).toBe(1)
+
+    // The crash window: what is on disk right now says `creating`.
+    const onDisk = await loadManifest(path, HOME)
+    expect(onDisk.instances).toHaveLength(1)
+    expect(onDisk.instances[0]!.phase).toBe("creating")
+
+    await manifest.markRunning(entry.instanceId)
+    expect((await loadManifest(path, HOME)).instances[0]!.phase).toBe("running")
+
+    await manifest.setFxSessionId(entry.instanceId, "sess-1")
+    expect((await loadManifest(path, HOME)).instances[0]!.fxSessionId).toBe("sess-1")
+
+    await manifest.remove(entry.instanceId)
+    expect((await loadManifest(path, HOME)).instances).toEqual([])
+    // Removed numbers are never reused.
+    expect((await manifest.beginCreate(params())).displayId).toBe(2)
+  })
+})
+
+test("a snapshot handed out does not alias the manifest", async () => {
+  await withDirectory(async (dir) => {
+    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    const entry = await manifest.beginCreate({ ...params(), fxArgs: ["a"] })
+    entry.fxArgs.push("b")
+    entry.phase = "running"
+    expect(manifest.get(entry.instanceId)).toMatchObject({ fxArgs: ["a"], phase: "creating" })
+  })
+})
+
+test("adopting an unrecorded session gives it a fresh number and no second entry", async () => {
+  await withDirectory(async (dir) => {
+    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate(params())
+    const identity = mintIdentity()
+    const adopted = await manifest.adopt({ ...params("/elsewhere"), identity, fxSessionId: "s9" })
+    expect(adopted).toMatchObject({ displayId: 2, phase: "running", fxSessionId: "s9", cwd: "/elsewhere" })
+    const again = await manifest.adopt({ ...params(), identity })
+    expect(again.displayId).toBe(2)
+    expect(manifest.entries).toHaveLength(2)
+  })
+})
+
+test("writes are atomic and serialized: concurrent mutations all land, no temp file survives", async () => {
+  await withDirectory(async (dir) => {
+    const path = join(dir, "m.json")
+    const manifest = await InstanceManifest.open(path, HOME)
+    const created = await Promise.all(Array.from({ length: 6 }, () => manifest.beginCreate(params())))
+    expect(new Set(created.map((entry) => entry.displayId)).size).toBe(6)
+    await Promise.all(created.map((entry) => manifest.markRunning(entry.instanceId)))
+    const reread = await loadManifest(path, HOME)
+    expect(reread.instances).toHaveLength(6)
+    expect(reread.instances.every((entry) => entry.phase === "running")).toBe(true)
+    expect(readdirSync(dir)).toEqual(["m.json"])
+    // Pretty-printed JSON with a trailing newline, like state.json.
+    expect((await readFile(path, "utf8")).endsWith("}\n")).toBe(true)
+  })
+})
+
+test("a write that fails does not wedge the next one", async () => {
+  await withDirectory(async (dir) => {
+    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    await expect(manifest.markRunning("0".repeat(32))).rejects.toThrow("not in manifest")
+    const entry = await manifest.beginCreate(params())
+    expect(entry.displayId).toBe(1)
+  })
+})
+
+test("opening a manifest another Home wrote starts fresh without touching the file until a write", async () => {
+  await withDirectory(async (dir) => {
+    const path = join(dir, "m.json")
+    await writeFile(path, JSON.stringify({ version: 1, homeId: "other", nextDisplayId: 3, instances: [] }))
+    const manifest = await InstanceManifest.open(path, HOME)
+    expect(manifest.entries).toEqual([])
+    expect(JSON.parse(await readFile(path, "utf8")).homeId).toBe("other")
+  })
+})

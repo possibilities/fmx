@@ -75,6 +75,19 @@ export class AgentRegistry {
     }
   }
 
+  /**
+   * What a restart already knows about a pane from the Manifest: its fx
+   * session id. The state stays `unknown` and nothing needs attention —
+   * durability of the PTY says nothing about what fx is doing in it — until
+   * fx's next frame says otherwise. A record fx has already reported into is
+   * left alone.
+   */
+  seed(paneId: string, sessionId: string | null): void {
+    if (this.records.has(paneId)) return
+    const record = this.ensure(paneId)
+    record.sessionId = sessionId
+  }
+
   get(paneId: string): AgentRecord | null {
     return this.records.get(paneId) ?? null
   }

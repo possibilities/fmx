@@ -3,15 +3,19 @@
 import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opentui/core"
 import { access, constants, realpath } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
-import { AgentSocket } from "./agent-socket.ts"
+import { AgentSocket, AgentSocketActiveError } from "./agent-socket.ts"
 import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
 import { debugPanelRequested } from "./debug-panel.ts"
+import { InstanceManifest, manifestPath } from "./instance-manifest.ts"
+import { reconcileInstances, type ReconcileOutcome } from "./instance-reconcile.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 import { loadState, saveState } from "./state.ts"
+import { CompanionCommand } from "./zmx-command.ts"
+import { companionDirectory, companionEnvironment, homeId, resolveCompanion } from "./zmx-environment.ts"
 
 async function main(): Promise<void> {
   let options
@@ -55,16 +59,18 @@ async function main(): Promise<void> {
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
   const persistedState = await loadState()
+  const home = homeId()
+  await reconcileAtStartup(home)
 
   let renderer: CliRenderer | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const debugPanel = debugPanelRequested()
-  const agentSocket = new AgentSocket()
+  const agentSocket = new AgentSocket({ homeId: home })
   let controlSocket: ControlSocket | null = null
 
   try {
-    agentSocket.start()
+    await agentSocket.start()
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: [],
@@ -126,8 +132,42 @@ async function main(): Promise<void> {
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     controlSocket?.close()
+    // Only the fmx that bound the socket may unlink it; the one refused at
+    // start never had it.
     agentSocket.close()
   }
+}
+
+/**
+ * Join the Manifest against the Companion's sessions before anything is
+ * drawn: adopt what a crash left unrecorded, drop what has ended, and say
+ * what survived. Attaching survivors to visible terminals is the next
+ * tranche; until then fmx reports them and starts as it always has. A
+ * Companion that cannot be found is reported, not fatal, for the same
+ * reason.
+ */
+async function reconcileAtStartup(home: string): Promise<ReconcileOutcome | null> {
+  let companionPath: string
+  try {
+    companionPath = await resolveCompanion()
+  } catch (error) {
+    process.stderr.write(`fmx: ${errorMessage(error)}; instances will not survive this fmx\n`)
+    return null
+  }
+  const directory = companionDirectory()
+  const companion = new CompanionCommand(directory, companionEnvironment(process.env, directory), companionPath)
+  const manifest = await InstanceManifest.open(manifestPath(), home)
+  const outcome = await reconcileInstances(manifest, companion)
+  const survivors = outcome.attached.length + outcome.adopted.length
+  if (survivors > 0) {
+    process.stderr.write(
+      `fmx: ${survivors} surviving instance(s) in the Companion (${outcome.adopted.length} adopted); attaching them is not yet supported\n`,
+    )
+  }
+  if (outcome.unresolved.length > 0) {
+    process.stderr.write(`fmx: ${outcome.unresolved.length} Companion session(s) unreadable; left for the next start\n`)
+  }
+  return outcome
 }
 
 async function detectHostPalette(renderer: CliRenderer): Promise<TerminalColors | null> {
@@ -161,5 +201,5 @@ function errorMessage(error: unknown): string {
 
 await main().catch((error) => {
   process.stderr.write(`fmx: ${errorMessage(error)}\n`)
-  process.exitCode = 1
+  process.exitCode = error instanceof AgentSocketActiveError ? 2 : 1
 })

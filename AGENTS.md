@@ -92,6 +92,31 @@
   or `send`: fx reports idle at startup before the pasted prompt reaches it.
   The flag is set when a prompt is queued and cleared by the first `working`
   frame; clear it nowhere else.
+- The agent socket's path is stable per Home (`/tmp/fmx-<uid>-<home id>.sock`)
+  so an fx that outlives the fmx that started it reports to the next one.
+  `AgentSocket.start` therefore probes before it binds: a path something
+  answers on is another fmx for this Home, refused with exit code 2, and
+  never unlinked — only the process that bound the socket removes it. Only
+  a path nothing answers on is the residue of a crash and replaced.
+- The Manifest is written before the Companion is asked to create (`creating`),
+  and marked `running` on the acknowledgement, so a crash anywhere in between
+  leaves something for the next start's join to resolve. The join
+  (`src/instance-reconcile.ts`) is a pure function over the Manifest and
+  `list --json`; keep the I/O out of it so every crash-window combination
+  stays a table test.
+- A Companion `create` that times out has not failed: the session may be
+  running. `CompanionCreateError.sessionMayExist` is the only error that says
+  so; `inspect` it, never assume. And `kill` returns when the daemon accepts,
+  not when it is gone — the name reads `refused` until then, which the join
+  holds as unresolved and `settle` waits out.
+- The Companion reports a session's `cwd` in OSC 7 form (`file://<host><path>`)
+  as the daemon's realpath, and its `cmd` single-quoted; `zmx-command.ts`
+  decodes both. A session that is not `live` has no readable labels, so
+  `list --where` never shows it — enumerate unfiltered when deciding
+  ownership.
+- The Companion's directory is under `/tmp/fmx-<uid>/zmx`, not the config
+  directory: macOS caps a socket path near 104 bytes, and sessions do not
+  survive a reboot, so neither need their exit records.
 - The two `tests/git-context.test.ts` cases that read `process.cwd()` assume a
   main checkout and fail in a linked worktree. That is the test's assumption,
   not a regression.

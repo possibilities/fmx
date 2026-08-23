@@ -28,7 +28,7 @@ async function harness(name: string) {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-control-test-${name}-${process.pid}.sock` })
-  agentSocket.start()
+  await agentSocket.start()
   const multiplexer = new Multiplexer(setup.renderer, {
     fxPath: FAKE_FX,
     cwd: join(code, "alpha"),

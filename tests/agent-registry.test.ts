@@ -119,3 +119,12 @@ test("shortens a session id to the segment that distinguishes it", () => {
   // Anything without the expected shape is shown as-is rather than mangled.
   expect(shortSessionId("plain")).toBe("plain")
 })
+
+test("seeding a pane after a restart keeps its session id and nothing else", () => {
+  const registry = new AgentRegistry()
+  registry.seed("p_a", "sess-a")
+  expect(registry.get("p_a")).toMatchObject({ sessionId: "sess-a", state: "unknown", attention: null, stateSeq: 0 })
+  // A pane fx has already reported into is not overwritten by a stale seed.
+  registry.seed("p_a", "sess-old")
+  expect(registry.get("p_a")?.sessionId).toBe("sess-a")
+})

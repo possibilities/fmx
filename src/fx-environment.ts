@@ -1,4 +1,5 @@
 import { CONTROL_SOCKET_ENV_VAR } from "./control-protocol.ts"
+import { INHERITED_COMPANION_VARIABLES } from "./zmx-environment.ts"
 
 /**
  * An fx reads the agent socket it reports to out of its environment. Any of
@@ -24,6 +25,10 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   "ZELLIJ_SESSION_NAME",
   "ZELLIJ_PANE_ID",
   ...INHERITED_AGENT_SOCKET_VARIABLES,
+  // The Companion's own names: an fmx started inside a human's zmx must not
+  // hand that session on to fx, and the Companion sets its own when it
+  // starts the child.
+  ...INHERITED_COMPANION_VARIABLES,
 ] as const
 
 /**

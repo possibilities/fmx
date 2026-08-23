@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { AgentSocket } from "../src/agent-socket.ts"
+import { AgentSocket, AgentSocketActiveError, defaultSocketPath, listenerAnswers } from "../src/agent-socket.ts"
 import { LineAssembler, type SocketFrame } from "../src/socket-frames.ts"
 
 /**
@@ -69,7 +69,7 @@ async function withSocket(
   const frames: SocketFrame[] = []
   const socket = new AgentSocket({ path: socketPath(name) })
   socket.addFrameListener((frame) => frames.push(frame))
-  socket.start()
+  await socket.start()
   try {
     await run(socket, frames)
   } finally {
@@ -130,7 +130,7 @@ test("answers a malformed line instead of leaving fx waiting out its timeout", a
 test("removes its socket file on close", async () => {
   const path = socketPath("cleanup")
   const socket = new AgentSocket({ path })
-  socket.start()
+  await socket.start()
   expect(existsSync(path)).toBe(true)
   socket.close()
   expect(existsSync(path)).toBe(false)
@@ -140,4 +140,45 @@ test("mints an opaque pane id per instance", () => {
   const socket = new AgentSocket({ path: socketPath("pane-ids") })
   expect(socket.paneIdFor(1)).toBe("p_1")
   expect(socket.paneIdFor(12)).toBe("p_12")
+})
+
+test("the default path is stable per Home and user, not per process", () => {
+  expect(defaultSocketPath("abc123", 502)).toBe("/tmp/fmx-502-abc123.sock")
+  expect(new AgentSocket({ homeId: "abc123" }).path).toBe(defaultSocketPath("abc123"))
+})
+
+test("a stale socket file is replaced; a live listener is refused and left alone", async () => {
+  const path = socketPath("singleton")
+  const first = new AgentSocket({ path })
+  await first.start()
+  try {
+    const second = new AgentSocket({ path })
+    const refusal = await second.start().catch((error) => error)
+    expect(refusal).toBeInstanceOf(AgentSocketActiveError)
+    expect(refusal.path).toBe(path)
+    // The first is still answering.
+    expect(await listenerAnswers(path)).toBe(true)
+    second.close()
+    expect(existsSync(path)).toBe(true)
+    expect(await listenerAnswers(path)).toBe(true)
+  } finally {
+    first.close()
+  }
+  expect(await listenerAnswers(path)).toBe(false)
+
+  // What a crashed fmx leaves: a path nothing listens on. Bun unlinks on
+  // stop, so the residue is made by a process killed without one.
+  const crashed = Bun.spawn(["bun", "-e", `Bun.listen({ unix: ${JSON.stringify(path)}, socket: { data() {} } }); setTimeout(() => {}, 10_000)`])
+  while (!existsSync(path)) await new Promise((resolve) => setTimeout(resolve, 10))
+  crashed.kill("SIGKILL")
+  await crashed.exited
+  expect(existsSync(path)).toBe(true)
+  expect(await listenerAnswers(path)).toBe(false)
+  const third = new AgentSocket({ path })
+  await third.start()
+  try {
+    expect(await listenerAnswers(path)).toBe(true)
+  } finally {
+    third.close()
+  }
 })
