@@ -1,14 +1,11 @@
-import { BoxRenderable, type CapturedFrame, type TerminalColors } from "@opentui/core"
+import { BoxRenderable, type CapturedFrame, type KeyEvent, type TerminalColors } from "@opentui/core"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
-  "Agent terminal",
   "Session list",
   "Launch dialog",
-  "Prompt editor",
   "Tools panel",
-  "Debug panel",
   "Toast",
 ] as const
 
@@ -22,6 +19,8 @@ export type UiStory = {
   description: string
   viewport: { cols: number; rows: number }
   expectedText: readonly string[]
+  /** What a human can usefully do after handing keys and mouse input to this state. */
+  interaction?: string
   arrange(context: UiStoryContext): void | Promise<void>
   verify?(context: UiStoryContext, frame: string): void | Promise<void>
 }
@@ -42,6 +41,139 @@ export type RenderedUiStory = Omit<UiStory, "arrange" | "verify"> & {
 export type UiGalleryStoriesByPalette = Readonly<
   Record<UiGalleryPaletteName, readonly RenderedUiStory[]>
 >
+
+export type UiStorySnapshot = {
+  frame: CapturedFrame
+  text: string
+}
+
+/**
+ * A story kept alive in its exact-size test renderer. The gallery paints its
+ * captured spans, then forwards input back here while interaction mode is on.
+ * That keeps components which measure against their renderer (notably the
+ * Multiplexer and Toast) honest without making production renderables aware of
+ * the gallery's surrounding chrome.
+ */
+export class UiStorySession {
+  private disposed = false
+  private readonly encoder = new TextEncoder()
+
+  private constructor(
+    readonly story: UiStory,
+    readonly paletteName: UiGalleryPaletteName,
+    private readonly setup: TestRendererSetup,
+    private readonly canvas: BoxRenderable,
+    private readonly cleanups: Array<() => void | Promise<void>>,
+  ) {}
+
+  static async open(story: UiStory, paletteName: UiGalleryPaletteName): Promise<UiStorySession> {
+    const setup = await createTestRenderer({
+      width: story.viewport.cols,
+      height: story.viewport.rows,
+      kittyKeyboard: true,
+      exitOnCtrlC: false,
+    })
+    const palette = UI_GALLERY_PALETTES[paletteName]
+    const canvas = new BoxRenderable(setup.renderer, {
+      id: `ui-gallery-canvas-${story.id}`,
+      width: "100%",
+      height: "100%",
+      backgroundColor: palette.defaultBackground ?? "#171c23",
+    })
+    setup.renderer.root.add(canvas)
+    const cleanups: Array<() => void | Promise<void>> = []
+    const context: UiStoryContext = {
+      setup,
+      canvas,
+      palette,
+      defer(cleanup) {
+        cleanups.push(cleanup)
+      },
+    }
+
+    const session = new UiStorySession(story, paletteName, setup, canvas, cleanups)
+    try {
+      await story.arrange(context)
+      const snapshot = await session.snapshot()
+      for (const expected of story.expectedText) {
+        if (!snapshot.text.includes(expected)) {
+          throw new Error(`${story.id}: expected the rendered frame to contain ${JSON.stringify(expected)}`)
+        }
+      }
+      await story.verify?.(context, snapshot.text)
+      return session
+    } catch (error) {
+      await session.dispose()
+      throw error
+    }
+  }
+
+  async sendKey(key: Pick<KeyEvent, "raw" | "sequence">): Promise<UiStorySnapshot> {
+    this.ensureOpen()
+    const raw = key.raw || key.sequence
+    this.setup.renderer.stdin.emit("data", this.encoder.encode(raw))
+    return this.snapshot()
+  }
+
+  async sendPaste(bytes: Uint8Array): Promise<UiStorySnapshot> {
+    this.ensureOpen()
+    await this.setup.mockInput.pasteBracketedText(new TextDecoder().decode(bytes))
+    return this.snapshot()
+  }
+
+  async sendMouse(
+    type: "down" | "up" | "drag" | "scroll",
+    x: number,
+    y: number,
+    button: number,
+    modifiers: { shift: boolean; alt: boolean; ctrl: boolean },
+    scrollDirection?: "up" | "down" | "left" | "right",
+  ): Promise<UiStorySnapshot> {
+    this.ensureOpen()
+    if (type === "scroll" && scrollDirection) {
+      await this.setup.mockMouse.scroll(x, y, scrollDirection, { modifiers })
+    } else {
+      await this.setup.mockMouse.emitMouseEvent(
+        type,
+        x,
+        y,
+        button as Parameters<typeof this.setup.mockMouse.emitMouseEvent>[3],
+        { modifiers },
+      )
+    }
+    return this.snapshot()
+  }
+
+  async snapshot(): Promise<UiStorySnapshot> {
+    this.ensureOpen()
+    // Several component actions deliberately finish through microtasks. Two
+    // passes make those immediate transitions visible without waiting on the
+    // long timers used by Toasts and launch prompting.
+    await Promise.resolve()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await this.setup.renderOnce()
+    await Promise.resolve()
+    await this.setup.renderOnce()
+    return { frame: this.setup.captureSpans(), text: this.setup.captureCharFrame() }
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) return
+    this.disposed = true
+    try {
+      for (const cleanup of this.cleanups.reverse()) await cleanup()
+    } finally {
+      if (!this.setup.renderer.isDestroyed) {
+        this.canvas.destroyRecursively()
+        this.setup.renderer.destroy()
+      }
+    }
+  }
+
+  private ensureOpen(): void {
+    if (this.disposed || this.setup.renderer.isDestroyed) throw new Error(`${this.story.id}: story is closed`)
+  }
+}
 
 const ANSI_DARK = [
   "#1b2028",
@@ -90,40 +222,9 @@ export async function renderUiStory(
   story: UiStory,
   paletteName: UiGalleryPaletteName,
 ): Promise<RenderedUiStory> {
-  const setup = await createTestRenderer({
-    width: story.viewport.cols,
-    height: story.viewport.rows,
-    kittyKeyboard: true,
-    exitOnCtrlC: false,
-  })
-  const palette = UI_GALLERY_PALETTES[paletteName]
-  const canvas = new BoxRenderable(setup.renderer, {
-    id: `ui-gallery-canvas-${story.id}`,
-    width: "100%",
-    height: "100%",
-    backgroundColor: palette.defaultBackground ?? "#171c23",
-  })
-  setup.renderer.root.add(canvas)
-  const cleanups: Array<() => void | Promise<void>> = []
-  const context: UiStoryContext = {
-    setup,
-    canvas,
-    palette,
-    defer(cleanup) {
-      cleanups.push(cleanup)
-    },
-  }
-
+  const session = await UiStorySession.open(story, paletteName)
   try {
-    await story.arrange(context)
-    await setup.renderOnce()
-    const text = setup.captureCharFrame()
-    for (const expected of story.expectedText) {
-      if (!text.includes(expected)) {
-        throw new Error(`${story.id}: expected the rendered frame to contain ${JSON.stringify(expected)}`)
-      }
-    }
-    await story.verify?.(context, text)
+    const { frame, text } = await session.snapshot()
     return {
       id: story.id,
       component: story.component,
@@ -132,15 +233,12 @@ export async function renderUiStory(
       viewport: story.viewport,
       palette: paletteName,
       expectedText: story.expectedText,
-      frame: setup.captureSpans(),
+      interaction: story.interaction,
+      frame,
       text,
     }
   } finally {
-    for (const cleanup of cleanups.reverse()) await cleanup()
-    if (!setup.renderer.isDestroyed) {
-      canvas.destroyRecursively()
-      setup.renderer.destroy()
-    }
+    await session.dispose()
   }
 }
 

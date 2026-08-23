@@ -4,10 +4,8 @@ import { decodeFrame } from "../src/socket-frames.ts"
 
 const SESSION_ID = "1787199707291-1787199707291996000-909bc46b64721838"
 
-let seq = 0
-
 function fold(registry: AgentRegistry, line: string): void {
-  registry.apply(decodeFrame(seq++, 0, line))
+  registry.apply(decodeFrame(line))
 }
 
 function report(state: string, attention?: string): string {
@@ -16,7 +14,6 @@ function report(state: string, attention?: string): string {
 }
 
 function registry(): AgentRegistry {
-  seq = 1
   return new AgentRegistry()
 }
 

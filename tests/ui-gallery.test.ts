@@ -9,6 +9,18 @@ test(
   "every component state renders in both themes and the catalog navigates each axis independently",
   async () => {
     expect(() => validateUiStories(UI_STORIES)).not.toThrow()
+    expect(UI_GALLERY_COMPONENTS).toEqual([
+      "Multiplexer",
+      "Session list",
+      "Launch dialog",
+      "Tools panel",
+      "Toast",
+    ])
+    const toastStates = UI_STORIES.filter((story) => story.component === "Toast")
+    expect(toastStates).toHaveLength(3)
+    expect(new Set(toastStates.map((story) => `${story.viewport.cols}×${story.viewport.rows}`))).toEqual(
+      new Set(["62×12"]),
+    )
     const built = await buildUiGallery()
     expect(built.stories.dark).toHaveLength(UI_STORIES.length)
     expect(built.stories.light).toHaveLength(UI_STORIES.length)
@@ -21,11 +33,11 @@ test(
     }
 
     const setup = await createTestRenderer({ width: 112, height: 34, kittyKeyboard: true, exitOnCtrlC: false })
-    const app = new UiGalleryApp(setup.renderer, built.stories)
+    const app = new UiGalleryApp(setup.renderer, built.stories, UI_STORIES)
     try {
       await setup.renderOnce()
       expect(setup.captureCharFrame()).toContain("UI GALLERY")
-      expect(setup.captureCharFrame()).toContain("8 components · 27 states")
+      expect(setup.captureCharFrame()).toContain("5 components · 20 states")
       expect(app.activeComponent).toBe("Multiplexer")
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
 
@@ -43,11 +55,32 @@ test(
 
       setup.mockInput.pressArrow("down")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Agent terminal")
+      expect(app.activeComponent).toBe("Session list")
       expect(app.activeStoryId).toBe(built.stories.light[3]!.id)
-      expect(setup.captureCharFrame()).toContain("state 1/2")
+      expect(setup.captureCharFrame()).toContain("state 1/3")
+
+      setup.mockInput.pressArrow("down")
+      await setup.renderOnce()
+      expect(app.activeComponent).toBe("Launch dialog")
+      expect(setup.captureCharFrame()).toContain("ENTER TO INTERACT")
+
+      setup.mockInput.pressEnter()
+      await app.waitForInteraction()
+      await setup.renderOnce()
+      expect(app.isInteracting).toBe(true)
+      expect(setup.captureCharFrame()).toContain("INTERACTING")
+
+      await setup.mockInput.typeText("Audit")
+      await app.waitForInteraction()
+      await setup.renderOnce()
+      expect(setup.captureCharFrame()).toContain("Audit")
+
+      setup.mockInput.pressEscape()
+      await app.waitForInteraction()
+      await setup.renderOnce()
+      expect(app.isInteracting).toBe(false)
     } finally {
-      app.destroy()
+      await app.destroy()
       setup.renderer.destroy()
     }
   },

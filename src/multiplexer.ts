@@ -51,7 +51,6 @@ import {
 } from "./control-protocol.ts"
 import { afterControlReply, type ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
-import { debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } from "./fx-environment.ts"
 import type { AgentManifest, ManifestEntry } from "./agent-manifest.ts"
 import {
@@ -163,14 +162,13 @@ type MultiplexerOptions = {
   /** Agents the join found running: attached, in display order, before anything else. */
   survivors?: readonly ManifestEntry[]
   agentSocket?: AgentSocket | null
-  debugPanel?: boolean
   /** Ordered configured tools available in the active agent's tools panel. */
   panels?: readonly PanelDefinition[]
   /** Owns configured tool processes and their terminal transports. */
   panelSessions?: PanelSessionController | null
   initialPanelWidth?: number
   onPanelWidthChange?: (width: number) => void
-  /** Undefined means the normal default: hidden, except for the opt-in legacy diagnostic. */
+  /** Undefined means the normal default: hidden. */
   initialPanelVisible?: boolean
   onPanelVisibleChange?: (visible: boolean) => void
   initialPanelId?: string
@@ -544,7 +542,6 @@ export class Multiplexer {
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
   private readonly pasteHandler = () => this.launchDialog.handlePaste()
   private readonly resizeHandler = () => this.applyLayout()
-  private readonly frameHandler = (frame: SocketFrame) => this.toolPanel?.appendDebug(frame)
   private readonly registryHandler = (frame: SocketFrame) => {
     this.registry.apply(frame)
     // A session id is the first thing fx reports that naming can act on, and
@@ -588,7 +585,8 @@ export class Multiplexer {
     this.keybindings = options.keybindings
     this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
     this.trayHidden = options.initialTrayHidden ?? false
-    this.panelWidth = options.initialPanelWidth ?? debugPanelWidth(renderer.width)
+    this.panelWidth =
+      options.initialPanelWidth ?? Math.max(1, Math.floor(renderer.width * TOOL_PANEL_MAX_SCREEN_FRACTION))
     this.slugNamer = new SlugNamer({
       fxPath: options.fxPath,
       settings: options.slug ?? defaultSlugSettings(),
@@ -654,11 +652,10 @@ export class Multiplexer {
     this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
     this.tray.add(this.sessionList.root)
     const panelDefinitions = options.panels ?? []
-    const debugSocketPath = options.debugPanel && this.agentSocket ? this.agentSocket.path : null
     if (panelDefinitions.length > 0 && !options.panelSessions) {
       throw new Error("configured tools panels need a session controller")
     }
-    if (panelDefinitions.length > 0 || debugSocketPath) {
+    if (panelDefinitions.length > 0) {
       this.panelDivider = new BoxRenderable(renderer, {
         id: "fmx-tool-panel-divider",
         width: 1,
@@ -676,7 +673,6 @@ export class Multiplexer {
       this.toolPanel = new ToolPanel(renderer, {
         definitions: panelDefinitions,
         sessions: options.panelSessions ?? null,
-        debugSocketPath,
         initialSelectedId: options.initialPanelId,
         onSelectedChange: (id) => {
           options.onPanelIdChange?.(id)
@@ -687,10 +683,7 @@ export class Multiplexer {
           if (this.focusOwner === "panel") this.setFocusOwner("agent")
         },
       })
-      // FMX_DEBUG_PANEL used to open its fixed right column immediately. Keep
-      // that explicit diagnostic request visible unless state says otherwise;
-      // configured terminal tools alone start hidden.
-      this.panelVisible = options.initialPanelVisible ?? Boolean(debugSocketPath)
+      this.panelVisible = options.initialPanelVisible ?? false
       this.stage.add(this.panelDivider)
       this.stage.add(this.toolPanel.root)
     }
@@ -759,7 +752,6 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
-    if (debugSocketPath) this.agentSocket?.addFrameListener(this.frameHandler)
     this.agentSocket?.addFrameListener(this.registryHandler)
     this.refreshPanelChrome()
     this.applyLayout()

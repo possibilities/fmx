@@ -9,8 +9,6 @@
  */
 
 export type SocketFrame = {
-  seq: number
-  at: number
   paneId: string | null
   method: string | null
   requestId: string | null
@@ -18,8 +16,6 @@ export type SocketFrame = {
   malformed: boolean
 }
 
-/** Longer lines are truncated for display; fx's own send buffer is 1KiB. */
-const MAX_PAYLOAD_CHARS = 4096
 /** A peer that never sends a newline must not grow the buffer without bound. */
 const MAX_PENDING_CHARS = 64 * 1024
 
@@ -56,11 +52,9 @@ export class LineAssembler {
   }
 }
 
-export function decodeFrame(seq: number, at: number, line: string): SocketFrame {
-  const payload = truncatePayload(line.trim())
+export function decodeFrame(line: string): SocketFrame {
+  const payload = line.trim()
   const frame: SocketFrame = {
-    seq,
-    at,
     paneId: null,
     method: null,
     requestId: null,
@@ -102,10 +96,6 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null
 }
 
-function truncatePayload(payload: string): string {
-  return payload.length > MAX_PAYLOAD_CHARS ? `${payload.slice(0, MAX_PAYLOAD_CHARS)}…` : payload
-}
-
 /** herdr's reply shape: a string id and a result object, newline-terminated. */
 export function successReply(requestId: string | null): string {
   return `${JSON.stringify({ id: requestId ?? "", result: {} })}\n`
@@ -113,35 +103,4 @@ export function successReply(requestId: string | null): string {
 
 export function errorReply(requestId: string | null, code: string, message: string): string {
   return `${JSON.stringify({ id: requestId ?? "", error: { code, message } })}\n`
-}
-
-/**
- * The payload as the panel shows it: re-indented for reading, two spaces per
- * level. `payload` stays the raw wire line, so a frame that will not parse —
- * malformed, or truncated past its closing brace — is shown exactly as it
- * arrived rather than not at all.
- */
-export function formatPayload(frame: SocketFrame): string {
-  if (frame.malformed) return frame.payload
-  try {
-    return JSON.stringify(JSON.parse(frame.payload), null, 2)
-  } catch {
-    return frame.payload
-  }
-}
-
-export function formatFrameTime(at: number): string {
-  const time = new Date(at)
-  const hours = String(time.getHours()).padStart(2, "0")
-  const minutes = String(time.getMinutes()).padStart(2, "0")
-  const seconds = String(time.getSeconds()).padStart(2, "0")
-  const millis = String(time.getMilliseconds()).padStart(3, "0")
-  return `${hours}:${minutes}:${seconds}.${millis}`
-}
-
-/** Header line for the debug panel: when, which pane, what. */
-export function describeFrame(frame: SocketFrame): string {
-  const pane = frame.paneId ?? "—"
-  const method = frame.malformed ? "malformed" : (frame.method ?? "—")
-  return `${formatFrameTime(frame.at)} ${pane} ${method}`
 }

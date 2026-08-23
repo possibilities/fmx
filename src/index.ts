@@ -13,7 +13,6 @@ import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
-import { debugPanelRequested } from "./debug-panel.ts"
 import { doctor, resolveFx } from "./doctor.ts"
 import { AgentManifest, type ManifestEntry, manifestPath } from "./agent-manifest.ts"
 import { reconcileAgents, type ReconcileOutcome } from "./agent-reconcile.ts"
@@ -104,7 +103,6 @@ async function main(): Promise<void> {
   let startupPaletteDetector: TerminalPaletteDetector | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
-  const debugPanel = debugPanelRequested()
   const agentSocket = new AgentSocket({ homeId: home })
   let controlSocket: ControlSocket | null = null
   let transport: CompanionTransportFactory | null = null
@@ -187,7 +185,6 @@ async function main(): Promise<void> {
       transport,
       survivors,
       agentSocket,
-      debugPanel,
       panels: loadedConfig.panels,
       panelSessions,
       projectRoots: loadedConfig.projectRoots,

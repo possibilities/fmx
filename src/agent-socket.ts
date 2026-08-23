@@ -55,7 +55,6 @@ export class AgentSocket {
   private lock: HeldLock | null = null
   private readonly assemblers = new WeakMap<object, LineAssembler>()
   private readonly listeners = new Set<FrameListener>()
-  private seq = 0
 
   constructor(options: AgentSocketOptions = {}) {
     this.path = options.path ?? defaultSocketPath(options.homeId ?? homeId())
@@ -127,16 +126,16 @@ export class AgentSocket {
   private acceptClose(socket: SocketConnection): void {
     const assembler = this.assemblers.get(socket as object)
     if (!assembler) return
-    // A peer that closed mid-record leaves bytes worth showing, but there is
-    // no longer a connection to answer on.
+    // A peer that closed mid-record may still have sent lifecycle data worth
+    // processing, but there is no longer a connection to answer on.
     for (const line of assembler.flush()) {
-      this.emit(decodeFrame(this.seq++, Date.now(), line))
+      this.emit(decodeFrame(line))
     }
     this.assemblers.delete(socket as object)
   }
 
   private acceptLine(socket: SocketConnection, line: string): void {
-    const request = decodeFrame(this.seq++, Date.now(), line)
+    const request = decodeFrame(line)
     const reply = request.malformed
       ? errorReply(request.requestId, "invalid_request", "expected one JSON object per line")
       : successReply(request.requestId)
@@ -150,8 +149,8 @@ export class AgentSocket {
       // failures on its side too.
     }
 
-    // The reply is fmx's own and identical every time; only fx's request is
-    // worth reporting.
+    // The reply is fmx's own and identical every time; listeners receive only
+    // what fx requested.
     this.emit(request)
   }
 
@@ -160,7 +159,7 @@ export class AgentSocket {
       try {
         listener(frame)
       } catch {
-        // Observation must never take the multiplexer down.
+        // One listener must never take the others or the multiplexer down.
       }
     }
   }

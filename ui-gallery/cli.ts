@@ -2,6 +2,7 @@ import { createCliRenderer } from "@opentui/core"
 import { FX_KEYBOARD_PROTOCOL } from "../src/fx-terminal.ts"
 import { UiGalleryApp } from "./app.ts"
 import { buildUiGallery } from "./build.ts"
+import { UI_STORIES } from "./stories.ts"
 
 export async function runUiGallery(args: readonly string[] = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(args)
@@ -17,7 +18,7 @@ export async function runUiGallery(args: readonly string[] = process.argv.slice(
     exitSignals: [],
     useKittyKeyboard: FX_KEYBOARD_PROTOCOL,
   })
-  const app = new UiGalleryApp(renderer, built.stories)
+  const app = new UiGalleryApp(renderer, built.stories, UI_STORIES)
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   try {
     for (const signal of ["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"] as const) {
@@ -29,7 +30,7 @@ export async function runUiGallery(args: readonly string[] = process.argv.slice(
     await app.waitUntilDone()
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
-    app.destroy()
+    await app.destroy()
     renderer.destroy()
   }
 }

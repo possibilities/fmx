@@ -11,17 +11,12 @@ import {
 } from "@opentui/core"
 import type { PanelDefinition } from "./config.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
-import { DebugPanel } from "./debug-panel.ts"
 import { FmxTerminalRenderable } from "./fx-terminal.ts"
 import { hasDetectedBackground, modalColors, themeModeReport } from "./host-palette.ts"
 import type { TerminalSize, TerminalTransport } from "./agent-transport.ts"
 import type { PanelContext, PanelSessionController } from "./panel-session.ts"
-import type { SocketFrame } from "./socket-frames.ts"
 import { sanitizeTitle } from "./title-parser.ts"
 
-/** Invalid as a configured panel id, so the opt-in diagnostic tool can never
- * collide with a human's stable id. */
-export const DEBUG_TOOL_ID = "$debug"
 const MAX_SCROLLBACK_BYTES = 10_000_000
 const TERMINAL_RESET = new Uint8Array([0x1b, 0x63])
 
@@ -29,22 +24,18 @@ export type ToolPanelTab = {
   id: string
   label: string
   persistent: boolean
-  diagnostic?: boolean
 }
 
 export type ToolPanelOptions = {
   definitions: readonly PanelDefinition[]
   sessions: PanelSessionController | null
-  debugSocketPath?: string | null
   initialSelectedId?: string
   onSelectedChange?: (id: string) => void
   onFocusRequest?: () => void
   onFocusLost?: () => void
 }
 
-type ToolEntry =
-  | { kind: "terminal"; definition: PanelDefinition; tab: ToolPanelTab }
-  | { kind: "debug"; tab: ToolPanelTab }
+type ToolEntry = { definition: PanelDefinition; tab: ToolPanelTab }
 
 type RuntimeState = "loading" | "ready" | "exited" | "failed" | "lost"
 
@@ -62,7 +53,6 @@ export class ToolPanel {
   private readonly entries: ToolEntry[]
   private readonly links = new Map<string, TextRenderable>()
   private readonly runtimes = new Map<string, ToolRuntime>()
-  private readonly debugPanel: DebugPanel | null
   private selectedId: string
   private context: PanelContext | null = null
   private visible = false
@@ -75,21 +65,14 @@ export class ToolPanel {
     private readonly renderer: CliRenderer,
     private readonly options: ToolPanelOptions,
   ) {
-    const terminalEntries: ToolEntry[] = options.definitions.map((definition) => ({
-      kind: "terminal",
+    this.entries = options.definitions.map((definition) => ({
       definition,
       tab: { id: definition.id, label: definition.label, persistent: definition.persistent },
     }))
-    const debugEntry: ToolEntry[] = options.debugSocketPath
-      ? [{ kind: "debug", tab: { id: DEBUG_TOOL_ID, label: "agent socket", persistent: false, diagnostic: true } }]
-      : []
-    this.entries = [...terminalEntries, ...debugEntry]
-    if (this.entries.length === 0) throw new Error("a tools panel needs at least one terminal or diagnostic tool")
+    if (this.entries.length === 0) throw new Error("a tools panel needs at least one configured tool")
 
     const requested = this.entries.find((entry) => entry.tab.id === options.initialSelectedId)
-    // Preserve the old FMX_DEBUG_PANEL behavior: without saved selection, the
-    // diagnostic it explicitly requested is the surface that opens.
-    this.selectedId = requested?.tab.id ?? debugEntry[0]?.tab.id ?? this.entries[0]!.tab.id
+    this.selectedId = requested?.tab.id ?? this.entries[0]!.tab.id
 
     this.root = new BoxRenderable(renderer, {
       id: "fmx-tool-panel",
@@ -123,13 +106,6 @@ export class ToolPanel {
     this.body.add(this.contextStatus)
 
     for (const entry of this.entries) this.addLink(entry)
-    this.debugPanel = options.debugSocketPath ? new DebugPanel(renderer, options.debugSocketPath) : null
-    if (this.debugPanel) {
-      this.debugPanel.root.width = "100%"
-      this.debugPanel.root.height = "100%"
-      this.debugPanel.root.visible = false
-      this.body.add(this.debugPanel.root)
-    }
     this.root.add(this.rail)
     this.root.add(this.body)
     this.applyPalette(null, null)
@@ -154,7 +130,7 @@ export class ToolPanel {
 
   /** Whether the selected surface can accept terminal input in this context. */
   get focusable(): boolean {
-    if (this.entry(this.selectedId)?.kind !== "terminal" || this.context === null) return false
+    if (!this.entry(this.selectedId) || this.context === null) return false
     return !this.currentRuntime()?.retryable
   }
 
@@ -223,15 +199,10 @@ export class ToolPanel {
     for (const runtime of this.runtimes.values()) runtime.blur()
   }
 
-  appendDebug(frame: SocketFrame): void {
-    this.debugPanel?.append(frame)
-  }
-
   applyPalette(colors: TerminalColors | null, themeMode: ThemeMode | null): void {
     this.colors = colors
     this.themeMode = themeMode
     this.contextStatus.fg = modalColors(colors).dim
-    this.debugPanel?.applyPalette(colors)
     for (const runtime of this.runtimes.values()) runtime.applyPalette(colors, themeMode)
     this.refreshLinks()
   }
@@ -297,15 +268,10 @@ export class ToolPanel {
 
   private activateCurrent(forceRetry = false): ToolRuntime | null {
     this.contextStatus.visible = false
-    if (this.debugPanel) this.debugPanel.root.visible = false
     for (const runtime of this.runtimes.values()) runtime.setVisible(false)
 
     const entry = this.entry(this.selectedId)
     if (!entry) return null
-    if (entry.kind === "debug") {
-      if (this.debugPanel) this.debugPanel.root.visible = true
-      return null
-    }
     const context = this.context
     if (!context) {
       this.contextStatus.visible = true
@@ -350,7 +316,7 @@ export class ToolPanel {
 
   private currentRuntime(): ToolRuntime | null {
     const entry = this.entry(this.selectedId)
-    if (entry?.kind !== "terminal" || !this.context) return null
+    if (!entry || !this.context) return null
     return this.runtimes.get(runtimeKey(entry.definition.id, this.context.agentId)) ?? null
   }
 

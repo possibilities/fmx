@@ -181,7 +181,7 @@ export type PanelInfo = {
   width: number
   selected: string | null
   focused: "agent" | "panel"
-  tabs: { id: string; label: string; persistent: boolean; diagnostic?: boolean }[]
+  tabs: { id: string; label: string; persistent: boolean }[]
 }
 
 /** The model catalog the launch dialog offers, in picker order. */

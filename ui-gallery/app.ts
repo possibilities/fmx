@@ -1,7 +1,10 @@
 import {
   BoxRenderable,
+  type CapturedFrame,
   type CliRenderer,
   type KeyEvent,
+  type MouseEvent,
+  type PasteEvent,
   RGBA,
   ScrollBoxRenderable,
   StyledText,
@@ -13,12 +16,14 @@ import {
   UI_GALLERY_COMPONENTS,
   UI_GALLERY_PALETTES,
   type RenderedUiStory,
+  type UiStory,
+  UiStorySession,
   type UiGalleryComponent,
   type UiGalleryPaletteName,
   type UiGalleryStoriesByPalette,
 } from "./story.ts"
 
-const RAIL_WIDTH = 30
+const RAIL_WIDTH = 26
 const RAIL_MIN_WIDTH = 22
 const PREVIEW_MIN_WIDTH = 30
 
@@ -45,9 +50,17 @@ export class UiGalleryApp {
   private readonly preview: BoxRenderable
   private readonly previewHeading: TextRenderable
   private readonly previewDescription: TextRenderable
+  private readonly previewInteraction: TextRenderable
   private readonly previewScroll: ScrollBoxRenderable
+  private readonly sourceById: ReadonlyMap<string, UiStory>
   private readonly stateByComponent = new Map<UiGalleryComponent, number>()
   private frame: BoxRenderable | null = null
+  private frameText: TextRenderable | null = null
+  private interactionSession: UiStorySession | null = null
+  private interactionTask: Promise<void> = Promise.resolve()
+  private interactionGeneration = 0
+  private interacting = false
+  private interactionPending = false
   private palette: UiGalleryPaletteName = "dark"
   private selectedComponent = 0
   private closed = false
@@ -57,6 +70,7 @@ export class UiGalleryApp {
   constructor(
     private readonly renderer: CliRenderer,
     private readonly storiesByPalette: UiGalleryStoriesByPalette,
+    sourceStories: readonly UiStory[],
   ) {
     if (storiesByPalette.dark.length === 0 || storiesByPalette.light.length === 0) {
       throw new Error("the UI gallery needs at least one state in each theme")
@@ -64,6 +78,10 @@ export class UiGalleryApp {
     const darkIds = storiesByPalette.dark.map((story) => story.id).join("\0")
     const lightIds = storiesByPalette.light.map((story) => story.id).join("\0")
     if (darkIds !== lightIds) throw new Error("the UI gallery themes must contain the same states")
+    this.sourceById = new Map(sourceStories.map((story) => [story.id, story]))
+    for (const story of storiesByPalette.dark) {
+      if (!this.sourceById.has(story.id)) throw new Error(`the UI gallery is missing source state ${story.id}`)
+    }
     this.components = UI_GALLERY_COMPONENTS.filter((component) =>
       storiesByPalette.dark.some((story) => story.component === component),
     )
@@ -105,7 +123,7 @@ export class UiGalleryApp {
     })
     this.hints = new TextRenderable(renderer, {
       id: "ui-gallery-hints",
-      height: 4,
+      height: 5,
       flexShrink: 0,
       selectable: false,
       content: "",
@@ -146,6 +164,13 @@ export class UiGalleryApp {
       selectable: false,
       content: "",
     })
+    this.previewInteraction = new TextRenderable(renderer, {
+      id: "ui-gallery-preview-interaction",
+      height: 2,
+      flexShrink: 0,
+      selectable: false,
+      content: "",
+    })
     this.previewScroll = new ScrollBoxRenderable(renderer, {
       id: "ui-gallery-preview-scroll",
       width: "100%",
@@ -160,6 +185,7 @@ export class UiGalleryApp {
     })
     this.preview.add(this.previewHeading)
     this.preview.add(this.previewDescription)
+    this.preview.add(this.previewInteraction)
     this.preview.add(this.previewScroll)
 
     this.root.add(this.rail)
@@ -167,6 +193,7 @@ export class UiGalleryApp {
     this.root.add(this.preview)
     renderer.root.add(this.root)
     renderer.keyInput.on("keypress", this.keypressHandler)
+    renderer.keyInput.on("paste", this.pasteHandler)
     this.applyTheme()
     this.showComponent(0)
   }
@@ -183,6 +210,14 @@ export class UiGalleryApp {
     return this.components[this.selectedComponent]!
   }
 
+  get isInteracting(): boolean {
+    return this.interacting
+  }
+
+  waitForInteraction(): Promise<void> {
+    return this.interactionTask
+  }
+
   waitUntilDone(): Promise<void> {
     return this.done
   }
@@ -194,8 +229,12 @@ export class UiGalleryApp {
     this.resolveDone()
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
     this.close()
+    this.interactionGeneration++
+    await this.interactionTask.catch(() => {})
+    await this.disposeInteractionSession()
+    this.renderer.keyInput.off("paste", this.pasteHandler)
     if (!this.root.isDestroyed) this.root.destroyRecursively()
   }
 
@@ -209,9 +248,25 @@ export class UiGalleryApp {
   }
 
   private readonly keypressHandler = (key: KeyEvent): void => {
+    if (this.interacting || this.interactionPending) {
+      if (key.name === "escape") {
+        this.swallow(key)
+        this.leaveInteraction()
+        return
+      }
+      this.swallow(key)
+      if (this.interacting) this.queueInteraction(() => this.forwardKey(key))
+      return
+    }
     if (key.name === "escape" || key.name === "q" || (key.ctrl === true && key.name === "c")) {
       this.swallow(key)
       this.close()
+      return
+    }
+    if (key.name === "enter" || key.name === "return") {
+      if (!this.activeStory.interaction) return
+      this.swallow(key)
+      this.beginInteraction()
       return
     }
     if (key.name === "down" || key.name === "j") {
@@ -246,6 +301,7 @@ export class UiGalleryApp {
     }
     if (key.name === "t") {
       this.swallow(key)
+      this.leaveInteraction()
       this.palette = this.palette === "dark" ? "light" : "dark"
       this.applyTheme()
       this.showActiveStory()
@@ -270,6 +326,19 @@ export class UiGalleryApp {
       this.swallow(key)
       this.previewScroll.scrollBy({ x: 0, y: 1 }, "viewport")
     }
+  }
+
+  private readonly pasteHandler = (event: PasteEvent): void => {
+    if (!this.interacting) return
+    event.preventDefault()
+    event.stopPropagation()
+    const bytes = event.bytes.slice()
+    this.queueInteraction(async () => {
+      const session = this.interactionSession
+      if (!session) return
+      const snapshot = await session.sendPaste(bytes)
+      this.paintInteractiveSnapshot(snapshot.frame)
+    })
   }
 
   private buildComponentList(): void {
@@ -299,6 +368,7 @@ export class UiGalleryApp {
   }
 
   private showComponent(index: number): void {
+    this.leaveInteraction()
     this.selectedComponent = Math.max(0, Math.min(this.components.length - 1, index))
     const component = this.activeComponent
     if (!this.stateByComponent.has(component)) this.stateByComponent.set(component, 0)
@@ -308,6 +378,7 @@ export class UiGalleryApp {
   }
 
   private cycleState(offset: number): void {
+    this.leaveInteraction()
     const component = this.activeComponent
     const states = this.statesFor(component)
     const next = (this.stateIndex(component) + offset + states.length) % states.length
@@ -328,6 +399,7 @@ export class UiGalleryApp {
     ])
     this.previewDescription.fg = theme.dim
     this.previewDescription.content = story.description
+    this.paintInteractionHint()
 
     if (this.frame) {
       this.previewScroll.remove(this.frame)
@@ -335,23 +407,172 @@ export class UiGalleryApp {
     }
     this.frame = new BoxRenderable(this.renderer, {
       id: "ui-gallery-frame",
+      width: story.frame.cols + 2,
+      height: story.frame.rows + 2,
+      flexShrink: 0,
+      backgroundColor: theme.background,
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.dim,
+      title: " viewport ",
+      titleColor: theme.dim,
+      onMouseDown: (event) => this.forwardMouse(event, "down"),
+      onMouseUp: (event) => this.forwardMouse(event, "up"),
+      onMouseDrag: (event) => this.forwardMouse(event, "drag"),
+      onMouseScroll: (event) => this.forwardMouse(event, "scroll"),
+    })
+    this.frameText = new TextRenderable(this.renderer, {
+      id: "ui-gallery-frame-text",
       width: story.frame.cols,
       height: story.frame.rows,
       flexShrink: 0,
-      backgroundColor: theme.background,
+      selectable: true,
+      content: frameText(story.frame, story.palette, theme.foreground),
     })
-    this.frame.add(
-      new TextRenderable(this.renderer, {
-        id: "ui-gallery-frame-text",
-        width: story.frame.cols,
-        height: story.frame.rows,
-        flexShrink: 0,
-        selectable: true,
-        content: frameText(story, theme.foreground),
-      }),
-    )
+    this.frame.add(this.frameText)
     this.previewScroll.add(this.frame)
     this.renderer.requestRender()
+  }
+
+  private beginInteraction(): void {
+    if (this.interacting || this.interactionPending || !this.activeStory.interaction) return
+    const source = this.sourceById.get(this.activeStory.id)
+    if (!source) return
+    const generation = ++this.interactionGeneration
+    this.interactionPending = true
+    this.paintInteractionHint()
+    this.paintFrameMode()
+    const palette = this.palette
+    this.interactionTask = this.interactionTask.catch(() => {}).then(async () => {
+      const session = await UiStorySession.open(source, palette)
+      if (generation !== this.interactionGeneration || this.closed) {
+        await session.dispose()
+        return
+      }
+      this.interactionSession = session
+      this.interactionPending = false
+      this.interacting = true
+      const snapshot = await session.snapshot()
+      if (generation !== this.interactionGeneration) return
+      this.paintInteractiveSnapshot(snapshot.frame)
+      this.paintInteractionHint()
+      this.paintFrameMode()
+    }).catch((error) => this.reportInteractionError(error))
+  }
+
+  private leaveInteraction(): void {
+    if (!this.interacting && !this.interactionPending && !this.interactionSession) return
+    this.interactionGeneration++
+    this.interacting = false
+    this.interactionPending = false
+    const session = this.interactionSession
+    this.interactionSession = null
+    this.interactionTask = this.interactionTask.catch(() => {}).then(async () => {
+      await session?.dispose()
+    })
+    this.paintInteractionHint()
+    this.paintFrameMode()
+  }
+
+  private async disposeInteractionSession(): Promise<void> {
+    const session = this.interactionSession
+    this.interactionSession = null
+    this.interacting = false
+    this.interactionPending = false
+    await session?.dispose()
+  }
+
+  private queueInteraction(operation: () => Promise<void>): void {
+    this.interactionTask = this.interactionTask.catch(() => {}).then(operation).catch((error) =>
+      this.reportInteractionError(error))
+  }
+
+  private async forwardKey(key: Pick<KeyEvent, "raw" | "sequence">): Promise<void> {
+    const session = this.interactionSession
+    const generation = this.interactionGeneration
+    if (!session) return
+    const snapshot = await session.sendKey(key)
+    if (session !== this.interactionSession || generation !== this.interactionGeneration) return
+    this.paintInteractiveSnapshot(snapshot.frame)
+  }
+
+  private forwardMouse(event: MouseEvent, type: "down" | "up" | "drag" | "scroll"): void {
+    const frame = this.frame
+    const session = this.interactionSession
+    if (!this.interacting || !frame || !session) return
+    const x = event.x - frame.screenX - 1
+    const y = event.y - frame.screenY - 1
+    const story = this.activeStory
+    if (x < 0 || y < 0 || x >= story.frame.cols || y >= story.frame.rows) return
+    event.preventDefault()
+    event.stopPropagation()
+    const generation = this.interactionGeneration
+    this.queueInteraction(async () => {
+      const snapshot = await session.sendMouse(
+        type,
+        x,
+        y,
+        event.button,
+        event.modifiers,
+        event.scroll?.direction,
+      )
+      if (session !== this.interactionSession || generation !== this.interactionGeneration) return
+      this.paintInteractiveSnapshot(snapshot.frame)
+    })
+  }
+
+  private paintInteractiveSnapshot(frame: CapturedFrame): void {
+    const story = this.activeStory
+    const theme = galleryTheme(this.palette)
+    if (!this.frameText) return
+    this.frameText.content = frameText(frame, story.palette, theme.foreground)
+    this.renderer.requestRender()
+  }
+
+  private paintInteractionHint(): void {
+    const theme = galleryTheme(this.palette)
+    const instruction = this.activeStory.interaction
+    if (!instruction) {
+      this.previewInteraction.content = new StyledText([
+        textChunk("REFERENCE", theme.dim, undefined, TextAttributes.BOLD),
+        textChunk(" · use ← → to compare states", theme.dim),
+      ])
+      return
+    }
+    const label = this.interactionPending ? "OPENING" : this.interacting ? "INTERACTING" : "ENTER TO INTERACT"
+    this.previewInteraction.content = new StyledText([
+      textChunk(label, this.interacting ? theme.signal : theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(` · ${instruction}`, theme.dim),
+      ...(this.interacting ? [textChunk(" · Esc returns", theme.dim)] : []),
+    ])
+  }
+
+  private paintFrameMode(): void {
+    if (!this.frame) return
+    const theme = galleryTheme(this.palette)
+    this.frame.borderColor = this.interacting ? theme.accent : theme.dim
+    this.frame.focusedBorderColor = this.interacting ? theme.accent : theme.dim
+    this.frame.title = this.interactionPending
+      ? " opening "
+      : this.interacting
+        ? " interactive · Esc returns "
+        : " viewport "
+    this.frame.titleColor = this.interacting ? theme.accent : theme.dim
+    this.renderer.requestRender()
+  }
+
+  private async reportInteractionError(error: unknown): Promise<void> {
+    const session = this.interactionSession
+    this.interacting = false
+    this.interactionPending = false
+    this.interactionSession = null
+    await session?.dispose()
+    const theme = galleryTheme(this.palette)
+    this.previewInteraction.content = new StyledText([
+      textChunk("INTERACTION ENDED", theme.signal, undefined, TextAttributes.BOLD),
+      textChunk(` · ${error instanceof Error ? error.message : String(error)}`, theme.dim),
+    ])
+    this.paintFrameMode()
   }
 
   private applyTheme(): void {
@@ -363,6 +584,8 @@ export class UiGalleryApp {
     this.divider.borderColor = theme.dim
     this.preview.backgroundColor = theme.background
     this.previewScroll.backgroundColor = theme.background
+    applyScrollbarTheme(this.componentList, theme)
+    applyScrollbarTheme(this.previewScroll, theme)
     this.previewDescription.fg = theme.dim
     this.identity.content = new StyledText([
       textChunk("UI GALLERY", theme.accent, undefined, TextAttributes.BOLD),
@@ -372,14 +595,20 @@ export class UiGalleryApp {
     ])
     this.hints.content = new StyledText([
       textChunk("↑↓", theme.accent, undefined, TextAttributes.BOLD),
-      textChunk(" component", theme.dim),
-      textChunk("\n←→", theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(" component · ", theme.dim),
+      textChunk("←→", theme.accent, undefined, TextAttributes.BOLD),
       textChunk(" state", theme.dim),
+      textChunk("\nenter", theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(" interact", theme.dim),
       textChunk("\npgup/pgdn scroll", theme.dim),
       textChunk("\n[ ] pan · ", theme.dim),
       textChunk("t", theme.accent, undefined, TextAttributes.BOLD),
-      textChunk(" theme · q close", theme.dim),
+      textChunk(" theme", theme.dim),
+      textChunk("\nq", theme.accent, undefined, TextAttributes.BOLD),
+      textChunk(" close", theme.dim),
     ])
+    this.paintInteractionHint()
+    this.paintFrameMode()
     this.paintComponentList()
     this.renderer.requestRender()
   }
@@ -419,18 +648,22 @@ export class UiGalleryApp {
   }
 }
 
-function frameText(story: RenderedUiStory, foreground: RGBA): StyledText {
+function frameText(
+  frame: CapturedFrame,
+  palette: UiGalleryPaletteName,
+  foreground: RGBA,
+): StyledText {
   const chunks: TextChunk[] = []
-  for (const [lineIndex, line] of story.frame.lines.entries()) {
+  for (const [lineIndex, line] of frame.lines.entries()) {
     for (const span of line.spans) {
       chunks.push(textChunk(span.text, span.fg, span.bg, span.attributes))
     }
-    if (lineIndex < story.frame.lines.length - 1) {
+    if (lineIndex < frame.lines.length - 1) {
       chunks.push(
         textChunk(
           "\n",
           foreground,
-          RGBA.fromHex(UI_GALLERY_PALETTES[story.palette].defaultBackground ?? "#171c23"),
+          RGBA.fromHex(UI_GALLERY_PALETTES[palette].defaultBackground ?? "#171c23"),
         ),
       )
     }
@@ -447,6 +680,13 @@ function galleryTheme(name: UiGalleryPaletteName): GalleryTheme {
     accent: RGBA.fromHex(palette.palette[6] ?? "#67c7c2"),
     signal: RGBA.fromHex(palette.palette[3] ?? "#e5c07b"),
     selectedBackground: RGBA.fromHex(name === "dark" ? "#2a3640" : "#d5dfde"),
+  }
+}
+
+function applyScrollbarTheme(scroll: ScrollBoxRenderable, theme: GalleryTheme): void {
+  for (const bar of [scroll.verticalScrollBar, scroll.horizontalScrollBar]) {
+    bar.slider.backgroundColor = theme.background
+    bar.slider.foregroundColor = theme.selectedBackground
   }
 }
 

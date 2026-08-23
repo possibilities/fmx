@@ -1,16 +1,13 @@
 import { strict as assert } from "node:assert"
 import { resolve } from "node:path"
-import { BoxRenderable, type KeyEvent } from "@opentui/core"
+import type { KeyEvent } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
+import type { AgentSocket, FrameListener } from "../src/agent-socket.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
 import type { PanelDefinition } from "../src/config.ts"
-import { DebugPanel } from "../src/debug-panel.ts"
-import { FxTerminalRenderable } from "../src/fx-terminal.ts"
-import { modalColors } from "../src/host-palette.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { LaunchDialog } from "../src/launch-dialog.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { PromptEditor } from "../src/prompt-editor.ts"
 import type { ProjectChoice } from "../src/projects.ts"
 import { SessionList } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
@@ -20,13 +17,24 @@ import { ToolPanel } from "../src/tool-panel.ts"
 import {
   GalleryAgentTransportFactory,
   GalleryPanelSessions,
-  RejectingAgentTransportFactory,
 } from "./fakes.ts"
 import type { UiStory, UiStoryContext } from "./story.ts"
 
 const ROOT = resolve(import.meta.dir, "..")
+const GALLERY_CWD = resolve(ROOT, "..")
 const NEVER = new AbortController().signal
 const SESSION_ID = "909bc46b64721838"
+const AGENT_SCREEN =
+  "\x1b[2J\x1b[H\x1b[1;36mWorking on the UI gallery\x1b[0m\r\n\r\n" +
+  "  ✓ Inventory visible components\r\n" +
+  "  ✓ Exercise meaningful states\r\n" +
+  "  ◐ Review the gallery in a terminal\r\n\r\n" +
+  "\x1b[90mDeterministic state.\x1b[0m\r\n"
+const PANEL_SCREEN =
+  "\x1b[2J\x1b[H\x1b[1;34mbun test\x1b[0m\r\n\r\n" +
+  "  363 pass\r\n" +
+  "  0 fail\r\n\r\n" +
+  "\x1b[90mWatching for changes…\x1b[0m\r\n"
 
 const PROJECTS: ProjectChoice[] = [
   { directory: "/Users/demo/code/fmx", display: "~/code/fmx", launches: 8 },
@@ -45,94 +53,39 @@ export const UI_STORIES: readonly UiStory[] = [
   {
     id: "multiplexer-empty",
     component: "Multiplexer",
-    title: "Empty state",
-    description: "The chromeless shell before the Home has an Agent.",
-    viewport: { cols: 80, rows: 24 },
+    title: "No Agents",
+    description: "An empty Home keeps the full work surface quiet and centers the two ways to begin.",
+    viewport: { cols: 86, rows: 24 },
     expectedText: ["prefix+c to create agent", "prefix+l to prompt agent"],
-    arrange: mountMultiplexer(),
+    interaction: "Use ctrl+b c to create an Agent, or ctrl+b ? to open the key reference.",
+    arrange: mountMultiplexer({ screen: AGENT_SCREEN }),
   },
   {
-    id: "multiplexer-help",
+    id: "multiplexer-working",
     component: "Multiplexer",
-    title: "Key reference",
-    description: "The help modal over the empty shell, reached through the same control path as the key.",
-    viewport: { cols: 80, rows: 24 },
-    expectedText: ["keys", "new agent", "toggle tools", "ctrl+b"],
-    arrange: mountMultiplexer(async (multiplexer) => {
-      await multiplexer.control.handle("keys", { show: true }, NEVER)
+    title: "Working Agent",
+    description: "The everyday composition: Session list, active path, divider, and one working surface.",
+    viewport: { cols: 86, rows: 24 },
+    expectedText: ["fmx", "Working on the UI gallery", "Review the gallery in a terminal"],
+    interaction: "Use ctrl+b b to toggle the Tray and ctrl+b ? to inspect the active key map.",
+    arrange: mountMultiplexer({
+      screen: AGENT_SCREEN,
+      afterMount: launchGalleryAgent,
     }),
   },
   {
-    id: "multiplexer-start-error",
+    id: "multiplexer-tools",
     component: "Multiplexer",
-    title: "Agent start failure",
-    description: "A failed direct start leaves no provisional Agent and explains the failure in a modal.",
-    viewport: { cols: 88, rows: 24 },
-    expectedText: ["error", "fx did not start", "ENOENT: fx executable was not found"],
-    arrange: mountMultiplexer(
-      async (_multiplexer, context) => {
-        context.setup.mockInput.pressKey("b", { ctrl: true })
-        context.setup.mockInput.pressKey("c")
-        await context.setup.waitFor(() => context.setup.renderer.root.findDescendantById("fmx-modal")?.visible === true)
-      },
-      new RejectingAgentTransportFactory(),
-    ),
-  },
-  {
-    id: "agent-terminal-working",
-    component: "Agent terminal",
-    title: "Working Agent",
-    description: "ANSI output, emphasis, and an established input cursor inside the embedded terminal.",
-    viewport: { cols: 76, rows: 20 },
-    expectedText: ["FMX AGENT 1", "Working", "Inspect the restore path", "Read 12 files"],
-    arrange(context) {
-      const terminal = new FxTerminalRenderable(context.setup.renderer, {
-        id: "ui-gallery-agent-terminal",
-        width: "100%",
-        height: "100%",
-        onData: () => {},
-      })
-      context.canvas.add(terminal)
-      terminal.applyHostPalette(context.palette)
-      terminal.write(
-        "\x1b[2J\x1b[H\x1b[1;36mFMX AGENT 1\x1b[0m  \x1b[33mWorking\x1b[0m\r\n" +
-          "\x1b[90m/Users/demo/code/fmx · silver-valley\x1b[0m\r\n\r\n" +
-          "\x1b[1m› Inspect the restore path and cover the lost transport states\x1b[0m\r\n\r\n" +
-          "  ✓ Read 12 files\r\n" +
-          "  ✓ Reproduced stale cursor report\r\n" +
-          "  ◐ Writing the regression test\r\n\r\n" +
-          "\x1b[36m•\x1b[0m I found the reset ordering in src/multiplexer.ts.\r\n\r\n" +
-          "› ",
-      )
-      terminal.focus()
-      context.defer(() => terminal.destroy())
-    },
-  },
-  {
-    id: "agent-terminal-light",
-    component: "Agent terminal",
-    title: "Light host palette",
-    description: "The same embedded emulator under a light terminal palette with status colors intact.",
-    viewport: { cols: 62, rows: 14 },
-    expectedText: ["Review complete", "3 files changed", "Ready for the next instruction"],
-    arrange(context) {
-      const terminal = new FxTerminalRenderable(context.setup.renderer, {
-        id: "ui-gallery-agent-terminal-light",
-        width: "100%",
-        height: "100%",
-        onData: () => {},
-      })
-      context.canvas.add(terminal)
-      terminal.applyHostPalette(context.palette)
-      terminal.write(
-        "\x1b[2J\x1b[H\x1b[1;32m✓ Review complete\x1b[0m\r\n\r\n" +
-          "  3 files changed, 118 insertions(+), 9 deletions(-)\r\n" +
-          "  bun test: 214 pass\r\n" +
-          "  bun run typecheck: pass\r\n\r\n" +
-          "\x1b[34mReady for the next instruction.\x1b[0m\r\n",
-      )
-      context.defer(() => terminal.destroy())
-    },
+    title: "Tools beside an Agent",
+    description: "The complete workspace keeps the Session list, Agent, and selected tool legible as one block.",
+    viewport: { cols: 86, rows: 24 },
+    expectedText: ["fmx", "Working on the UI gallery", "Diff", "Tests", "363 pass", "Watching for changes"],
+    interaction: "Use ctrl+b r to hide the Tools panel and ctrl+b o to move focus into it.",
+    arrange: mountMultiplexer({
+      screen: AGENT_SCREEN,
+      panelScreen: PANEL_SCREEN,
+      afterMount: launchGalleryAgent,
+    }),
   },
   {
     id: "session-list-status-atlas",
@@ -216,9 +169,10 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "launch-dialog-default",
     component: "Launch dialog",
     title: "New launch",
-    description: "The default launch dialog opens on the Prompt editor and the most-used project.",
-    viewport: { cols: 88, rows: 26 },
+    description: "The default launch dialog opens on its prompt field and the most-used project.",
+    viewport: { cols: 86, rows: 26 },
     expectedText: ["launch", "what should the agent do?", "~/code/fmx", "worktree  no", "gpt-5.6-sol", "effort    high"],
+    interaction: "Type a prompt; Tab moves through rows and Space opens the focused picker.",
     arrange(context) {
       mountLaunchDialog(context)
     },
@@ -228,8 +182,9 @@ export const UI_STORIES: readonly UiStory[] = [
     component: "Launch dialog",
     title: "Multiline Worktree launch",
     description: "A prepared draft with a multiline Launch prompt, Worktree enabled, and an explicit launch level.",
-    viewport: { cols: 92, rows: 28 },
+    viewport: { cols: 86, rows: 26 },
     expectedText: ["Build the gallery", "Keep every state deterministic", "worktree  yes", "gpt-5.6-terra", "effort    xhigh"],
+    interaction: "Edit the prompt or use Tab and Space to change any launch choice.",
     arrange(context) {
       const dialog = mountLaunchDialog(context, {
         prompt: "Build the gallery\nKeep every state deterministic",
@@ -248,6 +203,7 @@ export const UI_STORIES: readonly UiStory[] = [
     description: "The Worktree row explains why it cannot be enabled for an untracked project.",
     viewport: { cols: 84, rows: 24 },
     expectedText: ["~/code/zmax", "unavailable — not a repository"],
+    interaction: "Move between rows to inspect which choices remain available.",
     arrange(context) {
       const dialog = mountLaunchDialog(context, { directory: PROJECTS[4]!.directory })
       dialog.setWorktreeAvailability(PROJECTS[4]!.directory, false)
@@ -258,8 +214,9 @@ export const UI_STORIES: readonly UiStory[] = [
     component: "Launch dialog",
     title: "Filtered project picker",
     description: "The project chooser filters by subsequence and keeps the best match highlighted.",
-    viewport: { cols: 88, rows: 26 },
+    viewport: { cols: 86, rows: 26 },
     expectedText: ["project", "> api", "~/code/agent-api"],
+    interaction: "Type to filter, use arrows to move, Enter applies, and Escape cancels.",
     async arrange(context) {
       mountLaunchDialog(context)
       context.setup.mockInput.pressTab()
@@ -272,40 +229,15 @@ export const UI_STORIES: readonly UiStory[] = [
     component: "Launch dialog",
     title: "Model catalog",
     description: "The model picker presents each local model with the efforts it supports.",
-    viewport: { cols: 92, rows: 26 },
+    viewport: { cols: 86, rows: 26 },
     expectedText: ["model", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "low/medium/high/xhigh"],
+    interaction: "Use arrows to choose a model; Enter applies and Escape cancels.",
     arrange(context) {
       mountLaunchDialog(context)
       context.setup.mockInput.pressTab()
       context.setup.mockInput.pressTab()
       context.setup.mockInput.pressTab()
       context.setup.mockInput.pressKey(" ")
-    },
-  },
-  {
-    id: "prompt-editor-placeholder",
-    component: "Prompt editor",
-    title: "Empty Prompt editor",
-    description: "The real line editor at rest, including its instructional placeholder and cursor.",
-    viewport: { cols: 58, rows: 10 },
-    expectedText: ["what should the agent do?"],
-    async arrange(context) {
-      await mountPromptEditor(context, "")
-    },
-  },
-  {
-    id: "prompt-editor-wrapped",
-    component: "Prompt editor",
-    title: "Wrapped multiline Prompt",
-    description: "A long Launch prompt wraps and grows while retaining the editor's capped viewport.",
-    viewport: { cols: 54, rows: 14 },
-    expectedText: ["Generate a gallery of every", "Include narrow widths, failures,", "light palettes."],
-    async arrange(context) {
-      await mountPromptEditor(
-        context,
-        "Generate a gallery of every visible component.\nInclude narrow widths, failures, and light palettes.",
-        42,
-      )
     },
   },
   {
@@ -386,55 +318,7 @@ export const UI_STORIES: readonly UiStory[] = [
       await mountToolPanel(context, new GalleryPanelSessions("failed"))
     },
   },
-  {
-    id: "debug-panel-empty",
-    component: "Debug panel",
-    title: "Empty frame tail",
-    description: "The diagnostic surface identifies its Agent socket and keeps clear visible before frames arrive.",
-    viewport: { cols: 52, rows: 14 },
-    expectedText: ["agent socket · /tmp/fmx-ui-gallery.sock", "[clear]"],
-    arrange(context) {
-      mountDebugPanel(context)
-    },
-  },
-  {
-    id: "debug-panel-frames",
-    component: "Debug panel",
-    title: "Decoded and malformed frames",
-    description: "Recent Agent-socket frames retain their headers, indented payloads, and malformed distinction.",
-    viewport: { cols: 58, rows: 30 },
-    expectedText: ["\"method\": \"pane.report_agent\"", "\"state\": \"working\"", "p_gallery pane.rename", "malformed", "{not-json"],
-    arrange(context) {
-      const panel = mountDebugPanel(context)
-      panel.append(
-        decodeFrame(
-          1,
-          Date.UTC(2026, 7, 23, 14, 5, 9, 120),
-          '{"id":"1","method":"pane.report_agent","params":{"pane_id":"p_gallery","state":"working"}}',
-        ),
-      )
-      panel.append(
-        decodeFrame(
-          2,
-          Date.UTC(2026, 7, 23, 14, 5, 10, 440),
-          '{"id":"2","method":"pane.rename","params":{"target":"p_gallery","label":"ui-gallery"}}',
-        ),
-      )
-      panel.append(decodeFrame(3, Date.UTC(2026, 7, 23, 14, 5, 11), "{not-json"))
-    },
-  },
   ...(["success", "neutral", "error"] as const).map((tone): UiStory => toastStory(tone)),
-  {
-    id: "toast-narrow",
-    component: "Toast",
-    title: "Narrow lifecycle notice",
-    description: "A long lifecycle notice truncates inside the safe horizontal inset.",
-    viewport: { cols: 34, rows: 10 },
-    expectedText: ["fmx / feature/ui-gallery / …"],
-    arrange(context) {
-      mountToast(context, "fmx / feature/ui-gallery / coordinate-the-review started", "success")
-    },
-  },
 ]
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
@@ -488,33 +372,6 @@ function mountLaunchDialog(
   return dialog
 }
 
-async function mountPromptEditor(context: UiStoryContext, text: string, width = 46): Promise<void> {
-  const container = new BoxRenderable(context.setup.renderer, {
-    id: "ui-gallery-prompt-editor-frame",
-    position: "absolute",
-    left: 4,
-    top: 3,
-    width: width + 4,
-    height: 10,
-    padding: 1,
-    border: true,
-    borderStyle: "single",
-    borderColor: modalColors(context.palette).accent,
-    backgroundColor: modalColors(context.palette).background,
-  })
-  const editor = new PromptEditor(context.setup.renderer, { onChange: () => editor.measure(width) })
-  container.add(editor.root)
-  context.canvas.add(container)
-  editor.applyPalette(modalColors(context.palette))
-  if (text) editor.setText(text)
-  editor.measure(width)
-  editor.focus()
-  await context.setup.renderOnce()
-  editor.measure(width)
-  editor.root.cursorOffset = 0
-  context.defer(() => container.destroyRecursively())
-}
-
 async function mountToolPanel(
   context: UiStoryContext,
   sessions: GalleryPanelSessions,
@@ -524,7 +381,6 @@ async function mountToolPanel(
   const panel = new ToolPanel(context.setup.renderer, {
     definitions: PANELS,
     sessions,
-    debugSocketPath: null,
     initialSelectedId: selected,
   })
   panel.setWidth(context.setup.renderer.width)
@@ -538,15 +394,6 @@ async function mountToolPanel(
     sessions.close()
     panel.root.destroyRecursively()
   })
-  return panel
-}
-
-function mountDebugPanel(context: UiStoryContext): DebugPanel {
-  const panel = new DebugPanel(context.setup.renderer, "/tmp/fmx-ui-gallery.sock")
-  panel.setWidth(context.setup.renderer.width)
-  panel.applyPalette(context.palette)
-  context.canvas.add(panel.root)
-  context.defer(() => panel.root.destroyRecursively())
   return panel
 }
 
@@ -578,24 +425,78 @@ function mountToast(context: UiStoryContext, text: string, tone: ToastTone, ital
   context.defer(() => toast.destroy())
 }
 
-function mountMultiplexer(
-  afterMount: (multiplexer: Multiplexer, context: UiStoryContext) => void | Promise<void> = () => {},
-  transport: AgentTransportFactory = new GalleryAgentTransportFactory(""),
-): (context: UiStoryContext) => Promise<void> {
+type MultiplexerStoryOptions = {
+  screen?: string
+  panelScreen?: string
+  afterMount?: (
+    multiplexer: Multiplexer,
+    context: UiStoryContext,
+    agentSocket: GalleryAgentSocket,
+  ) => void | Promise<void>
+  transport?: AgentTransportFactory
+}
+
+function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiStoryContext) => Promise<void> {
   return async (context) => {
+    const agentSocket = new GalleryAgentSocket()
+    const panelSessions = options.panelScreen === undefined
+      ? null
+      : new GalleryPanelSessions("ready", options.panelScreen)
     const multiplexer = new Multiplexer(context.setup.renderer, {
       fxPath: "fx",
-      cwd: ROOT,
+      cwd: GALLERY_CWD,
       keybindings: resolveKeybindings().keybindings,
       manifest: AgentManifest.ephemeral("ui-gallery"),
-      transport,
+      transport: options.transport ?? new GalleryAgentTransportFactory(options.screen ?? "", (launch) => {
+        agentSocket.report(launch.entry.paneId, "pane.report_agent_session", {
+          agent_session_id: `1770000000000-000000000-gallery${launch.entry.displayId}`,
+        })
+        agentSocket.report(launch.entry.paneId, "pane.report_agent", { state: "working" })
+      }),
+      agentSocket: agentSocket as unknown as AgentSocket,
+      panels: panelSessions ? PANELS : [],
+      panelSessions,
+      initialPanelVisible: panelSessions !== null,
+      initialPanelId: panelSessions ? "tests" : undefined,
       projectRoots: [],
       home: ROOT,
       toastDurationMs: 60_000,
     })
     multiplexer.setHostPalette(context.palette)
-    context.defer(() => multiplexer.shutdown())
-    await afterMount(multiplexer, context)
+    context.defer(async () => {
+      await multiplexer.shutdown()
+      panelSessions?.close()
+    })
+    await options.afterMount?.(multiplexer, context, agentSocket)
+  }
+}
+
+async function launchGalleryAgent(
+  multiplexer: Multiplexer,
+): Promise<void> {
+  await multiplexer.control.handle(
+    "launch",
+    { directory: GALLERY_CWD, focus: true },
+    NEVER,
+  )
+  await settlePromises()
+}
+
+class GalleryAgentSocket {
+  readonly path = "/tmp/fmx-ui-gallery.sock"
+  private readonly listeners = new Set<FrameListener>()
+
+  addFrameListener(listener: FrameListener): void {
+    this.listeners.add(listener)
+  }
+
+  report(paneId: string, method: string, params: Record<string, unknown>): void {
+    const frame = decodeFrame(JSON.stringify({
+      id: "gallery",
+      method,
+      params: { pane_id: paneId, ...params },
+    }))
+    for (const listener of this.listeners) listener(frame)
   }
 }
 

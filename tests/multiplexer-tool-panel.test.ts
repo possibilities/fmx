@@ -308,7 +308,7 @@ test("an Agent exit tears down its local Tool panel runtime and stops its owned 
   }
 })
 
-test("panel controls report unavailability when no terminal or diagnostic tool is assigned", async () => {
+test("panel controls report unavailability when no tool is configured", async () => {
   const h = await harness({ panels: [] })
   try {
     expect(h.find("fmx-tool-panel")).toBeUndefined()

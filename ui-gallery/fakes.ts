@@ -60,9 +60,13 @@ export class GalleryTransport implements TerminalTransport {
 export class GalleryAgentTransportFactory implements AgentTransportFactory {
   readonly transports: GalleryTransport[] = []
 
-  constructor(private readonly screen: string) {}
+  constructor(
+    private readonly screen: string,
+    private readonly onStart?: (launch: AgentLaunch) => void,
+  ) {}
 
-  start(_launch: AgentLaunch): Promise<AgentTransport> {
+  start(launch: AgentLaunch): Promise<AgentTransport> {
+    this.onStart?.(launch)
     return Promise.resolve(this.transport())
   }
 

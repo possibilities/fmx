@@ -91,9 +91,9 @@ command = ["bun", "test", "--watch"]
 persistent = false
 ```
 
-The panel exists only when at least one tool is configured (or the diagnostic
-`FMX_DEBUG_PANEL` is requested). Its visibility, width, and selected link are
-kept in `state.json`, just like the Session list's visibility and width.
+The panel exists only when at least one tool is configured. Its visibility,
+width, and selected link are kept in `state.json`, just like the Session list's
+visibility and width.
 Persistent tools run in Companion-owned terminals: Detach leaves them running,
 and the next fmx attaches to the same terminal. A non-persistent tool belongs
 to the current fmx process; Detach ends it, and reattaching starts it naturally
@@ -239,10 +239,12 @@ bun run test:pty  # requires a host that permits PTY allocation, and the compani
 The UI gallery is an executable catalog of fmx's interesting OpenTUI
 components and blocks. Up/down chooses a component, left/right cycles through
 its states, and `t` toggles the entire gallery between dark and light without
-changing either selection. Page up/page down scrolls a large frame, `[`/`]`
-pans it horizontally, and `q` closes the gallery. States use deterministic
-transports and palettes, so the interactive gallery and the headless check
-exercise the same states under both themes.
+changing either selection. On a state that benefits from live input, Enter
+hands its real keys and mouse controls to the component and Escape returns to
+gallery navigation. Page up/page down scrolls a large frame, `[`/`]` pans it
+horizontally, and `q` closes the gallery. States use deterministic transports
+and palettes, so the interactive gallery and the headless check exercise the
+same states under both themes.
 
 Running fmx from a checkout needs the companion daemon, which a release
 bundles as `fmx-zmx`. A linked checkout finds it on `PATH`:
