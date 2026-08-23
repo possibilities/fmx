@@ -98,8 +98,11 @@ branch, then one row per agent carrying its status icon and its name — the
 slug once naming lands, the short session id until then.
 Depth is carried by indentation alone, with no connecting glyphs.
 Clicking an agent row switches to that instance; project and branch rows are
-not selectable. Agent names use the terminal's native gray directly, so late
-palette detection does not restyle them.
+not selectable. The switch happens on mouse-down and sidebar text itself is
+not selectable, so pointer navigation never waits for release. Agent names use
+the terminal's native gray directly, so late palette detection does not
+restyle them. The selected-row background and divider are chosen together
+before first paint and do not change when the initial palette answer is late.
 _Avoid_: agent panel, tab bar, session picker.
 
 **Subagent row** — a non-selectable Session list row for an fx subagent whose

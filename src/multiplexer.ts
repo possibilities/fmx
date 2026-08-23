@@ -486,6 +486,9 @@ export class Multiplexer {
   private spawnErrorLines: string[] = []
   private spawnErrorHeading = "fx did not start"
   private hostPalette: TerminalColors | null = null
+  /** The first frame owns one coherent selected-row and divider palette. A
+   * late answer may theme everything else, but cannot repaint those two. */
+  private startupChromeLocked = false
   private shuttingDown = false
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
@@ -711,10 +714,6 @@ export class Multiplexer {
   async start(): Promise<void> {
     if (this.shuttingDown) return
     this.subagents.start()
-    // The host palette query has settled by the time an fx can launch; if it
-    // never produced colors, the fallback is the best divider color there will
-    // be once an agent makes the sidebar visible.
-    if (!this.hostPalette) this.applyDividerPalette(null)
     const survivors = [...(this.options.survivors ?? [])].sort((a, b) => a.displayId - b.displayId)
     for (const entry of survivors) {
       if (this.shuttingDown) return
@@ -724,6 +723,20 @@ export class Multiplexer {
 
   setHostPalette(colors: TerminalColors): void {
     this.onPalette(colors)
+  }
+
+  /** Choose the selected-row and divider colors before OpenTUI may draw them. */
+  lockStartupChrome(colors: TerminalColors | null): void {
+    if (this.shuttingDown) return
+    if (colors) this.onPalette(colors)
+    else this.applyDividerPalette(null)
+    this.startupChromeLocked = true
+  }
+
+  /** The initial answer has now either landed or been deliberately ignored;
+   * a later, genuine terminal theme change may update the chrome again. */
+  unlockStartupChrome(): void {
+    this.startupChromeLocked = false
   }
 
   waitUntilDone(): Promise<void> {
@@ -1262,16 +1275,18 @@ export class Multiplexer {
   }
 
   private applyDividerPalette(colors: TerminalColors | null): void {
-    const color = dividerColor(colors)
-    this.divider.borderColor = color
-    this.divider.focusedBorderColor = color
-    if (this.debugDivider) {
-      this.debugDivider.borderColor = color
-      this.debugDivider.focusedBorderColor = color
+    if (!this.startupChromeLocked) {
+      const color = dividerColor(colors)
+      this.divider.borderColor = color
+      this.divider.focusedBorderColor = color
+      if (this.debugDivider) {
+        this.debugDivider.borderColor = color
+        this.debugDivider.focusedBorderColor = color
+      }
     }
     this.debugPanel?.applyPalette(colors)
     this.launchDialog.applyPalette(colors)
-    this.sessionList.applyPalette(colors)
+    this.sessionList.applyPalette(colors, this.startupChromeLocked)
     this.refreshSessionList()
   }
 

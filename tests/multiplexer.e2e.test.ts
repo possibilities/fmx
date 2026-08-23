@@ -224,7 +224,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "restores agent and subagent status without unknown flashes",
+  "restores agent state and sidebar chrome without startup flashes",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-status-restore-e2e-"))
@@ -246,19 +246,32 @@ test.skipIf(!PTY_TEST_ENABLED)(
       ...privateHome(tempDirectory),
       FMX_TEST_LOG: lifecycleLog,
     }
-    const spawnFmx = (sink: { output: string }) => {
+    const spawnFmx = (sink: { output: string }, answerPalette = false) => {
       const decoder = new TextDecoder()
-      return Bun.spawn(FMX_COMMAND, {
+      const encoder = new TextEncoder()
+      const pendingReplies: string[] = []
+      let sendHostReply: (reply: string) => void = (reply) => {
+        pendingReplies.push(reply)
+      }
+      const respondToPaletteQueries = answerPalette
+        ? createHostPaletteResponder((reply) => sendHostReply(reply))
+        : null
+      const child = Bun.spawn(FMX_COMMAND, {
         cwd: projectRoot,
         env,
         terminal: {
           cols: 100,
           rows: 24,
           data: (_terminal, bytes) => {
-            sink.output += decoder.decode(bytes, { stream: true })
+            const text = decoder.decode(bytes, { stream: true })
+            sink.output += text
+            respondToPaletteQueries?.(text)
           },
         },
       })
+      sendHostReply = (reply) => child.terminal?.write(encoder.encode(reply))
+      for (const reply of pendingReplies) sendHostReply(reply)
+      return child
     }
     const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
     const agentSocketPath = defaultSocketPath(homeOf(tempDirectory))
@@ -313,7 +326,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       first.terminal?.close()
 
       const restoredOutput = { output: "" }
-      replacement = spawnFmx(restoredOutput)
+      replacement = spawnFmx(restoredOutput, true)
       let restored: Snapshot | null = null
       await waitUntil(
         async () => {
@@ -335,6 +348,19 @@ test.skipIf(!PTY_TEST_ENABLED)(
       // adds their rows, before OpenTUI can expose an unknown-state frame.
       expect(restoredOutput.output).not.toContain(`· ${RESTORED_SESSION_A.split("-").at(-1)}`)
       expect(restoredOutput.output).not.toContain(`· ${RESTORED_SESSION_B.split("-").at(-1)}`)
+
+      // The host answers during the pre-display frame budget. The selected
+      // row and divider must therefore first appear in their detected colors;
+      // neither guessed RGB fallback may ever reach the terminal.
+      await waitUntil(
+        () =>
+          hasRgbSgr(restoredOutput.output, "background", [18, 50, 81]) &&
+          hasRgbSgr(restoredOutput.output, "foreground", [18, 48, 78]),
+        5_000,
+        () => restoredOutput.output,
+      )
+      expect(hasRgbSgr(restoredOutput.output, "background", [42, 47, 58])).toBe(false)
+      expect(hasRgbSgr(restoredOutput.output, "foreground", [76, 86, 106])).toBe(false)
 
       replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
       expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
@@ -975,6 +1001,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 function countOccurrences(value: string, needle: string): number {
   return value.split(needle).length - 1
+}
+
+function hasRgbSgr(
+  output: string,
+  layer: "foreground" | "background",
+  [red, green, blue]: readonly [number, number, number],
+): boolean {
+  const selector = layer === "foreground" ? 38 : 48
+  return new RegExp(`\\u001b\\[[0-9;]*${selector};2;${red};${green};${blue}(?:;|m)`, "u").test(output)
 }
 
 /**

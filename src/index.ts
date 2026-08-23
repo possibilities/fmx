@@ -1,6 +1,11 @@
 #!/usr/bin/env bun
 
-import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opentui/core"
+import {
+  CliRenderer,
+  createTerminalPalette,
+  type TerminalColors,
+  type TerminalPaletteDetector,
+} from "@opentui/core"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { AgentSocket, AgentSocketActiveError } from "./agent-socket.ts"
@@ -29,6 +34,10 @@ import {
   homeId,
   resolveCompanion,
 } from "./zmx-environment.ts"
+
+/** One 60 Hz frame is enough for a responsive terminal to answer its palette
+ * query, and short enough that a silent terminal does not delay first paint. */
+const FIRST_FRAME_PALETTE_BUDGET_MS = 16
 
 async function main(): Promise<void> {
   let options
@@ -85,6 +94,7 @@ async function main(): Promise<void> {
   const home = homeId()
 
   let renderer: CliRenderer | null = null
+  let startupPaletteDetector: TerminalPaletteDetector | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const debugPanel = debugPanelRequested()
@@ -112,11 +122,40 @@ async function main(): Promise<void> {
     manifest = await InstanceManifest.open(manifestPath(), home)
     const survivors = await reconcileAtStartup(manifest, companion)
     transport = new CompanionTransportFactory(companion, home)
-    renderer = await createCliRenderer({
-      exitOnCtrlC: false,
-      exitSignals: [],
-      useKittyKeyboard: FX_KEYBOARD_PROTOCOL,
+    // Constructing the renderer starts its input parser but does not expose the
+    // alternate screen. That gives a responsive host one frame to answer the
+    // palette query before any fmx surface can be painted.
+    const createdRenderer = new CliRenderer(
+      process.stdin,
+      process.stdout,
+      process.stdout.columns || 80,
+      process.stdout.rows || 24,
+      {
+        exitOnCtrlC: false,
+        exitSignals: [],
+        useKittyKeyboard: FX_KEYBOARD_PROTOCOL,
+      },
+    )
+    renderer = createdRenderer
+    const termProgram = process.env.TERM_PROGRAM?.toLowerCase()
+    const tmuxVersion = termProgram?.includes("tmux") ? process.env.TERM_PROGRAM_VERSION : undefined
+    startupPaletteDetector = createTerminalPalette({
+      stdin: process.stdin,
+      stdout: process.stdout,
+      isTmux: Boolean(process.env.TMUX) || Boolean(termProgram?.includes("tmux")),
+      isLegacyTmux:
+        tmuxVersion !== undefined && tmuxVersion.localeCompare("3.6", undefined, { numeric: true }) < 0,
+      oscSource: {
+        subscribeOsc: (handler) => createdRenderer.subscribeOsc(handler),
+      },
     })
+    const paletteDetection = detectHostPalette(startupPaletteDetector)
+    const firstPalette = await Promise.race([
+      paletteDetection.then((colors) => ({ kind: "settled" as const, colors })),
+      Bun.sleep(FIRST_FRAME_PALETTE_BUDGET_MS).then(() => ({ kind: "pending" as const })),
+    ])
+    await renderer.setupTerminal()
+
     app = new Multiplexer(renderer, {
       fxPath,
       cwd: workspace,
@@ -149,6 +188,7 @@ async function main(): Promise<void> {
         void saveState(persistedState).catch(() => {})
       },
     })
+    app.lockStartupChrome(firstPalette.kind === "settled" ? firstPalette.colors : null)
 
     for (const [signal, exitCode] of [
       ["SIGHUP", 129],
@@ -167,20 +207,18 @@ async function main(): Promise<void> {
     controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(agentSocket.path))
     controlSocket.start()
 
-    // `start` chooses the first surface synchronously, before its first
-    // attach waits: either the empty state when the join found nothing, or
-    // the first restored Instance. Only then may OpenTUI expose a frame.
-    // Restoration and palette detection continue together after that first
-    // truthful frame instead of making either settled outcome wait on the
-    // other.
+    // Choose the truthful first surface before anything may render. The chrome
+    // was fixed above, before the renderer could expose an empty or partially
+    // restored application.
     const startup = app.start()
     renderer.start()
 
     // Detection takes seconds in a terminal that never answers, and a
     // renderer destroyed under it never settles the query: a shutdown in
     // that window must still reach the cleanup below.
-    const hostPalette = await Promise.race([detectHostPalette(renderer), app.waitUntilDone().then(() => null)])
+    const hostPalette = await Promise.race([paletteDetection, app.waitUntilDone().then(() => null)])
     if (hostPalette) app.setHostPalette(hostPalette)
+    app.unlockStartupChrome()
     await startup
     await app.waitUntilDone()
   } catch (error) {
@@ -194,6 +232,7 @@ async function main(): Promise<void> {
     transport?.close()
     await manifest?.settled()
     controlSocket?.close()
+    startupPaletteDetector?.cleanup()
     // Only the fmx that bound the socket may unlink it; the one refused at
     // start never had it.
     agentSocket.close()
@@ -225,9 +264,9 @@ async function reconcileAtStartup(manifest: InstanceManifest, companion: Compani
   return [...outcome.attached, ...outcome.adopted]
 }
 
-async function detectHostPalette(renderer: CliRenderer): Promise<TerminalColors | null> {
+async function detectHostPalette(detector: TerminalPaletteDetector): Promise<TerminalColors | null> {
   try {
-    return await renderer.getPalette({ size: 16 })
+    return await detector.detect({ size: 16 })
   } catch {
     // Palette mirroring is an enhancement; keep fmx usable when a terminal
     // cannot answer OSC color queries.

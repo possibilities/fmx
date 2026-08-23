@@ -115,8 +115,10 @@ export class SessionList {
     this.renderer.requestRender()
   }
 
-  applyPalette(colors: TerminalColors | null): void {
+  applyPalette(colors: TerminalColors | null, preserveActiveBackground = false): void {
+    const activeBackground = this.colors.activeBackground
     this.colors = listColors(colors)
+    if (preserveActiveBackground) this.colors.activeBackground = activeBackground
   }
 
   private clearRows(): void {

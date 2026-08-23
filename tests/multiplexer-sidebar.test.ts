@@ -310,6 +310,32 @@ test("themes the divider from the host palette", async () => {
   }
 })
 
+test("keeps first-frame divider and selected-row colors through a late initial palette", async () => {
+  const { setup, multiplexer, divider } = await createMultiplexer(90, 24)
+  const late = hostPalette({}, { foreground: "#ffffff", background: "#000000" })
+  const selectedBackground = () => {
+    const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-1") as BoxRenderable
+    return rgb(row.backgroundColor)
+  }
+
+  try {
+    multiplexer.lockStartupChrome(null)
+    const firstDivider = rgb(divider.borderColor)
+    const firstSelection = selectedBackground()
+
+    multiplexer.setHostPalette(late)
+    expect(rgb(divider.borderColor)).toEqual(firstDivider)
+    expect(selectedBackground()).toEqual(firstSelection)
+
+    multiplexer.unlockStartupChrome()
+    multiplexer.setHostPalette(late)
+    expect(rgb(divider.borderColor)).not.toEqual(firstDivider)
+    expect(selectedBackground()).not.toEqual(firstSelection)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("restores a persisted width and reports changes on drag end", async () => {
   const widthChanges: number[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
