@@ -1,7 +1,9 @@
 # fmx glossary
 
 **Instance** — one fx process together with the embedded terminal fmx renders
-it in. Instances are numbered by fmx and disappear when their fx exits.
+it in. Instances are numbered by fmx, keep their number across fmx restarts,
+and disappear when their fx exits — never when fmx does: the Companion holds
+the fx, and the next fmx for the Home attaches to it.
 _Avoid_: pane, tab, window, session.
 
 **Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns an
@@ -31,15 +33,29 @@ what only the Manifest remembers. It keeps no prompt text.
 _Avoid_: registry (that is the agent registry), state file (that is
 `state.json`), session list.
 
+**Transport** — what carries one Instance's terminal between fmx and the
+Companion: bytes out, bytes in, the size, and the two ways it ends — fx
+ending, with a status, against the transport itself dropping, which says
+nothing about fx. The seam `FxInstance` renders through; the Companion's
+socket is the only one fmx ships.
+_Avoid_: connection (that is the socket underneath), PTY, backend.
+
+**Restore** — what the Companion sends first on every attach: the Instance's
+whole terminal as it stands, between a `RestoreBegin` the visible terminal
+resets at and a `Ready` after which bytes are live. A reconnect replays onto
+a clean screen for the same reason a first attach does.
+_Avoid_: replay, resync, history.
+
 **Agent socket** — the Unix socket fmx binds and points every instance at, and
 over which fx reports its own lifecycle. One socket serves all instances.
 _Avoid_: status socket, control socket, IPC socket.
 
 **Pane id** — the opaque string that identifies an instance on the agent
 socket. It is the wire's word, not fmx's: fx addresses every request to a pane
-id, so fmx mints one per instance and never uses the term anywhere else. An
-Instance the Manifest records has `p_<instance id>`, the same token as its
-Companion session name `fmx-<instance id>`.
+id, so fmx mints one per instance and never uses the term anywhere else. It is
+`p_<instance id>`, the same token as the Companion session name
+`fmx-<instance id>`, which is why an fx keeps reporting to the right Instance
+across fmx restarts.
 _Avoid_: instance id (that is the Manifest's 128-bit token; the number
 exported as `FMX_INSTANCE_ID` is the display id).
 
@@ -169,8 +185,9 @@ nobody has started has no name, which is an answer and not a failure.
 _Avoid_: job, task, naming run.
 
 **Control socket** — the Unix socket `fmx control <command>` drives a running fmx
-through, bound beside the agent socket as `/tmp/fmx-<pid>.ctl` and handed to
-every instance as `FMX_SOCKET_PATH`. Its own wire, not the agent socket's: that
+through, bound beside the agent socket as `/tmp/fmx-<uid>-<home id>.ctl` — as
+stable as it, so an fx that outlives one fmx still reaches the next — and
+handed to every instance as `FMX_SOCKET_PATH`. Its own wire, not the agent socket's: that
 one speaks fx's protocol and answers before it acts, where a command needs its
 result. One request per connection; a waiting method holds the connection.
 _Avoid_: command socket, API socket, RPC.

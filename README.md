@@ -55,6 +55,20 @@ project_roots = ["~/code", "~/src"]
 
 With no roots configured it offers the directory fmx itself was started in.
 
+### Agents outlive fmx
+
+An agent is not fmx's process. fmx hands each one to a bundled companion
+daemon that owns the agent and its terminal, so closing fmx — or losing it
+to a crash, a signal, or a dropped connection — leaves every agent running
+exactly where it was. The next fmx started from the same configuration
+directory finds them, numbered as they were, with their screens restored,
+and picks up where the last one left off. An agent disappears only when it
+exits; the last exit still closes fmx. There is no key to close or detach
+an agent: end it from inside, the way you would at a terminal.
+
+One fmx runs per configuration directory at a time; a second one started
+alongside says so and exits.
+
 ### Session names
 
 An agent is listed by its session id until it is given something to do. As
@@ -144,5 +158,11 @@ bun install --frozen-lockfile
 bun link  # ~/.bun/bin/fmx runs this checkout's src/index.ts
 bun test
 bun run typecheck
-bun run test:pty  # requires a host that permits PTY allocation
+bun run test:pty  # requires a host that permits PTY allocation, and the companion
 ```
+
+Running fmx from a checkout needs the companion daemon, which a release
+bundles as `fmx-zmx`. Point `FMX_ZMX_PATH` at a build of it (the fork of
+zmx at `possibilities/zmx`, branch `integration`: `zig build`, then
+`zig-out/bin/zmx`); `test:pty` and the Companion tests read the same
+variable and skip without it.

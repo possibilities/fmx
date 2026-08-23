@@ -25,8 +25,41 @@
   open, so a key let through can reach nothing else.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
-- fmx has no quit/close/detach keys: fx exits govern the lifecycle. A tab
-  disappears when its fx exits; the last exit shuts fmx down.
+- fmx has no quit/close/detach keys: fx exits govern the lifecycle. An
+  Instance disappears when its fx exits; the last exit shuts fmx down. fmx
+  closing — a signal, a crash, the terminal going away — is a detach, never
+  an exit: nothing is sent to fx, the Companion keeps it, and the next fmx
+  for the Home attaches to it. Do not bring back the Ctrl-C/TERM/KILL
+  escalation `stop()` used to do; ending an fx is the human's act, from
+  inside it, or `fmx-zmx kill` by hand.
+- `FxInstance` renders; it never owns a process. Everything that carries fx
+  goes through `InstanceTransport` (`src/instance-transport.ts`), and the
+  one implementation in `src/` is the Companion's. The Bun PTY behind the
+  same seam lives in `tests/fixtures/pty-transport.ts` so the multiplexer
+  suites run without a Companion — keep it a fixture; a second production
+  transport is what the seam exists to prevent.
+- Creation order is fixed: `manifest.claim` (the Instance is on screen from
+  here, its claim queued to disk), `await saved`, then the transport's
+  `start`, then `markRunning`, then `adopt`. The claim must be on disk
+  before the Companion hears the name, and the Manifest must say `running`
+  before anything can go wrong in fmx, because those two writes are what a
+  crash leaves for the join.
+- A restore resets the visible terminal with RIS at `RestoreBegin` and
+  re-applies the host palette after: the Companion's replay carries the
+  modes, cursor, and keyboard state fx set, but the host's colors were never
+  fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the
+  same moment — a query half-translated when the last transport dropped must
+  not pair with a response from the next.
+- A lost transport is not an exit. `recoverInstance` asks the Companion: a
+  live session is re-attached (and replays onto the reset), an ended one is
+  removed exactly as an Exit would remove it, and one that cannot be reached
+  after a few tries leaves the screen but stays in the Manifest for the next
+  start's join. Only `InstanceEndedError` or an `Exit` frame may remove an
+  Instance's Manifest entry.
+- Palette detection can take seconds in a terminal that never answers, and a
+  renderer destroyed under it never settles the query; `index.ts` races it
+  against shutdown so a signal in that window still reaches the socket
+  cleanup. Do not await anything renderer-bound in `main` without that race.
 - The agent socket speaks the protocol fx already speaks unprompted, which is
   Herdr's. That is why `src/fx-environment.ts` sets `HERDR_SOCKET_PATH` and
   `HERDR_PANE_ID` literally — fx reads those names and no others, so they are
@@ -78,7 +111,12 @@
   acts (see above), and a command that needs its result cannot. The two share
   nothing but the `LineAssembler`. Keep `FMX_SOCKET_PATH` beside
   `FMX_INSTANCE_ID` in `src/fx-environment.ts`: the client reads both, and
-  `current` as a target is meaningless without the id.
+  `current` as a target is meaningless without the id. The path is the agent
+  socket's with `.ctl` for `.sock` — per Home, not per pid — so the
+  `FMX_SOCKET_PATH` an fx was given outlives the fmx that gave it; it is bound
+  under the agent socket's singleton, which is what makes unlinking a stale
+  one safe. `fmx control` from outside any instance finds a live fmx by
+  probing the sockets, not by pid.
 - Every `fmx control <command>` goes through `Multiplexer.handleControl`, and every
   write there takes the path the keys take (`showLaunchDialog`, `switchTo`,
   `applySidebarWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
