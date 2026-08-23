@@ -166,9 +166,12 @@ try {
   second.key(CTRL("c"))
   await second.process.exited
   note(`fmx exited with ${second.process.exitCode}`)
-  await until(async () => (await companion.list()).length === 0, "the Companion to be empty", 8000)
+  // fmx left the moment the last exit was shown; the record the daemon writes
+  // a beat later is the next start's to consume. Nothing is running.
+  await until(async () => (await companion.list()).every((s) => s.state === "exited" || s.state === "absent"), "the last daemon to finish", 8000)
   await showManifest()
   await showCompanion()
+  note("(an exit record left behind is consumed by the next start's join)")
   console.log("\n[1m✓ kill and restart is routine[0m")
 } finally {
   for (const fmx of [first, second]) {

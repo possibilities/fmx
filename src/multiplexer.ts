@@ -79,7 +79,13 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
-import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
+import {
+  readGitContext,
+  projectNameFor,
+  type GitContext,
+  treeNameFor,
+  UNTRACKED_TREE_NAME,
+} from "./git-context.ts"
 import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
@@ -87,6 +93,7 @@ import type { SocketFrame } from "./socket-frames.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
+import { Toast } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
 
 /** The sidebar the embedded terminal sits beside; exported so tests can
@@ -163,6 +170,8 @@ type MultiplexerOptions = {
   slug?: SlugSettings
   /** Where `fmx control <command>` reaches this fmx; handed to every instance. */
   controlSocketPath?: string
+  /** How long each lifecycle Toast remains; overridden only by renderer tests. */
+  toastDurationMs?: number
 }
 
 /** Default states `instance wait` waits for: any that needs someone. */
@@ -451,6 +460,9 @@ export class Multiplexer {
   private readonly seenSeq = new Map<number, number>()
   /** Per-directory git context, read once and reused by every instance there. */
   private readonly gitContexts = new Map<string, GitContext | null>()
+  /** In-flight reads stay shared too, so lifecycle notices for a fast exit
+   * resolve against the same answer and keep their arrival order. */
+  private readonly gitContextLoads = new Map<string, Promise<GitContext | null>>()
   private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   /** Hidden by the toggle key; orthogonal to the empty state, which hides the
    * sidebar because there is nothing to list. */
@@ -462,6 +474,10 @@ export class Multiplexer {
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
+  private readonly toast: Toast
+  /** Per-Instance tails keep a fast exit behind its start notice even when
+   * both are waiting for Git context. */
+  private readonly lifecycleNoticeTails = new Map<number, Promise<void>>()
   private readonly keybindings: Keybindings
   private readonly instances: FxInstance[] = []
   private activeIndex = -1
@@ -652,6 +668,8 @@ export class Multiplexer {
     this.modalBackdrop.add(this.modal)
     this.applyModalPalette(this.hostPalette)
 
+    this.toast = new Toast(renderer, { durationMs: options.toastDurationMs })
+
     this.projectLaunches = new Map(Object.entries(options.initialProjectLaunches ?? {}))
     this.launchDialog = new LaunchDialog(renderer, {
       onLaunch: (request) => void this.startLaunch(request),
@@ -663,6 +681,7 @@ export class Multiplexer {
     })
 
     this.renderer.root.add(this.stage)
+    this.renderer.root.add(this.toast.root)
     this.renderer.root.add(this.modalBackdrop)
     this.renderer.root.add(this.launchDialog.root)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
@@ -729,6 +748,7 @@ export class Multiplexer {
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const instance of this.instances) instance.destroy()
+      this.toast.destroy()
     } finally {
       this.instances.length = 0
       this.renderer.destroy()
@@ -764,6 +784,9 @@ export class Multiplexer {
     const instance = this.addInstance(entry, cwd, focus)
     instance.setPendingPrompt(prompt)
     this.countLaunch(cwd)
+    // "started" means fx is running, whether or not it could be reached.
+    let started = false
+    this.queueLifecycleNotice(instance, `agent ${instance.id}`, "started", "success", null, () => started)
     let transport: InstanceTransport
     try {
       await saved
@@ -789,6 +812,7 @@ export class Multiplexer {
       if (error instanceof InstanceUnreachableError) {
         // fx is running; only the way to it failed. It is recovered like a
         // lost transport, never removed — the Manifest says so first.
+        started = true
         await this.options.manifest.markRunning(entry.instanceId).catch(() => {})
         void this.recoverInstance(instance, error)
         return instance
@@ -802,6 +826,7 @@ export class Multiplexer {
     // fx is running whatever happens from here; the record says so before
     // anything else, because this is the acknowledgement a crash loses. A
     // write that fails leaves `creating` on disk, which the join resolves.
+    started = true
     await this.options.manifest.markRunning(entry.instanceId).catch(() => {})
     if (this.shuttingDown || !this.instances.includes(instance)) {
       transport.detach()
@@ -847,7 +872,7 @@ export class Multiplexer {
       onTitleChange: (candidate) => {
         if (this.activeInstance() === candidate) this.refreshTerminalTitle()
       },
-      onExit: (candidate) => this.handleInstanceExit(candidate),
+      onExit: (candidate, exit) => this.handleInstanceExit(candidate, exit),
       onLost: (candidate, error) => void this.recoverInstance(candidate, error),
     })
     this.instances.push(instance)
@@ -859,13 +884,20 @@ export class Multiplexer {
     return instance
   }
 
-  /** fx ended: the Instance, its claim, and whatever the Companion recorded all go. */
-  private handleInstanceExit(instance: FxInstance): void {
+  /**
+   * fx ended: the Instance, its claim, and whatever the Companion recorded
+   * all go. `exit` is null when the end was observed but its status was not.
+   */
+  private handleInstanceExit(instance: FxInstance, exit: InstanceExit | null): void {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
     void this.options.manifest.remove(instance.entry.instanceId).catch(() => {})
     if (this.shuttingDown) return
+    const identity = this.slugOf(instance) ?? `agent ${instance.id}`
+    // The shell's number for a signal, so a notice reads the way `$?` would.
+    const exitCode = exit === null ? 0 : exit.signal ? 128 + exit.signal : exit.code
+    this.queueLifecycleNotice(instance, identity, "exited", exitCode === 0 ? "neutral" : "error", exitCode)
     this.removeInstance(instance)
   }
 
@@ -891,7 +923,7 @@ export class Multiplexer {
         return
       } catch (caught) {
         if (caught instanceof InstanceEndedError) {
-          this.handleInstanceExit(instance)
+          this.handleInstanceExit(instance, caught.exit)
           return
         }
         error = caught
@@ -899,6 +931,31 @@ export class Multiplexer {
     }
     if (this.shuttingDown || !this.removeInstance(instance)) return
     this.showError(`lost instance ${instance.id}`, error)
+  }
+
+  private queueLifecycleNotice(
+    instance: FxInstance,
+    identity: string,
+    event: "started" | "exited",
+    tone: "success" | "neutral" | "error",
+    exitCode: number | null,
+    shouldShow: () => boolean = () => true,
+  ): void {
+    const context = this.loadGitContext(instance.cwd)
+    const previous = this.lifecycleNoticeTails.get(instance.id) ?? Promise.resolve()
+    const queued = previous.then(async () => {
+      const git = await context
+      if (this.shuttingDown || !shouldShow()) return
+      const location = `${projectNameFor(git, instance.cwd)} / ${treeNameFor(git)}`
+      const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` / code ${exitCode}` : ""
+      this.toast.show(`${location} / ${identity} ${event}${code}`, tone, {
+        italic: git ? [] : [UNTRACKED_TREE_NAME],
+      })
+    })
+    this.lifecycleNoticeTails.set(instance.id, queued)
+    void queued.finally(() => {
+      if (this.lifecycleNoticeTails.get(instance.id) === queued) this.lifecycleNoticeTails.delete(instance.id)
+    })
   }
 
   private removeInstance(instance: FxInstance): boolean {
@@ -1038,14 +1095,22 @@ export class Multiplexer {
    * it spawned the instance in. The list renders without a branch rung until
    * the answer arrives, which is why this refreshes rather than blocking.
    */
-  private loadGitContext(cwd: string): void {
-    if (this.gitContexts.has(cwd)) return
+  private loadGitContext(cwd: string): Promise<GitContext | null> {
+    const pending = this.gitContextLoads.get(cwd)
+    if (pending) return pending
+    if (this.gitContexts.has(cwd)) return Promise.resolve(this.gitContexts.get(cwd) ?? null)
     this.gitContexts.set(cwd, null)
-    void readGitContext(cwd).then((context) => {
-      if (this.shuttingDown || !context) return
-      this.gitContexts.set(cwd, context)
-      this.refreshSessionList()
+    const load = readGitContext(cwd).then((context) => {
+      if (!this.shuttingDown && context) {
+        this.gitContexts.set(cwd, context)
+        this.refreshSessionList()
+      }
+      return context
+    }).finally(() => {
+      this.gitContextLoads.delete(cwd)
     })
+    this.gitContextLoads.set(cwd, load)
+    return load
   }
 
   /**
@@ -1126,6 +1191,7 @@ export class Multiplexer {
     this.applyDebugPanelWidth()
     this.applySidebarWidth(requestedSidebarWidth)
     this.launchDialog.layout()
+    this.toast.layout()
   }
 
   private applyDebugPanelWidth(): void {
@@ -1153,6 +1219,7 @@ export class Multiplexer {
     this.hostPalette = colors
     this.applyModalPalette(colors)
     this.applyDividerPalette(colors)
+    this.toast.applyPalette(colors)
     this.refreshEmptyState()
     const themeMode = this.renderer.themeMode
     for (const instance of this.instances) instance.updateHostPalette(colors, themeMode)

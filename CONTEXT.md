@@ -72,6 +72,11 @@ Its `[clear]` button empties the view alone; the socket keeps running and later
 frames still arrive.
 _Avoid_: log pane, console, inspector.
 
+**Toast** — a transient, bottom-center notice drawn over the active surface.
+Toasts use the terminal's detected palette with fallbacks, appear one at a
+time in arrival order, and do not take focus.
+_Avoid_: status bar, modal.
+
 **Session list** — the sidebar's tree of running instances: project, then
 branch, then one row per agent carrying its status icon and its name — the
 slug once naming lands, the short session id until then.

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { projectNameFor, readGitContext } from "../src/git-context.ts"
+import { projectNameFor, readGitContext, treeNameFor } from "../src/git-context.ts"
 
 test("reads the worktree root and branch of a repository", async () => {
   const context = await readGitContext(process.cwd())
@@ -61,4 +61,18 @@ test("names a project by its repository, falling back to the directory", () => {
   ).toBe("agentbrain")
   expect(projectNameFor(null, "/work/loose-files")).toBe("loose-files")
   expect(projectNameFor(null, "/")).toBe("workspace")
+})
+
+test("names a linked Worktree by its own root and the main tree by its branch", () => {
+  expect(
+    treeNameFor({
+      root: "/trees/agentbrain-1",
+      mainRoot: "/work/agentbrain",
+      branch: "agentbrain-1",
+    }),
+  ).toBe("agentbrain-1")
+  expect(
+    treeNameFor({ root: "/work/agentbrain", mainRoot: "/work/agentbrain", branch: "main" }),
+  ).toBe("main")
+  expect(treeNameFor(null)).toBe("(untracked)")
 })

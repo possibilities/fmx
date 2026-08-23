@@ -1,5 +1,7 @@
 import { basename, dirname } from "node:path"
 
+export const UNTRACKED_TREE_NAME = "(untracked)"
+
 /**
  * Where an fx instance is working, as far as git is concerned. fx never
  * reports its own directory over the agent socket, so fmx reads this itself
@@ -53,6 +55,14 @@ export async function readGitContext(cwd: string): Promise<GitContext | null> {
  * every worktree cut from it. */
 export function projectNameFor(context: GitContext | null, cwd: string): string {
   return basename(context?.mainRoot ?? cwd) || "workspace"
+}
+
+/** The tree this instance is actually working in: a linked Worktree's own
+ * directory name, or the checked-out branch for the repository's main tree. */
+export function treeNameFor(context: GitContext | null): string {
+  if (!context) return UNTRACKED_TREE_NAME
+  if (context.root === context.mainRoot) return context.branch
+  return basename(context.root) || context.branch
 }
 
 async function runGit(cwd: string, args: string[]): Promise<string[] | null> {

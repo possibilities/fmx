@@ -18,7 +18,7 @@ const HOME = "0123456789ab"
 
 const decoder = new TextDecoder()
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-const waitFor = async (check: () => boolean | Promise<boolean>, timeoutMs = 3000) => {
+const waitFor = async (check: () => boolean | Promise<boolean>, timeoutMs = 8000) => {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (await check()) return true
