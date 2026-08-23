@@ -56,13 +56,14 @@ worktree_root = "~/.fmx/worktrees"
 ```
 
 The dialog offers each directory named by `project_roots` and the directories
-one level under it:
+one level under it. At least one root is required:
 
 ```toml
 project_roots = ["~/code", "~/src"]
 ```
 
-With no roots configured it offers the directory fmx itself was started in.
+With no roots configured fmx exits 1 and names this setting and the config
+file that needs it.
 
 ### Agents outlive fmx
 

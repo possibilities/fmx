@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import packageMetadata from "../package.json" with { type: "json" }
 import { parseArgs, UsageError, usage, VERSION } from "../src/cli.ts"
 
@@ -17,6 +20,37 @@ describe("parseArgs", () => {
   test("uses the package version", () => {
     expect(VERSION).toBe(packageMetadata.version)
   })
+})
+
+test.skipIf(typeof Bun.Terminal !== "function")("the TUI exits 1 with the config line when no project roots are configured", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-no-roots-"))
+  const path = join(directory, "config.toml")
+  let output = ""
+  const decoder = new TextDecoder()
+  const child = Bun.spawn([process.execPath, "src/index.ts"], {
+    cwd: new URL("..", import.meta.url).pathname,
+    env: {
+      ...process.env,
+      FMX_CONFIG_PATH: path,
+      FMX_FX_PATH: join(directory, "missing-fx"),
+    },
+    terminal: {
+      cols: 80,
+      rows: 24,
+      data: (_terminal, bytes) => {
+        output += decoder.decode(bytes, { stream: true })
+      },
+    },
+  })
+
+  try {
+    expect(await child.exited).toBe(1)
+    expect(output).toContain(`fmx: no project roots configured; add project_roots = ["~/code"] to ${path}`)
+    expect(output).not.toContain("missing-fx")
+  } finally {
+    child.terminal?.close()
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 describe("commands", () => {

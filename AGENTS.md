@@ -11,6 +11,9 @@
 - `project_roots` is deliberately empty by default. Personal roots belong in
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.
+  TUI startup refuses an empty resolved list with exit 1 and the exact config
+  line to add; control commands, `--help`, `--version`, and `doctor` do not
+  need project roots because they never open the TUI.
 - fx has no flag for an interactive prompt — `fx ask` is noninteractive and a
   bare positional is an unknown subcommand. A launch prompt is therefore typed
   into the PTY and submitted, once the pane's first agent-socket frame says fx

@@ -15,6 +15,8 @@ const FMX_COMMAND = process.env.FMX_BINARY_PATH
   ? [resolve(ROOT, process.env.FMX_BINARY_PATH)]
   : [process.execPath, "src/index.ts"]
 
+const configWithRoot = (extra = "") => `project_roots = [${JSON.stringify(ROOT)}]\n${extra}`
+
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
 // The embedded terminal starts past the sidebar and its one-column divider, so
@@ -82,6 +84,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-detach-e2e-"))
     const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "config.toml")
+    await writeFile(configFile, configWithRoot())
     let output = ""
     const decoder = new TextDecoder()
     const child = Bun.spawn(FMX_COMMAND, {
@@ -91,7 +95,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         FMX_FX_PATH: FAKE_FX,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
-        FMX_CONFIG_PATH: join(tempDirectory, "missing-config.toml"),
+        FMX_CONFIG_PATH: configFile,
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
         ...privateHome(tempDirectory),
         FMX_TEST_LOG: lifecycleLog,
@@ -145,7 +149,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-e2e-"))
     const lifecycleLog = join(tempDirectory, "lifecycle.log")
     const configFile = join(tempDirectory, "config.toml")
-    await writeFile(configFile, '[keys]\nprefix = "ctrl+space"\n')
+    await writeFile(configFile, configWithRoot('[keys]\nprefix = "ctrl+space"\n'))
 
     let output = ""
     const decoder = new TextDecoder()
@@ -294,7 +298,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-natural-exit-e2e-"))
     const lifecycleLog = join(tempDirectory, "lifecycle.log")
-    const configFile = join(tempDirectory, "missing-config.toml")
+    const configFile = join(tempDirectory, "config.toml")
+    await writeFile(configFile, configWithRoot())
 
     let output = ""
     const decoder = new TextDecoder()
@@ -379,7 +384,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-palette-e2e-"))
     const lifecycleLog = join(tempDirectory, "lifecycle.log")
-    const configFile = join(tempDirectory, "missing-config.toml")
+    const configFile = join(tempDirectory, "config.toml")
+    await writeFile(configFile, configWithRoot())
 
     let output = ""
     const decoder = new TextDecoder()
@@ -473,7 +479,8 @@ for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
       await chmod(FAKE_FX, 0o755)
       const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-restart-e2e-"))
       const lifecycleLog = join(tempDirectory, "lifecycle.log")
-      const configFile = join(tempDirectory, "missing-config.toml")
+      const configFile = join(tempDirectory, "config.toml")
+      await writeFile(configFile, configWithRoot())
       const env = {
         ...process.env,
         FMX_FX_PATH: FAKE_FX,
