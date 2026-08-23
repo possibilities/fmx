@@ -96,32 +96,49 @@ case "$archive" in
 esac
 # One archive is one pair: fmx and the companion it was released with. Both
 # are checked before either is placed, so a bad archive installs nothing.
+# The companion's `version` runs in a directory of its own here: it creates
+# the directory it is given, and installing must touch nothing of the user's.
 [[ -x "$extract_dir/fmx" ]] || fail 'archive does not contain an executable fmx binary'
 [[ -x "$extract_dir/fmx-zmx" ]] || fail 'archive does not contain an executable fmx-zmx companion'
 if [[ "$("$extract_dir/fmx" --version)" != "$version" ]]; then
   fail 'downloaded binary version does not match the requested release'
 fi
-companion_build="$("$extract_dir/fmx-zmx" version 2>/dev/null | awk 'NR == 1 && $1 == "zmx" { print $2 }')"
-[[ -n "$companion_build" ]] || fail 'downloaded companion did not report its build'
+companion_build_of() {
+  local output
+  output="$(ZMX_DIR="$temp_dir/zmx" "$1" version 2>&1 || true)"
+  printf '%s\n' "$output" | awk 'NR == 1 && $1 == "zmx" { print $2 }'
+}
+companion_build="$(companion_build_of "$extract_dir/fmx-zmx")"
+if [[ -z "$companion_build" ]]; then
+  fail "downloaded companion did not report its build: $(ZMX_DIR="$temp_dir/zmx" "$extract_dir/fmx-zmx" version 2>&1 || true)"
+fi
 
-# The companion goes first, then fmx, each into place in one rename. A
-# failure between the two leaves a pair fmx itself refuses to run, with a
-# message saying to run this installer again; it never leaves one that runs.
+# fmx first, then the companion, each into place in one rename. A failure
+# between the two leaves the new fmx beside whatever companion was there,
+# which it refuses with a message saying to run this installer again; the
+# other order would leave an fmx from before the pair existed running
+# quietly against a companion it never checked. A name in the way that is
+# not a plain file would swallow the rename, so it is refused first.
 mkdir -p "$install_dir"
-install_temp="$(mktemp "$install_dir/.fmx-zmx.XXXXXX")"
-cp "$extract_dir/fmx-zmx" "$install_temp"
-chmod 0755 "$install_temp"
-mv -f "$install_temp" "$install_dir/fmx-zmx"
+for name in fmx fmx-zmx; do
+  if [[ -e "$install_dir/$name" && ! -f "$install_dir/$name" ]]; then
+    fail "$install_dir/$name exists and is not a regular file"
+  fi
+done
 install_temp="$(mktemp "$install_dir/.fmx.XXXXXX")"
 cp "$extract_dir/fmx" "$install_temp"
 chmod 0755 "$install_temp"
 mv -f "$install_temp" "$install_dir/fmx"
+install_temp="$(mktemp "$install_dir/.fmx-zmx.XXXXXX")"
+cp "$extract_dir/fmx-zmx" "$install_temp"
+chmod 0755 "$install_temp"
+mv -f "$install_temp" "$install_dir/fmx-zmx"
 install_temp=""
 
 if [[ "$("$install_dir/fmx" --version)" != "$version" ]]; then
   fail 'installed binary did not pass its version check'
 fi
-if [[ "$("$install_dir/fmx-zmx" version 2>/dev/null | awk 'NR == 1 && $1 == "zmx" { print $2 }')" != "$companion_build" ]]; then
+if [[ "$(companion_build_of "$install_dir/fmx-zmx")" != "$companion_build" ]]; then
   fail 'installed companion did not pass its build check'
 fi
 

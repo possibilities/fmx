@@ -30,6 +30,8 @@ export const COMPANION_PIN: { repository: string; branch: string; commit: string
  */
 export const INHERITED_COMPANION_VARIABLES = [
   "ZMX_DIR",
+  "ZMX_DIR_MODE",
+  "ZMX_LOG_MODE",
   "ZMX_SESSION",
   "ZMX_SESSION_PREFIX",
   "ZMX_SCROLLBACK_LINES",
@@ -110,7 +112,9 @@ export async function ensureCompanionDirectories(directories: readonly string[],
     if (!info.isDirectory()) throw new Error(`Companion directory ${path} is not a directory`)
     if (info.uid !== uid) throw new Error(`Companion directory ${path} is owned by uid ${info.uid}, not ${uid}; refusing to use it`)
     if ((info.mode & 0o077) !== 0) {
-      throw new Error(`Companion directory ${path} is readable or writable by others (mode ${(info.mode & 0o777).toString(8)}); refusing to use it`)
+      throw new Error(
+        `Companion directory ${path} is readable or writable by others (mode ${(info.mode & 0o777).toString(8)}); refusing to use it (chmod 700 ${path})`,
+      )
     }
   }
 }
@@ -147,19 +151,22 @@ export async function resolveCompanion(
   env: NodeJS.ProcessEnv = process.env,
   installDirectory: string | null = installedDirectory(),
 ): Promise<ResolvedCompanion> {
+  // An empty override is no override, as an empty `FMX_ZMX_DIR` is no directory.
   const requested = env[COMPANION_PATH_ENV_VAR]
-  if (requested !== undefined) {
+  if (requested) {
     const candidate = requested.includes("/")
       ? isAbsolute(requested)
         ? requested
         : resolve(process.cwd(), requested)
-      : Bun.which(requested)
+      : Bun.which(requested, { PATH: env.PATH ?? "" })
     if (!candidate) throw new Error(`Companion executable not found: ${requested} (${COMPANION_PATH_ENV_VAR})`)
     return { path: await executable(candidate), origin: "override" }
   }
   if (installDirectory !== null) {
+    // Kept as the sibling's own path, not its target: what is beside fmx is
+    // what a message must name, even when it is a link to something else.
     const sibling = join(installDirectory, COMPANION_BINARY_NAME)
-    if (await isExecutable(sibling)) return { path: await realpath(sibling), origin: "sibling" }
+    if (await isExecutable(sibling)) return { path: sibling, origin: "sibling" }
   }
   const onPath = Bun.which(COMPANION_BINARY_NAME, { PATH: env.PATH ?? "" })
   if (!onPath) {
@@ -171,10 +178,11 @@ export async function resolveCompanion(
   return { path: await executable(onPath), origin: "path" }
 }
 
+/** A regular file we may execute: a directory passes `access(X_OK)` and is not one. */
 async function isExecutable(path: string): Promise<boolean> {
   try {
     await access(path, constants.X_OK)
-    return true
+    return (await stat(path)).isFile()
   } catch {
     return false
   }
@@ -185,16 +193,22 @@ async function executable(candidate: string): Promise<string> {
   return realpath(candidate)
 }
 
+/** How long `fmx-zmx version` may take: it opens a log and prints four lines. */
+export const COMPANION_VERSION_TIMEOUT_MS = 5000
+
 /**
  * The build a Companion reports: the first line of `fmx-zmx version` is
  * `zmx<tabs><build>`. Run in the Companion's own directory, which the
  * caller has already made private — the command creates the directory if
  * it must, and a stock-built fork would create it with a mode fmx refuses.
+ * A `version` that hangs — a wedged filesystem under the log — is killed
+ * and reported rather than waited on forever before the TUI.
  */
 export async function companionBuild(
   path: string,
   env: NodeJS.ProcessEnv = process.env,
   directory: string = companionDirectory(env),
+  timeoutMs: number = COMPANION_VERSION_TIMEOUT_MS,
 ): Promise<string> {
   const proc = Bun.spawn([path, "version"], {
     env: companionEnvironment(env, directory),
@@ -202,8 +216,22 @@ export async function companionBuild(
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()])
-  await proc.exited
+  // The pipes are not awaited past the deadline: a child the Companion
+  // leaves behind could hold them open after the Companion itself is gone.
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs)
+  })
+  const answered = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).then(
+    ([stdout, stderr]) => ({ stdout, stderr }),
+  )
+  const outcome = await Promise.race([answered, deadline])
+  if (timer !== null) clearTimeout(timer)
+  if (outcome === null) {
+    proc.kill("SIGKILL")
+    throw new Error(`Companion ${path} did not answer \`version\` within ${timeoutMs} ms`)
+  }
+  const { stdout, stderr } = outcome
   const build = proc.exitCode === 0 ? parseCompanionVersion(stdout) : null
   if (build === null) {
     const detail = stderr.trim() || stdout.trim() || `exit ${proc.exitCode}`
@@ -212,8 +240,9 @@ export async function companionBuild(
   return build
 }
 
+/** The first line, and only the first: `zmx<whitespace><build>`, as the installer reads it too. */
 export function parseCompanionVersion(output: string): string | null {
-  const match = /^zmx[ \t]+(\S+)[ \t]*$/m.exec(output)
+  const match = /^zmx[ \t]+(\S+)[ \t]*(?:\r?\n|$)/.exec(output)
   return match ? match[1]! : null
 }
 

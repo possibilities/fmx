@@ -49,10 +49,22 @@ test("the Companion is FMX_ZMX_PATH, else fmx-zmx beside fmx, else fmx-zmx on PA
 
     await expect(resolveCompanion({ FMX_ZMX_PATH: "/nonexistent/fmx-zmx" }, install)).rejects.toThrow("not executable")
     expect(await resolveCompanion({ FMX_ZMX_PATH: "/bin/sh", PATH: elsewhere }, install)).toEqual({ path: "/bin/sh", origin: "override" })
+    // A bare name is looked up on the given PATH, and an empty override is none.
+    expect(await resolveCompanion({ FMX_ZMX_PATH: "zmx", PATH: elsewhere }, install)).toEqual({ path: join(elsewhere, "zmx"), origin: "override" })
+    await expect(resolveCompanion({ FMX_ZMX_PATH: "zmx", PATH: "/nonexistent" }, install)).rejects.toThrow("not found: zmx (FMX_ZMX_PATH)")
+    expect(await resolveCompanion({ FMX_ZMX_PATH: "", PATH: elsewhere }, install)).toEqual({ path: join(install, "fmx-zmx"), origin: "sibling" })
 
     expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(install, "fmx-zmx"), origin: "sibling" })
     expect(await resolveCompanion({ PATH: elsewhere }, null)).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
     expect(await resolveCompanion({ PATH: elsewhere }, join(root, "no-such-install"))).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
+
+    // A link beside fmx is named as the link: what is beside fmx is what a message must say.
+    const { symlink, unlink } = await import("node:fs/promises")
+    await unlink(join(install, "fmx-zmx"))
+    await symlink(join(elsewhere, "zmx"), join(install, "fmx-zmx"))
+    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(install, "fmx-zmx"), origin: "sibling" })
+    await unlink(join(install, "fmx-zmx"))
+    await writeFile(join(install, "fmx-zmx"), "#!/bin/sh\nexit 0\n")
 
     // Beside fmx but not executable: passed over, like any other file there.
     await chmod(join(install, "fmx-zmx"), 0o644)
@@ -78,7 +90,11 @@ test("the Companion pin is a fork commit and the build string a Companion built 
 test("a Companion's build is the first line of its version output", async () => {
   expect(parseCompanionVersion("zmx\t\t0.7.0+fmx.0123456789ab\nghostty_vt\tghostty-1.3.2\nsocket_dir\t/tmp/x\n")).toBe("0.7.0+fmx.0123456789ab")
   expect(parseCompanionVersion("zmx 0.7.0\n")).toBe("0.7.0")
+  expect(parseCompanionVersion("zmx 0.7.0")).toBe("0.7.0")
   expect(parseCompanionVersion("fmx 0.1.1\n")).toBeNull()
+  // Only the first line: a later line is never the build, whatever it says.
+  expect(parseCompanionVersion("something else\nzmx\t\t0.7.0\n")).toBeNull()
+  expect(parseCompanionVersion("zmx_extra 1\n")).toBeNull()
   expect(parseCompanionVersion("")).toBeNull()
 
   const root = await mkdtemp("/tmp/fmx-env-")
@@ -96,6 +112,12 @@ test("a Companion's build is the first line of its version output", async () => 
     await writeFile(silent, "#!/bin/sh\nexit 0\n")
     await chmod(silent, 0o755)
     await expect(companionBuild(silent, {}, directory)).rejects.toThrow("did not report a build")
+    const stuck = join(root, "stuck")
+    await writeFile(stuck, "#!/bin/sh\nsleep 30\n")
+    await chmod(stuck, 0o755)
+    const started = Date.now()
+    await expect(companionBuild(stuck, {}, directory, 200)).rejects.toThrow("did not answer `version` within 200 ms")
+    expect(Date.now() - started).toBeLessThan(5000)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

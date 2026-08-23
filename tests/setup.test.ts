@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -74,7 +74,10 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
     expect(installed.stdout).toContain(`Installed fmx ${version} at ${installDirectory}/fmx, with its companion fmx-zmx (${companionBuild}) beside it`)
     expect(await readFile(join(installDirectory, "fmx"), "utf8")).toContain(version)
     expect(await readFile(join(installDirectory, "fmx-zmx"), "utf8")).toContain(companionBuild)
-    expect(await Bun.file(join(installDirectory, ".fmx-zmx.keep")).exists()).toBe(false)
+    // Nothing but the pair: no temp file survived the renames.
+    expect((await readdir(installDirectory)).sort()).toEqual(["fmx", "fmx-zmx"])
+    // Installing touched no directory of the user's: the companion's `version` ran in the installer's own.
+    expect(await Bun.file(join(tempDirectory, "zmx")).exists()).toBe(false)
 
     corruptChecksum = true
     const rejectedDirectory = join(tempDirectory, "rejected", "bin")
@@ -93,6 +96,33 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
     expect(refused.stderr).toContain("does not contain an executable fmx-zmx companion")
     expect(await Bun.file(join(loneDirectory, "fmx")).exists()).toBe(false)
     expect(await Bun.file(join(loneDirectory, "fmx-zmx")).exists()).toBe(false)
+
+    // Over an existing install, a refused archive leaves the old pair exactly as it was.
+    const installedFmx = await readFile(join(installDirectory, "fmx"))
+    const installedCompanion = await readFile(join(installDirectory, "fmx-zmx"))
+    const overExisting = await runSetup(baseUrl, installDirectory)
+    expect(overExisting.code).toBe(1)
+    expect(Buffer.compare(await readFile(join(installDirectory, "fmx")), installedFmx)).toBe(0)
+    expect(Buffer.compare(await readFile(join(installDirectory, "fmx-zmx")), installedCompanion)).toBe(0)
+    expect((await readdir(installDirectory)).sort()).toEqual(["fmx", "fmx-zmx"])
+
+    // A directory where an executable must go is refused before anything is placed.
+    archive = "pair"
+    const blockedDirectory = join(tempDirectory, "blocked", "bin")
+    await mkdir(join(blockedDirectory, "fmx-zmx"), { recursive: true })
+    const blocked = await runSetup(baseUrl, blockedDirectory)
+    expect(blocked.code).toBe(1)
+    expect(blocked.stderr).toContain(`${blockedDirectory}/fmx-zmx exists and is not a regular file`)
+    expect(await Bun.file(join(blockedDirectory, "fmx")).exists()).toBe(false)
+
+    // A companion that cannot report its build is said so, not swallowed by errexit.
+    await writeFile(join(payloadDirectory, "fmx-zmx"), "#!/bin/sh\necho 'illegal hardware instruction' >&2\nexit 134\n")
+    const crashing = await pack(["fmx", "fmx-zmx", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+    pair.bytes = crashing.bytes
+    pair.checksum = crashing.checksum
+    const unreported = await runSetup(baseUrl, join(tempDirectory, "crashing", "bin"))
+    expect(unreported.code).toBe(1)
+    expect(unreported.stderr).toContain("downloaded companion did not report its build: illegal hardware instruction")
   } finally {
     server.stop(true)
     await rm(tempDirectory, { recursive: true, force: true })

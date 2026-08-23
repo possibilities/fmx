@@ -392,7 +392,9 @@ Commands:
   control        every key and click as a command, for agents; see fmx control
   doctor         versions, the companion and whether it is the one this fmx
                  was released with, its directory, and fx; exits 1 when the
-                 companion is missing or not that build
+                 companion is missing, not that build, or its directory is
+                 not fmx's own; fx, and a build FMX_ZMX_PATH named, are
+                 reported, never judged
 
 Configuration:
   ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)

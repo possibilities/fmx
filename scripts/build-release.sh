@@ -118,13 +118,21 @@ fi
 # The build string is the fork's own version plus build metadata naming the
 # commit; the fork's version comes from its build.zig.zon, so the two are
 # checked against each other rather than trusted.
-companion_version="$(grep -m 1 -E '^[[:space:]]*\.version = "' "$companion_source/build.zig.zon" | sed 's/^[[:space:]]*\.version = "\([^"]*\)",.*/\1/')"
+companion_version="$( (grep -m 1 -E '^[[:space:]]*\.version = "' "$companion_source/build.zig.zon" || true) | sed 's/^[[:space:]]*\.version = "\([^"]*\)",.*/\1/')"
+if [[ -z "$companion_version" ]]; then
+  printf 'fmx release: no .version in %s/build.zig.zon\n' "$companion_source" >&2
+  exit 1
+fi
 if [[ "$companion_build" != "$companion_version+fmx.${companion_commit:0:12}" ]]; then
   printf 'fmx release: companion.json build %s is not %s+fmx.%s (the fork at the pin is version %s)\n' \
     "$companion_build" "$companion_version" "${companion_commit:0:12}" "$companion_version" >&2
   exit 1
 fi
-minimum_zig="$(grep -m 1 -E '^[[:space:]]*\.minimum_zig_version = "' "$companion_source/build.zig.zon" | sed 's/^[[:space:]]*\.minimum_zig_version = "\([^"]*\)",.*/\1/')"
+minimum_zig="$( (grep -m 1 -E '^[[:space:]]*\.minimum_zig_version = "' "$companion_source/build.zig.zon" || true) | sed 's/^[[:space:]]*\.minimum_zig_version = "\([^"]*\)",.*/\1/')"
+if [[ -z "$minimum_zig" ]]; then
+  printf 'fmx release: no .minimum_zig_version in %s/build.zig.zon\n' "$companion_source" >&2
+  exit 1
+fi
 zig_series="${minimum_zig%.*}"
 if [[ "$(zig version)" != "$zig_series".* ]]; then
   printf 'fmx release: the Companion builds with zig %s.x (found %s)\n' "$zig_series" "$(zig version)" >&2
@@ -142,12 +150,16 @@ bun build ./src/index.ts --compile --minify --sourcemap=none --outfile "$binary"
 chmod 0755 "$binary"
 
 # What each executable must still do after stripping: fmx answers --version
-# and --help, the Companion reports its build.
+# and --help, the Companion reports its build. The Companion's `version`
+# creates the directory it is given, so it is given one here, never the
+# build host's own or one an inherited ZMX_DIR names.
 fmx_healthy() {
   [[ "$("$1" --version)" == "$version" && "$("$1" --help)" == *"Usage:"* ]]
 }
 companion_healthy() {
-  [[ "$("$1" version 2>/dev/null | awk 'NR == 1 { print $2 }')" == "$companion_build" ]]
+  local output
+  output="$(ZMX_DIR="$work_dir/version-check" "$1" version 2>&1 || true)"
+  [[ "$(printf '%s\n' "$output" | awk 'NR == 1 && $1 == "zmx" { print $2 }')" == "$companion_build" ]]
 }
 
 # Strip an executable in place when the stripped copy is smaller and still
@@ -291,8 +303,9 @@ for extracted in "$work_dir/verify-xz/fmx" "$work_dir/verify-gz/fmx"; do
   [[ -f "$(dirname "$extracted")/LICENSE" ]]
   [[ -f "$(dirname "$extracted")/THIRD_PARTY_NOTICES.md" ]]
   # The pair, as installed: fmx finds the Companion beside itself and
-  # accepts it as the pinned build.
-  if ! FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" "$extracted" doctor > "$work_dir/doctor.txt" \
+  # accepts it as the pinned build. The build host's own override, if it
+  # has one for its checkout, must not stand in for the sibling.
+  if ! env -u FMX_ZMX_PATH FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" "$extracted" doctor > "$work_dir/doctor.txt" \
     || ! grep -q "^build  *$companion_build (the build this fmx was released with)" "$work_dir/doctor.txt" \
     || ! grep -q "^companion  *.*/fmx-zmx (beside " "$work_dir/doctor.txt"; then
     printf 'fmx release: the extracted pair did not pass fmx doctor:\n' >&2
