@@ -9,11 +9,12 @@ import { loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
 import { debugPanelRequested } from "./debug-panel.ts"
-import { InstanceManifest, manifestPath } from "./instance-manifest.ts"
+import { InstanceManifest, type ManifestEntry, manifestPath } from "./instance-manifest.ts"
 import { reconcileInstances, type ReconcileOutcome } from "./instance-reconcile.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 import { loadState, saveState } from "./state.ts"
+import { CompanionTransportFactory } from "./companion-transport.ts"
 import { CompanionCommand } from "./zmx-command.ts"
 import { companionDirectory, homeId, resolveCompanion } from "./zmx-environment.ts"
 
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
 
   const workspace = await realpath(process.cwd())
   const fxPath = await resolveExecutable(process.env.FMX_FX_PATH ?? "fx")
+  const companionPath = await resolveCompanion()
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
   const persistedState = await loadState()
@@ -72,7 +74,9 @@ async function main(): Promise<void> {
     // The socket is the Home's singleton; only its holder may touch the
     // Manifest, so the join runs after the bind and before anything is drawn.
     await agentSocket.start()
-    await reconcileAtStartup(home)
+    const companion = new CompanionCommand(companionDirectory(), process.env, companionPath)
+    const manifest = await InstanceManifest.open(manifestPath(), home)
+    const survivors = await reconcileAtStartup(manifest, companion)
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: [],
@@ -83,12 +87,15 @@ async function main(): Promise<void> {
       fxPath,
       cwd: workspace,
       keybindings: loadedConfig.keybindings,
+      manifest,
+      transport: new CompanionTransportFactory(companion, home),
+      survivors,
       agentSocket,
       debugPanel,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
       slug: loadedConfig.slug,
-      controlSocketPath: ControlSocket.pathFor(process.pid),
+      controlSocketPath: ControlSocket.pathFor(agentSocket.path),
       initialSidebarWidth: persistedState.sidebarWidth,
       initialSidebarHidden: persistedState.sidebarHidden,
       initialProjectLaunches: persistedState.projectLaunches,
@@ -120,12 +127,15 @@ async function main(): Promise<void> {
       process.once(signal, handler)
     }
 
-    controlSocket = new ControlSocket(app.control)
+    // Beside the agent socket and under the same singleton: an fx that
+    // outlives this fmx still reaches the next one for this Home by the path
+    // it was given.
+    controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(agentSocket.path))
     controlSocket.start()
 
     const hostPalette = await detectHostPalette(renderer)
     if (hostPalette) app.setHostPalette(hostPalette)
-    app.start()
+    await app.start()
     await app.waitUntilDone()
   } catch (error) {
     if (app) await app.shutdown(1)
@@ -142,36 +152,19 @@ async function main(): Promise<void> {
 
 /**
  * Join the Manifest against the Companion's sessions before anything is
- * drawn: adopt what a crash left unrecorded, drop what has ended, and say
- * what survived. Attaching survivors to visible terminals is the next
- * tranche; until then fmx reports them and starts as it always has. A
- * Companion that cannot be found, or a join that fails, is reported and
- * changes nothing: fmx started before any of this existed, and a failed
- * read must never be taken for an empty Companion.
+ * drawn: adopt what a crash left unrecorded, drop what has ended, and hand
+ * back what survived for the multiplexer to attach. A join that fails is
+ * reported and changes nothing — a failed read must never be taken for an
+ * empty Companion — and fmx starts with nothing attached, the Instances
+ * left where they are for the next start.
  */
-async function reconcileAtStartup(home: string): Promise<ReconcileOutcome | null> {
-  let companionPath: string
-  try {
-    companionPath = await resolveCompanion()
-  } catch (error) {
-    process.stderr.write(`fmx: ${errorMessage(error)}; instances will not survive this fmx\n`)
-    return null
-  }
+async function reconcileAtStartup(manifest: InstanceManifest, companion: CompanionCommand): Promise<ManifestEntry[]> {
   let outcome: ReconcileOutcome
   try {
-    const directory = companionDirectory()
-    const companion = new CompanionCommand(directory, process.env, companionPath)
-    const manifest = await InstanceManifest.open(manifestPath(), home)
     outcome = await reconcileInstances(manifest, companion)
   } catch (error) {
     process.stderr.write(`fmx: could not reconcile instances: ${errorMessage(error)}\n`)
-    return null
-  }
-  const survivors = outcome.attached.length + outcome.adopted.length
-  if (survivors > 0) {
-    process.stderr.write(
-      `fmx: ${survivors} surviving instance(s) in the Companion (${outcome.adopted.length} adopted); attaching them is not yet supported\n`,
-    )
+    return []
   }
   if (outcome.cleared.length > 0) {
     process.stderr.write(`fmx: cleared ${outcome.cleared.length} stale Companion socket(s)\n`)
@@ -179,7 +172,7 @@ async function reconcileAtStartup(home: string): Promise<ReconcileOutcome | null
   if (outcome.unresolved.length > 0) {
     process.stderr.write(`fmx: ${outcome.unresolved.length} Companion session(s) unreachable; left for the next start\n`)
   }
-  return outcome
+  return [...outcome.attached, ...outcome.adopted]
 }
 
 async function detectHostPalette(renderer: CliRenderer): Promise<TerminalColors | null> {

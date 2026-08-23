@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { instanceOptions } from "./fixtures/pty-transport.ts"
 import { rowText, SessionList, stateIcon, truncate } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 
@@ -244,6 +245,7 @@ test("the indent keeps every row's text aligned", async () => {
 test("mounts the list into the sidebar", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,

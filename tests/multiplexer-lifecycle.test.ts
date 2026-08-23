@@ -5,23 +5,27 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { instanceOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
 test("reports an fx spawn failure after removing its provisional instance", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: "/definitely/missing/fx",
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
   })
 
   try {
-    multiplexer.start()
+    await multiplexer.start()
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
+    // On screen from the claim, gone again with the reason once the start fails.
+    expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
     await setup.renderOnce()
-    expect(setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
     expect(setup.captureCharFrame()).toContain("fx did not start")
   } finally {
     await multiplexer.shutdown()
@@ -36,6 +40,7 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
     exitOnCtrlC: false,
   })
   const options = {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -52,12 +57,13 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
 
   try {
     multiplexer.setHostPalette(hostPalette("#cc3344"))
-    multiplexer.start()
+    await multiplexer.start()
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
     options.fxPath = "/definitely/missing/fx"
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-2") === undefined, 2_000)
     await setup.renderOnce()
 
     expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()

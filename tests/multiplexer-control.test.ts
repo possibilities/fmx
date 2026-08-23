@@ -9,6 +9,7 @@ import { AgentSocket } from "../src/agent-socket.ts"
 import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { instanceOptions } from "./fixtures/pty-transport.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -30,6 +31,7 @@ async function harness(name: string) {
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-control-test-${name}-${process.pid}.sock` })
   await agentSocket.start()
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: join(code, "alpha"),
     keybindings: resolveKeybindings().keybindings,
@@ -44,13 +46,27 @@ async function harness(name: string) {
     await multiplexer.shutdown()
     agentSocket.close()
   }
+  /**
+   * The pane id fx would address: an Instance's is minted with its identity,
+   * so a test names the Instance by number and looks the pane up.
+   */
+  const paneOf = async (ref: string): Promise<string> => {
+    const match = /^p_(\d+)$/.exec(ref)
+    if (!match) return ref
+    const snapshot = (await control("orient")) as Snapshot
+    const info = snapshot.instances.find((candidate) => candidate.id === Number(match[1]))
+    if (!info) throw new Error(`no instance ${match[1]}`)
+    return info.pane_id
+  }
   /** Report to the agent socket exactly as fx does: one line, one reply. */
-  const report = async (paneId: string, state: string, extra = "") => {
+  const report = async (pane: string, state: string, extra = "") => {
+    const paneId = await paneOf(pane)
     const payload = `{"id":"${Date.now()}","method":"pane.report_agent","params":{"pane_id":"${paneId}","source":"custom:fx","agent":"fx","state":"${state}"${extra}}}`
     await exchange(agentSocket.path, payload)
     await setup.renderOnce()
   }
-  const session = async (paneId: string, sessionId: string) => {
+  const session = async (pane: string, sessionId: string) => {
+    const paneId = await paneOf(pane)
     await exchange(
       agentSocket.path,
       `{"id":"s","method":"pane.report_agent_session","params":{"pane_id":"${paneId}","source":"custom:fx","agent":"fx","agent_session_id":"${sessionId}"}}`,

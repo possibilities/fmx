@@ -3,10 +3,12 @@ import { CliRenderEvents, type Selection } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { instanceOptions } from "./fixtures/pty-transport.ts"
 
 test("clears provisional, empty, and successfully copied selections", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: "fx",
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,

@@ -110,14 +110,6 @@ export class AgentSocket {
     this.lock = null
   }
 
-  /**
-   * fx treats the pane id as an opaque string. The `p_<n>` shape keeps it
-   * parseable by herdr-compatible tooling without costing anything here.
-   */
-  paneIdFor(instanceId: number): string {
-    return `p_${instanceId}`
-  }
-
   private acceptData(socket: SocketConnection, data: Uint8Array): void {
     const assembler = this.assemblerFor(socket)
     for (const line of assembler.push(new TextDecoder().decode(data))) {

@@ -6,6 +6,7 @@ import { AgentSocket } from "../src/agent-socket.ts"
 import { debugPanelRequested, debugPanelWidth } from "../src/debug-panel.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { instanceOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
@@ -13,6 +14,7 @@ async function createMultiplexer(width: number, height: number, debugPanel: bool
   const setup = await createTestRenderer({ width, height })
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-panel-test-${process.pid}.sock` })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,

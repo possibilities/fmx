@@ -40,14 +40,19 @@ export class ControlSocket {
 
   constructor(
     private readonly surface: ControlSurface,
-    path: string = ControlSocket.pathFor(),
+    path: string,
   ) {
     this.path = path
   }
 
-  /** Beside the agent socket, with an extension that says which is which. */
-  static pathFor(pid = process.pid): string {
-    return `/tmp/fmx-${pid}.ctl`
+  /**
+   * Beside the agent socket, with an extension that says which is which —
+   * and as stable as it, so an fx that outlives one fmx still reaches the
+   * next by the path it was given. Binding is safe under the agent
+   * socket's singleton: whatever is at the path is a previous fmx's residue.
+   */
+  static pathFor(agentSocketPath: string): string {
+    return `${agentSocketPath.replace(/\.sock$/, "")}.ctl`
   }
 
   start(): void {

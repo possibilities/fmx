@@ -4,12 +4,14 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
+import { instanceOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
 async function createMultiplexer(width: number, height: number) {
   const setup = await createTestRenderer({ width, height })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -27,6 +29,7 @@ test("starts without an fx, hiding the sidebar and centering dimmed prefix actio
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
   const { keybindings } = resolveKeybindings({ prefix: "ctrl+space" })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings,
@@ -74,6 +77,7 @@ test("requires a second ctrl+c before the empty-state exit timeout", async () =>
     exitOnCtrlC: false,
   })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -168,6 +172,7 @@ test("restores a persisted hidden sidebar and reports each toggle", async () => 
   const hiddenChanges: boolean[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -239,6 +244,7 @@ test("re-clamps the sidebar when the terminal shrinks", async () => {
 test("themes the divider from the host palette", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: "fx",
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -274,6 +280,7 @@ test("restores a persisted width and reports changes on drag end", async () => {
   const widthChanges: number[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -304,6 +311,7 @@ test("restores a persisted width and reports changes on drag end", async () => {
 test("clamps a stale persisted width to the current screen", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,

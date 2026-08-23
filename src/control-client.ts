@@ -10,6 +10,7 @@ import {
   decodeReply,
   encodeRequest,
 } from "./control-protocol.ts"
+import { listenerAnswers } from "./agent-socket.ts"
 import { LineAssembler } from "./socket-frames.ts"
 
 /**
@@ -48,7 +49,8 @@ export type ClientEnvironment = {
   readStdin: () => Promise<string>
   /** Where live control sockets are looked for when nothing names one. */
   socketDirectory?: string
-  isProcessAlive?: (pid: number) => boolean
+  /** Whether an fmx answers at a control socket path; a connect probe unless a test says otherwise. */
+  isSocketLive?: (path: string) => Promise<boolean>
 }
 
 export class UnreachableError extends Error {
@@ -65,7 +67,7 @@ export async function runCommand(
 ): Promise<ClientOutcome> {
   let socketPath: string
   try {
-    socketPath = resolveSocketPath(explicitSocket, environment)
+    socketPath = await resolveSocketPath(explicitSocket, environment)
   } catch (error) {
     return {
       exitCode: EXIT_UNREACHABLE,
@@ -246,11 +248,11 @@ function callerInstance(env: NodeJS.ProcessEnv): number | null {
  * Which fmx to talk to: the one named, the one the caller runs inside, or —
  * for a human testing from outside — the only one alive on this machine.
  */
-export function resolveSocketPath(explicit: string | null, environment: ClientEnvironment): string {
+export async function resolveSocketPath(explicit: string | null, environment: ClientEnvironment): Promise<string> {
   if (explicit) return isAbsolute(explicit) ? explicit : resolve(environment.cwd, explicit)
   const fromEnv = environment.env[CONTROL_SOCKET_ENV_VAR]
   if (fromEnv) return fromEnv
-  const candidates = liveControlSockets(environment)
+  const candidates = await liveControlSockets(environment)
   if (candidates.length === 1) return candidates[0]!
   if (candidates.length === 0) {
     throw new UnreachableError(`not running inside fmx (${CONTROL_SOCKET_ENV_VAR} is unset and no fmx is running)`)
@@ -260,9 +262,14 @@ export function resolveSocketPath(explicit: string | null, environment: ClientEn
   )
 }
 
-function liveControlSockets(environment: ClientEnvironment): string[] {
+/**
+ * Control sockets are named for a Home, not a process, so a file proves
+ * nothing about whether an fmx is behind it: the ones that answer are the
+ * ones that count.
+ */
+async function liveControlSockets(environment: ClientEnvironment): Promise<string[]> {
   const directory = environment.socketDirectory ?? "/tmp"
-  const alive = environment.isProcessAlive ?? processAlive
+  const alive = environment.isSocketLive ?? listenerAnswers
   let names: string[]
   try {
     names = readdirSync(directory)
@@ -270,22 +277,12 @@ function liveControlSockets(environment: ClientEnvironment): string[] {
     return []
   }
   const sockets: string[] = []
-  for (const name of names) {
-    const match = /^fmx-(\d+)\.ctl$/u.exec(name)
-    if (!match) continue
-    if (alive(Number(match[1]))) sockets.push(`${directory}/${name}`)
+  for (const name of names.sort()) {
+    if (!/^fmx-\d+-[0-9a-f]+\.ctl$/u.test(name)) continue
+    const path = `${directory}/${name}`
+    if (await alive(path)) sockets.push(path)
   }
-  return sockets.sort()
-}
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    // EPERM means it exists but belongs to someone else — still alive.
-    return (error as NodeJS.ErrnoException).code === "EPERM"
-  }
+  return sockets
 }
 
 /** One request, one reply, one connection. */

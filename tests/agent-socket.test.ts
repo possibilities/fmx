@@ -136,12 +136,6 @@ test("removes its socket file on close", async () => {
   expect(existsSync(path)).toBe(false)
 })
 
-test("mints an opaque pane id per instance", () => {
-  const socket = new AgentSocket({ path: socketPath("pane-ids") })
-  expect(socket.paneIdFor(1)).toBe("p_1")
-  expect(socket.paneIdFor(12)).toBe("p_12")
-})
-
 test("the default path is stable per Home and user, not per process", () => {
   expect(defaultSocketPath("abc123", 502)).toBe("/tmp/fmx-502-abc123.sock")
   expect(new AgentSocket({ homeId: "abc123" }).path).toBe(defaultSocketPath("abc123"))

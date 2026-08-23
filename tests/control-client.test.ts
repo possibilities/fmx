@@ -45,20 +45,23 @@ async function server(answer: (call: Call) => Promise<unknown>, name: string) {
 
 test("names the socket from the flag, then the environment, then a lone live fmx", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-sockets-"))
+  const first = join(directory, "fmx-501-0123456789ab.ctl")
+  const second = join(directory, "fmx-501-ba9876543210.ctl")
+  await writeFile(first, "")
+  await writeFile(second, "")
   await writeFile(join(directory, "fmx-100.ctl"), "")
-  await writeFile(join(directory, "fmx-200.ctl"), "")
-  const alive = new Set([100])
-  const discover = environment({ socketDirectory: directory, isProcessAlive: (pid) => alive.has(pid) })
+  const alive = new Set([first])
+  const discover = environment({ socketDirectory: directory, isSocketLive: async (path) => alive.has(path) })
 
-  expect(resolveSocketPath("/tmp/given.ctl", discover)).toBe("/tmp/given.ctl")
-  expect(resolveSocketPath("rel.ctl", discover)).toBe("/work/rel.ctl")
-  expect(resolveSocketPath(null, { ...discover, env: { FMX_SOCKET_PATH: "/tmp/env.ctl" } })).toBe("/tmp/env.ctl")
-  expect(resolveSocketPath(null, discover)).toBe(join(directory, "fmx-100.ctl"))
+  expect(await resolveSocketPath("/tmp/given.ctl", discover)).toBe("/tmp/given.ctl")
+  expect(await resolveSocketPath("rel.ctl", discover)).toBe("/work/rel.ctl")
+  expect(await resolveSocketPath(null, { ...discover, env: { FMX_SOCKET_PATH: "/tmp/env.ctl" } })).toBe("/tmp/env.ctl")
+  expect(await resolveSocketPath(null, discover)).toBe(first)
 
-  alive.add(200)
-  expect(() => resolveSocketPath(null, discover)).toThrow("more than one")
+  alive.add(second)
+  expect(resolveSocketPath(null, discover)).rejects.toThrow("more than one")
   alive.clear()
-  expect(() => resolveSocketPath(null, discover)).toThrow("not running inside fmx")
+  expect(resolveSocketPath(null, discover)).rejects.toThrow("not running inside fmx")
 })
 
 test("reports an unreachable fmx as exit 3", async () => {

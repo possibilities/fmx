@@ -172,20 +172,27 @@ export type CreateParams = {
 }
 
 /**
- * The Manifest as a live object: every mutation is written through before
- * it resolves, and writes are serialized so two in flight cannot land out of
- * order. Callers hold the entries they were handed as snapshots.
+ * The Manifest as a live object: every mutation lands in memory at once and
+ * is written through before its promise resolves, with the writes
+ * serialized so two in flight cannot land out of order. Callers hold the
+ * entries they were handed as snapshots.
  */
 export class InstanceManifest {
   private queue: Promise<unknown> = Promise.resolve()
 
   private constructor(
-    readonly path: string,
+    /** `null` for a Manifest that is never written: a test's, or a demo's. */
+    readonly path: string | null,
     private manifest: Manifest,
   ) {}
 
   static async open(path: string, homeId: string): Promise<InstanceManifest> {
     return new InstanceManifest(path, await loadManifest(path, homeId))
+  }
+
+  /** A Manifest held in memory alone. Nothing survives the process, which is the point. */
+  static ephemeral(homeId: string): InstanceManifest {
+    return new InstanceManifest(null, emptyManifest(homeId))
   }
 
   get homeId(): string {
@@ -203,24 +210,35 @@ export class InstanceManifest {
 
   /** Step 1 of creation: the claim is on disk before the Companion is asked. */
   beginCreate(params: CreateParams): Promise<ManifestEntry> {
-    return this.mutate((manifest) => {
-      const identity = params.identity ?? mintIdentity()
-      if (manifest.instances.some((entry) => entry.instanceId === identity.instanceId)) {
-        throw new Error(`instance already in manifest: ${identity.instanceId}`)
-      }
-      const entry: ManifestEntry = {
-        ...identity,
-        displayId: manifest.nextDisplayId++,
-        cwd: params.cwd,
-        fxPath: params.fxPath,
-        fxArgs: params.fxArgs && [...params.fxArgs],
-        createdAt: params.createdAt,
-        fxSessionId: null,
-        phase: "creating",
-      }
-      manifest.instances.push(entry)
-      return copy(entry)
-    })
+    return this.mutate((manifest) => this.claimIn(manifest, params))
+  }
+
+  /**
+   * Step 1 as two halves: the entry now, for an Instance that should be on
+   * screen the moment it is asked for, and the write to wait for before
+   * the Companion is asked — the claim must be on disk first.
+   */
+  claim(params: CreateParams): { result: ManifestEntry; saved: Promise<void> } {
+    return this.apply((manifest) => this.claimIn(manifest, params))
+  }
+
+  private claimIn(manifest: Manifest, params: CreateParams): ManifestEntry {
+    const identity = params.identity ?? mintIdentity()
+    if (manifest.instances.some((entry) => entry.instanceId === identity.instanceId)) {
+      throw new Error(`instance already in manifest: ${identity.instanceId}`)
+    }
+    const entry: ManifestEntry = {
+      ...identity,
+      displayId: manifest.nextDisplayId++,
+      cwd: params.cwd,
+      fxPath: params.fxPath,
+      fxArgs: params.fxArgs && [...params.fxArgs],
+      createdAt: params.createdAt,
+      fxSessionId: null,
+      phase: "creating",
+    }
+    manifest.instances.push(entry)
+    return copy(entry)
   }
 
   /** Step 3: the Companion acknowledged the start. */
@@ -253,6 +271,10 @@ export class InstanceManifest {
   }
 
   setFxSessionId(instanceId: string, fxSessionId: string | null): Promise<void> {
+    // Checked before the write is queued: every frame fx sends is a chance
+    // to record the id, and all but the first would otherwise be a rewrite.
+    const current = this.manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+    if (!current || current.fxSessionId === fxSessionId) return Promise.resolve()
     return this.mutate((manifest) => {
       const entry = manifest.instances.find((candidate) => candidate.instanceId === instanceId)
       if (!entry || entry.fxSessionId === fxSessionId) return
@@ -268,19 +290,29 @@ export class InstanceManifest {
   }
 
   private mutate<T>(change: (manifest: Manifest) => T): Promise<T> {
-    const run = this.queue.then(async () => {
-      const next: Manifest = {
-        ...this.manifest,
-        instances: this.manifest.instances.map(copy),
-      }
-      const result = change(next)
-      await saveManifest(next, this.path)
-      this.manifest = next
-      return result
+    try {
+      const { result, saved } = this.apply(change)
+      return saved.then(() => result)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+  }
+
+  /** The change now, in memory; the write of that snapshot behind every write before it. */
+  private apply<T>(change: (manifest: Manifest) => T): { result: T; saved: Promise<void> } {
+    const next: Manifest = {
+      ...this.manifest,
+      instances: this.manifest.instances.map(copy),
+    }
+    // A change that throws changes nothing: `next` is dropped unsaved.
+    const result = change(next)
+    this.manifest = next
+    const saved = this.queue.then(async () => {
+      if (this.path !== null) await saveManifest(next, this.path)
     })
     // A failed write must not wedge every later one behind a rejected promise.
-    this.queue = run.catch(() => {})
-    return run
+    this.queue = saved.catch(() => {})
+    return { result, saved }
   }
 }
 

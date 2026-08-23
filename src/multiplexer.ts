@@ -47,6 +47,15 @@ import type { ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } from "./fx-environment.ts"
+import type { InstanceManifest, ManifestEntry } from "./instance-manifest.ts"
+import {
+  InstanceEndedError,
+  type InstanceExit,
+  type InstanceTransport,
+  type InstanceTransportFactory,
+  stringEnvironment,
+  type TerminalSize,
+} from "./instance-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
 import { type KnownPrompt, SlugNamer } from "./slug-namer.ts"
@@ -96,7 +105,6 @@ const DIVIDER_UNREVEALED_COLOR = "transparent"
 const HELP_MODAL_TITLE = " keys "
 const ERROR_MODAL_TITLE = " error "
 
-const CTRL_C = new Uint8Array([0x03])
 const HELP_CLOSE_KEY = parseKeyCombo("?")!
 const MODIFIER_ONLY_KEYS = new Set([
   "leftshift",
@@ -118,8 +126,9 @@ const MODIFIER_ONLY_KEYS = new Set([
 const PROMPT_SETTLE_MS = 250
 /** How long after the paste the send follows, so fx sees them apart. */
 const PROMPT_SUBMIT_MS = 120
-const GRACEFUL_EXIT_TIMEOUT_MS = 21_000
-const FORCED_EXIT_TIMEOUT_MS = 500
+/** How many times, and how far apart, a lost transport is reached for before the Instance is let go of. */
+const RECOVERY_ATTEMPTS = 3
+const RECOVERY_INTERVAL_MS = 250
 const EMPTY_STATE_CONTENT = "prefix+c to create agent\nprefix+l to prompt agent"
 const EXIT_CONFIRMATION_CONTENT = "press ctrl+c again to exit"
 export const EXIT_CONFIRMATION_TIMEOUT_MS = 2_000
@@ -129,6 +138,12 @@ type MultiplexerOptions = {
   fxPath: string
   cwd: string
   keybindings: Keybindings
+  /** The Home's record of its Instances; every start and end is written through it. */
+  manifest: InstanceManifest
+  /** Where Instances are started and reached. */
+  transport: InstanceTransportFactory
+  /** Instances the join found running: attached, in display order, before anything else. */
+  survivors?: readonly ManifestEntry[]
   agentSocket?: AgentSocket | null
   debugPanel?: boolean
   initialSidebarWidth?: number
@@ -166,23 +181,39 @@ type InstanceWaiter = {
   settle: (state: DisplayState | null) => void
 }
 
-type InstanceStatus = "starting" | "running" | "closing" | "exited"
-type FxProcess = ReturnType<typeof Bun.spawn>
+type InstanceStatus = "starting" | "running" | "exited"
 type ModalKind = "help" | "spawn-error"
 
 type InstanceEvents = {
   onTitleChange: (instance: FxInstance) => void
-  onExit: (instance: FxInstance, exitCode: number) => void
+  onExit: (instance: FxInstance, exit: InstanceExit) => void
+  /** The transport went away under a running fx; nothing is known until asked. */
+  onLost: (instance: FxInstance, error: Error) => void
 }
 
+/** RIS. Everything — screen, scrollback, modes — so a restore lands on nothing. */
+const TERMINAL_RESET = new Uint8Array([0x1b, 0x63])
+
+/**
+ * One Instance as fmx shows it: the visible terminal, what fx has said its
+ * title is, and the prompt it was launched with. The process and its PTY
+ * are the transport's; this owns only the rendering side and the bytes
+ * between the two.
+ */
 class FxInstance {
   readonly terminal: FxTerminalRenderable
+  /** The number fmx's UI knows it by: the Manifest's display id. */
+  readonly id: number
+  /** What fx addresses its frames to; the identity's, so it survives fmx. */
+  readonly paneId: string
   private readonly fallbackLabel: string
   label: string
   status: InstanceStatus = "starting"
 
-  private processHandle: FxProcess | null = null
-  private ptyClosed = false
+  private transport: InstanceTransport | null = null
+  private detached = false
+  /** The terminal's size as last laid out, for a transport attached later. */
+  private size: TerminalSize = { cols: 80, rows: 24 }
   /** The prompt this instance was launched with, kept past the typing so
    * naming can use it without waiting for fx to write it down. */
   launchPrompt: string | null = null
@@ -191,20 +222,18 @@ class FxInstance {
   /** A prompt has gone in and fx has not yet said it is working on it. */
   awaitingWork = false
   private promptTimer: ReturnType<typeof setTimeout> | null = null
-  private readonly cursorReportAdapter = new CursorReportAdapter()
+  private cursorReportAdapter = new CursorReportAdapter()
   private readonly titleParser: OscTitleParser
 
   constructor(
     renderer: CliRenderer,
-    readonly id: number,
+    readonly entry: ManifestEntry,
     readonly cwd: string,
-    private readonly fxPath: string,
-    private readonly agentSocket: FxAgentSocketBinding | null,
-    private readonly controlSocketPath: string | null,
-    private readonly launchLevel: FxLaunchLevel | null,
-    hostPalette: TerminalColors | null,
+    private hostPalette: TerminalColors | null,
     private readonly events: InstanceEvents,
   ) {
+    this.id = entry.displayId
+    this.paneId = entry.paneId
     const workspace = basename(cwd) || "workspace"
     this.fallbackLabel = sanitizeTitle(workspace) || "fx"
     this.label = this.fallbackLabel
@@ -216,7 +245,7 @@ class FxInstance {
     })
 
     this.terminal = new FxTerminalRenderable(renderer, {
-      id: `fx-${id}`,
+      id: `fx-${this.id}`,
       cols: 80,
       rows: 24,
       width: "100%",
@@ -284,39 +313,66 @@ class FxInstance {
     }, PROMPT_SETTLE_MS)
   }
 
-  start(): void {
-    const processHandle = Bun.spawn([this.fxPath], {
-      cwd: this.cwd,
-      env: createFxEnvironment(
-        process.env,
-        this.id,
-        this.cwd,
-        this.agentSocket,
-        this.controlSocketPath,
-        this.launchLevel,
-      ),
-      terminal: {
-        cols: Math.max(1, this.terminal.width || 80),
-        rows: Math.max(1, this.terminal.height || 24),
-        data: (_pty, data) => this.acceptOutput(data),
+  /** What a transport should be opened at: the terminal's size once it has one. */
+  currentSize(): TerminalSize {
+    return {
+      cols: Math.max(1, this.terminal.width || this.size.cols),
+      rows: Math.max(1, this.terminal.height || this.size.rows),
+    }
+  }
+
+  /**
+   * Take a transport, first or replacement. Bound before anything else so
+   * the restore it answers the attach with has somewhere to land; the
+   * terminal resets at its `RestoreBegin`, so a replacement replays onto a
+   * clean screen rather than over the one the lost transport left.
+   */
+  adopt(transport: InstanceTransport): void {
+    if (this.detached || this.status === "exited") {
+      transport.detach()
+      return
+    }
+    this.transport?.detach()
+    this.transport = transport
+    transport.bind({
+      output: (bytes) => this.acceptOutput(bytes),
+      restoreBegin: () => this.resetTerminal(),
+      ready: () => {},
+      exit: (status) => this.recordExit(status),
+      lost: (error) => {
+        if (this.transport !== transport) return
+        this.transport = null
+        this.events.onLost(this, error)
       },
     })
-    this.processHandle = processHandle
-    this.status = "running"
-    void processHandle.exited.then((exitCode) => this.recordExit(exitCode))
+    if (this.status === "starting") this.status = "running"
+  }
+
+  /** Whether a transport is carrying this instance right now. */
+  get connected(): boolean {
+    return this.transport !== null
   }
 
   updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
+    this.hostPalette = colors
     if (!this.terminal.applyHostPalette(colors)) return
     if (themeMode && hasDetectedBackground(colors)) this.writeInput(themeModeReport(themeMode), "response")
   }
 
+  /** Let go of fx without ending it, and take the terminal down. */
   destroy(): void {
+    this.detach()
+    this.terminal.blur()
+    this.terminal.destroy()
+  }
+
+  /** Stop watching fx. It keeps running; the Companion holds it. */
+  detach(): void {
     if (this.promptTimer !== null) clearTimeout(this.promptTimer)
     this.promptTimer = null
-    this.terminal.blur()
-    this.closePty()
-    this.terminal.destroy()
+    this.detached = true
+    this.transport?.detach()
+    this.transport = null
   }
 
   private acceptOutput(data: Uint8Array): void {
@@ -325,83 +381,39 @@ class FxInstance {
     if (terminalData.byteLength > 0) this.terminal.write(terminalData)
   }
 
+  /**
+   * What the transport replays is the whole terminal, so the one here must
+   * hold nothing first: not the screen, not the scrollback, not a cursor
+   * query half-translated when the last transport dropped. The host palette
+   * goes back on afterwards — the replay restores what fx set, and the
+   * host's colors were never fx's.
+   */
+  private resetTerminal(): void {
+    this.cursorReportAdapter = new CursorReportAdapter()
+    this.terminal.write(TERMINAL_RESET)
+    if (this.hostPalette) this.terminal.applyHostPalette(this.hostPalette)
+  }
+
   private writeInput(data: Uint8Array, source: EmbeddedTerminalDataSource): void {
-    const pty = this.processHandle?.terminal
-    if (!pty || this.status === "exited") return
-    // Stop accepting user input once shutdown begins, but keep terminal-query
-    // responses flowing so fx can restore and finalize its terminal cleanly.
-    if (this.status === "closing" && source === "input") return
+    const transport = this.transport
+    if (!transport || this.status === "exited") return
     const ptyData = source === "response" ? this.cursorReportAdapter.toPty(data) : data
-    try {
-      pty.write(ptyData)
-    } catch {
-      // Exit reconciliation owns the final state; stale input can be dropped.
-    }
+    transport.write(ptyData)
   }
 
   private resizePty(cols: number, rows: number): void {
-    try {
-      this.processHandle?.terminal?.resize(Math.max(1, cols), Math.max(1, rows))
-    } catch {
-      // A resize racing process exit is harmless.
-    }
+    this.size = { cols: Math.max(1, cols), rows: Math.max(1, rows) }
+    this.transport?.resize(this.size)
   }
 
-  private recordExit(exitCode: number): void {
+  private recordExit(status: InstanceExit): void {
+    if (this.status === "exited") return
     const trailingTerminalData = this.cursorReportAdapter.flushTerminalBytes()
     if (trailingTerminalData.byteLength > 0) this.terminal.write(trailingTerminalData)
     this.status = "exited"
-    this.closePty()
-    this.events.onExit(this, exitCode)
-  }
-
-  async stop(): Promise<void> {
-    const processHandle = this.processHandle
-    if (!processHandle || this.status === "exited") {
-      this.closePty()
-      return
-    }
-
-    this.status = "closing"
-
-    // fx owns raw input and treats a second semantic Ctrl-C as a graceful exit,
-    // including persistence finalization and its resume handoff. Extra presses
-    // allow fx-owned modal surfaces to dismiss before the composer sees the pair.
-    for (let attempt = 0; attempt < 4 && processHandle.exitCode === null; attempt += 1) {
-      try {
-        processHandle.terminal?.write(CTRL_C)
-      } catch {
-        break
-      }
-      await Bun.sleep(50)
-    }
-
-    if (!(await exitsWithin(processHandle, GRACEFUL_EXIT_TIMEOUT_MS))) {
-      try {
-        processHandle.kill("SIGTERM")
-      } catch {
-        // The child may have exited between the timeout and signal delivery.
-      }
-      if (!(await exitsWithin(processHandle, FORCED_EXIT_TIMEOUT_MS))) {
-        try {
-          processHandle.kill("SIGKILL")
-        } catch {
-          // Nothing remains to kill.
-        }
-        await exitsWithin(processHandle, FORCED_EXIT_TIMEOUT_MS)
-      }
-    }
-    this.closePty()
-  }
-
-  private closePty(): void {
-    if (this.ptyClosed) return
-    this.ptyClosed = true
-    try {
-      this.processHandle?.terminal?.close()
-    } catch {
-      // PTY close is idempotent from fmx's perspective.
-    }
+    this.transport?.detach()
+    this.transport = null
+    this.events.onExit(this, status)
   }
 }
 
@@ -434,7 +446,6 @@ export class Multiplexer {
   private readonly keybindings: Keybindings
   private readonly instances: FxInstance[] = []
   private activeIndex = -1
-  private nextId = 1
   private prefixArmed = false
   private modalKind: ModalKind | null = null
   private spawnErrorLines: string[] = []
@@ -476,6 +487,11 @@ export class Multiplexer {
       // typed into.
       const instance = this.instanceForPane(frame.paneId)
       instance?.armPrompt()
+      // The session id is what a restart seeds the name from; written the
+      // moment fx first says it, and never again for the same one.
+      if (instance && sessionId) {
+        void this.options.manifest.setFxSessionId(instance.entry.instanceId, sessionId).catch(() => {})
+      }
       if (instance && this.registry.get(frame.paneId)?.state === "working") instance.awaitingWork = false
     }
     // A pane the human is already watching is seen the moment it reports, so
@@ -642,12 +658,22 @@ export class Multiplexer {
     this.refreshTerminalTitle()
   }
 
-  start(): void {
+  /**
+   * Bring up what the join found running before anything new can be asked
+   * for, in the order the Instances were numbered. Each attach is its own:
+   * one that fails is reported and the rest still come up.
+   */
+  async start(): Promise<void> {
     this.subagents.start()
     // The host palette query has settled by the time an fx can launch; if it
     // never produced colors, the fallback is the best divider color there will
     // be once an agent makes the sidebar visible.
     if (!this.hostPalette) this.applyDividerPalette(null)
+    const survivors = [...(this.options.survivors ?? [])].sort((a, b) => a.displayId - b.displayId)
+    for (const entry of survivors) {
+      if (this.shuttingDown) return
+      await this.restoreInstance(entry)
+    }
   }
 
   setHostPalette(colors: TerminalColors): void {
@@ -672,7 +698,9 @@ export class Multiplexer {
     this.instanceWaiters.clear()
 
     try {
-      await Promise.allSettled(this.instances.map((instance) => instance.stop()))
+      // Let go, never end: fx and its terminal are the Companion's, and the
+      // next fmx for this Home finds them where this one left them.
+      for (const instance of this.instances) instance.detach()
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
       this.renderer.keyInput.off("paste", this.pasteHandler)
@@ -693,52 +721,151 @@ export class Multiplexer {
    * Start an fx. `focus` false leaves the screen where it is — an agent
    * starting workers should not keep taking the human's view — unless nothing
    * is on it yet, when the new instance is the only thing to show.
+   *
+   * The Manifest is written first and the Companion asked second, so a crash
+   * anywhere between leaves a claim the next start's join resolves against
+   * what the Companion actually holds. The Instance is on screen from the
+   * claim: a start that fails takes it down again with the reason.
    */
-  private createInstance(
+  private async createInstance(
     cwd: string = this.options.cwd,
     prompt = "",
     focus = true,
     launchLevel: FxLaunchLevel | null = null,
-  ): FxInstance | null {
+  ): Promise<FxInstance | null> {
     if (this.shuttingDown) return null
     this.cancelExitConfirmation()
-    const instanceId = this.nextId++
-    const instance = new FxInstance(
-      this.renderer,
-      instanceId,
+    const { result: entry, saved } = this.options.manifest.claim({
       cwd,
-      this.options.fxPath,
-      this.agentSocketBinding(instanceId),
-      this.options.controlSocketPath ?? null,
-      launchLevel,
-      this.hostPalette,
-      {
-        onTitleChange: (candidate) => {
-          if (this.activeInstance() === candidate) this.refreshTerminalTitle()
-        },
-        onExit: (candidate) => this.handleInstanceExit(candidate),
-      },
-    )
+      fxPath: this.options.fxPath,
+      fxArgs: [],
+      createdAt: Date.now(),
+    })
+    const instance = this.addInstance(entry, cwd, focus)
     instance.setPendingPrompt(prompt)
-    this.instances.push(instance)
-    this.content.add(instance.terminal)
-    this.refreshInstanceChrome()
-    if (focus || this.activeIndex === -1) this.switchTo(this.instances.length - 1)
-    this.loadGitContext(cwd)
     this.countLaunch(cwd)
-    this.refreshSessionList()
     try {
-      instance.start()
+      await saved
+      if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
+      const transport = await this.options.transport.start({
+        entry,
+        // The claim's, not the option's: what the Manifest says was started is what is started.
+        command: [entry.fxPath, ...(entry.fxArgs ?? [])],
+        cwd,
+        env: stringEnvironment(
+          createFxEnvironment(
+            process.env,
+            entry.displayId,
+            cwd,
+            this.agentSocketBinding(entry.paneId),
+            this.options.controlSocketPath ?? null,
+            launchLevel,
+          ),
+        ),
+        size: instance.currentSize(),
+      })
+      // fx is running whatever happened here meanwhile; the record says so
+      // before anything else, because this is the acknowledgement a crash
+      // loses.
+      await this.options.manifest.markRunning(entry.instanceId)
+      if (this.shuttingDown || !this.instances.includes(instance)) {
+        transport.detach()
+        return null
+      }
+      instance.adopt(transport)
     } catch (error) {
       this.removeInstance(instance)
+      await this.options.manifest.remove(entry.instanceId)
       throw error
     }
     return instance
   }
 
+  /**
+   * Attach to an Instance the Companion held between runs. What fx last
+   * reported is seeded so its name shows; its state is unknown until it
+   * reports again, and a launch prompt is not replayed — there is none.
+   */
+  private async restoreInstance(entry: ManifestEntry): Promise<void> {
+    const instance = this.addInstance(entry, entry.cwd, false)
+    if (entry.fxSessionId) {
+      this.registry.seed(instance.paneId, entry.fxSessionId)
+      this.slugNamer.note(entry.fxSessionId, null)
+      this.refreshSessionList()
+    }
+    try {
+      const transport = await this.options.transport.attach(entry, instance.currentSize())
+      if (this.shuttingDown || !this.instances.includes(instance)) {
+        transport.detach()
+        return
+      }
+      instance.adopt(transport)
+    } catch (error) {
+      this.removeInstance(instance)
+      if (error instanceof InstanceEndedError) {
+        await this.options.manifest.remove(entry.instanceId)
+        return
+      }
+      // Unreachable is not ended: the claim stays for the next start.
+      this.showError(`instance ${entry.displayId} could not be restored`, error)
+    }
+  }
+
+  /** Put an Instance on screen under its Manifest identity; nothing is attached yet. */
+  private addInstance(entry: ManifestEntry, cwd: string, focus: boolean): FxInstance {
+    const instance = new FxInstance(this.renderer, entry, cwd, this.hostPalette, {
+      onTitleChange: (candidate) => {
+        if (this.activeInstance() === candidate) this.refreshTerminalTitle()
+      },
+      onExit: (candidate) => this.handleInstanceExit(candidate),
+      onLost: (candidate, error) => void this.recoverInstance(candidate, error),
+    })
+    this.instances.push(instance)
+    this.content.add(instance.terminal)
+    this.refreshInstanceChrome()
+    if (focus || this.activeIndex === -1) this.switchTo(this.instances.length - 1)
+    this.loadGitContext(cwd)
+    this.refreshSessionList()
+    return instance
+  }
+
+  /** fx ended: the Instance, its claim, and whatever the Companion recorded all go. */
   private handleInstanceExit(instance: FxInstance): void {
     if (this.shuttingDown) return
     this.removeInstance(instance)
+    void this.options.manifest.remove(instance.entry.instanceId).catch(() => {})
+  }
+
+  /**
+   * The transport dropped under a running fx. Reach for it again: a live
+   * session is re-attached and replays onto a reset terminal; one that
+   * ended is removed exactly as an Exit would have; one that cannot be
+   * reached after a few tries is let go of on screen but kept in the
+   * Manifest, where the next start's join will find it.
+   */
+  private async recoverInstance(instance: FxInstance, lost: Error): Promise<void> {
+    let error: unknown = lost
+    for (let attempt = 0; attempt < RECOVERY_ATTEMPTS; attempt += 1) {
+      if (this.shuttingDown || !this.instances.includes(instance)) return
+      try {
+        const transport = await this.options.transport.attach(instance.entry, instance.currentSize())
+        if (this.shuttingDown || !this.instances.includes(instance)) {
+          transport.detach()
+          return
+        }
+        instance.adopt(transport)
+        return
+      } catch (caught) {
+        if (caught instanceof InstanceEndedError) {
+          this.handleInstanceExit(instance)
+          return
+        }
+        error = caught
+      }
+      await new Promise((resolve) => setTimeout(resolve, RECOVERY_INTERVAL_MS))
+    }
+    if (this.shuttingDown || !this.removeInstance(instance)) return
+    this.showError(`lost instance ${instance.id}`, error)
   }
 
   private removeInstance(instance: FxInstance): boolean {
@@ -919,13 +1046,13 @@ export class Multiplexer {
   }
 
   private paneIdFor(instance: FxInstance): string {
-    return this.agentSocket?.paneIdFor(instance.id) ?? `p_${instance.id}`
+    return instance.paneId
   }
 
-  private agentSocketBinding(instanceId: number): FxAgentSocketBinding | null {
+  private agentSocketBinding(paneId: string): FxAgentSocketBinding | null {
     const socket = this.agentSocket
     if (!socket) return null
-    return { socketPath: socket.path, paneId: socket.paneIdFor(instanceId) }
+    return { socketPath: socket.path, paneId }
   }
 
   private beginDividerDrag(event: MouseEvent): void {
@@ -1123,11 +1250,9 @@ export class Multiplexer {
   private executeAction(action: KeyAction): void {
     switch (action.name) {
       case "new_tab":
-        try {
-          this.createInstance()
-        } catch (error) {
-          this.showError("fx did not start", error)
-        }
+        void this.createInstance().catch((error) => {
+          if (!this.shuttingDown) this.showError("fx did not start", error)
+        })
         return
       case "launch":
         try {
@@ -1258,7 +1383,7 @@ export class Multiplexer {
       }
     }
     if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    const instance = this.createInstance(directory, request.prompt, focus, {
+    const instance = await this.createInstance(directory, request.prompt, focus, {
       model: request.model,
       effort: request.effort,
     })
@@ -1890,17 +2015,3 @@ function launchErrorHeading(error: unknown): string {
   return error instanceof WorktreeError ? "worktree not created" : "fx did not start"
 }
 
-async function exitsWithin(processHandle: FxProcess, timeoutMs: number): Promise<boolean> {
-  if (processHandle.exitCode !== null) return true
-  let timeout: ReturnType<typeof setTimeout> | null = null
-  try {
-    return await Promise.race([
-      processHandle.exited.then(() => true),
-      new Promise<boolean>((resolve) => {
-        timeout = setTimeout(() => resolve(false), timeoutMs)
-      }),
-    ])
-  } finally {
-    if (timeout) clearTimeout(timeout)
-  }
-}

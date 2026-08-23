@@ -3,11 +3,13 @@ import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { instanceOptions } from "./fixtures/pty-transport.ts"
 
 test("uses the configured prefix and renders configured bindings", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const { keybindings } = resolveKeybindings({ prefix: "ctrl+space" })
   const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
     fxPath: "fx",
     cwd: process.cwd(),
     keybindings,
