@@ -121,7 +121,10 @@ export async function reconcileInstances(
     plan = reconcile(manifest.entries, sessions, manifest.homeId)
   }
 
-  for (const { entry } of plan.attach) outcome.attached.push(entry)
+  for (const { entry } of plan.attach) {
+    // A live session is the acknowledgement a crash kept fmx from recording.
+    outcome.attached.push(entry.phase === "creating" ? await manifest.markRunning(entry.instanceId) : entry)
+  }
   for (const { instanceId, session } of plan.adopt) {
     const [fxPath = "", ...fxArgs] = session.command ?? []
     outcome.adopted.push(

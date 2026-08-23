@@ -116,13 +116,15 @@ test("reconcileInstances applies the join: adopts, removes, consumes exit record
   const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
   try {
     const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
-    const a = await manifest.beginCreate({ cwd: "/work", fxPath: "/fx", fxArgs: [], createdAt: 0, identity: identityFor(ID_A) })
-    await manifest.markRunning(a.instanceId)
+    // A: acknowledged by the Companion, but fmx died before writing it down.
+    await manifest.beginCreate({ cwd: "/work", fxPath: "/fx", fxArgs: [], createdAt: 0, identity: identityFor(ID_A) })
     await manifest.beginCreate({ cwd: "/work", fxPath: "/fx", fxArgs: [], createdAt: 0, identity: identityFor(ID_B) })
     const { companion, forgotten } = fakeCompanion([[session(ID_A), session(ID_B, "exited"), session(ID_C, "live", { cwd: "/adopted" })]])
 
     const outcome = await reconcileInstances(manifest, companion)
     expect(outcome.attached.map((item) => item.instanceId)).toEqual([ID_A])
+    expect(outcome.attached[0]?.phase).toBe("running")
+    expect(manifest.get(ID_A)?.phase).toBe("running")
     expect(outcome.adopted.map((item) => [item.instanceId, item.cwd, item.fxPath, item.fxArgs, item.displayId])).toEqual([
       [ID_C, "/adopted", "/fx", ["--x"], 3],
     ])
