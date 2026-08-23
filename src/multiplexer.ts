@@ -1183,7 +1183,7 @@ export class Multiplexer {
   }
 
   private refreshPanelChrome(): void {
-    const visible = Boolean(this.toolPanel && this.panelVisible)
+    const visible = Boolean(this.toolPanel && this.panelVisible && this.agents.length > 0)
     this.panelDivider && (this.panelDivider.visible = visible)
     this.toolPanel?.setVisible(visible)
   }
@@ -1219,6 +1219,8 @@ export class Multiplexer {
     this.divider.visible = showTray
     this.emptyState.visible = !hasAgents
     if (!hasAgents) this.refreshEmptyState()
+    this.refreshPanelChrome()
+    this.applyLayout()
   }
 
   private refreshEmptyState(): void {
@@ -1510,7 +1512,7 @@ export class Multiplexer {
   }
 
   private reservedPanelWidth(): number {
-    if (!this.toolPanel || !this.panelVisible) return 0
+    if (!this.toolPanel || !this.panelVisible || this.agents.length === 0) return 0
     return this.panelWidth + 1
   }
 

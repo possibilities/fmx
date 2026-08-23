@@ -167,6 +167,31 @@ test("configured Tool panels exist but start hidden and remember a resized width
   }
 })
 
+test("keeps a remembered visible Tools panel offscreen while no Agents are running", async () => {
+  const h = await harness({ initialPanelVisible: true })
+  try {
+    const panel = h.find("fmx-tool-panel")!
+    const divider = h.find("fmx-tool-panel-divider")!
+    const content = h.find("fmx-content")!
+
+    await h.setup.renderOnce()
+    expect(panel.visible).toBe(false)
+    expect(divider.visible).toBe(false)
+    expect([content.x, content.width]).toEqual([0, 90])
+    expect(await h.control()).toMatchObject({ visible: false, hidden: false })
+    expect(h.sessions.opens).toHaveLength(0)
+
+    await launchWithKeys(h)
+    expect(panel.visible).toBe(true)
+    expect(divider.visible).toBe(true)
+    expect([panel.x, panel.width]).toEqual([60, 30])
+    expect(await h.control()).toMatchObject({ visible: true, hidden: false })
+    expect(h.visibility).toEqual([])
+  } finally {
+    await h.close()
+  }
+})
+
 test("restores Tool panel visibility, width, and selection without drawing a rail for one tool", async () => {
   const h = await harness({
     panels: [PANELS[1]!],
@@ -303,6 +328,11 @@ test("an Agent exit tears down its local Tool panel runtime and stops its owned 
 
     expect(h.sessions.stopped).toEqual([opened.context.agentId])
     expect(opened.transport.detached).toBe(true)
+    await h.setup.renderOnce()
+    expect(h.find("fmx-tool-panel")).toMatchObject({ visible: false })
+    expect(h.find("fmx-tool-panel-divider")).toMatchObject({ visible: false })
+    expect(h.find("fmx-content")).toMatchObject({ x: 0, width: 90 })
+    expect(await h.control()).toMatchObject({ visible: false, hidden: false })
   } finally {
     await h.close()
   }
