@@ -75,6 +75,12 @@
   transport to tell; without the re-send fx draws at the wrong size until
   the next host resize. The same ordering is why `armPrompt` waits for the
   transport when fx reports first: `create` returns with fx already up.
+- `state.json` remembers the selected agent by its stable `instanceId`, not its
+  display number. Startup prepares every survivor synchronously in display-id
+  order, selects that saved Instance before its first await, then attaches the
+  selected transport first. Do not restore by adding the selected Instance out
+  of order: sidebar order is creation order. State writes are serialized and
+  awaited during cleanup so a selection immediately followed by detach lands.
 - Palette detection can take seconds in a terminal that never answers, and a
   renderer destroyed under it never settles the query; `index.ts` races it
   against shutdown so a signal in that window still reaches the socket

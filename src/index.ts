@@ -20,7 +20,7 @@ import { reconcileInstances, type ReconcileOutcome } from "./instance-reconcile.
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 import { expandTilde } from "./projects.ts"
-import { loadState, saveState } from "./state.ts"
+import { loadState, saveState, type PersistedState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
 import { CompanionCommand } from "./zmx-command.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
@@ -91,6 +91,12 @@ async function main(): Promise<void> {
   const fxPath = await resolveFx(process.env.FMX_FX_PATH ?? "fx")
   const companionPath = await resolveCompanion()
   const persistedState = await loadState()
+  let stateSave: Promise<void> = Promise.resolve()
+  const persistState = () => {
+    const snapshot: PersistedState = { ...persistedState }
+    if (persistedState.projectLaunches) snapshot.projectLaunches = { ...persistedState.projectLaunches }
+    stateSave = stateSave.then(() => saveState(snapshot)).catch(() => {})
+  }
   const home = homeId()
 
   let renderer: CliRenderer | null = null
@@ -171,21 +177,32 @@ async function main(): Promise<void> {
       controlSocketPath: ControlSocket.pathFor(agentSocket.path),
       initialSidebarWidth: persistedState.sidebarWidth,
       initialSidebarHidden: persistedState.sidebarHidden,
+      initialActiveInstanceId: persistedState.activeInstanceId,
       initialProjectLaunches: persistedState.projectLaunches,
       onProjectLaunch: (launches) => {
         persistedState.projectLaunches = launches
-        void saveState(persistedState).catch(() => {})
+        persistState()
       },
       onSidebarWidthChange: (width) => {
         persistedState.sidebarWidth = width
         // State persistence is an enhancement; a failed write must never
         // disturb the running session.
-        void saveState(persistedState).catch(() => {})
+        persistState()
       },
       onSidebarHiddenChange: (hidden) => {
         if (hidden) persistedState.sidebarHidden = true
         else delete persistedState.sidebarHidden
-        void saveState(persistedState).catch(() => {})
+        persistState()
+      },
+      onActiveInstanceChange: (instanceId) => {
+        if (instanceId === null) {
+          if (persistedState.activeInstanceId === undefined) return
+          delete persistedState.activeInstanceId
+        } else {
+          if (persistedState.activeInstanceId === instanceId) return
+          persistedState.activeInstanceId = instanceId
+        }
+        persistState()
       },
     })
     app.lockStartupChrome(firstPalette.kind === "settled" ? firstPalette.colors : null)
@@ -231,6 +248,7 @@ async function main(): Promise<void> {
     // is not consumed is the next start's. The Manifest's last write is.
     transport?.close()
     await manifest?.settled()
+    await stateSave
     controlSocket?.close()
     startupPaletteDetector?.cleanup()
     // Only the fmx that bound the socket may unlink it; the one refused at

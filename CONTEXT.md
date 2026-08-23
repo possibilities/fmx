@@ -103,6 +103,8 @@ not selectable, so pointer navigation never waits for release. Agent names use
 the terminal's native gray directly, so late palette detection does not
 restyle them. The selected-row background and divider are chosen together
 before first paint and do not change when the initial palette answer is late.
+The selected agent's stable Instance identity is machine state, restored before
+the first frame so detach and reattach do not move focus back to agent one.
 _Avoid_: agent panel, tab bar, session picker.
 
 **Subagent row** — a non-selectable Session list row for an fx subagent whose

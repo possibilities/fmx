@@ -378,6 +378,122 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
+  "reattaches with the last focused agent still selected",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-focus-restore-e2e-"))
+    const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "config.toml")
+    const stateFile = join(tempDirectory, "state.json")
+    await writeFile(configFile, configWithRoot())
+    const env = {
+      ...process.env,
+      HOME: tempDirectory,
+      FMX_FX_PATH: FAKE_FX,
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      FMX_CONFIG_PATH: configFile,
+      FMX_STATE_PATH: stateFile,
+      ...privateHome(tempDirectory),
+      FMX_TEST_LOG: lifecycleLog,
+      FMX_TEST_PASSTHROUGH_KEYS: "1",
+    }
+    const spawnFmx = (sink: { output: string }) => {
+      const decoder = new TextDecoder()
+      return Bun.spawn(FMX_COMMAND, {
+        cwd: ROOT,
+        env,
+        terminal: {
+          cols: 100,
+          rows: 24,
+          data: (_terminal, bytes) => {
+            sink.output += decoder.decode(bytes, { stream: true })
+          },
+        },
+      })
+    }
+    const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
+
+    const firstOutput = { output: "" }
+    const first = spawnFmx(firstOutput)
+    let replacement: ReturnType<typeof spawnFmx> | null = null
+    try {
+      await waitUntil(() => firstOutput.output.includes("prefix+c"), 8_000, () => firstOutput.output)
+      first.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
+      first.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
+
+      // Exercise an actual selection change, ending on agent 2.
+      first.terminal?.write(Uint8Array.of(control("b"), "p".charCodeAt(0)))
+      await waitUntil(
+        async () => (await orientation(tempDirectory, env))?.active === 1,
+        5_000,
+        () => firstOutput.output,
+      )
+      first.terminal?.write(Uint8Array.of(control("b"), "n".charCodeAt(0)))
+      await waitUntil(
+        async () => (await orientation(tempDirectory, env))?.active === 2,
+        5_000,
+        () => firstOutput.output,
+      )
+      const second = (await manifest()).instances.find((entry) => entry.displayId === 2)!
+
+      first.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(first.exited, 6_000, "first fmx did not detach")).toBe(0)
+      first.terminal?.close()
+      expect(JSON.parse(await readFile(stateFile, "utf8")).activeInstanceId).toBe(second.instanceId)
+
+      const restoredOutput = { output: "" }
+      replacement = spawnFmx(restoredOutput)
+      let restored: Snapshot | null = null
+      await waitUntil(
+        async () => {
+          restored = await orientation(tempDirectory, env)
+          return restored?.instances.length === 2 && restored.active === 2
+        },
+        10_000,
+        () => restoredOutput.output,
+      )
+      expect(restored!.instances.map((instance) => [instance.id, instance.active])).toEqual([
+        [1, false],
+        [2, true],
+      ])
+      expect(
+        restored!.sidebar.rows
+          .filter((row) => row.kind === "agent")
+          .map((row) => [row.instance, row.active]),
+      ).toEqual([
+        [1, false],
+        [2, true],
+      ])
+
+      // Focus is functional, not only painted: unprefixed input goes straight
+      // to the restored selection.
+      replacement.terminal?.write(Uint8Array.of(control("u")))
+      await waitUntil(
+        async () => (await readLifecycle(lifecycleLog)).includes("ctrl-u 2"),
+        5_000,
+        () => restoredOutput.output,
+      )
+      expect(await readLifecycle(lifecycleLog)).not.toContain("ctrl-u 1")
+
+      replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
+      replacement.terminal?.close()
+    } finally {
+      if (first.exitCode === null) first.kill("SIGKILL")
+      first.terminal?.close()
+      if (replacement && replacement.exitCode === null) replacement.kill("SIGKILL")
+      replacement?.terminal?.close()
+      await endSurvivors(tempDirectory)
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  25_000,
+)
+
+test.skipIf(!PTY_TEST_ENABLED)(
   "multiplexer uses configured bindings and leaves PTY exits to fx",
   async () => {
     await chmod(FAKE_FX, 0o755)
@@ -715,6 +831,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
       const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-restart-e2e-"))
       const lifecycleLog = join(tempDirectory, "lifecycle.log")
       const configFile = join(tempDirectory, "config.toml")
+      const stateFile = join(tempDirectory, "state.json")
       await writeFile(configFile, configWithRoot())
       const env = {
         ...process.env,
@@ -722,7 +839,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
-        FMX_STATE_PATH: join(tempDirectory, "state.json"),
+        FMX_STATE_PATH: stateFile,
         ...privateHome(tempDirectory),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_HEARTBEAT: "1",
@@ -760,6 +877,27 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
           async () => {
             const entries = (await manifest()).instances
             return entries.length === 2 && entries.every((entry) => entry.phase === "running")
+          },
+          5_000,
+          () => first.output,
+        )
+
+        // Make agent 1 the last selection and wait for its stable identity to
+        // land before SIGKILL gets a chance to bypass normal cleanup.
+        one.terminal?.write(Uint8Array.of(control("b"), "p".charCodeAt(0)))
+        await waitUntil(
+          async () => (await orientation(tempDirectory, env))?.active === 1,
+          5_000,
+          () => first.output,
+        )
+        const firstInstance = (await manifest()).instances.find((entry) => entry.displayId === 1)!
+        await waitUntil(
+          async () => {
+            try {
+              return JSON.parse(await readFile(stateFile, "utf8")).activeInstanceId === firstInstance.instanceId
+            } catch {
+              return false
+            }
           },
           5_000,
           () => first.output,

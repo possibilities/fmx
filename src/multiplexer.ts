@@ -158,6 +158,9 @@ type MultiplexerOptions = {
   onSidebarWidthChange?: (width: number) => void
   initialSidebarHidden?: boolean
   onSidebarHiddenChange?: (hidden: boolean) => void
+  /** Stable identity to focus before the first restored frame. */
+  initialActiveInstanceId?: string
+  onActiveInstanceChange?: (instanceId: string | null) => void
   /** Directories the launch dialog scans one level deep for projects. */
   projectRoots?: string[]
   /** Where a launch's new worktree is checked out. */
@@ -715,9 +718,21 @@ export class Multiplexer {
     if (this.shuttingDown) return
     this.subagents.start()
     const survivors = [...(this.options.survivors ?? [])].sort((a, b) => a.displayId - b.displayId)
-    for (const entry of survivors) {
+    const restoring = survivors.map((entry) => this.prepareRestoredInstance(entry))
+    if (restoring.length === 0) return
+
+    const savedIndex = restoring.findIndex(
+      (instance) => instance.entry.instanceId === this.options.initialActiveInstanceId,
+    )
+    this.switchTo(savedIndex === -1 ? 0 : savedIndex)
+
+    // Reach the selected terminal first, while keeping the sidebar itself in
+    // display-id order. It is the surface the renderer is about to expose.
+    const active = this.activeInstance()!
+    const attachOrder = [active, ...restoring.filter((instance) => instance !== active)]
+    for (const instance of attachOrder) {
       if (this.shuttingDown) return
-      await this.restoreInstance(entry)
+      await this.attachRestoredInstance(instance)
     }
   }
 
@@ -863,8 +878,8 @@ export class Multiplexer {
    * until fx reports something newer. A launch prompt is not replayed —
    * there is none.
    */
-  private async restoreInstance(entry: ManifestEntry): Promise<void> {
-    const instance = this.addInstance(entry, entry.cwd, false)
+  private prepareRestoredInstance(entry: ManifestEntry): FxInstance {
+    const instance = this.addInstance(entry, entry.cwd, false, false)
     const checkpoint = entry.agentStatus
     const record = this.registry.seed(instance.paneId, {
       sessionId: entry.fxSessionId,
@@ -875,10 +890,13 @@ export class Multiplexer {
       instance.id,
       checkpoint?.seen === false ? Math.max(0, record.stateSeq - 1) : record.stateSeq,
     )
-    // The first restored Instance is already the surface the human will see.
-    if (this.activeInstance() === instance) this.markSeen(instance)
     if (entry.fxSessionId) this.slugNamer.note(entry.fxSessionId, null)
     this.refreshSessionList()
+    return instance
+  }
+
+  private async attachRestoredInstance(instance: FxInstance): Promise<void> {
+    const entry = instance.entry
     try {
       const transport = await this.options.transport.attach(entry, instance.currentSize())
       if (this.shuttingDown || !this.instances.includes(instance)) {
@@ -898,7 +916,12 @@ export class Multiplexer {
   }
 
   /** Put an Instance on screen under its Manifest identity; nothing is attached yet. */
-  private addInstance(entry: ManifestEntry, cwd: string, focus: boolean): FxInstance {
+  private addInstance(
+    entry: ManifestEntry,
+    cwd: string,
+    focus: boolean,
+    selectIfEmpty = true,
+  ): FxInstance {
     const instance = new FxInstance(this.renderer, entry, cwd, this.hostPalette, {
       onTitleChange: (candidate) => {
         if (this.activeInstance() === candidate) this.refreshTerminalTitle()
@@ -909,7 +932,7 @@ export class Multiplexer {
     this.instances.push(instance)
     this.content.add(instance.terminal)
     this.refreshInstanceChrome()
-    if (focus || this.activeIndex === -1) this.switchTo(this.instances.length - 1)
+    if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.instances.length - 1)
     this.loadGitContext(cwd)
     this.refreshSessionList()
     return instance
@@ -1007,6 +1030,7 @@ export class Multiplexer {
 
     if (this.instances.length === 0) {
       this.activeIndex = -1
+      this.options.onActiveInstanceChange?.(null)
       this.refreshTerminalTitle()
       this.refreshSessionList()
     } else if (wasActive) {
@@ -1022,6 +1046,7 @@ export class Multiplexer {
     this.renderer.clearSelection()
     if (this.instances.length === 0) {
       this.activeIndex = -1
+      this.options.onActiveInstanceChange?.(null)
       this.refreshTerminalTitle()
       return
     }
@@ -1035,6 +1060,7 @@ export class Multiplexer {
 
     this.activeIndex = normalized
     const active = this.instances[normalized]!
+    this.options.onActiveInstanceChange?.(active.entry.instanceId)
     active.terminal.visible = true
     active.terminal.setHostSelectionEnabled(true)
     // A surface drawn over fx keeps the keys; it hands them back when it

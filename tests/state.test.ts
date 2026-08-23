@@ -17,9 +17,10 @@ describe("statePath", () => {
 describe("loadState", () => {
   test("round-trips through saveState, creating missing directories", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "fmx-state-")), "nested", "state.json")
-    await saveState({ sidebarWidth: 31 }, path)
-    expect(await loadState(path)).toEqual({ sidebarWidth: 31 })
-    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ sidebarWidth: 31 })
+    const activeInstanceId = "0123456789abcdef0123456789abcdef"
+    await saveState({ sidebarWidth: 31, activeInstanceId }, path)
+    expect(await loadState(path)).toEqual({ sidebarWidth: 31, activeInstanceId })
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ sidebarWidth: 31, activeInstanceId })
   })
 
   test("returns empty state for a missing file", async () => {
@@ -44,6 +45,9 @@ describe("loadState", () => {
     expect(await loadState(path)).toEqual({})
 
     await writeFile(path, JSON.stringify({ sidebarWidth: "26" }), "utf8")
+    expect(await loadState(path)).toEqual({})
+
+    await writeFile(path, JSON.stringify({ activeInstanceId: "not-an-instance" }), "utf8")
     expect(await loadState(path)).toEqual({})
   })
 

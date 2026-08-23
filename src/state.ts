@@ -12,6 +12,8 @@ export type PersistedState = {
   sidebarHidden?: boolean
   /** Instances started per directory, which orders the project picker. */
   projectLaunches?: Record<string, number>
+  /** Stable Manifest identity of the agent that most recently owned focus. */
+  activeInstanceId?: string
 }
 
 /** Everything fmx keeps for itself lives here, alongside the config file the
@@ -60,6 +62,9 @@ export async function loadState(path = statePath()): Promise<PersistedState> {
   if (document.sidebarHidden === true) state.sidebarHidden = true
   const launches = readLaunches(document.projectLaunches)
   if (launches) state.projectLaunches = launches
+  if (typeof document.activeInstanceId === "string" && /^[0-9a-f]{32}$/u.test(document.activeInstanceId)) {
+    state.activeInstanceId = document.activeInstanceId
+  }
   return state
 }
 
