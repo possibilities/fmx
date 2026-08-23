@@ -31,7 +31,7 @@ import {
   ControlFailure,
   type ControlMethod,
   type DraftInfo,
-  type InstanceInfo,
+  type AgentInfo,
   type CatalogInfo,
   type KeysInfo,
   type LaunchChoices,
@@ -43,7 +43,7 @@ import {
   parseTarget,
   requiredString,
   isRecord,
-  type SidebarRow,
+  type TrayRow,
   type Snapshot,
   type SubagentInfo,
   type Surface,
@@ -53,16 +53,16 @@ import { afterControlReply, type ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } from "./fx-environment.ts"
-import type { InstanceManifest, ManifestEntry } from "./instance-manifest.ts"
+import type { AgentManifest, ManifestEntry } from "./agent-manifest.ts"
 import {
-  InstanceEndedError,
-  InstanceUnreachableError,
-  type InstanceExit,
-  type InstanceTransport,
-  type InstanceTransportFactory,
+  AgentEndedError,
+  AgentUnreachableError,
+  type AgentExit,
+  type AgentTransport,
+  type AgentTransportFactory,
   stringEnvironment,
   type TerminalSize,
-} from "./instance-transport.ts"
+} from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
 import { type KnownPrompt, SlugNamer } from "./slug-namer.ts"
@@ -104,11 +104,11 @@ import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } fro
 import type { PanelSessionController } from "./panel-session.ts"
 import { ToolPanel } from "./tool-panel.ts"
 
-/** The sidebar the embedded terminal sits beside; exported so tests can
+/** The tray the embedded terminal sits beside; exported so tests can
  * address the terminal by its real screen column rather than a guess. */
-export const SIDEBAR_DEFAULT_WIDTH = 26
-const SIDEBAR_MIN_WIDTH = 16
-const SIDEBAR_MAX_SCREEN_FRACTION = 1 / 3
+export const TRAY_DEFAULT_WIDTH = 26
+const TRAY_MIN_WIDTH = 16
+const TRAY_MAX_SCREEN_FRACTION = 1 / 3
 const TOOL_PANEL_MIN_WIDTH = 16
 const TOOL_PANEL_MAX_SCREEN_FRACTION = 1 / 3
 // Blending the background slightly toward the foreground keeps the divider a
@@ -145,7 +145,7 @@ const MODIFIER_ONLY_KEYS = new Set([
 const PROMPT_SETTLE_MS = 250
 /** How long after the paste the send follows, so fx sees them apart. */
 const PROMPT_SUBMIT_MS = 120
-/** How many times, and how far apart, a lost transport is reached for before the Instance is let go of. */
+/** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
 const EMPTY_STATE_CONTENT = "prefix+c to create agent\nprefix+l to prompt agent"
@@ -156,15 +156,15 @@ type MultiplexerOptions = {
   fxPath: string
   cwd: string
   keybindings: Keybindings
-  /** The Home's record of its Instances; every start and end is written through it. */
-  manifest: InstanceManifest
-  /** Where Instances are started and reached. */
-  transport: InstanceTransportFactory
-  /** Instances the join found running: attached, in display order, before anything else. */
+  /** The Home's record of its Agents; every start and end is written through it. */
+  manifest: AgentManifest
+  /** Where Agents are started and reached. */
+  transport: AgentTransportFactory
+  /** Agents the join found running: attached, in display order, before anything else. */
   survivors?: readonly ManifestEntry[]
   agentSocket?: AgentSocket | null
   debugPanel?: boolean
-  /** Ordered configured tools available in the active Instance's Tool panel. */
+  /** Ordered configured tools available in the active agent's tools panel. */
   panels?: readonly PanelDefinition[]
   /** Owns configured tool processes and their terminal transports. */
   panelSessions?: PanelSessionController | null
@@ -175,30 +175,30 @@ type MultiplexerOptions = {
   onPanelVisibleChange?: (visible: boolean) => void
   initialPanelId?: string
   onPanelIdChange?: (id: string) => void
-  initialSidebarWidth?: number
-  onSidebarWidthChange?: (width: number) => void
-  initialSidebarHidden?: boolean
-  onSidebarHiddenChange?: (hidden: boolean) => void
+  initialTrayWidth?: number
+  onTrayWidthChange?: (width: number) => void
+  initialTrayHidden?: boolean
+  onTrayHiddenChange?: (hidden: boolean) => void
   /** Stable identity to focus before the first restored frame. */
-  initialActiveInstanceId?: string
-  onActiveInstanceChange?: (instanceId: string | null) => void
+  initialActiveAgentId?: string
+  onActiveAgentChange?: (agentId: string | null) => void
   /** Directories the launch dialog scans one level deep for projects. */
   projectRoots?: string[]
   /** Where a launch's new worktree is checked out. */
   worktreeRoot?: string
   home?: string
-  /** Instances started per directory so far, which orders the picker. */
+  /** Agents started per directory so far, which orders the picker. */
   initialProjectLaunches?: Record<string, number>
   onProjectLaunch?: (launches: Record<string, number>) => void
-  /** How instances earn a name from their first prompt. */
+  /** How agents earn a name from their first prompt. */
   slug?: SlugSettings
-  /** Where `fmx control <command>` reaches this fmx; handed to every instance. */
+  /** Where `fmx control <command>` reaches this fmx; handed to every agent. */
   controlSocketPath?: string
   /** How long each lifecycle Toast remains; overridden only by renderer tests. */
   toastDurationMs?: number
 }
 
-/** Default states `instance wait` waits for: any that needs someone. */
+/** Default states `agent wait` waits for: any that needs someone. */
 const WAIT_DEFAULT_STATES: readonly DisplayState[] = ["idle", "done", "blocked"]
 const DISPLAY_STATES: readonly string[] = ["blocked", "working", "done", "idle", "unknown"]
 /** How many resolved drafts stay readable after they close. */
@@ -209,33 +209,33 @@ type Draft = {
   waiters: Set<(info: DraftInfo) => void>
 }
 
-type InstanceWaiter = {
-  instanceId: number
+type AgentWaiter = {
+  agentId: number
   states: readonly DisplayState[]
   settle: (state: DisplayState | null) => void
 }
 
-type InstanceStatus = "starting" | "running" | "exited"
+type AgentStatus = "starting" | "running" | "exited"
 type ModalKind = "help" | "spawn-error"
 
-type InstanceEvents = {
-  onTitleChange: (instance: FxInstance) => void
-  onExit: (instance: FxInstance, exit: InstanceExit) => void
+type AgentEvents = {
+  onTitleChange: (agent: FxAgent) => void
+  onExit: (agent: FxAgent, exit: AgentExit) => void
   /** The transport went away under a running fx; nothing is known until asked. */
-  onLost: (instance: FxInstance, error: Error) => void
-  onFocus: (instance: FxInstance) => void
+  onLost: (agent: FxAgent, error: Error) => void
+  onFocus: (agent: FxAgent) => void
 }
 
 /** RIS. Everything — screen, scrollback, modes — so a restore lands on nothing. */
 const TERMINAL_RESET = new Uint8Array([0x1b, 0x63])
 
 /**
- * One Instance as fmx shows it: the visible terminal, what fx has said its
+ * One Agent as fmx shows it: the visible terminal, what fx has said its
  * title is, and the prompt it was launched with. The process and its PTY
  * are the transport's; this owns only the rendering side and the bytes
  * between the two.
  */
-class FxInstance {
+class FxAgent {
   readonly terminal: FxTerminalRenderable
   /** The number fmx's UI knows it by: the Manifest's display id. */
   readonly id: number
@@ -243,13 +243,13 @@ class FxInstance {
   readonly paneId: string
   private readonly fallbackLabel: string
   label: string
-  status: InstanceStatus = "starting"
+  status: AgentStatus = "starting"
 
-  private transport: InstanceTransport | null = null
+  private transport: AgentTransport | null = null
   private detached = false
   /** The terminal's size as last laid out, for a transport attached later. */
   private size: TerminalSize = { cols: 80, rows: 24 }
-  /** The prompt this instance was launched with, kept past the typing so
+  /** The prompt this agent was launched with, kept past the typing so
    * naming can use it without waiting for fx to write it down. */
   launchPrompt: string | null = null
   /** A launch prompt waiting for fx to be ready to be typed into. */
@@ -267,7 +267,7 @@ class FxInstance {
     readonly entry: ManifestEntry,
     readonly cwd: string,
     private hostPalette: TerminalColors | null,
-    private readonly events: InstanceEvents,
+    private readonly events: AgentEvents,
   ) {
     this.id = entry.displayId
     this.paneId = entry.paneId
@@ -313,7 +313,7 @@ class FxInstance {
   /** Paste `text` into a running fx and send it, the way a launch prompt
    * goes in — the two writes a beat apart, for the same reason. */
   send(text: string): void {
-    if (this.status !== "running") throw new ControlFailure("busy", "the instance is not running")
+    if (this.status !== "running") throw new ControlFailure("busy", "the agent is not running")
     if (this.pendingPrompt !== null || this.promptTimer !== null) {
       throw new ControlFailure("busy", "the launch prompt has not been sent yet")
     }
@@ -372,7 +372,7 @@ class FxInstance {
    * terminal resets at its `RestoreBegin`, so a replacement replays onto a
    * clean screen rather than over the one the lost transport left.
    */
-  adopt(transport: InstanceTransport): void {
+  adopt(transport: AgentTransport): void {
     if (this.detached || this.status === "exited") {
       transport.detach()
       return
@@ -402,7 +402,7 @@ class FxInstance {
     }
   }
 
-  /** Whether a transport is carrying this instance right now. */
+  /** Whether a transport is carrying this agent right now. */
   get connected(): boolean {
     return this.transport !== null
   }
@@ -460,7 +460,7 @@ class FxInstance {
     this.transport?.resize(this.size)
   }
 
-  private recordExit(status: InstanceExit): void {
+  private recordExit(status: AgentExit): void {
     if (this.status === "exited") return
     const trailingTerminalData = this.cursorReportAdapter.flushTerminalBytes()
     if (trailingTerminalData.byteLength > 0) this.terminal.write(trailingTerminalData)
@@ -473,7 +473,7 @@ class FxInstance {
 
 export class Multiplexer {
   private readonly stage: BoxRenderable
-  private readonly sidebar: BoxRenderable
+  private readonly tray: BoxRenderable
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
   private readonly emptyState: TextRenderable
@@ -484,33 +484,33 @@ export class Multiplexer {
   private readonly sessionList: SessionList
   private readonly subagents: SubagentObserver
   private readonly seenSeq = new Map<number, number>()
-  /** Per-directory git context, read once and reused by every instance there. */
+  /** Per-directory git context, read once and reused by every agent there. */
   private readonly gitContexts = new Map<string, GitContext | null>()
   /** In-flight reads stay shared too, so lifecycle notices for a fast exit
    * resolve against the same answer and keep their arrival order. */
   private readonly gitContextLoads = new Map<string, Promise<GitContext | null>>()
-  private sidebarWidth = SIDEBAR_DEFAULT_WIDTH
+  private trayWidth = TRAY_DEFAULT_WIDTH
   /** Hidden by the toggle key; orthogonal to the empty state, which hides the
-   * sidebar because there is nothing to list. */
-  private sidebarHidden = false
+   * tray because there is nothing to list. */
+  private trayHidden = false
   private dividerDragging = false
-  private dragStartWidth = SIDEBAR_DEFAULT_WIDTH
+  private dragStartWidth = TRAY_DEFAULT_WIDTH
   private panelWidth = 1
   private panelVisible = false
   private panelDividerDragging = false
   private panelDragStartWidth = 1
-  private focusOwner: "instance" | "panel" = "instance"
+  private focusOwner: "agent" | "panel" = "agent"
   private readonly launchDialog: LaunchDialog
   private readonly projectLaunches: Map<string, number>
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
   private readonly toast: Toast
-  /** Per-Instance tails keep a fast exit behind its start notice even when
+  /** Per-Agent tails keep a fast exit behind its start notice even when
    * both are waiting for Git context. */
   private readonly lifecycleNoticeTails = new Map<number, Promise<void>>()
   private readonly keybindings: Keybindings
-  private readonly instances: FxInstance[] = []
+  private readonly agents: FxAgent[] = []
   private activeIndex = -1
   private prefixArmed = false
   private modalKind: ModalKind | null = null
@@ -531,7 +531,7 @@ export class Multiplexer {
   /** Handed from the dialog's close to the launch that follows it. */
   private submittedDraft: Draft | null = null
   private nextDraftId = 1
-  private readonly instanceWaiters = new Set<InstanceWaiter>()
+  private readonly agentWaiters = new Set<AgentWaiter>()
   /** What `fmx control <command>` drives. */
   readonly control: ControlSurface = {
     handle: (method, params, signal) => this.handleControl(method, params, signal),
@@ -555,27 +555,27 @@ export class Multiplexer {
       if (sessionId) this.slugNamer.note(sessionId, this.launchPromptFor(frame.paneId))
       // fx reporting itself is the only signal fmx has that it is ready to be
       // typed into.
-      const instance = this.instanceForPane(frame.paneId)
-      instance?.armPrompt()
+      const agent = this.agentForPane(frame.paneId)
+      agent?.armPrompt()
       // The session id is what a restart seeds the name from; written the
       // moment fx first says it, and never again for the same one.
-      if (instance && sessionId) {
-        void this.options.manifest.setFxSessionId(instance.entry.instanceId, sessionId).catch(() => {})
+      if (agent && sessionId) {
+        void this.options.manifest.setFxSessionId(agent.entry.agentId, sessionId).catch(() => {})
       }
-      if (instance && this.registry.get(frame.paneId)?.state === "working") instance.awaitingWork = false
+      if (agent && this.registry.get(frame.paneId)?.state === "working") agent.awaitingWork = false
     }
     // A pane the human is already watching is seen the moment it reports, so
     // finishing in the foreground never shows as an unacknowledged `done`.
-    const active = this.activeInstance()
+    const active = this.activeAgent()
     if (active) this.markSeen(active)
-    // A report from somewhere else advances beyond that Instance's seen
+    // A report from somewhere else advances beyond that Agent's seen
     // version; checkpoint it as unseen so `done` survives a detach too.
     if (frame.paneId) {
-      const reported = this.instanceForPane(frame.paneId)
+      const reported = this.agentForPane(frame.paneId)
       if (reported && reported !== active) this.checkpointAgent(reported)
     }
     this.refreshSessionList()
-    this.settleInstanceWaiters()
+    this.settleAgentWaiters()
   }
 
   constructor(
@@ -586,8 +586,8 @@ export class Multiplexer {
       this.resolveDone = resolveDone
     })
     this.keybindings = options.keybindings
-    this.sidebarWidth = options.initialSidebarWidth ?? SIDEBAR_DEFAULT_WIDTH
-    this.sidebarHidden = options.initialSidebarHidden ?? false
+    this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
+    this.trayHidden = options.initialTrayHidden ?? false
     this.panelWidth = options.initialPanelWidth ?? debugPanelWidth(renderer.width)
     this.slugNamer = new SlugNamer({
       fxPath: options.fxPath,
@@ -610,9 +610,9 @@ export class Multiplexer {
       height: "100%",
       flexDirection: "row",
     })
-    this.sidebar = new BoxRenderable(renderer, {
-      id: "fmx-sidebar",
-      width: this.sidebarWidth,
+    this.tray = new BoxRenderable(renderer, {
+      id: "fmx-tray",
+      width: this.trayWidth,
       height: "100%",
       flexShrink: 0,
       visible: false,
@@ -646,17 +646,17 @@ export class Multiplexer {
       selectable: false,
     })
     this.content.add(this.emptyState)
-    this.stage.add(this.sidebar)
+    this.stage.add(this.tray)
     this.stage.add(this.divider)
     this.stage.add(this.content)
 
     this.agentSocket = options.agentSocket ?? null
-    this.sessionList = new SessionList(renderer, (instanceId) => this.selectInstance(instanceId))
-    this.sidebar.add(this.sessionList.root)
+    this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
+    this.tray.add(this.sessionList.root)
     const panelDefinitions = options.panels ?? []
     const debugSocketPath = options.debugPanel && this.agentSocket ? this.agentSocket.path : null
     if (panelDefinitions.length > 0 && !options.panelSessions) {
-      throw new Error("configured Tool panels need a session controller")
+      throw new Error("configured tools panels need a session controller")
     }
     if (panelDefinitions.length > 0 || debugSocketPath) {
       this.panelDivider = new BoxRenderable(renderer, {
@@ -680,11 +680,11 @@ export class Multiplexer {
         initialSelectedId: options.initialPanelId,
         onSelectedChange: (id) => {
           options.onPanelIdChange?.(id)
-          if (this.focusOwner === "panel" && !this.toolPanel?.focusable) this.setFocusOwner("instance")
+          if (this.focusOwner === "panel" && !this.toolPanel?.focusable) this.setFocusOwner("agent")
         },
         onFocusRequest: () => this.setFocusOwner("panel"),
         onFocusLost: () => {
-          if (this.focusOwner === "panel") this.setFocusOwner("instance")
+          if (this.focusOwner === "panel") this.setFocusOwner("agent")
         },
       })
       // FMX_DEBUG_PANEL used to open its fixed right column immediately. Keep
@@ -768,28 +768,28 @@ export class Multiplexer {
 
   /**
    * Bring up what the join found running before anything new can be asked
-   * for, in the order the Instances were numbered. Each attach is its own:
+   * for, in the order the Agents were numbered. Each attach is its own:
    * one that fails is reported and the rest still come up.
    */
   async start(): Promise<void> {
     if (this.shuttingDown) return
     this.subagents.start()
     const survivors = [...(this.options.survivors ?? [])].sort((a, b) => a.displayId - b.displayId)
-    const restoring = survivors.map((entry) => this.prepareRestoredInstance(entry))
+    const restoring = survivors.map((entry) => this.prepareRestoredAgent(entry))
     if (restoring.length === 0) return
 
     const savedIndex = restoring.findIndex(
-      (instance) => instance.entry.instanceId === this.options.initialActiveInstanceId,
+      (agent) => agent.entry.agentId === this.options.initialActiveAgentId,
     )
     this.switchTo(savedIndex === -1 ? 0 : savedIndex)
 
-    // Reach the selected terminal first, while keeping the sidebar itself in
+    // Reach the selected terminal first, while keeping the tray itself in
     // display-id order. It is the surface the renderer is about to expose.
-    const active = this.activeInstance()!
-    const attachOrder = [active, ...restoring.filter((instance) => instance !== active)]
-    for (const instance of attachOrder) {
+    const active = this.activeAgent()!
+    const attachOrder = [active, ...restoring.filter((agent) => agent !== active)]
+    for (const agent of attachOrder) {
       if (this.shuttingDown) return
-      await this.attachRestoredInstance(instance)
+      await this.attachRestoredAgent(agent)
     }
   }
 
@@ -826,13 +826,13 @@ export class Multiplexer {
     this.hideModal()
     this.slugNamer.stop()
     this.subagents.stop()
-    for (const waiter of this.instanceWaiters) waiter.settle(null)
-    this.instanceWaiters.clear()
+    for (const waiter of this.agentWaiters) waiter.settle(null)
+    this.agentWaiters.clear()
 
     try {
       // Let go, never end: fx and its terminal are the Companion's, and the
       // next fmx for this Home finds them where this one left them.
-      for (const instance of this.instances) instance.detach()
+      for (const agent of this.agents) agent.detach()
       this.toolPanel?.destroy()
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
@@ -841,10 +841,10 @@ export class Multiplexer {
       this.renderer.off(CliRenderEvents.PALETTE, this.paletteHandler)
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
-      for (const instance of this.instances) instance.destroy()
+      for (const agent of this.agents) agent.destroy()
       this.toast.destroy()
     } finally {
-      this.instances.length = 0
+      this.agents.length = 0
       this.renderer.destroy()
       process.exitCode = exitCode
       this.resolveDone()
@@ -854,19 +854,19 @@ export class Multiplexer {
   /**
    * Start an fx. `focus` false leaves the screen where it is — an agent
    * starting workers should not keep taking the human's view — unless nothing
-   * is on it yet, when the new instance is the only thing to show.
+   * is on it yet, when the new agent is the only thing to show.
    *
    * The Manifest is written first and the Companion asked second, so a crash
    * anywhere between leaves a claim the next start's join resolves against
-   * what the Companion actually holds. The Instance is on screen from the
+   * what the Companion actually holds. The Agent is on screen from the
    * claim: a start that fails takes it down again with the reason.
    */
-  private async createInstance(
+  private async createAgent(
     cwd: string = this.options.cwd,
     prompt = "",
     focus = true,
     launchLevel: FxLaunchLevel | null = null,
-  ): Promise<FxInstance | null> {
+  ): Promise<FxAgent | null> {
     if (this.shuttingDown) return null
     this.cancelExitConfirmation()
     const { result: entry, saved } = this.options.manifest.claim({
@@ -875,13 +875,13 @@ export class Multiplexer {
       fxArgs: [],
       createdAt: Date.now(),
     })
-    const instance = this.addInstance(entry, cwd, focus)
-    instance.setPendingPrompt(prompt)
+    const agent = this.addAgent(entry, cwd, focus)
+    agent.setPendingPrompt(prompt)
     this.countLaunch(cwd)
     // "started" means fx is running, whether or not it could be reached.
     let started = false
-    this.queueLifecycleNotice(instance, `agent ${instance.id}`, "started", "success", null, () => started)
-    let transport: InstanceTransport
+    this.queueLifecycleNotice(agent, `agent ${agent.id}`, "started", "success", null, () => started)
+    let transport: AgentTransport
     try {
       await saved
       if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
@@ -900,121 +900,121 @@ export class Multiplexer {
             launchLevel,
           ),
         ),
-        size: instance.currentSize(),
+        size: agent.currentSize(),
       })
     } catch (error) {
-      if (error instanceof InstanceUnreachableError) {
+      if (error instanceof AgentUnreachableError) {
         // fx is running; only the way to it failed. It is recovered like a
         // lost transport, never removed — the Manifest says so first.
         started = true
-        await this.options.manifest.markRunning(entry.instanceId).catch(() => {})
-        void this.recoverInstance(instance, error)
-        return instance
+        await this.options.manifest.markRunning(entry.agentId).catch(() => {})
+        void this.recoverAgent(agent, error)
+        return agent
       }
-      this.removeInstance(instance)
+      this.removeAgent(agent)
       // A write that fails here is the same disk that failed above; the
       // reason the start failed is the one to show.
-      await this.options.manifest.remove(entry.instanceId).catch(() => {})
+      await this.options.manifest.remove(entry.agentId).catch(() => {})
       throw error
     }
     // fx is running whatever happens from here; the record says so before
     // anything else, because this is the acknowledgement a crash loses. A
     // write that fails leaves `creating` on disk, which the join resolves.
     started = true
-    await this.options.manifest.markRunning(entry.instanceId).catch(() => {})
-    if (this.shuttingDown || !this.instances.includes(instance)) {
+    await this.options.manifest.markRunning(entry.agentId).catch(() => {})
+    if (this.shuttingDown || !this.agents.includes(agent)) {
       transport.detach()
       return null
     }
-    instance.adopt(transport)
-    return instance
+    agent.adopt(transport)
+    return agent
   }
 
   /**
-   * Attach to an Instance the Companion held between runs. The last socket
+   * Attach to an Agent the Companion held between runs. The last socket
    * truth is seeded before the renderer can expose this row; it stays true
    * until fx reports something newer. A launch prompt is not replayed —
    * there is none.
    */
-  private prepareRestoredInstance(entry: ManifestEntry): FxInstance {
-    const instance = this.addInstance(entry, entry.cwd, false, false)
+  private prepareRestoredAgent(entry: ManifestEntry): FxAgent {
+    const agent = this.addAgent(entry, entry.cwd, false, false)
     const checkpoint = entry.agentStatus
-    const record = this.registry.seed(instance.paneId, {
+    const record = this.registry.seed(agent.paneId, {
       sessionId: entry.fxSessionId,
       state: checkpoint?.state ?? "unknown",
       attention: checkpoint?.attention ?? null,
     })
     this.seenSeq.set(
-      instance.id,
+      agent.id,
       checkpoint?.seen === false ? Math.max(0, record.stateSeq - 1) : record.stateSeq,
     )
     if (entry.fxSessionId) this.slugNamer.note(entry.fxSessionId, null)
     this.refreshSessionList()
-    return instance
+    return agent
   }
 
-  private async attachRestoredInstance(instance: FxInstance): Promise<void> {
-    const entry = instance.entry
+  private async attachRestoredAgent(agent: FxAgent): Promise<void> {
+    const entry = agent.entry
     try {
-      const transport = await this.options.transport.attach(entry, instance.currentSize())
-      if (this.shuttingDown || !this.instances.includes(instance)) {
+      const transport = await this.options.transport.attach(entry, agent.currentSize())
+      if (this.shuttingDown || !this.agents.includes(agent)) {
         transport.detach()
         return
       }
-      instance.adopt(transport)
+      agent.adopt(transport)
     } catch (error) {
-      this.removeInstance(instance)
-      if (error instanceof InstanceEndedError) {
-        await this.options.manifest.remove(entry.instanceId).catch(() => {})
+      this.removeAgent(agent)
+      if (error instanceof AgentEndedError) {
+        await this.options.manifest.remove(entry.agentId).catch(() => {})
         return
       }
       // Unreachable is not ended: the claim stays for the next start.
-      this.showError(`instance ${entry.displayId} could not be restored`, error)
+      this.showError(`agent ${entry.displayId} could not be restored`, error)
     }
   }
 
-  /** Put an Instance on screen under its Manifest identity; nothing is attached yet. */
-  private addInstance(
+  /** Put an Agent on screen under its Manifest identity; nothing is attached yet. */
+  private addAgent(
     entry: ManifestEntry,
     cwd: string,
     focus: boolean,
     selectIfEmpty = true,
-  ): FxInstance {
-    const instance = new FxInstance(this.renderer, entry, cwd, this.hostPalette, {
+  ): FxAgent {
+    const agent = new FxAgent(this.renderer, entry, cwd, this.hostPalette, {
       onTitleChange: (candidate) => {
-        if (this.activeInstance() === candidate) this.refreshTerminalTitle()
+        if (this.activeAgent() === candidate) this.refreshTerminalTitle()
       },
-      onExit: (candidate, exit) => this.handleInstanceExit(candidate, exit),
-      onLost: (candidate, error) => void this.recoverInstance(candidate, error),
+      onExit: (candidate, exit) => this.handleAgentExit(candidate, exit),
+      onLost: (candidate, error) => void this.recoverAgent(candidate, error),
       onFocus: (candidate) => {
-        if (this.activeInstance() === candidate) this.setFocusOwner("instance")
+        if (this.activeAgent() === candidate) this.setFocusOwner("agent")
       },
     })
-    this.instances.push(instance)
-    this.content.add(instance.terminal)
-    this.refreshInstanceChrome()
-    if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.instances.length - 1)
+    this.agents.push(agent)
+    this.content.add(agent.terminal)
+    this.refreshAgentChrome()
+    if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
     this.loadGitContext(cwd)
     this.refreshSessionList()
-    return instance
+    return agent
   }
 
   /**
-   * fx ended: the Instance, its claim, and whatever the Companion recorded
+   * fx ended: the Agent, its claim, and whatever the Companion recorded
    * all go. `exit` is null when the end was observed but its status was not.
    */
-  private handleInstanceExit(instance: FxInstance, exit: InstanceExit | null): void {
+  private handleAgentExit(agent: FxAgent, exit: AgentExit | null): void {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
-    void this.options.manifest.remove(instance.entry.instanceId).catch(() => {})
-    void this.options.panelSessions?.stopInstance(instance.entry.instanceId).catch(() => {})
+    void this.options.manifest.remove(agent.entry.agentId).catch(() => {})
+    void this.options.panelSessions?.stopAgent(agent.entry.agentId).catch(() => {})
     if (this.shuttingDown) return
-    const identity = this.slugOf(instance) ?? `agent ${instance.id}`
+    const identity = this.slugOf(agent) ?? `agent ${agent.id}`
     // The shell's number for a signal, so a notice reads the way `$?` would.
     const exitCode = exit === null ? 0 : exit.signal ? 128 + exit.signal : exit.code
-    this.queueLifecycleNotice(instance, identity, "exited", exitCode === 0 ? "neutral" : "error", exitCode)
-    this.removeInstance(instance)
+    this.queueLifecycleNotice(agent, identity, "exited", exitCode === 0 ? "neutral" : "error", exitCode)
+    this.removeAgent(agent)
   }
 
   /**
@@ -1024,83 +1024,83 @@ export class Multiplexer {
    * reached after a few tries is let go of on screen but kept in the
    * Manifest, where the next start's join will find it.
    */
-  private async recoverInstance(instance: FxInstance, lost: Error): Promise<void> {
+  private async recoverAgent(agent: FxAgent, lost: Error): Promise<void> {
     let error: unknown = lost
     for (let attempt = 0; attempt < RECOVERY_ATTEMPTS; attempt += 1) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RECOVERY_INTERVAL_MS))
-      if (this.shuttingDown || !this.instances.includes(instance)) return
+      if (this.shuttingDown || !this.agents.includes(agent)) return
       try {
-        const transport = await this.options.transport.attach(instance.entry, instance.currentSize())
-        if (this.shuttingDown || !this.instances.includes(instance)) {
+        const transport = await this.options.transport.attach(agent.entry, agent.currentSize())
+        if (this.shuttingDown || !this.agents.includes(agent)) {
           transport.detach()
           return
         }
-        instance.adopt(transport)
+        agent.adopt(transport)
         return
       } catch (caught) {
-        if (caught instanceof InstanceEndedError) {
-          this.handleInstanceExit(instance, caught.exit)
+        if (caught instanceof AgentEndedError) {
+          this.handleAgentExit(agent, caught.exit)
           return
         }
         error = caught
       }
     }
-    if (this.shuttingDown || !this.removeInstance(instance)) return
-    this.showError(`lost instance ${instance.id}`, error)
+    if (this.shuttingDown || !this.removeAgent(agent)) return
+    this.showError(`lost agent ${agent.id}`, error)
   }
 
   private queueLifecycleNotice(
-    instance: FxInstance,
+    agent: FxAgent,
     identity: string,
     event: "started" | "exited",
     tone: "success" | "neutral" | "error",
     exitCode: number | null,
     shouldShow: () => boolean = () => true,
   ): void {
-    const context = this.loadGitContext(instance.cwd)
-    const previous = this.lifecycleNoticeTails.get(instance.id) ?? Promise.resolve()
+    const context = this.loadGitContext(agent.cwd)
+    const previous = this.lifecycleNoticeTails.get(agent.id) ?? Promise.resolve()
     const queued = previous.then(async () => {
       const git = await context
       if (this.shuttingDown || !shouldShow()) return
-      const location = `${projectNameFor(git, instance.cwd)} / ${treeNameFor(git)}`
+      const location = `${projectNameFor(git, agent.cwd)} / ${treeNameFor(git)}`
       const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` / code ${exitCode}` : ""
       this.toast.show(`${location} / ${identity} ${event}${code}`, tone, {
         italic: git ? [] : [UNTRACKED_TREE_NAME],
       })
     })
-    this.lifecycleNoticeTails.set(instance.id, queued)
+    this.lifecycleNoticeTails.set(agent.id, queued)
     void queued.finally(() => {
-      if (this.lifecycleNoticeTails.get(instance.id) === queued) this.lifecycleNoticeTails.delete(instance.id)
+      if (this.lifecycleNoticeTails.get(agent.id) === queued) this.lifecycleNoticeTails.delete(agent.id)
     })
   }
 
-  private removeInstance(instance: FxInstance): boolean {
-    const index = this.instances.indexOf(instance)
+  private removeAgent(agent: FxAgent): boolean {
+    const index = this.agents.indexOf(agent)
     if (index === -1) return false
-    const wasActive = this.activeInstance() === instance
-    this.content.remove(instance.terminal)
-    this.toolPanel?.forgetContext(instance.entry.instanceId)
-    instance.destroy()
-    this.instances.splice(index, 1)
-    this.registry.forget(this.paneIdFor(instance))
-    this.seenSeq.delete(instance.id)
-    this.refreshInstanceChrome()
-    for (const waiter of this.instanceWaiters) {
-      if (waiter.instanceId !== instance.id) continue
-      this.instanceWaiters.delete(waiter)
+    const wasActive = this.activeAgent() === agent
+    this.content.remove(agent.terminal)
+    this.toolPanel?.forgetContext(agent.entry.agentId)
+    agent.destroy()
+    this.agents.splice(index, 1)
+    this.registry.forget(this.paneIdFor(agent))
+    this.seenSeq.delete(agent.id)
+    this.refreshAgentChrome()
+    for (const waiter of this.agentWaiters) {
+      if (waiter.agentId !== agent.id) continue
+      this.agentWaiters.delete(waiter)
       waiter.settle(null)
     }
 
-    if (this.instances.length === 0) {
+    if (this.agents.length === 0) {
       this.activeIndex = -1
-      this.focusOwner = "instance"
+      this.focusOwner = "agent"
       this.toolPanel?.setContext(null)
-      this.options.onActiveInstanceChange?.(null)
+      this.options.onActiveAgentChange?.(null)
       this.refreshTerminalTitle()
       this.refreshSessionList()
     } else if (wasActive) {
       this.activeIndex = -1
-      this.switchTo(Math.min(index, this.instances.length - 1))
+      this.switchTo(Math.min(index, this.agents.length - 1))
     } else if (index < this.activeIndex) {
       this.activeIndex -= 1
     }
@@ -1109,16 +1109,16 @@ export class Multiplexer {
 
   private switchTo(index: number): void {
     this.renderer.clearSelection()
-    if (this.instances.length === 0) {
+    if (this.agents.length === 0) {
       this.activeIndex = -1
-      this.focusOwner = "instance"
+      this.focusOwner = "agent"
       this.toolPanel?.setContext(null)
-      this.options.onActiveInstanceChange?.(null)
+      this.options.onActiveAgentChange?.(null)
       this.refreshTerminalTitle()
       return
     }
-    const normalized = ((index % this.instances.length) + this.instances.length) % this.instances.length
-    const previous = this.activeInstance()
+    const normalized = ((index % this.agents.length) + this.agents.length) % this.agents.length
+    const previous = this.activeAgent()
     if (previous) {
       previous.terminal.setHostSelectionEnabled(false)
       previous.terminal.blur()
@@ -1126,42 +1126,42 @@ export class Multiplexer {
     }
 
     this.activeIndex = normalized
-    const active = this.instances[normalized]!
-    this.options.onActiveInstanceChange?.(active.entry.instanceId)
+    const active = this.agents[normalized]!
+    this.options.onActiveAgentChange?.(active.entry.agentId)
     active.terminal.visible = true
     active.terminal.setHostSelectionEnabled(true)
     this.toolPanel?.setContext({
-      instanceId: active.entry.instanceId,
+      agentId: active.entry.agentId,
       displayId: active.id,
       cwd: active.cwd,
     })
     // A surface drawn over fx keeps the keys; it hands them back when it
-    // closes, so an instance shown behind it must not take them now.
+    // closes, so an agent shown behind it must not take them now.
     if (!this.launchDialog.isOpen() && !this.modalKind) this.restoreFocus()
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
   }
 
-  private activeInstance(): FxInstance | null {
-    return this.instances[this.activeIndex] ?? null
+  private activeAgent(): FxAgent | null {
+    return this.agents[this.activeIndex] ?? null
   }
 
   private refreshSessionList(): void {
     this.subagents.setParents(
-      this.instances.flatMap((instance) => {
-        const sessionId = this.registry.get(this.paneIdFor(instance))?.sessionId
+      this.agents.flatMap((agent) => {
+        const sessionId = this.registry.get(this.paneIdFor(agent))?.sessionId
         return sessionId ? [sessionId] : []
       }),
     )
-    this.sessionList.render(buildTree(this.sessionEntries()), this.sidebarWidth)
+    this.sessionList.render(buildTree(this.sessionEntries()), this.trayWidth)
   }
 
-  private setSidebarHidden(hidden: boolean): void {
-    if (hidden === this.sidebarHidden) return
-    this.sidebarHidden = hidden
-    this.refreshInstanceChrome()
-    this.options.onSidebarHiddenChange?.(this.sidebarHidden)
+  private setTrayHidden(hidden: boolean): void {
+    if (hidden === this.trayHidden) return
+    this.trayHidden = hidden
+    this.refreshAgentChrome()
+    this.options.onTrayHiddenChange?.(this.trayHidden)
   }
 
   private setPanelVisible(visible: boolean): boolean {
@@ -1170,7 +1170,7 @@ export class Multiplexer {
       return this.toolPanel !== null
     }
     this.panelVisible = visible
-    if (!visible && this.focusOwner === "panel") this.setFocusOwner("instance")
+    if (!visible && this.focusOwner === "panel") this.setFocusOwner("agent")
     this.refreshPanelChrome()
     this.applyLayout()
     this.options.onPanelVisibleChange?.(visible)
@@ -1183,37 +1183,37 @@ export class Multiplexer {
     this.toolPanel?.setVisible(visible)
   }
 
-  private setFocusOwner(owner: "instance" | "panel"): boolean {
+  private setFocusOwner(owner: "agent" | "panel"): boolean {
     if (owner === "panel") {
       if (!this.toolPanel?.focus()) return false
       this.focusOwner = "panel"
-      this.activeInstance()?.terminal.blur()
+      this.activeAgent()?.terminal.blur()
       return true
     }
-    this.focusOwner = "instance"
+    this.focusOwner = "agent"
     this.toolPanel?.blur()
-    if (!this.launchDialog.isOpen() && !this.modalKind) this.activeInstance()?.terminal.focus()
+    if (!this.launchDialog.isOpen() && !this.modalKind) this.activeAgent()?.terminal.focus()
     return true
   }
 
   private restoreFocus(): void {
     if (this.launchDialog.isOpen() || this.modalKind) return
     if (this.focusOwner === "panel" && this.toolPanel?.focus()) {
-      this.activeInstance()?.terminal.blur()
+      this.activeAgent()?.terminal.blur()
       return
     }
-    this.focusOwner = "instance"
+    this.focusOwner = "agent"
     this.toolPanel?.blur()
-    this.activeInstance()?.terminal.focus()
+    this.activeAgent()?.terminal.focus()
   }
 
-  private refreshInstanceChrome(): void {
-    const hasInstances = this.instances.length > 0
-    const showSidebar = hasInstances && !this.sidebarHidden
-    this.sidebar.visible = showSidebar
-    this.divider.visible = showSidebar
-    this.emptyState.visible = !hasInstances
-    if (!hasInstances) this.refreshEmptyState()
+  private refreshAgentChrome(): void {
+    const hasAgents = this.agents.length > 0
+    const showTray = hasAgents && !this.trayHidden
+    this.tray.visible = showTray
+    this.divider.visible = showTray
+    this.emptyState.visible = !hasAgents
+    if (!hasAgents) this.refreshEmptyState()
   }
 
   private refreshEmptyState(): void {
@@ -1238,7 +1238,7 @@ export class Multiplexer {
     this.exitConfirmationTimer = setTimeout(() => {
       this.exitConfirmationTimer = null
       this.exitConfirmationKey = null
-      if (!this.shuttingDown && this.instances.length === 0) this.refreshEmptyState()
+      if (!this.shuttingDown && this.agents.length === 0) this.refreshEmptyState()
     }, EXIT_CONFIRMATION_TIMEOUT_MS)
     this.refreshEmptyState()
   }
@@ -1251,16 +1251,16 @@ export class Multiplexer {
   }
 
   private sessionEntries(): SessionEntry[] {
-    return this.instances.map((instance, index) => {
-      const record = this.registry.get(this.paneIdFor(instance))
-      const git = this.gitContexts.get(instance.cwd) ?? null
+    return this.agents.map((agent, index) => {
+      const record = this.registry.get(this.paneIdFor(agent))
+      const git = this.gitContexts.get(agent.cwd) ?? null
       return {
-        instanceId: instance.id,
-        project: projectNameFor(git, instance.cwd),
+        agentId: agent.id,
+        project: projectNameFor(git, agent.cwd),
         branch: git?.branch ?? null,
         sessionId: shortSessionId(record?.sessionId ?? null),
         slug: record?.sessionId ? this.slugNamer.slugFor(record.sessionId) : null,
-        state: displayStateFor(record, this.seenSeq.get(instance.id) ?? 0),
+        state: displayStateFor(record, this.seenSeq.get(agent.id) ?? 0),
         attention: record?.attention ?? null,
         active: index === this.activeIndex,
         subagents: record?.sessionId ? this.subagents.childrenOf(record.sessionId) : [],
@@ -1270,7 +1270,7 @@ export class Multiplexer {
 
   /**
    * fx never reports where it is working, so fmx reads it from the directory
-   * it spawned the instance in. The list renders without a branch rung until
+   * it spawned the agent in. The list renders without a branch rung until
    * the answer arrives, which is why this refreshes rather than blocking.
    */
   private loadGitContext(cwd: string): Promise<GitContext | null> {
@@ -1292,34 +1292,34 @@ export class Multiplexer {
   }
 
   /**
-   * Mark an instance acknowledged: its current state is now one the human has
+   * Mark an agent acknowledged: its current state is now one the human has
    * looked at, so a finished turn stops reading as `done`.
    */
-  private markSeen(instance: FxInstance): void {
-    const record = this.registry.get(this.paneIdFor(instance))
-    this.seenSeq.set(instance.id, record?.stateSeq ?? 0)
-    this.checkpointAgent(instance)
+  private markSeen(agent: FxAgent): void {
+    const record = this.registry.get(this.paneIdFor(agent))
+    this.seenSeq.set(agent.id, record?.stateSeq ?? 0)
+    this.checkpointAgent(agent)
   }
 
   /** Keep the last trustworthy socket state and its acknowledgement relation. */
-  private checkpointAgent(instance: FxInstance): void {
-    const record = this.registry.get(this.paneIdFor(instance))
+  private checkpointAgent(agent: FxAgent): void {
+    const record = this.registry.get(this.paneIdFor(agent))
     if (!record) return
-    void this.options.manifest.setAgentStatus(instance.entry.instanceId, {
+    void this.options.manifest.setAgentStatus(agent.entry.agentId, {
       state: record.state,
       attention: record.attention,
-      seen: (this.seenSeq.get(instance.id) ?? 0) >= record.stateSeq,
+      seen: (this.seenSeq.get(agent.id) ?? 0) >= record.stateSeq,
     }).catch(() => {})
   }
 
-  private selectInstance(instanceId: number): void {
-    const index = this.instances.findIndex((instance) => instance.id === instanceId)
+  private selectAgent(agentId: number): void {
+    const index = this.agents.findIndex((agent) => agent.id === agentId)
     if (index === -1 || index === this.activeIndex) return
     this.switchTo(index)
   }
 
-  private instanceForPane(paneId: string): FxInstance | null {
-    return this.instances.find((instance) => this.paneIdFor(instance) === paneId) ?? null
+  private agentForPane(paneId: string): FxAgent | null {
+    return this.agents.find((agent) => this.paneIdFor(agent) === paneId) ?? null
   }
 
   private home(): string {
@@ -1328,13 +1328,13 @@ export class Multiplexer {
 
   /** What fmx itself typed into this pane, if anything. */
   private launchPromptFor(paneId: string): KnownPrompt | null {
-    const instance = this.instances.find((candidate) => this.paneIdFor(candidate) === paneId)
-    if (!instance?.launchPrompt) return null
-    return { text: instance.launchPrompt, workspaceRoot: instance.cwd }
+    const agent = this.agents.find((candidate) => this.paneIdFor(candidate) === paneId)
+    if (!agent?.launchPrompt) return null
+    return { text: agent.launchPrompt, workspaceRoot: agent.cwd }
   }
 
-  private paneIdFor(instance: FxInstance): string {
-    return instance.paneId
+  private paneIdFor(agent: FxAgent): string {
+    return agent.paneId
   }
 
   private agentSocketBinding(paneId: string): FxAgentSocketBinding | null {
@@ -1347,7 +1347,7 @@ export class Multiplexer {
     event.preventDefault()
     event.stopPropagation()
     this.dividerDragging = true
-    this.dragStartWidth = this.sidebarWidth
+    this.dragStartWidth = this.trayWidth
     // Capture immediately: OpenTUI only latches drag capture on the first drag
     // event, and a fast flick can put that event past this one-cell divider —
     // over the terminal, which forwards motion to fx and stops propagation.
@@ -1358,14 +1358,14 @@ export class Multiplexer {
     if (!this.dividerDragging) return
     event.preventDefault()
     event.stopPropagation()
-    this.applySidebarWidth(event.x)
+    this.applyTrayWidth(event.x)
   }
 
   private endDividerDrag(): void {
     if (!this.dividerDragging) return
     this.dividerDragging = false
-    if (this.sidebarWidth !== this.dragStartWidth) {
-      this.options.onSidebarWidthChange?.(this.sidebarWidth)
+    if (this.trayWidth !== this.dragStartWidth) {
+      this.options.onTrayWidthChange?.(this.trayWidth)
     }
   }
 
@@ -1383,7 +1383,7 @@ export class Multiplexer {
     event.preventDefault()
     event.stopPropagation()
     this.applyPanelWidth(this.renderer.width - event.x - 1)
-    this.applySidebarWidth()
+    this.applyTrayWidth()
   }
 
   private endPanelDividerDrag(): void {
@@ -1402,9 +1402,9 @@ export class Multiplexer {
     capturer.setCapturedRenderable?.(renderable)
   }
 
-  private applyLayout(requestedSidebarWidth = this.sidebarWidth): void {
+  private applyLayout(requestedTrayWidth = this.trayWidth): void {
     this.applyPanelWidth(this.panelWidth)
-    this.applySidebarWidth(requestedSidebarWidth)
+    this.applyTrayWidth(requestedTrayWidth)
     this.launchDialog.layout()
     this.toast.layout()
   }
@@ -1416,15 +1416,15 @@ export class Multiplexer {
     this.toolPanel?.setWidth(this.panelWidth)
   }
 
-  private applySidebarWidth(requested = this.sidebarWidth): void {
-    // The sidebar's third is measured against the space the Tool panel leaves
+  private applyTrayWidth(requested = this.trayWidth): void {
+    // The tray's third is measured against the space the tools panel leaves
     // behind, so the embedded terminal keeps the middle rather than being
     // squeezed between two fixed columns.
     const available = this.renderer.width - this.reservedPanelWidth()
-    const max = Math.max(1, Math.floor(available * SIDEBAR_MAX_SCREEN_FRACTION))
-    const min = Math.min(SIDEBAR_MIN_WIDTH, max)
-    this.sidebarWidth = Math.max(min, Math.min(max, requested))
-    this.sidebar.width = this.sidebarWidth
+    const max = Math.max(1, Math.floor(available * TRAY_MAX_SCREEN_FRACTION))
+    const min = Math.min(TRAY_MIN_WIDTH, max)
+    this.trayWidth = Math.max(min, Math.min(max, requested))
+    this.tray.width = this.trayWidth
     this.refreshSessionList()
   }
 
@@ -1440,7 +1440,7 @@ export class Multiplexer {
     this.toast.applyPalette(colors)
     this.refreshEmptyState()
     const themeMode = this.renderer.themeMode
-    for (const instance of this.instances) instance.updateHostPalette(colors, themeMode)
+    for (const agent of this.agents) agent.updateHostPalette(colors, themeMode)
   }
 
   private applyDividerPalette(colors: TerminalColors | null): void {
@@ -1531,7 +1531,7 @@ export class Multiplexer {
     }
 
     const emptyStateExitKey = isCancelKey(key) ? "ctrl+c" : keyMatchesCombo(key, CTRL_D_KEY) ? "ctrl+d" : null
-    if (this.instances.length === 0 && emptyStateExitKey !== null) {
+    if (this.agents.length === 0 && emptyStateExitKey !== null) {
       this.swallow(key)
       this.cancelPrefix()
       this.requestExitConfirmation(emptyStateExitKey)
@@ -1574,7 +1574,7 @@ export class Multiplexer {
         this.detach()
         return
       case "new_tab":
-        void this.createInstance().catch((error) => {
+        void this.createAgent().catch((error) => {
           if (!this.shuttingDown) this.showError("fx did not start", error)
         })
         return
@@ -1594,15 +1594,15 @@ export class Multiplexer {
       case "help":
         this.showHelp()
         return
-      case "toggle_sidebar":
-        this.setSidebarHidden(!this.sidebarHidden)
+      case "toggle_tray":
+        this.setTrayHidden(!this.trayHidden)
         return
       case "toggle_panel":
         this.setPanelVisible(!this.panelVisible)
         return
       case "focus_panel":
         if (this.focusOwner === "panel") {
-          this.setFocusOwner("instance")
+          this.setFocusOwner("agent")
           return
         }
         if (!this.toolPanel) return
@@ -1618,7 +1618,7 @@ export class Multiplexer {
     }
   }
 
-  /** Leave every Instance with the Companion and close fmx itself. */
+  /** Leave every Agent with the Companion and close fmx itself. */
   private detach(): void {
     void this.shutdown()
   }
@@ -1646,7 +1646,7 @@ export class Multiplexer {
     if (this.modalKind || this.launchDialog.isOpen()) {
       throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
     }
-    const active = this.activeInstance()
+    const active = this.activeAgent()
     this.launchDialog.applyPalette(this.hostPalette)
     const projects = this.projectChoices()
     if (prefill.directory !== undefined) {
@@ -1711,8 +1711,8 @@ export class Multiplexer {
     const draft = this.submittedDraft
     this.submittedDraft = null
     try {
-      const instance = await this.performLaunch(request, true)
-      if (draft) this.resolveDraft(draft, "submitted", { instance: instance.id })
+      const agent = await this.performLaunch(request, true)
+      if (draft) this.resolveDraft(draft, "submitted", { agent: agent.id })
     } catch (error) {
       if (draft) this.resolveDraft(draft, "failed", { error: errorMessage(error) })
       if (error instanceof ControlFailure && error.code === "shutting_down") return
@@ -1721,7 +1721,7 @@ export class Multiplexer {
   }
 
   /** Cut the worktree if asked, then start fx; throws with the reason. */
-  private async performLaunch(request: LaunchRequest, focus: boolean): Promise<FxInstance> {
+  private async performLaunch(request: LaunchRequest, focus: boolean): Promise<FxAgent> {
     let directory = request.directory
     if (request.worktree) {
       try {
@@ -1731,16 +1731,16 @@ export class Multiplexer {
       }
     }
     if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    const instance = await this.createInstance(directory, request.prompt, focus, {
+    const agent = await this.createAgent(directory, request.prompt, focus, {
       model: request.model,
       effort: request.effort,
     })
-    if (!instance) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    return instance
+    if (!agent) throw new ControlFailure("shutting_down", "fmx is shutting down")
+    return agent
   }
 
   /** Branch from what the launch was looking at and check it out under the
-   * worktree root, returning where the instance should start. */
+   * worktree root, returning where the agent should start. */
   private async cutWorktree(directory: string): Promise<string> {
     const context = await readWorktreeContext(directory)
     if (!context) throw new Error(`${directory} is not a git repository`)
@@ -1804,7 +1804,7 @@ export class Multiplexer {
     this.applyModalPalette(this.hostPalette)
     this.modalBackdrop.visible = true
     this.modal.visible = true
-    this.activeInstance()?.terminal.blur()
+    this.activeAgent()?.terminal.blur()
     this.toolPanel?.suspendFocus()
   }
 
@@ -1849,34 +1849,34 @@ export class Multiplexer {
       case "detach":
         this.refuseIfBusy()
         return afterControlReply({ detached: true }, () => this.detach())
-      case "instance.list":
-        return { instances: this.instances.map((instance) => this.instanceInfo(instance)) }
-      case "instance.wait":
-        return this.waitForInstance(
+      case "agent.list":
+        return { agents: this.agents.map((agent) => this.agentInfo(agent)) }
+      case "agent.wait":
+        return this.waitForAgent(
           this.resolveTarget(parseTarget(optionalString(params, "target") ?? "current"), caller),
           waitStates(optionalStringList(params, "states")),
           optionalInteger(params, "timeout_ms") ?? null,
           signal,
         )
-      case "instance.send": {
-        const instance = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
+      case "agent.send": {
+        const agent = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
         const text = requiredString(params, "text").trim()
         if (text === "") throw new ControlFailure("invalid_params", "text is empty")
-        instance.send(text)
-        return { instance: this.instanceInfo(instance) }
+        agent.send(text)
+        return { agent: this.agentInfo(agent) }
       }
       case "launch": {
         const request = this.launchRequestFrom(params, caller)
         const focus = optionalBoolean(params, "focus") ?? false
         if (focus) this.refuseIfBusy()
-        const instance = await this.performLaunch(request, focus)
-        return { instance: this.instanceInfo(instance) }
+        const agent = await this.performLaunch(request, focus)
+        return { agent: this.agentInfo(agent) }
       }
       case "focus": {
-        const instance = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
+        const agent = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
         this.refuseIfBusy()
-        this.selectInstance(instance.id)
-        return { instance: this.instanceInfo(instance) }
+        this.selectAgent(agent.id)
+        return { agent: this.agentInfo(agent) }
       }
       case "draft.open": {
         const kind = optionalString(params, "kind") ?? "launch"
@@ -1921,17 +1921,17 @@ export class Multiplexer {
         )
       case "catalog":
         return catalogInfo()
-      case "sidebar": {
+      case "tray": {
         const width = optionalInteger(params, "width")
         if (width !== undefined) {
           if (width < 1) throw new ControlFailure("invalid_params", "width must be at least 1")
-          this.applySidebarWidth(width)
-          this.options.onSidebarWidthChange?.(this.sidebarWidth)
+          this.applyTrayWidth(width)
+          this.options.onTrayWidthChange?.(this.trayWidth)
         }
         const hidden = optionalBoolean(params, "hidden")
-        if (hidden !== undefined) this.setSidebarHidden(hidden)
-        else if (optionalBoolean(params, "toggle")) this.setSidebarHidden(!this.sidebarHidden)
-        return this.sidebarInfo()
+        if (hidden !== undefined) this.setTrayHidden(hidden)
+        else if (optionalBoolean(params, "toggle")) this.setTrayHidden(!this.trayHidden)
+        return this.trayInfo()
       }
       case "panel": {
         const width = optionalInteger(params, "width")
@@ -1948,17 +1948,17 @@ export class Multiplexer {
           step !== undefined ||
           focus !== undefined
         if (!this.toolPanel) {
-          if (mutates) throw new ControlFailure("not_found", "no Tool panel is configured")
+          if (mutates) throw new ControlFailure("not_found", "no tools panel is configured")
           return this.panelInfo()
         }
         if (width !== undefined) {
           if (width < 1) throw new ControlFailure("invalid_params", "width must be at least 1")
           this.applyPanelWidth(width)
-          this.applySidebarWidth()
+          this.applyTrayWidth()
           this.options.onPanelWidthChange?.(this.panelWidth)
         }
         if (select !== undefined && !this.toolPanel.select(select)) {
-          throw new ControlFailure("not_found", `no Tool panel item ${select}`)
+          throw new ControlFailure("not_found", `no tools panel item ${select}`)
         }
         if (step !== undefined) {
           if (step !== "next" && step !== "previous") {
@@ -1969,17 +1969,17 @@ export class Multiplexer {
         if (hidden !== undefined) this.setPanelVisible(!hidden)
         else if (toggle) this.setPanelVisible(!this.panelVisible)
         if (focus !== undefined) {
-          if (focus !== "panel" && focus !== "instance" && focus !== "toggle") {
-            throw new ControlFailure("invalid_params", "focus must be panel, instance, or toggle")
+          if (focus !== "panel" && focus !== "agent" && focus !== "toggle") {
+            throw new ControlFailure("invalid_params", "focus must be panel, agent, or toggle")
           }
-          const desired = focus === "toggle" ? (this.focusOwner === "panel" ? "instance" : "panel") : focus
+          const desired = focus === "toggle" ? (this.focusOwner === "panel" ? "agent" : "panel") : focus
           if (desired === "panel") {
             this.setPanelVisible(true)
             if (!this.setFocusOwner("panel")) {
-              throw new ControlFailure("not_found", "the selected Tool panel item has no terminal for the active Instance")
+              throw new ControlFailure("not_found", "the selected tools panel item has no terminal for the active agent")
             }
           } else {
-            this.setFocusOwner("instance")
+            this.setFocusOwner("agent")
           }
         }
         return this.panelInfo()
@@ -2002,55 +2002,55 @@ export class Multiplexer {
     }
   }
 
-  private resolveTarget(target: Target, caller: number | null): FxInstance {
+  private resolveTarget(target: Target, caller: number | null): FxAgent {
     switch (target.kind) {
       case "id":
-        return this.instanceById(target.id)
+        return this.agentById(target.id)
       case "current":
         if (caller === null) {
-          throw new ControlFailure("invalid_params", "current needs a caller inside an instance (FMX_INSTANCE_ID)")
+          throw new ControlFailure("invalid_params", "current needs a caller inside an agent (FMX_AGENT_ID)")
         }
-        return this.instanceById(caller)
+        return this.agentById(caller)
       case "active": {
-        const active = this.activeInstance()
-        if (!active) throw new ControlFailure("not_found", "no instance is active")
+        const active = this.activeAgent()
+        if (!active) throw new ControlFailure("not_found", "no agent is active")
         return active
       }
       case "next":
       case "previous": {
-        if (this.instances.length === 0) throw new ControlFailure("not_found", "no instances")
-        const count = this.instances.length
+        if (this.agents.length === 0) throw new ControlFailure("not_found", "no agents")
+        const count = this.agents.length
         const step = target.kind === "next" ? 1 : -1
-        return this.instances[(((this.activeIndex + step) % count) + count) % count]!
+        return this.agents[(((this.activeIndex + step) % count) + count) % count]!
       }
       case "name": {
-        const bySlug = this.instances.filter((instance) => this.slugOf(instance) === target.name)
+        const bySlug = this.agents.filter((agent) => this.slugOf(agent) === target.name)
         if (bySlug.length === 1) return bySlug[0]!
-        const bySession = this.instances.filter((instance) =>
-          this.registry.get(this.paneIdFor(instance))?.sessionId?.startsWith(target.name),
+        const bySession = this.agents.filter((agent) =>
+          this.registry.get(this.paneIdFor(agent))?.sessionId?.startsWith(target.name),
         )
         if (bySession.length === 1) return bySession[0]!
         if (bySession.length > 1 || bySlug.length > 1) {
-          throw new ControlFailure("ambiguous", `${target.name} names more than one instance`, {
-            instances: [...bySlug, ...bySession].map((instance) => instance.id),
+          throw new ControlFailure("ambiguous", `${target.name} names more than one agent`, {
+            agents: [...bySlug, ...bySession].map((agent) => agent.id),
           })
         }
-        throw new ControlFailure("not_found", `no instance named ${target.name}`)
+        throw new ControlFailure("not_found", `no agent named ${target.name}`)
       }
     }
   }
 
-  private instanceById(id: number): FxInstance {
-    const instance = this.instances.find((candidate) => candidate.id === id)
-    if (!instance) throw new ControlFailure("not_found", `no instance ${id}`)
-    return instance
+  private agentById(id: number): FxAgent {
+    const agent = this.agents.find((candidate) => candidate.id === id)
+    if (!agent) throw new ControlFailure("not_found", `no agent ${id}`)
+    return agent
   }
 
   private launchRequestFrom(params: Record<string, unknown>, caller: number | null): LaunchRequest {
     const prefill = this.prefillFrom(params)
-    const callerInstance = caller === null ? null : (this.instances.find((instance) => instance.id === caller) ?? null)
+    const callerAgent = caller === null ? null : (this.agents.find((agent) => agent.id === caller) ?? null)
     return {
-      directory: prefill.directory ?? callerInstance?.cwd ?? this.options.cwd,
+      directory: prefill.directory ?? callerAgent?.cwd ?? this.options.cwd,
       prompt: prefill.prompt ?? "",
       worktree: prefill.worktree ?? false,
       model: prefill.model ?? DEFAULT_CODEX_MODEL.id,
@@ -2141,37 +2141,37 @@ export class Multiplexer {
     })
   }
 
-  private waitForInstance(
-    instance: FxInstance,
+  private waitForAgent(
+    agent: FxAgent,
     states: readonly DisplayState[],
     timeoutMs: number | null,
     signal: AbortSignal,
-  ): Promise<{ instance: InstanceInfo; state: DisplayState }> {
-    const settled = this.waitedState(instance, states)
-    if (settled) return Promise.resolve({ instance: this.instanceInfo(instance), state: settled })
+  ): Promise<{ agent: AgentInfo; state: DisplayState }> {
+    const settled = this.waitedState(agent, states)
+    if (settled) return Promise.resolve({ agent: this.agentInfo(agent), state: settled })
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null
-      const waiter: InstanceWaiter = {
-        instanceId: instance.id,
+      const waiter: AgentWaiter = {
+        agentId: agent.id,
         states,
         settle: (state) => {
           cleanup()
-          if (state === null) reject(new ControlFailure("not_found", `instance ${instance.id} exited`))
-          else resolve({ instance: this.instanceInfo(instance), state })
+          if (state === null) reject(new ControlFailure("not_found", `agent ${agent.id} exited`))
+          else resolve({ agent: this.agentInfo(agent), state })
         },
       }
       const cleanup = () => {
-        this.instanceWaiters.delete(waiter)
+        this.agentWaiters.delete(waiter)
         if (timer) clearTimeout(timer)
         signal.removeEventListener("abort", cleanup)
       }
-      this.instanceWaiters.add(waiter)
+      this.agentWaiters.add(waiter)
       signal.addEventListener("abort", cleanup)
       if (timeoutMs !== null) {
         timer = setTimeout(() => {
           cleanup()
           reject(
-            new ControlFailure("timeout", `instance ${instance.id} is ${this.displayStateOf(instance)} after ${timeoutMs}ms`),
+            new ControlFailure("timeout", `agent ${agent.id} is ${this.displayStateOf(agent)} after ${timeoutMs}ms`),
           )
         }, timeoutMs)
       }
@@ -2181,50 +2181,50 @@ export class Multiplexer {
   /** The state a wait resolves on, or null while it should keep waiting. A
    * prompt that has gone in but not yet been picked up holds the wait: the
    * idle fx reports at startup is not the idle that means it has finished. */
-  private waitedState(instance: FxInstance, states: readonly DisplayState[]): DisplayState | null {
-    if (instance.awaitingWork) return null
-    const state = this.displayStateOf(instance)
+  private waitedState(agent: FxAgent, states: readonly DisplayState[]): DisplayState | null {
+    if (agent.awaitingWork) return null
+    const state = this.displayStateOf(agent)
     return states.includes(state) ? state : null
   }
 
-  private settleInstanceWaiters(): void {
-    for (const waiter of this.instanceWaiters) {
-      const instance = this.instances.find((candidate) => candidate.id === waiter.instanceId)
-      if (!instance) {
+  private settleAgentWaiters(): void {
+    for (const waiter of this.agentWaiters) {
+      const agent = this.agents.find((candidate) => candidate.id === waiter.agentId)
+      if (!agent) {
         waiter.settle(null)
         continue
       }
-      const state = this.waitedState(instance, waiter.states)
+      const state = this.waitedState(agent, waiter.states)
       if (state) waiter.settle(state)
     }
   }
 
-  private displayStateOf(instance: FxInstance): DisplayState {
-    return displayStateFor(this.registry.get(this.paneIdFor(instance)), this.seenSeq.get(instance.id) ?? 0)
+  private displayStateOf(agent: FxAgent): DisplayState {
+    return displayStateFor(this.registry.get(this.paneIdFor(agent)), this.seenSeq.get(agent.id) ?? 0)
   }
 
-  private slugOf(instance: FxInstance): string | null {
-    const sessionId = this.registry.get(this.paneIdFor(instance))?.sessionId
+  private slugOf(agent: FxAgent): string | null {
+    const sessionId = this.registry.get(this.paneIdFor(agent))?.sessionId
     return sessionId ? this.slugNamer.slugFor(sessionId) : null
   }
 
-  private instanceInfo(instance: FxInstance): InstanceInfo {
-    const record = this.registry.get(this.paneIdFor(instance))
-    const git = this.gitContexts.get(instance.cwd) ?? null
+  private agentInfo(agent: FxAgent): AgentInfo {
+    const record = this.registry.get(this.paneIdFor(agent))
+    const git = this.gitContexts.get(agent.cwd) ?? null
     return {
-      id: instance.id,
-      pane_id: this.paneIdFor(instance),
-      cwd: instance.cwd,
-      project: projectNameFor(git, instance.cwd),
+      id: agent.id,
+      pane_id: this.paneIdFor(agent),
+      cwd: agent.cwd,
+      project: projectNameFor(git, agent.cwd),
       branch: git?.branch ?? null,
       worktree: git ? git.root !== git.mainRoot : null,
-      slug: this.slugOf(instance),
+      slug: this.slugOf(agent),
       session_id: record?.sessionId ?? null,
-      label: instance.label,
-      state: this.displayStateOf(instance),
+      label: agent.label,
+      state: this.displayStateOf(agent),
       attention: record?.attention ?? null,
-      active: this.activeInstance() === instance,
-      awaiting_work: instance.awaitingWork,
+      active: this.activeAgent() === agent,
+      awaiting_work: agent.awaitingWork,
       subagents: record?.sessionId ? subagentInfos(this.subagents.childrenOf(record.sessionId)) : [],
     }
   }
@@ -2239,15 +2239,15 @@ export class Multiplexer {
   }
 
   private snapshot(caller: number | null): Snapshot {
-    const you = caller === null ? null : (this.instances.find((instance) => instance.id === caller) ?? null)
-    const rows: SidebarRow[] = buildTree(this.sessionEntries()).map((row) => ({
+    const you = caller === null ? null : (this.agents.find((agent) => agent.id === caller) ?? null)
+    const rows: TrayRow[] = buildTree(this.sessionEntries()).map((row) => ({
       kind: row.kind,
       depth: row.depth,
       text:
         row.kind === "agent" || row.kind === "subagent"
           ? `${stateIcon(row.state, row.attention)} ${row.label || "—"}`
           : row.label,
-      instance: row.instanceId,
+      agent: row.agentId,
       active: row.active,
     }))
     return {
@@ -2259,10 +2259,10 @@ export class Multiplexer {
         cols: this.renderer.width,
         rows: this.renderer.height,
       },
-      you: you ? this.instanceInfo(you) : null,
-      active: this.activeInstance()?.id ?? null,
-      instances: this.instances.map((instance) => this.instanceInfo(instance)),
-      sidebar: { ...this.sidebarInfo(), rows },
+      you: you ? this.agentInfo(you) : null,
+      active: this.activeAgent()?.id ?? null,
+      agents: this.agents.map((agent) => this.agentInfo(agent)),
+      tray: { ...this.trayInfo(), rows },
       panel: this.panelInfo(),
       surface: this.surface(),
     }
@@ -2270,8 +2270,8 @@ export class Multiplexer {
 
   /** `visible` is what is drawn; `hidden` is the human's choice, which an
    * empty fmx keeps without showing. */
-  private sidebarInfo(): { visible: boolean; hidden: boolean; width: number } {
-    return { visible: this.sidebar.visible, hidden: this.sidebarHidden, width: this.sidebarWidth }
+  private trayInfo(): { visible: boolean; hidden: boolean; width: number } {
+    return { visible: this.tray.visible, hidden: this.trayHidden, width: this.trayWidth }
   }
 
   private panelInfo(): PanelInfo {
@@ -2294,7 +2294,7 @@ export class Multiplexer {
       launch: "fmx control launch --editable",
       previous_tab: "fmx control focus previous",
       next_tab: "fmx control focus next",
-      toggle_sidebar: "fmx control sidebar --toggle",
+      toggle_tray: "fmx control tray --toggle",
       toggle_panel: "fmx control panel --toggle",
       focus_panel: "fmx control panel --focus toggle",
       previous_panel: "fmx control panel --previous",
@@ -2308,7 +2308,7 @@ export class Multiplexer {
       "launch",
       "previous_tab",
       "next_tab",
-      "toggle_sidebar",
+      "toggle_tray",
       "toggle_panel",
       "focus_panel",
       "previous_panel",
@@ -2324,7 +2324,7 @@ export class Multiplexer {
 
   private refreshTerminalTitle(): void {
     if (this.shuttingDown && this.renderer.isDestroyed) return
-    const active = this.activeInstance()
+    const active = this.activeAgent()
     this.renderer.setTerminalTitle(active ? `fmx · ${active.label}` : "fmx")
   }
 }
@@ -2351,9 +2351,9 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
     [bindingLabel(keybindings.launch), "launch agent"],
     [bindingLabel(keybindings.previous_tab), "prev agent"],
     [bindingLabel(keybindings.next_tab), "next agent"],
-    [bindingLabel(keybindings.toggle_sidebar), "toggle sidebar"],
-    [bindingLabel(keybindings.toggle_panel), "toggle Tool panel"],
-    [bindingLabel(keybindings.focus_panel), "focus Tool panel"],
+    [bindingLabel(keybindings.toggle_tray), "toggle tray"],
+    [bindingLabel(keybindings.toggle_panel), "toggle tools"],
+    [bindingLabel(keybindings.focus_panel), "focus tools"],
     [bindingLabel(keybindings.previous_panel), "previous tool"],
     [bindingLabel(keybindings.next_panel), "next tool"],
   ]

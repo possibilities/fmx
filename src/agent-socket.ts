@@ -29,7 +29,7 @@ export type AgentSocketOptions = {
  * Another fmx is listening on this Home's agent socket. One Home runs one
  * fmx at a time: the socket is where every surviving fx reports, and a
  * second process that unlinked it would silently take the first one's
- * instances off the air.
+ * agents off the air.
  */
 export class AgentSocketActiveError extends Error {
   constructor(readonly path: string) {
@@ -40,10 +40,10 @@ export class AgentSocketActiveError extends Error {
 export type FrameListener = (frame: SocketFrame) => void
 
 /**
- * The Unix socket fx instances report their lifecycle to.
+ * The Unix socket fx agents report their lifecycle to.
  *
- * One socket serves every instance: fx opens a connection per message and
- * addresses each one by pane id, so there is no per-instance connection to
+ * One socket serves every agent: fx opens a connection per message and
+ * addresses each one by pane id, so there is no per-agent connection to
  * keep. Replies are written before anything else happens with the request —
  * fx blocks its send path on our newline reply with a 250ms timeout, so any
  * work done first is latency charged directly to the agent.

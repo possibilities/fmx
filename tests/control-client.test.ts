@@ -70,13 +70,13 @@ test("reports an unreachable fmx as exit 3", async () => {
   expect(outcome.error?.message).toContain("not running inside fmx")
 })
 
-test("sends the caller's instance with commands that have one", async () => {
+test("sends the caller's agent with commands that have one", async () => {
   const { socket, calls } = await server(async () => ({ ok: true }), "caller")
   try {
     const outcome = await runCommand(
       { name: "orient" },
       socket.path,
-      environment({ env: { FMX_INSTANCE_ID: "4" } }),
+      environment({ env: { FMX_AGENT_ID: "4" } }),
     )
     expect(outcome.exitCode).toBe(EXIT_OK)
     expect(calls).toEqual([{ method: "orient", params: { caller: 4 } }])
@@ -96,7 +96,7 @@ test("asks a running fmx to detach", async () => {
   }
 })
 
-test("sends Tool panel visibility, selection, and focus in one request", async () => {
+test("sends tools panel visibility, selection, and focus in one request", async () => {
   const { socket, calls } = await server(async () => ({ selected: "diff" }), "panel")
   try {
     const command = parseArgs([
@@ -128,7 +128,7 @@ test("sends Tool panel visibility, selection, and focus in one request", async (
 test("resolves prompt text from a file or stdin before sending", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-prompt-"))
   await writeFile(join(directory, "brief.md"), "do the thing\n")
-  const { socket, calls } = await server(async () => ({ instance: { id: 2 } }), "text")
+  const { socket, calls } = await server(async () => ({ agent: { id: 2 } }), "text")
   try {
     await runCommand(
       parseArgs([
@@ -147,7 +147,7 @@ test("resolves prompt text from a file or stdin before sending", async () => {
       environment({ cwd: directory }),
     )
     await runCommand(
-      parseArgs(["control", "instance", "send", "2", "-"]).command!,
+      parseArgs(["control", "agent", "send", "2", "-"]).command!,
       socket.path,
       environment({ readStdin: async () => "from stdin" }),
     )
@@ -162,7 +162,7 @@ test("resolves prompt text from a file or stdin before sending", async () => {
           focus: false,
         },
       },
-      { method: "instance.send", params: { target: "2", text: "from stdin" } },
+      { method: "agent.send", params: { target: "2", text: "from stdin" } },
     ])
   } finally {
     socket.close()
@@ -209,7 +209,7 @@ test("maps error codes to exit statuses", async () => {
 
 test("the fmx binary itself is the client: JSON out, exit status in", async () => {
   const { socket } = await server(async ({ method }) => {
-    if (method === "focus") throw new ControlFailure("not_found", "no instance 9")
+    if (method === "focus") throw new ControlFailure("not_found", "no agent 9")
     return { you: null }
   }, "binary")
   const cli = (...args: string[]) =>
@@ -227,7 +227,7 @@ test("the fmx binary itself is the client: JSON out, exit status in", async () =
     const focus = cli("control", "focus", "9")
     expect(await focus.exited).toBe(EXIT_REFUSED)
     expect(JSON.parse(await new Response(focus.stderr).text())).toEqual({
-      error: { code: "not_found", message: "no instance 9" },
+      error: { code: "not_found", message: "no agent 9" },
     })
 
     const usage = cli("control", "draft")

@@ -4,7 +4,7 @@ import { INHERITED_COMPANION_VARIABLES } from "./zmx-environment.ts"
 /**
  * An fx reads the agent socket it reports to out of its environment. Any of
  * these inherited from fmx's own parent name a surface that is not this one,
- * so every fx fmx starts — the instances it renders and the short-lived one
+ * so every fx fmx starts — the agents it renders and the short-lived one
  * that names them — is started without them.
  */
 export const INHERITED_AGENT_SOCKET_VARIABLES = [
@@ -54,25 +54,25 @@ export type FxLaunchLevel = {
  *
  * The agent-socket variables are cleared for the same reason: an inherited
  * socket path and pane id name a surface that is not this one, and fx would
- * report this instance's lifecycle against a stranger's pane.
+ * report this agent's lifecycle against a stranger's pane.
  */
 export function createFxEnvironment(
   parent: NodeJS.ProcessEnv,
-  instanceId: number,
+  agentId: number,
   cwd: string,
   agentSocket: FxAgentSocketBinding | null = null,
   controlSocketPath: string | null = null,
   launchLevel: FxLaunchLevel | null = null,
 ): NodeJS.ProcessEnv {
   const env = createEmbeddedEnvironment(parent, cwd)
-  env.FMX_INSTANCE_ID = String(instanceId)
+  env.FMX_AGENT_ID = String(agentId)
 
   if (agentSocket) {
     env.HERDR_SOCKET_PATH = agentSocket.socketPath
     env.HERDR_PANE_ID = agentSocket.paneId
   }
-  // The control socket is fmx's own: an agent inside the instance drives
-  // this fmx through it, and `FMX_INSTANCE_ID` says which instance it is.
+  // The control socket is fmx's own: an agent inside the agent drives
+  // this fmx through it, and `FMX_AGENT_ID` says which agent it is.
   if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
   else delete env[CONTROL_SOCKET_ENV_VAR]
   if (launchLevel) {
@@ -82,17 +82,17 @@ export function createFxEnvironment(
   return env
 }
 
-/** A configured terminal tool runs in the active Instance's context but is not
+/** A configured terminal tool runs in the active Agent's context but is not
  * itself an fx and must never report on the Agent socket. */
 export function createPanelEnvironment(
   parent: NodeJS.ProcessEnv,
-  instanceId: number,
+  agentId: number,
   cwd: string,
   controlSocketPath: string | null,
   panelId: string,
 ): NodeJS.ProcessEnv {
   const env = createEmbeddedEnvironment(parent, cwd)
-  env.FMX_INSTANCE_ID = String(instanceId)
+  env.FMX_AGENT_ID = String(agentId)
   env.FMX_PANEL_ID = panelId
   if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
   else delete env[CONTROL_SOCKET_ENV_VAR]

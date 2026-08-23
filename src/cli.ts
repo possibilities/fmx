@@ -17,9 +17,9 @@ export type LaunchFieldArgs = {
 export type Command =
   | { name: "orient" }
   | { name: "detach" }
-  | { name: "instance"; verb: "list" }
-  | { name: "instance"; verb: "wait"; target: string; states?: string[]; timeoutMs?: number }
-  | { name: "instance"; verb: "send"; target: string; text: TextSource }
+  | { name: "agent"; verb: "list" }
+  | { name: "agent"; verb: "wait"; target: string; states?: string[]; timeoutMs?: number }
+  | { name: "agent"; verb: "send"; target: string; text: TextSource }
   | {
       name: "launch"
       fields: LaunchFieldArgs
@@ -34,7 +34,7 @@ export type Command =
   | { name: "draft"; verb: "cancel"; draft: string }
   | { name: "draft"; verb: "wait"; draft?: string; timeoutMs?: number }
   | { name: "focus"; target: string }
-  | { name: "sidebar"; width?: number; hidden?: boolean; toggle?: boolean }
+  | { name: "tray"; width?: number; hidden?: boolean; toggle?: boolean }
   | {
       name: "panel"
       width?: number
@@ -42,7 +42,7 @@ export type Command =
       toggle?: boolean
       select?: string
       step?: "next" | "previous"
-      focus?: "panel" | "instance" | "toggle"
+      focus?: "panel" | "agent" | "toggle"
     }
   | { name: "keys"; show: boolean }
   | { name: "catalog" }
@@ -63,9 +63,9 @@ export type CliOptions = {
 const CONTROL_GROUP = "control"
 /** The one other top-level command: a report on the installation, never a running fmx. */
 const DOCTOR_COMMAND = "doctor"
-const COMMAND_NAMES = ["orient", "detach", "instance", "launch", "draft", "focus", "sidebar", "panel", "keys", "catalog"] as const
+const COMMAND_NAMES = ["orient", "detach", "agent", "launch", "draft", "focus", "tray", "panel", "keys", "catalog"] as const
 const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
-const INSTANCE_VERBS = ["list", "wait", "send"] as const
+const AGENT_VERBS = ["list", "wait", "send"] as const
 
 export class UsageError extends Error {
   constructor(
@@ -142,8 +142,8 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
     case "detach":
       rejectExtra(args, "detach")
       return { name: "detach" }
-    case "instance":
-      return parseInstance(args)
+    case "agent":
+      return parseAgent(args)
     case "launch":
       return parseLaunch(args)
     case "draft":
@@ -155,12 +155,12 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
       rejectExtra(flags.positional.slice(1), "focus")
       return { name: "focus", target }
     }
-    case "sidebar": {
-      const flags = parseFlags(args, { width: "value", show: "switch", hide: "switch", toggle: "switch" }, "sidebar")
-      rejectExtra(flags.positional, "sidebar")
+    case "tray": {
+      const flags = parseFlags(args, { width: "value", show: "switch", hide: "switch", toggle: "switch" }, "tray")
+      rejectExtra(flags.positional, "tray")
       const visibility = ["show", "hide", "toggle"].filter((flag) => flags.switches.has(flag))
-      if (visibility.length > 1) throw new UsageError("--show, --hide, and --toggle contradict", "sidebar")
-      const command: Command = { name: "sidebar" }
+      if (visibility.length > 1) throw new UsageError("--show, --hide, and --toggle contradict", "tray")
+      const command: Command = { name: "tray" }
       if (flags.values.width !== undefined) command.width = integerFlag("--width", flags.values.width)
       if (flags.switches.has("show")) command.hidden = false
       if (flags.switches.has("hide")) command.hidden = true
@@ -197,8 +197,8 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
       if (flags.switches.has("next")) command.step = "next"
       if (flags.switches.has("previous")) command.step = "previous"
       if (flags.values.focus !== undefined) {
-        if (flags.values.focus !== "panel" && flags.values.focus !== "instance" && flags.values.focus !== "toggle") {
-          throw new UsageError("--focus must be panel, instance, or toggle", "panel")
+        if (flags.values.focus !== "panel" && flags.values.focus !== "agent" && flags.values.focus !== "toggle") {
+          throw new UsageError("--focus must be panel, agent, or toggle", "panel")
         }
         command.focus = flags.values.focus
       }
@@ -215,33 +215,33 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
   }
 }
 
-function parseInstance(args: string[]): Command {
+function parseAgent(args: string[]): Command {
   const verb = args[0]
-  if (verb === undefined || !(INSTANCE_VERBS as readonly string[]).includes(verb)) {
-    throw new UsageError(verb === undefined ? "instance needs a verb" : `unknown instance verb: ${verb}`, "instance")
+  if (verb === undefined || !(AGENT_VERBS as readonly string[]).includes(verb)) {
+    throw new UsageError(verb === undefined ? "agent needs a verb" : `unknown agent verb: ${verb}`, "agent")
   }
   const rest = args.slice(1)
-  switch (verb as (typeof INSTANCE_VERBS)[number]) {
+  switch (verb as (typeof AGENT_VERBS)[number]) {
     case "list":
-      rejectExtra(rest, "instance")
-      return { name: "instance", verb: "list" }
+      rejectExtra(rest, "agent")
+      return { name: "agent", verb: "list" }
     case "wait": {
-      const flags = parseFlags(rest, { state: "list", timeout: "value" }, "instance")
+      const flags = parseFlags(rest, { state: "list", timeout: "value" }, "agent")
       const target = flags.positional[0] ?? "current"
-      rejectExtra(flags.positional.slice(1), "instance")
-      const command: Command = { name: "instance", verb: "wait", target }
+      rejectExtra(flags.positional.slice(1), "agent")
+      const command: Command = { name: "agent", verb: "wait", target }
       if (flags.lists.state) command.states = flags.lists.state
       if (flags.values.timeout !== undefined) command.timeoutMs = integerFlag("--timeout", flags.values.timeout)
       return command
     }
     case "send": {
-      const flags = parseFlags(rest, { file: "value" }, "instance")
+      const flags = parseFlags(rest, { file: "value" }, "agent")
       const target = flags.positional[0]
-      if (target === undefined) throw new UsageError("instance send needs a target", "instance")
-      const text = textSource(flags.positional[1], flags.values.file, "instance")
-      if (!text) throw new UsageError("instance send needs text, --file, or - for stdin", "instance")
-      rejectExtra(flags.positional.slice(2), "instance")
-      return { name: "instance", verb: "send", target, text }
+      if (target === undefined) throw new UsageError("agent send needs a target", "agent")
+      const text = textSource(flags.positional[1], flags.values.file, "agent")
+      if (!text) throw new UsageError("agent send needs text, --file, or - for stdin", "agent")
+      rejectExtra(flags.positional.slice(2), "agent")
+      return { name: "agent", verb: "send", target, text }
     }
   }
 }
@@ -418,16 +418,16 @@ export function usage(topic: string | null = null): string {
       return LAUNCH_USAGE
     case "draft":
       return DRAFT_USAGE
-    case "instance":
-      return INSTANCE_USAGE
+    case "agent":
+      return AGENT_USAGE
     case "focus":
-      return "Usage: fmx control focus <target>\n\n  target: instance id, slug, session-id prefix, next, previous, current\n"
+      return "Usage: fmx control focus <target>\n\n  target: agent id, slug, session-id prefix, next, previous, current\n"
     case "detach":
       return "Usage: fmx control detach\n\nDetach fmx and leave every agent running.\n"
-    case "sidebar":
-      return "Usage: fmx control sidebar [--width N] [--show | --hide | --toggle]\n"
+    case "tray":
+      return "Usage: fmx control tray [--width N] [--show | --hide | --toggle]\n"
     case "panel":
-      return "Usage: fmx control panel [--width N] [--show | --hide | --toggle] [--select ID | --next | --previous] [--focus panel|instance|toggle]\n"
+      return "Usage: fmx control panel [--width N] [--show | --hide | --toggle] [--select ID | --next | --previous] [--focus panel|agent|toggle]\n"
     case "keys":
       return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running fmx as well\n"
   }
@@ -464,12 +464,12 @@ Each command prints one JSON object.
   launch [prompt] [flags]      start an agent; --editable opens the dialog instead
   draft show|set|submit|cancel|wait [id]
                                an open dialog an agent can finish or hand over
-  focus <target>               switch to an instance (next, previous, id, slug)
-  instance list|wait|send      read, wait on, or type into instances
-  sidebar [--width N] [--show|--hide|--toggle]
+  focus <target>               switch to an agent (next, previous, id, slug)
+  agent list|wait|send      read, wait on, or type into agents
+  tray [--width N] [--show|--hide|--toggle]
                                the session list's width and visibility
   panel [--width N] [--show|--hide|--toggle] [--select ID|--next|--previous] [--focus OWNER]
-                               the active instance's configured terminal tools
+                               the active agent's configured terminal tools
   keys [--show]                the keybindings and their command equivalents
   catalog                      the models and efforts the launch dialog offers
 
@@ -483,11 +483,11 @@ const LAUNCH_USAGE = `Usage: fmx control launch [prompt] [flags]
 
   --project DIR        directory to start in (default: your own)
   --worktree           cut a fresh worktree of the project first
-  --model ID           Codex model for this instance
-  --effort LEVEL       reasoning effort for this instance
+  --model ID           Codex model for this agent
+  --effort LEVEL       reasoning effort for this agent
   --prompt TEXT        the prompt to start on; a bare positional works too
   --prompt-file PATH   read the prompt from a file; --prompt - reads stdin
-  --focus              switch the screen to the new instance
+  --focus              switch the screen to the new agent
   --editable           open the launch dialog prefilled instead of starting;
                        prints the draft id. Omitted fields keep their defaults.
   --wait               with --editable, block until the draft resolves
@@ -499,19 +499,19 @@ const DRAFT_USAGE = `Usage: fmx control draft <verb> [id] [flags]
   show [id]            fields and status (default: the open draft)
   set <id> [flags]     change fields: --prompt, --prompt-file, --project,
                        --worktree, --no-worktree, --model, --effort
-  submit <id>          launch it; prints the instance started
+  submit <id>          launch it; prints the agent started
   cancel <id>          close it without launching
   wait [id] [--timeout MS]
                        block until a human or agent resolves it
 `
 
-const INSTANCE_USAGE = `Usage: fmx control instance <verb> [args]
+const AGENT_USAGE = `Usage: fmx control agent <verb> [args]
 
-  list                             every instance, as the sidebar knows it
+  list                             every agent, as the tray knows it
   wait [target] [--state S,...] [--timeout MS]
-                                   block until the instance reaches a state
+                                   block until the agent reaches a state
                                    (default target: current;
                                     default states: idle,done,blocked)
   send <target> <text|-> [--file PATH]
-                                   paste text into the instance and send it
+                                   paste text into the agent and send it
 `

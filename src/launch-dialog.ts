@@ -16,7 +16,7 @@ import { cycleByLetter, matchProjects, type ProjectChoice } from "./projects.ts"
 import { isStructuralKey, PromptEditor } from "./prompt-editor.ts"
 
 /**
- * The launch dialog: what an instance is started with, gathered before fx
+ * The launch dialog: what an agent is started with, gathered before fx
  * runs. Five rows — prompt, project, worktree, model, and effort.
  *
  * The chooser rows are rows rather than a bare list on purpose. A row answers

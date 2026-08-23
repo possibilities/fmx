@@ -12,7 +12,7 @@ type LoadedConfig = {
   /** Where a launch's new worktree is checked out. */
   worktreeRoot: string
   slug: SlugSettings
-  /** Ordered terminal tools available in the active Instance's Tool panel. */
+  /** Ordered terminal tools available in the active agent's tools panel. */
   panels: PanelDefinition[]
   diagnostics: string[]
 }
@@ -28,7 +28,7 @@ export type PanelDefinition = {
   persistent: boolean
 }
 
-/** How an instance earns a name from its first prompt. */
+/** How an agent earns a name from its first prompt. */
 export type SlugSettings = {
   enabled: boolean
   /** Reasoning effort the naming completion runs at. */

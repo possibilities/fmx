@@ -9,22 +9,22 @@ const MANIFEST_PATH_ENV_VAR = "FMX_MANIFEST_PATH"
 export const MANIFEST_VERSION = 1
 
 /**
- * The Manifest: fmx's own record of the Instances its Companion holds, so a
+ * The Manifest: fmx's own record of the Agents its Companion holds, so a
  * restart can find them. It is a claim, not the truth — the Companion's
- * sessions are the truth, and `instance-reconcile.ts` joins the two.
+ * sessions are the truth, and `agent-reconcile.ts` joins the two.
  *
  * Nothing sensitive is kept: no prompt text, no environment. A crash before a
  * launch prompt is delivered leaves an unprompted fx, which is safer than a
  * replayed secret.
  */
 
-/** The three names one Instance is known by; all three carry the same token. */
-export type InstanceIdentity = {
+/** The three names one Agent is known by; all three carry the same token. */
+export type AgentIdentity = {
   /** 128 random bits as 32 hex characters; the one id that never changes. */
-  instanceId: string
-  /** What fx addresses its frames to; the wire's term, `p_<instanceId>`. */
+  agentId: string
+  /** What fx addresses its frames to; the wire's term, `p_<agentId>`. */
   paneId: string
-  /** The Companion session name, `fmx-<instanceId>`. */
+  /** The Companion session name, `fmx-<agentId>`. */
   zmxName: string
 }
 
@@ -38,12 +38,12 @@ export type AgentStatusCheckpoint = {
   seen: boolean
 }
 
-export type ManifestEntry = InstanceIdentity & {
-  /** The number fmx's UI knows the Instance by; persisted, never reused. */
+export type ManifestEntry = AgentIdentity & {
+  /** The number fmx's UI knows the Agent by; persisted, never reused. */
   displayId: number
   cwd: string
   fxPath: string
-  /** `null` when unknown: an adopted Instance's argv comes from a display string the Companion truncates. */
+  /** `null` when unknown: an adopted Agent's argv comes from a display string the Companion truncates. */
   fxArgs: string[] | null
   createdAt: number
   fxSessionId: string | null
@@ -62,7 +62,7 @@ export type Manifest = {
   version: typeof MANIFEST_VERSION
   homeId: string
   nextDisplayId: number
-  instances: ManifestEntry[]
+  agents: ManifestEntry[]
 }
 
 export function manifestPath(
@@ -73,22 +73,22 @@ export function manifestPath(
   return join(fmxDirectory(env, homeDirectory), "instances.json")
 }
 
-export function mintIdentity(token: string = randomBytes(16).toString("hex")): InstanceIdentity {
+export function mintIdentity(token: string = randomBytes(16).toString("hex")): AgentIdentity {
   return identityFor(token)
 }
 
-export function identityFor(instanceId: string): InstanceIdentity {
-  return { instanceId, paneId: `p_${instanceId}`, zmxName: `fmx-${instanceId}` }
+export function identityFor(agentId: string): AgentIdentity {
+  return { agentId, paneId: `p_${agentId}`, zmxName: `fmx-${agentId}` }
 }
 
-const INSTANCE_ID = /^[0-9a-f]{32}$/
+const AGENT_ID = /^[0-9a-f]{32}$/
 
-export function isInstanceId(value: unknown): value is string {
-  return typeof value === "string" && INSTANCE_ID.test(value)
+export function isAgentId(value: unknown): value is string {
+  return typeof value === "string" && AGENT_ID.test(value)
 }
 
 export function emptyManifest(homeId: string): Manifest {
-  return { version: MANIFEST_VERSION, homeId, nextDisplayId: 1, instances: [] }
+  return { version: MANIFEST_VERSION, homeId, nextDisplayId: 1, agents: [] }
 }
 
 /**
@@ -107,19 +107,19 @@ export function parseManifest(content: string, homeId: string): Manifest {
   if (!isRecord(document)) return emptyManifest(homeId)
   if (document.version !== MANIFEST_VERSION || document.homeId !== homeId) return emptyManifest(homeId)
 
-  const instances: ManifestEntry[] = []
+  const agents: ManifestEntry[] = []
   const seenIds = new Set<string>()
   const seenDisplayIds = new Set<number>()
   let highestDisplayId = 0
-  if (Array.isArray(document.instances)) {
-    for (const raw of document.instances) {
+  if (Array.isArray(document.agents)) {
+    for (const raw of document.agents) {
       const entry = readEntry(raw)
       if (!entry) continue
-      if (seenIds.has(entry.instanceId) || seenDisplayIds.has(entry.displayId)) continue
-      seenIds.add(entry.instanceId)
+      if (seenIds.has(entry.agentId) || seenDisplayIds.has(entry.displayId)) continue
+      seenIds.add(entry.agentId)
       seenDisplayIds.add(entry.displayId)
       highestDisplayId = Math.max(highestDisplayId, entry.displayId)
-      instances.push(entry)
+      agents.push(entry)
     }
   }
   const declared = document.nextDisplayId
@@ -127,14 +127,14 @@ export function parseManifest(content: string, homeId: string): Manifest {
     highestDisplayId + 1,
     typeof declared === "number" && Number.isInteger(declared) && declared > 0 ? declared : 1,
   )
-  return { version: MANIFEST_VERSION, homeId, nextDisplayId, instances }
+  return { version: MANIFEST_VERSION, homeId, nextDisplayId, agents }
 }
 
 function readEntry(raw: unknown): ManifestEntry | null {
   if (!isRecord(raw)) return null
-  const { instanceId, displayId, cwd, fxPath, fxArgs, createdAt, fxSessionId, phase } = raw
-  if (!isInstanceId(instanceId)) return null
-  const identity = identityFor(instanceId)
+  const { agentId, displayId, cwd, fxPath, fxArgs, createdAt, fxSessionId, phase } = raw
+  if (!isAgentId(agentId)) return null
+  const identity = identityFor(agentId)
   if (raw.paneId !== identity.paneId || raw.zmxName !== identity.zmxName) return null
   if (typeof displayId !== "number" || !Number.isInteger(displayId) || displayId <= 0) return null
   if (typeof cwd !== "string" || !cwd.startsWith("/")) return null
@@ -192,10 +192,10 @@ export async function saveManifest(manifest: Manifest, path: string): Promise<vo
 export type CreateParams = {
   cwd: string
   fxPath: string
-  /** `null` when unknown: an adopted Instance's argv comes from a display string the Companion truncates. */
+  /** `null` when unknown: an adopted Agent's argv comes from a display string the Companion truncates. */
   fxArgs: string[] | null
   createdAt: number
-  identity?: InstanceIdentity
+  identity?: AgentIdentity
 }
 
 /**
@@ -204,7 +204,7 @@ export type CreateParams = {
  * serialized so two in flight cannot land out of order. Callers hold the
  * entries they were handed as snapshots.
  */
-export class InstanceManifest {
+export class AgentManifest {
   private queue: Promise<unknown> = Promise.resolve()
 
   private constructor(
@@ -213,13 +213,13 @@ export class InstanceManifest {
     private manifest: Manifest,
   ) {}
 
-  static async open(path: string, homeId: string): Promise<InstanceManifest> {
-    return new InstanceManifest(path, await loadManifest(path, homeId))
+  static async open(path: string, homeId: string): Promise<AgentManifest> {
+    return new AgentManifest(path, await loadManifest(path, homeId))
   }
 
   /** A Manifest held in memory alone. Nothing survives the process, which is the point. */
-  static ephemeral(homeId: string): InstanceManifest {
-    return new InstanceManifest(null, emptyManifest(homeId))
+  static ephemeral(homeId: string): AgentManifest {
+    return new AgentManifest(null, emptyManifest(homeId))
   }
 
   get homeId(): string {
@@ -227,11 +227,11 @@ export class InstanceManifest {
   }
 
   get entries(): readonly ManifestEntry[] {
-    return this.manifest.instances.map(copy)
+    return this.manifest.agents.map(copy)
   }
 
-  get(instanceId: string): ManifestEntry | null {
-    const entry = this.manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+  get(agentId: string): ManifestEntry | null {
+    const entry = this.manifest.agents.find((candidate) => candidate.agentId === agentId)
     return entry ? copy(entry) : null
   }
 
@@ -241,7 +241,7 @@ export class InstanceManifest {
   }
 
   /**
-   * Step 1 as two halves: the entry now, for an Instance that should be on
+   * Step 1 as two halves: the entry now, for an Agent that should be on
    * screen the moment it is asked for, and the write to wait for before
    * the Companion is asked — the claim must be on disk first.
    */
@@ -251,8 +251,8 @@ export class InstanceManifest {
 
   private claimIn(manifest: Manifest, params: CreateParams): ManifestEntry {
     const identity = params.identity ?? mintIdentity()
-    if (manifest.instances.some((entry) => entry.instanceId === identity.instanceId)) {
-      throw new Error(`instance already in manifest: ${identity.instanceId}`)
+    if (manifest.agents.some((entry) => entry.agentId === identity.agentId)) {
+      throw new Error(`agent already in manifest: ${identity.agentId}`)
     }
     const entry: ManifestEntry = {
       ...identity,
@@ -265,23 +265,23 @@ export class InstanceManifest {
       agentStatus: null,
       phase: "creating",
     }
-    manifest.instances.push(entry)
+    manifest.agents.push(entry)
     return copy(entry)
   }
 
   /** Step 3: the Companion acknowledged the start. */
-  markRunning(instanceId: string): Promise<ManifestEntry> {
+  markRunning(agentId: string): Promise<ManifestEntry> {
     return this.mutate((manifest) => {
-      const entry = find(manifest, instanceId)
+      const entry = find(manifest, agentId)
       entry.phase = "running"
       return copy(entry)
     })
   }
 
   /** A session seen in the Companion that the Manifest did not know. */
-  adopt(params: CreateParams & { identity: InstanceIdentity; fxSessionId?: string | null }): Promise<ManifestEntry> {
+  adopt(params: CreateParams & { identity: AgentIdentity; fxSessionId?: string | null }): Promise<ManifestEntry> {
     return this.mutate((manifest) => {
-      const existing = manifest.instances.find((entry) => entry.instanceId === params.identity.instanceId)
+      const existing = manifest.agents.find((entry) => entry.agentId === params.identity.agentId)
       if (existing) return copy(existing)
       const entry: ManifestEntry = {
         ...params.identity,
@@ -294,38 +294,38 @@ export class InstanceManifest {
         agentStatus: null,
         phase: "running",
       }
-      manifest.instances.push(entry)
+      manifest.agents.push(entry)
       return copy(entry)
     })
   }
 
-  setFxSessionId(instanceId: string, fxSessionId: string | null): Promise<void> {
+  setFxSessionId(agentId: string, fxSessionId: string | null): Promise<void> {
     // Checked before the write is queued: every frame fx sends is a chance
     // to record the id, and all but the first would otherwise be a rewrite.
-    const current = this.manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+    const current = this.manifest.agents.find((candidate) => candidate.agentId === agentId)
     if (!current || current.fxSessionId === fxSessionId) return Promise.resolve()
     return this.mutate((manifest) => {
-      const entry = manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+      const entry = manifest.agents.find((candidate) => candidate.agentId === agentId)
       if (!entry || entry.fxSessionId === fxSessionId) return
       entry.fxSessionId = fxSessionId
     })
   }
 
   /** Checkpoint the last socket truth so a detach does not turn it unknown. */
-  setAgentStatus(instanceId: string, status: AgentStatusCheckpoint): Promise<void> {
-    const current = this.manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+  setAgentStatus(agentId: string, status: AgentStatusCheckpoint): Promise<void> {
+    const current = this.manifest.agents.find((candidate) => candidate.agentId === agentId)
     if (!current || sameAgentStatus(current.agentStatus, status)) return Promise.resolve()
     return this.mutate((manifest) => {
-      const entry = manifest.instances.find((candidate) => candidate.instanceId === instanceId)
+      const entry = manifest.agents.find((candidate) => candidate.agentId === agentId)
       if (!entry || sameAgentStatus(entry.agentStatus, status)) return
       entry.agentStatus = { ...status }
     })
   }
 
   /** Steps 4 and 5: a definite failure, an exit, or an absence. Removing what is not there is fine. */
-  remove(instanceId: string): Promise<void> {
+  remove(agentId: string): Promise<void> {
     return this.mutate((manifest) => {
-      manifest.instances = manifest.instances.filter((entry) => entry.instanceId !== instanceId)
+      manifest.agents = manifest.agents.filter((entry) => entry.agentId !== agentId)
     })
   }
 
@@ -347,7 +347,7 @@ export class InstanceManifest {
   private apply<T>(change: (manifest: Manifest) => T): { result: T; saved: Promise<void> } {
     const next: Manifest = {
       ...this.manifest,
-      instances: this.manifest.instances.map(copy),
+      agents: this.manifest.agents.map(copy),
     }
     // A change that throws changes nothing: `next` is dropped unsaved.
     const result = change(next)
@@ -376,9 +376,9 @@ function sameAgentStatus(
   return left?.state === right.state && left.attention === right.attention && left.seen === right.seen
 }
 
-function find(manifest: Manifest, instanceId: string): ManifestEntry {
-  const entry = manifest.instances.find((candidate) => candidate.instanceId === instanceId)
-  if (!entry) throw new Error(`instance not in manifest: ${instanceId}`)
+function find(manifest: Manifest, agentId: string): ManifestEntry {
+  const entry = manifest.agents.find((candidate) => candidate.agentId === agentId)
+  if (!entry) throw new Error(`agent not in manifest: ${agentId}`)
   return entry
 }
 

@@ -3,18 +3,18 @@ import { UNTRACKED_TREE_NAME } from "./git-context.ts"
 import type { SubagentEntry } from "./subagents.ts"
 
 /**
- * Flattening a project → branch → agent tree into the rows the sidebar draws.
+ * Flattening a project → branch → agent tree into the rows the tray draws.
  * Pure: no renderer, no colors, no widths.
  */
 
-/** One fx instance as the list knows it, before grouping. */
+/** One fx agent as the list knows it, before grouping. */
 export type SessionEntry = {
-  instanceId: number
+  agentId: number
   project: string
-  /** null when the instance is not in a git worktree. */
+  /** null when the agent is not in a git worktree. */
   branch: string | null
   sessionId: string | null
-  /** The name minted from the instance's first prompt, once it has one. It
+  /** The name minted from the agent's first prompt, once it has one. It
    * stands in for the session id, which is what a row shows until then. */
   slug: string | null
   state: DisplayState
@@ -28,8 +28,8 @@ export type TreeRow = {
   kind: "project" | "branch" | "agent" | "subagent"
   depth: number
   label: string
-  /** Set only on selectable agent rows; subagents have no Instance to switch to. */
-  instanceId: number | null
+  /** Set only on selectable agent rows; subagents have no Agent to switch to. */
+  agentId: number | null
   state: DisplayState
   attention: AgentAttention | null
   active: boolean
@@ -40,8 +40,8 @@ export type TreeRow = {
 }
 
 /**
- * Group entries into rows, preserving the order instances were created in.
- * Instances outside a repository keep the same project → branch → agent shape
+ * Group entries into rows, preserving the order agents were created in.
+ * Agents outside a repository keep the same project → branch → agent shape
  * through a virtual `(untracked)` branch.
  */
 export function buildTree(entries: SessionEntry[]): TreeRow[] {
@@ -53,7 +53,7 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
       kind: "project",
       depth: 0,
       label: project,
-      instanceId: null,
+      agentId: null,
       state: "unknown",
       attention: null,
       active: false,
@@ -66,7 +66,7 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
         kind: "branch",
         depth: 1,
         label: branch ?? UNTRACKED_TREE_NAME,
-        instanceId: null,
+        agentId: null,
         state: "unknown",
         attention: null,
         active: false,
@@ -78,7 +78,7 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
           kind: "agent",
           depth: 2,
           label: entry.slug ?? entry.sessionId ?? "",
-          instanceId: entry.instanceId,
+          agentId: entry.agentId,
           state: entry.state,
           attention: entry.attention,
           active: entry.active,
@@ -99,7 +99,7 @@ function appendSubagents(rows: TreeRow[], subagents: SubagentEntry[], depth: num
       kind: "subagent",
       depth,
       label: subagent.label,
-      instanceId: null,
+      agentId: null,
       state: subagent.state,
       attention: subagent.attention,
       active: false,

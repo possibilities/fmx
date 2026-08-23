@@ -4,14 +4,14 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
 async function createMultiplexer(width: number, height: number) {
   const setup = await createTestRenderer({ width, height })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -19,22 +19,22 @@ async function createMultiplexer(width: number, height: number) {
   multiplexer.start()
   setup.mockInput.pressKey("b", { ctrl: true })
   setup.mockInput.pressKey("c")
-  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
-  return { setup, multiplexer, sidebar, divider, content }
+  return { setup, multiplexer, tray, divider, content }
 }
 
-test("starts without an fx, hiding the sidebar and centering dimmed prefix actions", async () => {
+test("starts without an fx, hiding the tray and centering dimmed prefix actions", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
   const { keybindings } = resolveKeybindings({ prefix: "ctrl+space" })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings,
   })
-  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
   const emptyState = setup.renderer.root.findDescendantById("fmx-empty-state") as TextRenderable
@@ -46,7 +46,7 @@ test("starts without an fx, hiding the sidebar and centering dimmed prefix actio
     multiplexer.start()
     await setup.renderOnce()
 
-    expect(sidebar.visible).toBe(false)
+    expect(tray.visible).toBe(false)
     expect(divider.visible).toBe(false)
     expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 80, 24])
     expect(emptyState).toBeInstanceOf(TextRenderable)
@@ -61,7 +61,7 @@ test("starts without an fx, hiding the sidebar and centering dimmed prefix actio
     await setup.renderOnce()
 
     expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
-    expect(sidebar.visible).toBe(true)
+    expect(tray.visible).toBe(true)
     expect(divider.visible).toBe(true)
     expect(emptyState.visible).toBe(false)
   } finally {
@@ -77,7 +77,7 @@ test("requires a second ctrl+c before the empty-state exit timeout", async () =>
     exitOnCtrlC: false,
   })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -122,7 +122,7 @@ test("requires a second ctrl+d to exit from the empty state", async () => {
     exitOnCtrlC: false,
   })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -148,15 +148,15 @@ test("requires a second ctrl+d to exit from the empty state", async () => {
   }
 })
 
-test("lays out sidebar, divider line, and content row", async () => {
-  const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
+test("lays out tray, divider line, and content row", async () => {
+  const { setup, multiplexer, tray, divider, content } = await createMultiplexer(90, 24)
   try {
-    expect(sidebar).toBeInstanceOf(BoxRenderable)
+    expect(tray).toBeInstanceOf(BoxRenderable)
     expect(divider).toBeInstanceOf(BoxRenderable)
     expect(content).toBeInstanceOf(BoxRenderable)
 
     await setup.renderOnce()
-    expect([sidebar.x, sidebar.y, sidebar.width, sidebar.height]).toEqual([0, 0, 26, 24])
+    expect([tray.x, tray.y, tray.width, tray.height]).toEqual([0, 0, 26, 24])
     expect([divider.x, divider.y, divider.width, divider.height]).toEqual([26, 0, 1, 24])
     expect([content.x, content.y, content.width, content.height]).toEqual([27, 0, 63, 24])
 
@@ -171,78 +171,78 @@ test("lays out sidebar, divider line, and content row", async () => {
   }
 })
 
-test("toggles the sidebar with prefix+b and keeps it hidden across a new agent", async () => {
-  const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
+test("toggles the tray with prefix+b and keeps it hidden across a new agent", async () => {
+  const { setup, multiplexer, tray, divider, content } = await createMultiplexer(90, 24)
   try {
     await setup.renderOnce()
-    expect(sidebar.visible).toBe(true)
+    expect(tray.visible).toBe(true)
 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("b")
     await setup.renderOnce()
-    expect(sidebar.visible).toBe(false)
+    expect(tray.visible).toBe(false)
     expect(divider.visible).toBe(false)
     expect([content.x, content.width]).toEqual([0, 90])
 
-    // A second instance does not bring the sidebar back on its own.
+    // A second agent does not bring the tray back on its own.
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
     await setup.renderOnce()
     expect(setup.renderer.root.findDescendantById("fx-2")).toBeDefined()
-    expect(sidebar.visible).toBe(false)
+    expect(tray.visible).toBe(false)
 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("b")
     await setup.renderOnce()
-    expect(sidebar.visible).toBe(true)
+    expect(tray.visible).toBe(true)
     expect(divider.visible).toBe(true)
-    expect([sidebar.width, content.x, content.width]).toEqual([26, 27, 63])
+    expect([tray.width, content.x, content.width]).toEqual([26, 27, 63])
   } finally {
     await multiplexer.shutdown()
   }
 })
 
-test("restores a persisted hidden sidebar and reports each toggle", async () => {
+test("restores a persisted hidden tray and reports each toggle", async () => {
   const hiddenChanges: boolean[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    initialSidebarHidden: true,
-    onSidebarHiddenChange: (hidden) => hiddenChanges.push(hidden),
+    initialTrayHidden: true,
+    onTrayHiddenChange: (hidden) => hiddenChanges.push(hidden),
   })
   multiplexer.start()
   setup.mockInput.pressKey("b", { ctrl: true })
   setup.mockInput.pressKey("c")
-  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
-    expect(sidebar.visible).toBe(false)
+    expect(tray.visible).toBe(false)
 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("b")
     await setup.renderOnce()
-    expect(sidebar.visible).toBe(true)
+    expect(tray.visible).toBe(true)
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("b")
     await setup.renderOnce()
-    expect(sidebar.visible).toBe(false)
+    expect(tray.visible).toBe(false)
     expect(hiddenChanges).toEqual([false, true])
   } finally {
     await multiplexer.shutdown()
   }
 })
 
-test("resizes the sidebar by dragging the divider, clamped to 16..width/3", async () => {
-  const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
+test("resizes the tray by dragging the divider, clamped to 16..width/3", async () => {
+  const { setup, multiplexer, tray, divider, content } = await createMultiplexer(90, 24)
   try {
     await setup.renderOnce()
 
     await setup.mockMouse.drag(26, 10, 20, 10)
     await setup.renderOnce()
-    expect(sidebar.width).toBe(20)
+    expect(tray.width).toBe(20)
     expect(divider.x).toBe(20)
     expect(content.x).toBe(21)
     expect(content.width).toBe(69)
@@ -250,26 +250,26 @@ test("resizes the sidebar by dragging the divider, clamped to 16..width/3", asyn
     // Far past the maximum: clamps to a third of the screen.
     await setup.mockMouse.drag(20, 10, 80, 10)
     await setup.renderOnce()
-    expect(sidebar.width).toBe(30)
+    expect(tray.width).toBe(30)
 
     // Far past the minimum: clamps to 16.
     await setup.mockMouse.drag(30, 10, 2, 10)
     await setup.renderOnce()
-    expect(sidebar.width).toBe(16)
+    expect(tray.width).toBe(16)
   } finally {
     await multiplexer.shutdown()
   }
 })
 
-test("re-clamps the sidebar when the terminal shrinks", async () => {
-  const { setup, multiplexer, sidebar } = await createMultiplexer(90, 24)
+test("re-clamps the tray when the terminal shrinks", async () => {
+  const { setup, multiplexer, tray } = await createMultiplexer(90, 24)
   try {
     await setup.renderOnce()
-    expect(sidebar.width).toBe(26)
+    expect(tray.width).toBe(26)
 
     setup.resize(60, 24)
     await setup.renderOnce()
-    expect(sidebar.width).toBe(20)
+    expect(tray.width).toBe(20)
   } finally {
     await multiplexer.shutdown()
   }
@@ -278,7 +278,7 @@ test("re-clamps the sidebar when the terminal shrinks", async () => {
 test("themes the divider from the host palette", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: "fx",
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -340,24 +340,24 @@ test("restores a persisted width and reports changes on drag end", async () => {
   const widthChanges: number[] = []
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    initialSidebarWidth: 22,
-    onSidebarWidthChange: (width) => widthChanges.push(width),
+    initialTrayWidth: 22,
+    onTrayWidthChange: (width) => widthChanges.push(width),
   })
   multiplexer.start()
   setup.mockInput.pressKey("b", { ctrl: true })
   setup.mockInput.pressKey("c")
-  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
-    expect(sidebar.width).toBe(22)
+    expect(tray.width).toBe(22)
 
     await setup.mockMouse.drag(22, 10, 28, 10)
     await setup.renderOnce()
-    expect(sidebar.width).toBe(28)
+    expect(tray.width).toBe(28)
     expect(widthChanges).toEqual([28])
 
     // A click that never moves reports nothing.
@@ -371,19 +371,19 @@ test("restores a persisted width and reports changes on drag end", async () => {
 test("clamps a stale persisted width to the current screen", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    initialSidebarWidth: 70,
+    initialTrayWidth: 70,
   })
   multiplexer.start()
   setup.mockInput.pressKey("b", { ctrl: true })
   setup.mockInput.pressKey("c")
-  const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
+  const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
-    expect(sidebar.width).toBe(30)
+    expect(tray.width).toBe(30)
   } finally {
     await multiplexer.shutdown()
   }

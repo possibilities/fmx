@@ -11,7 +11,7 @@ import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from 
 import { ControlSocket } from "../src/control-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -33,7 +33,7 @@ async function harness(name: string) {
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-control-test-${name}-${process.pid}.sock` })
   await agentSocket.start()
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: join(code, "alpha"),
     keybindings: resolveKeybindings().keybindings,
@@ -49,15 +49,15 @@ async function harness(name: string) {
     agentSocket.close()
   }
   /**
-   * The pane id fx would address: an Instance's is minted with its identity,
-   * so a test names the Instance by number and looks the pane up.
+   * The pane id fx would address: an Agent's is minted with its identity,
+   * so a test names the Agent by number and looks the pane up.
    */
   const paneOf = async (ref: string): Promise<string> => {
     const match = /^p_(\d+)$/.exec(ref)
     if (!match) return ref
     const snapshot = (await control("orient")) as Snapshot
-    const info = snapshot.instances.find((candidate) => candidate.id === Number(match[1]))
-    if (!info) throw new Error(`no instance ${match[1]}`)
+    const info = snapshot.agents.find((candidate) => candidate.id === Number(match[1]))
+    if (!info) throw new Error(`no agent ${match[1]}`)
     return info.pane_id
   }
   /** Report to the agent socket exactly as fx does: one line, one reply. */
@@ -76,7 +76,7 @@ async function harness(name: string) {
     await setup.renderOnce()
   }
   const launch = (params: Record<string, unknown> = {}) =>
-    control("launch", params) as Promise<{ instance: { id: number } }>
+    control("launch", params) as Promise<{ agent: { id: number } }>
   return { setup, multiplexer, control, close, report, session, launch, home, code }
 }
 
@@ -122,8 +122,8 @@ test("orients an empty fmx", async () => {
     expect(snapshot.fmx).toMatchObject({ pid: process.pid, socket: CONTROL_PATH, cols: 100, rows: 30 })
     expect(snapshot.you).toBeNull()
     expect(snapshot.active).toBeNull()
-    expect(snapshot.instances).toEqual([])
-    expect(snapshot.sidebar).toMatchObject({ visible: false, rows: [] })
+    expect(snapshot.agents).toEqual([])
+    expect(snapshot.tray).toMatchObject({ visible: false, rows: [] })
     expect(snapshot.surface).toEqual({ kind: "none" })
   } finally {
     await h.close()
@@ -134,25 +134,25 @@ test("launches in the background once something is on screen, and says where the
   const h = await harness("launch")
   try {
     const first = await h.launch()
-    expect(first.instance.id).toBe(1)
+    expect(first.agent.id).toBe(1)
     await h.setup.renderOnce()
     expect(terminal(h.setup, 1).visible).toBe(true)
 
     const second = await h.launch({ caller: 1, directory: join(h.code, "beta"), prompt: "write tests" })
     await h.setup.renderOnce()
-    expect(second.instance.id).toBe(2)
+    expect(second.agent.id).toBe(2)
     expect(terminal(h.setup, 2).visible).toBe(false)
     expect(terminal(h.setup, 1).visible).toBe(true)
 
     const snapshot = (await h.control("orient", { caller: 1 })) as Snapshot
     expect(snapshot.active).toBe(1)
     expect(snapshot.you).toMatchObject({ id: 1, active: true, cwd: join(h.code, "alpha"), project: "alpha" })
-    expect(snapshot.instances.map((instance) => [instance.id, instance.project, instance.awaiting_work])).toEqual([
+    expect(snapshot.agents.map((agent) => [agent.id, agent.project, agent.awaiting_work])).toEqual([
       [1, "alpha", false],
       [2, "beta", true],
     ])
-    expect(snapshot.sidebar.visible).toBe(true)
-    expect(snapshot.sidebar.rows.map((row) => [row.kind, row.depth, row.text, row.instance])).toEqual([
+    expect(snapshot.tray.visible).toBe(true)
+    expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
       ["project", 0, "alpha", null],
       ["branch", 1, "(untracked)", null],
       ["agent", 2, "· —", 1],
@@ -163,7 +163,7 @@ test("launches in the background once something is on screen, and says where the
 
     const focused = await h.launch({ focus: true })
     await h.setup.renderOnce()
-    expect(focused.instance.id).toBe(3)
+    expect(focused.agent.id).toBe(3)
     expect(terminal(h.setup, 3).visible).toBe(true)
     expect(terminal(h.setup, 1).visible).toBe(false)
   } finally {
@@ -171,7 +171,7 @@ test("launches in the background once something is on screen, and says where the
   }
 })
 
-test("includes filesystem subagents in the sidebar orientation", async () => {
+test("includes filesystem subagents in the tray orientation", async () => {
   const h = await harness("subagents")
   const parent = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
   const child = "1787368609310-1787368609310138000-3e38dc7a8d7c16c2"
@@ -196,16 +196,16 @@ test("includes filesystem subagents in the sidebar orientation", async () => {
 
     const snapshot = await waitForSnapshot(
       () => h.control("orient") as Promise<Snapshot>,
-      (candidate) => candidate.sidebar.rows.some((row) => row.kind === "subagent"),
+      (candidate) => candidate.tray.rows.some((row) => row.kind === "subagent"),
     )
-    expect(snapshot.sidebar.rows.map((row) => [row.kind, row.depth, row.text, row.instance])).toEqual([
+    expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
       ["project", 0, "alpha", null],
       ["branch", 1, "(untracked)", null],
       ["agent", 2, "· ba9a9f7e16e5ef8c", 1],
       ["subagent", 3, "✓ test-subagent", null],
     ])
     // The model carries them too, so an agent need not parse the drawing.
-    expect(snapshot.instances[0]?.subagents).toEqual([
+    expect(snapshot.agents[0]?.subagents).toEqual([
       { session_id: child, label: "test-subagent", state: "done", attention: null, children: [] },
     ])
     expect(((await h.control("orient", { caller: 1 })) as Snapshot).you?.subagents).toHaveLength(1)
@@ -225,7 +225,7 @@ test("refuses a launch it cannot honour without drawing anything", async () => {
     expect(worktree.message).toContain("not a git repository")
     const snapshot = (await h.control("orient")) as Snapshot
     expect(snapshot.surface).toEqual({ kind: "none" })
-    expect(snapshot.instances).toEqual([])
+    expect(snapshot.agents).toEqual([])
   } finally {
     await h.close()
   }
@@ -240,16 +240,16 @@ test("focuses by position, id, and name, and refuses while something is open", a
     await h.setup.renderOnce()
     expect(((await h.control("orient")) as Snapshot).active).toBe(1)
 
-    expect(await h.control("focus", { target: "next" })).toMatchObject({ instance: { id: 2 } })
-    expect(await h.control("focus", { target: "previous" })).toMatchObject({ instance: { id: 1 } })
-    expect(await h.control("focus", { target: "previous" })).toMatchObject({ instance: { id: 3 } })
-    expect(await h.control("focus", { target: "2", caller: 1 })).toMatchObject({ instance: { id: 2 } })
-    expect(await h.control("focus", { target: "current", caller: 1 })).toMatchObject({ instance: { id: 1 } })
+    expect(await h.control("focus", { target: "next" })).toMatchObject({ agent: { id: 2 } })
+    expect(await h.control("focus", { target: "previous" })).toMatchObject({ agent: { id: 1 } })
+    expect(await h.control("focus", { target: "previous" })).toMatchObject({ agent: { id: 3 } })
+    expect(await h.control("focus", { target: "2", caller: 1 })).toMatchObject({ agent: { id: 2 } })
+    expect(await h.control("focus", { target: "current", caller: 1 })).toMatchObject({ agent: { id: 1 } })
     await h.setup.renderOnce()
     expect(terminal(h.setup, 1).visible).toBe(true)
 
     await h.session("p_3", "sess_cafe0123")
-    expect(await h.control("focus", { target: "sess_ca" })).toMatchObject({ instance: { id: 3 } })
+    expect(await h.control("focus", { target: "sess_ca" })).toMatchObject({ agent: { id: 3 } })
     expect((await failure(h.control("focus", { target: "nobody" }))).code).toBe("not_found")
     expect((await failure(h.control("focus", { target: "9" }))).code).toBe("not_found")
     expect((await failure(h.control("focus", { target: "current" }))).code).toBe("invalid_params")
@@ -328,16 +328,16 @@ test("opens a draft prefilled, lets it be read, changed, and cancelled", async (
   }
 })
 
-test("submits a draft and answers with the instance it started; escape resolves a waiter", async () => {
+test("submits a draft and answers with the agent it started; escape resolves a waiter", async () => {
   const h = await harness("submit")
   try {
     const opened = (await h.control("draft.open", { fields: { prompt: "go" } })) as DraftInfo
     const submitted = (await h.control("draft.submit", { draft: opened.draft })) as DraftInfo
     expect(submitted.status).toBe("submitted")
-    expect(submitted.outcome).toEqual({ instance: 1 })
+    expect(submitted.outcome).toEqual({ agent: 1 })
     await h.setup.renderOnce()
     expect(terminal(h.setup, 1).visible).toBe(true)
-    expect(((await h.control("orient")) as Snapshot).instances[0]?.awaiting_work).toBe(true)
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(true)
 
     const second = (await h.control("draft.open")) as DraftInfo
     expect(second.draft).toBe("d2")
@@ -360,11 +360,11 @@ test("submits a draft and answers with the instance it started; escape resolves 
   }
 })
 
-test("waits for an instance through the prompt it was launched with", async () => {
+test("waits for an agent through the prompt it was launched with", async () => {
   const h = await harness("wait")
   try {
     await h.launch({ prompt: "do the work" })
-    const waiting = h.control("instance.wait", { target: "1" }) as Promise<{ state: string }>
+    const waiting = h.control("agent.wait", { target: "1" }) as Promise<{ state: string }>
     let settled = false
     void waiting.then(() => (settled = true))
 
@@ -373,55 +373,55 @@ test("waits for an instance through the prompt it was launched with", async () =
     await Bun.sleep(10)
     expect(settled).toBe(false)
     await h.report("p_1", "working")
-    expect(((await h.control("orient")) as Snapshot).instances[0]?.awaiting_work).toBe(false)
-    // Instance 1 is on screen, so its finish is seen as it happens: idle, not done.
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
+    // Agent 1 is on screen, so its finish is seen as it happens: idle, not done.
     await h.report("p_1", "idle")
     expect((await waiting).state).toBe("idle")
-    expect(await h.control("instance.wait", { target: "1", states: ["idle"] })).toMatchObject({ state: "idle" })
+    expect(await h.control("agent.wait", { target: "1", states: ["idle"] })).toMatchObject({ state: "idle" })
 
     // A finish nobody was looking at is done until someone looks.
     await h.launch({ prompt: "more work" })
-    const background = h.control("instance.wait", { target: "2" }) as Promise<{ state: string }>
+    const background = h.control("agent.wait", { target: "2" }) as Promise<{ state: string }>
     await h.report("p_2", "working")
     await h.report("p_2", "idle")
     expect((await background).state).toBe("done")
     await h.control("focus", { target: "2" })
-    expect(await h.control("instance.wait", { target: "2" })).toMatchObject({ state: "idle" })
+    expect(await h.control("agent.wait", { target: "2" })).toMatchObject({ state: "idle" })
     await h.control("focus", { target: "1" })
-    const timedOut = await failure(h.control("instance.wait", { target: "1", states: ["blocked"], timeout_ms: 20 }))
+    const timedOut = await failure(h.control("agent.wait", { target: "1", states: ["blocked"], timeout_ms: 20 }))
     expect(timedOut.code).toBe("timeout")
-    expect((await failure(h.control("instance.wait", { target: "1", states: ["napping"] }))).code).toBe(
+    expect((await failure(h.control("agent.wait", { target: "1", states: ["napping"] }))).code).toBe(
       "invalid_params",
     )
 
     await h.report("p_1", "blocked", ',"custom_status":"question"')
-    expect(await h.control("instance.wait", { target: "1" })).toMatchObject({
+    expect(await h.control("agent.wait", { target: "1" })).toMatchObject({
       state: "blocked",
-      instance: { attention: "question" },
+      agent: { attention: "question" },
     })
   } finally {
     await h.close()
   }
 })
 
-test("sends text into a running instance and holds a wait until it is picked up", async () => {
+test("sends text into a running agent and holds a wait until it is picked up", async () => {
   const h = await harness("send")
   try {
     await h.launch({ prompt: "first" })
-    expect((await failure(h.control("instance.send", { target: "1", text: "second" }))).code).toBe("busy")
+    expect((await failure(h.control("agent.send", { target: "1", text: "second" }))).code).toBe("busy")
     await h.report("p_1", "idle")
     await Bun.sleep(450)
     await h.report("p_1", "working")
     await h.report("p_1", "idle")
 
-    expect(await h.control("instance.send", { target: "1", text: "second" })).toMatchObject({
-      instance: { id: 1, awaiting_work: true },
+    expect(await h.control("agent.send", { target: "1", text: "second" })).toMatchObject({
+      agent: { id: 1, awaiting_work: true },
     })
-    const waiting = h.control("instance.wait", { target: "1", timeout_ms: 2000 }) as Promise<{ state: string }>
+    const waiting = h.control("agent.wait", { target: "1", timeout_ms: 2000 }) as Promise<{ state: string }>
     await h.report("p_1", "working")
     await h.report("p_1", "idle")
     expect((await waiting).state).toBe("idle")
-    expect((await failure(h.control("instance.send", { target: "1", text: "  " }))).code).toBe("invalid_params")
+    expect((await failure(h.control("agent.send", { target: "1", text: "  " }))).code).toBe("invalid_params")
   } finally {
     await h.close()
   }
@@ -456,7 +456,7 @@ test("offers the catalog the pickers draw from, and a draft's choices follow its
   }
 })
 
-test("lists the keys with their command equivalents, and resizes the sidebar", async () => {
+test("lists the keys with their command equivalents, and resizes the tray", async () => {
   const h = await harness("keys")
   try {
     expect(await h.control("keys")).toEqual({
@@ -468,20 +468,20 @@ test("lists the keys with their command equivalents, and resizes the sidebar", a
         launch: { keys: ["prefix+l"], command: "fmx control launch --editable" },
         previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
         next_tab: { keys: ["prefix+n"], command: "fmx control focus next" },
-        toggle_sidebar: { keys: ["prefix+b"], command: "fmx control sidebar --toggle" },
+        toggle_tray: { keys: ["prefix+b"], command: "fmx control tray --toggle" },
         toggle_panel: { keys: ["prefix+r"], command: "fmx control panel --toggle" },
         focus_panel: { keys: ["prefix+o"], command: "fmx control panel --focus toggle" },
         previous_panel: { keys: ["prefix+["], command: "fmx control panel --previous" },
         next_panel: { keys: ["prefix+]"], command: "fmx control panel --next" },
       },
     })
-    expect(await h.control("sidebar", { hidden: true })).toEqual({ visible: false, hidden: true, width: 26 })
+    expect(await h.control("tray", { hidden: true })).toEqual({ visible: false, hidden: true, width: 26 })
     await h.launch()
-    expect(await h.control("sidebar", { width: 30 })).toEqual({ visible: false, hidden: true, width: 30 })
-    expect(await h.control("sidebar", { toggle: true })).toEqual({ visible: true, hidden: false, width: 30 })
-    expect(await h.control("sidebar", { width: 400 })).toEqual({ visible: true, hidden: false, width: 33 })
-    expect(await h.control("sidebar", { hidden: false })).toEqual({ visible: true, hidden: false, width: 33 })
-    expect(((await h.control("orient")) as Snapshot).sidebar).toMatchObject({ visible: true, hidden: false })
+    expect(await h.control("tray", { width: 30 })).toEqual({ visible: false, hidden: true, width: 30 })
+    expect(await h.control("tray", { toggle: true })).toEqual({ visible: true, hidden: false, width: 30 })
+    expect(await h.control("tray", { width: 400 })).toEqual({ visible: true, hidden: false, width: 33 })
+    expect(await h.control("tray", { hidden: false })).toEqual({ visible: true, hidden: false, width: 33 })
+    expect(((await h.control("orient")) as Snapshot).tray).toMatchObject({ visible: true, hidden: false })
   } finally {
     await h.close()
   }

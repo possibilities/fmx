@@ -14,7 +14,7 @@
  */
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
-import { loadManifest } from "../src/instance-manifest.ts"
+import { loadManifest } from "../src/agent-manifest.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { homeIdFor } from "../src/zmx-environment.ts"
 
@@ -69,9 +69,9 @@ const visibleText = (output: string) =>
 const banners = (output: string) => visibleText(output).match(/fake\s+fx\s+ready/g)?.length ?? 0
 const showManifest = async () => {
   const manifest = await loadManifest(manifestPath, home)
-  if (manifest.instances.length === 0) note("Manifest: no Instances")
-  for (const entry of manifest.instances) {
-    note(`Manifest: Instance ${entry.displayId} ${entry.phase}, session ${entry.zmxName}`)
+  if (manifest.agents.length === 0) note("Manifest: no Agents")
+  for (const entry of manifest.agents) {
+    note(`Manifest: Agent ${entry.displayId} ${entry.phase}, session ${entry.zmxName}`)
   }
 }
 const showCompanion = async () => {
@@ -117,7 +117,7 @@ try {
   await until(async () => (await lifecycle()).includes("ready 1"), "agent 1")
   first.key(CTRL("b"), "c".charCodeAt(0))
   await until(async () => (await lifecycle()).includes("ready 2"), "agent 2")
-  await until(async () => (await loadManifest(manifestPath, home)).instances.every((e) => e.phase === "running"), "both claims acknowledged")
+  await until(async () => (await loadManifest(manifestPath, home)).agents.every((e) => e.phase === "running"), "both claims acknowledged")
   await showManifest()
   await showCompanion()
 
@@ -150,9 +150,9 @@ try {
   await step("ctrl-c ctrl-c inside agent 1: its own exit removes it, and only it")
   second.key(CTRL("c"), CTRL("c"))
   await until(async () => (await lifecycle()).includes("graceful 1"), "agent 1 to exit")
-  await until(async () => (await loadManifest(manifestPath, home)).instances.length === 1, "its claim to go")
+  await until(async () => (await loadManifest(manifestPath, home)).agents.length === 1, "its claim to go")
   await showManifest()
-  const remaining = (await loadManifest(manifestPath, home)).instances[0]!.zmxName
+  const remaining = (await loadManifest(manifestPath, home)).agents[0]!.zmxName
   await until(async () => (await companion.list()).every((s) => s.name === remaining), "its record to be consumed", 8000)
   await showCompanion()
 

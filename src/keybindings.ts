@@ -10,7 +10,7 @@ type KeysConfig = {
   launch: BindingConfig
   previous_tab: BindingConfig
   next_tab: BindingConfig
-  toggle_sidebar: BindingConfig
+  toggle_tray: BindingConfig
   toggle_panel: BindingConfig
   focus_panel: BindingConfig
   previous_panel: BindingConfig
@@ -25,7 +25,7 @@ const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   launch: "prefix+l",
   previous_tab: "prefix+p",
   next_tab: "prefix+n",
-  toggle_sidebar: "prefix+b",
+  toggle_tray: "prefix+b",
   toggle_panel: "prefix+r",
   focus_panel: "prefix+o",
   previous_panel: "prefix+[",
@@ -40,7 +40,7 @@ const KEY_CONFIG_FIELDS = [
   "launch",
   "previous_tab",
   "next_tab",
-  "toggle_sidebar",
+  "toggle_tray",
   "toggle_panel",
   "focus_panel",
   "previous_panel",
@@ -77,7 +77,7 @@ export type Keybindings = {
   launch: ResolvedBinding[]
   previous_tab: ResolvedBinding[]
   next_tab: ResolvedBinding[]
-  toggle_sidebar: ResolvedBinding[]
+  toggle_tray: ResolvedBinding[]
   toggle_panel: ResolvedBinding[]
   focus_panel: ResolvedBinding[]
   previous_panel: ResolvedBinding[]
@@ -194,7 +194,7 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
     launch: [],
     previous_tab: [],
     next_tab: [],
-    toggle_sidebar: [],
+    toggle_tray: [],
     toggle_panel: [],
     focus_panel: [],
     previous_panel: [],

@@ -30,21 +30,21 @@
   open, so a key let through can reach nothing else.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
-- `keys.detach` (default `prefix+d`) closes fmx, never an Instance: fx exits
-  govern the Instance lifecycle. An Instance disappears when its fx exits;
+- `keys.detach` (default `prefix+d`) closes fmx, never an Agent: fx exits
+  govern the Agent lifecycle. An Agent disappears when its fx exits;
   the last exit leaves the empty state, where ctrl-c twice also closes fmx.
   An explicit detach, a signal, a crash, or the terminal going away sends
   nothing to fx: the Companion keeps it, and the next fmx for the Home
   attaches to it. Do not bring back the Ctrl-C/TERM/KILL escalation `stop()`
   used to do; ending an fx is the human's act, from inside it, or
   `fmx-zmx kill` by hand.
-- `FxInstance` renders; it never owns a process. Everything that carries fx
-  goes through `InstanceTransport` (`src/instance-transport.ts`), and the
+- `FxAgent` renders; it never owns a process. Everything that carries fx
+  goes through `AgentTransport` (`src/agent-transport.ts`), and the
   one implementation in `src/` is the Companion's. The Bun PTY behind the
   same seam lives in `tests/fixtures/pty-transport.ts` so the multiplexer
   suites run without a Companion — keep it a fixture; a second production
   transport is what the seam exists to prevent.
-- Creation order is fixed: `manifest.claim` (the Instance is on screen from
+- Creation order is fixed: `manifest.claim` (the Agent is on screen from
   here, its claim queued to disk), `await saved`, then the transport's
   `start`, then `markRunning`, then `adopt`. The claim must be on disk
   before the Companion hears the name, and the Manifest must say `running`
@@ -58,16 +58,16 @@
   not pair with a response from the next.
 - Each Manifest entry checkpoints the last Agent-socket state, attention, and
   whether that exact state was seen. Seed it synchronously as the restored row
-  is added; the first visible Instance becomes seen, inactive `done` remains
+  is added; the first visible Agent becomes seen, inactive `done` remains
   done, and a newer fx frame supersedes it. Subagent state is not duplicated:
   refresh it from fx's control records and session locks on restore.
-- A lost transport is not an exit. `recoverInstance` asks the Companion: a
+- A lost transport is not an exit. `recoverAgent` asks the Companion: a
   live session is re-attached (and replays onto the reset), an ended one is
   removed exactly as an Exit would remove it, and one that cannot be reached
   after a few tries leaves the screen but stays in the Manifest for the next
-  start's join. Only `InstanceEndedError`, an `Exit` frame, or a `start` that
-  rejects with fx never started may remove an Instance's Manifest entry; a
-  `start` whose fx is running but unreachable (`InstanceUnreachableError`)
+  start's join. Only `AgentEndedError`, an `Exit` frame, or a `start` that
+  rejects with fx never started may remove an Agent's Manifest entry; a
+  `start` whose fx is running but unreachable (`AgentUnreachableError`)
   is marked `running` and recovered like a lost transport.
 - `adopt` re-sends the terminal's current size. The transport was opened at
   whatever size the terminal had when it was asked for — 80×24 before the
@@ -75,11 +75,11 @@
   transport to tell; without the re-send fx draws at the wrong size until
   the next host resize. The same ordering is why `armPrompt` waits for the
   transport when fx reports first: `create` returns with fx already up.
-- `state.json` remembers the selected agent by its stable `instanceId`, not its
+- `state.json` remembers the selected agent by its stable `agentId`, not its
   display number. Startup prepares every survivor synchronously in display-id
-  order, selects that saved Instance before its first await, then attaches the
-  selected transport first. Do not restore by adding the selected Instance out
-  of order: sidebar order is creation order. State writes are serialized and
+  order, selects that saved Agent before its first await, then attaches the
+  selected transport first. Do not restore by adding the selected Agent out
+  of order: tray order is creation order. State writes are serialized and
   awaited during cleanup so a selection immediately followed by detach lands.
 - Palette detection can take seconds in a terminal that never answers, and a
   renderer destroyed under it never settles the query; `index.ts` races it
@@ -95,7 +95,7 @@
   Session names use indexed ANSI gray rather than a guessed RGB fallback, so
   they must not be restyled when that late palette answer arrives.
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
-  non-selectable: rebuilding the list to switch while OpenTUI holds a sidebar
+  non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.
 - The agent socket speaks the protocol fx already speaks unprompted, which is
   Herdr's. That is why `src/fx-environment.ts` sets `HERDR_SOCKET_PATH` and
@@ -103,7 +103,7 @@
   protocol constants, not a naming choice. They are also the one place the name
   legitimately appears in code. Inherited `HERDR_*` variables are cleared first:
   running fmx inside a Herdr pane would otherwise have fx report this
-  instance's lifecycle against a stranger's pane.
+  agent's lifecycle against a stranger's pane.
 - fx replies-or-blocks: it opens a connection per message and waits up to 250ms
   for one newline-terminated reply. `src/agent-socket.ts` writes the reply
   before it does anything else with the request; keep it that way, because any
@@ -117,7 +117,7 @@
   the fx binary fmx already resolved answers on whatever provider the human
   is signed in to and keeps every credential out of fmx.
 - fx takes per-process launch overrides from `FX_MODEL` and `FX_EFFORT`; the
-  launch dialog passes both to the one instance it starts. fx rejects both
+  launch dialog passes both to the one agent it starts. fx rejects both
   `effort` and `codex_model` from a workspace's own `.fx.json` as user-only
   settings. Slug naming still keeps its effort in the fmx-owned inference
   workspace through `workspaces["<abs path>"]` in the human's
@@ -127,14 +127,14 @@
   `project_roots` ships empty: a guess at another provider's catalog is a
   model id that does not exist there. A provider with no default names at
   whatever model fx is configured for, which always works.
-- Naming is fastest when fmx already holds the prompt: an instance launched
+- Naming is fastest when fmx already holds the prompt: an agent launched
   with one names itself from what fmx typed, without waiting for fx to write
   it down. For a prompt typed by hand there is no such shortcut — fx records
   it 2 to 11 seconds after submit — so the session directory is watched and the
   write itself wakes naming; the sweep behind that watch is a safety net for a
   filesystem that drops events, not the thing that should ever notice.
   `~/.fx/history.jsonl` does hold every prompt at submit time, but it
-  carries a workspace and a timestamp and no session id: two instances in one
+  carries a workspace and a timestamp and no session id: two agents in one
   directory could take each other's name, and a wrong name is worse than a
   slow one.
 - fx never reports a prompt over the agent socket, only a session id. The
@@ -147,23 +147,23 @@
   second protocol on the agent socket. The agent socket must reply before it
   acts (see above), and a command that needs its result cannot. The two share
   nothing but the `LineAssembler`. Keep `FMX_SOCKET_PATH` beside
-  `FMX_INSTANCE_ID` in `src/fx-environment.ts`: the client reads both, and
+  `FMX_AGENT_ID` in `src/fx-environment.ts`: the client reads both, and
   `current` as a target is meaningless without the id. The path is the agent
   socket's with `.ctl` for `.sock` — per Home, not per pid — so the
   `FMX_SOCKET_PATH` an fx was given outlives the fmx that gave it; it is bound
   under the agent socket's singleton, which is what makes unlinking a stale
-  one safe. `fmx control` from outside any instance finds a live fmx by
+  one safe. `fmx control` from outside any agent finds a live fmx by
   probing the sockets, not by pid.
 - Every `fmx control <command>` goes through `Multiplexer.handleControl`, and every
   write there takes the path the keys take (`showLaunchDialog`, `switchTo`,
-  `applySidebarWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
+  `applyTrayWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
   command that does something a hand cannot; add the key first.
-- A launch from the CLI is background by default: `createInstance` only
+- A launch from the CLI is background by default: `createAgent` only
   switches when asked or when nothing is on screen. `switchTo` never focuses a
   terminal while the launch dialog or a modal is up — those hand focus back
   when they close — which is what lets a background launch land under an open
   draft without stealing its keys.
-- `awaiting_work` is why `instance wait` is trustworthy right after `launch`
+- `awaiting_work` is why `agent wait` is trustworthy right after `launch`
   or `send`: fx reports idle at startup before the pasted prompt reaches it.
   The flag is set when a prompt is queued and cleared by the first `working`
   frame; clear it nowhere else.
@@ -182,7 +182,7 @@
 - The Manifest is written before the Companion is asked to create (`creating`),
   and marked `running` on the acknowledgement, so a crash anywhere in between
   leaves something for the next start's join to resolve. The join
-  (`src/instance-reconcile.ts`) is a pure function over the Manifest and
+  (`src/agent-reconcile.ts`) is a pure function over the Manifest and
   `list --json`; keep the I/O out of it so every crash-window combination
   stays a table test.
 - A Companion `create` that times out has not failed: the session may be
@@ -195,12 +195,12 @@
   one state left for the next start.
 - `list --json` returning anything but a JSON array is a `CompanionError`,
   never an empty Companion: a join that believed an empty answer would drop
-  every Instance. `reconcileAtStartup` reports the failure and changes
+  every Agent. `reconcileAtStartup` reports the failure and changes
   nothing.
 - The Companion reports a session's `cwd` in OSC 7 form (`file://<host><path>`)
   as the daemon's realpath, and its `cmd` shell-quoted and cut at 256 bytes;
   `zmx-command.ts` decodes both, but `cmd` is for display — an adopted
-  Instance takes its executable from it and records `fxArgs: null`. A session that is not `live` has no readable labels, so
+  Agent takes its executable from it and records `fxArgs: null`. A session that is not `live` has no readable labels, so
   `list --where` never shows it — enumerate unfiltered when deciding
   ownership.
 - The Companion's directory is under `/tmp/fmx-<uid>/zmx`, not the config
@@ -239,7 +239,7 @@
   is refused by them, and the new `fmx-zmx` CLI cannot reach them either —
   every running agent on the machine becomes unreachable at once. Before
   the first bump, build one of these and say which in an ADR: **drain** —
-  the Manifest records each Instance's Companion build, a start that finds
+  the Manifest records each Agent's Companion build, a start that finds
   survivors on an older build leaves them on screen as unreachable with a
   message naming the build, and the installer keeps the previous
   `fmx-zmx` beside the new one as `fmx-zmx-<build>` so the human can attach

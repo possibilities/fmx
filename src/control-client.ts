@@ -75,7 +75,7 @@ export async function runCommand(
     }
   }
 
-  const caller = callerInstance(environment.env)
+  const caller = callerAgent(environment.env)
   const plan = await planRequests(command, environment, caller)
   let result: unknown = null
   for (const step of plan) {
@@ -103,14 +103,14 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
       return [{ method: "orient", params: withCaller({}), timeoutMs: REPLY_TIMEOUT_MS }]
     case "detach":
       return [{ method: "detach", params: {}, timeoutMs: REPLY_TIMEOUT_MS }]
-    case "instance":
+    case "agent":
       switch (command.verb) {
         case "list":
-          return [{ method: "instance.list", params: {}, timeoutMs: REPLY_TIMEOUT_MS }]
+          return [{ method: "agent.list", params: {}, timeoutMs: REPLY_TIMEOUT_MS }]
         case "wait":
           return [
             {
-              method: "instance.wait",
+              method: "agent.wait",
               params: withCaller({
                 target: command.target,
                 ...(command.states ? { states: command.states } : {}),
@@ -122,7 +122,7 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
         case "send":
           return [
             {
-              method: "instance.send",
+              method: "agent.send",
               params: withCaller({ target: command.target, text: await readText(command.text, environment) }),
               timeoutMs: REPLY_TIMEOUT_MS,
             },
@@ -195,10 +195,10 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
       }
     case "focus":
       return [{ method: "focus", params: withCaller({ target: command.target }), timeoutMs: REPLY_TIMEOUT_MS }]
-    case "sidebar":
+    case "tray":
       return [
         {
-          method: "sidebar",
+          method: "tray",
           params: {
             ...(command.width === undefined ? {} : { width: command.width }),
             ...(command.hidden === undefined ? {} : { hidden: command.hidden }),
@@ -255,8 +255,8 @@ function waitTimeout(requested: number | undefined): number | null {
   return requested === undefined ? null : requested + WAIT_TIMEOUT_SLACK_MS
 }
 
-function callerInstance(env: NodeJS.ProcessEnv): number | null {
-  const raw = env.FMX_INSTANCE_ID
+function callerAgent(env: NodeJS.ProcessEnv): number | null {
+  const raw = env.FMX_AGENT_ID
   if (raw === undefined || !/^\d+$/u.test(raw)) return null
   return Number(raw)
 }

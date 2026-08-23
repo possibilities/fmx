@@ -3,13 +3,13 @@ import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 
 test("uses the configured prefix and renders configured bindings", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const { keybindings } = resolveKeybindings({ prefix: "ctrl+space" })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: "fx",
     cwd: process.cwd(),
     keybindings,
@@ -42,20 +42,20 @@ test("uses the configured prefix and renders configured bindings", async () => {
     expect(helpModal.visible).toBe(true)
     const frame = setup.captureCharFrame()
     for (const line of [
-      "┌─ keys ──────────────────────────┐",
-      "│  ctrl+space  prefix mode        │",
-      "│  prefix+?    keybinds           │",
-      "│  prefix+d    detach fmx         │",
-      "│  prefix+c    new agent          │",
-      "│  prefix+l    launch agent       │",
-      "│  prefix+p    prev agent         │",
-      "│  prefix+n    next agent         │",
-      "│  prefix+b    toggle sidebar     │",
-      "│  prefix+r    toggle Tool panel  │",
-      "│  prefix+o    focus Tool panel   │",
-      "│  prefix+[    previous tool      │",
-      "│  prefix+]    next tool          │",
-      "└─────────────────────────────────┘",
+"┌─ keys ──────────────────────┐",
+      "│  ctrl+space  prefix mode    │",
+      "│  prefix+?    keybinds       │",
+      "│  prefix+d    detach fmx     │",
+      "│  prefix+c    new agent      │",
+      "│  prefix+l    launch agent   │",
+      "│  prefix+p    prev agent     │",
+      "│  prefix+n    next agent     │",
+      "│  prefix+b    toggle tray    │",
+      "│  prefix+r    toggle tools   │",
+      "│  prefix+o    focus tools    │",
+      "│  prefix+[    previous tool  │",
+      "│  prefix+]    next tool      │",
+      "└─────────────────────────────┘",
     ]) {
       expect(frame).toContain(line)
     }

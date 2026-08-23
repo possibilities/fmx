@@ -94,7 +94,7 @@ export class FmxTerminalRenderable extends EmbeddedTerminalRenderable {
  * pass through without being re-encoded by the embedded terminal emulator. */
 export class FxTerminalRenderable extends FmxTerminalRenderable {
   // A fresh emulator reports a visible cursor at the origin, and fmx focuses a
-  // new Instance before fx has drawn anything. Control-only startup output can
+  // new Agent before fx has drawn anything. Control-only startup output can
   // leave that provisional cursor untouched, so conceal it until fx places it.
   private cursorPositionEstablished = false
 

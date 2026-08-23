@@ -15,8 +15,8 @@ import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
 import { debugPanelRequested } from "./debug-panel.ts"
 import { doctor, resolveFx } from "./doctor.ts"
-import { InstanceManifest, type ManifestEntry, manifestPath } from "./instance-manifest.ts"
-import { reconcileInstances, type ReconcileOutcome } from "./instance-reconcile.ts"
+import { AgentManifest, type ManifestEntry, manifestPath } from "./agent-manifest.ts"
+import { reconcileAgents, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 import { expandTilde } from "./projects.ts"
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
   let controlSocket: ControlSocket | null = null
   let transport: CompanionTransportFactory | null = null
   let panelSessions: CompanionPanelSessions | null = null
-  let manifest: InstanceManifest | null = null
+  let manifest: AgentManifest | null = null
 
   try {
     // The socket is the Home's singleton; only its holder may touch the
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
       process.stderr.write(`fmx: ${message}\n`)
     }
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
-    manifest = await InstanceManifest.open(manifestPath(), home)
+    manifest = await AgentManifest.open(manifestPath(), home)
     const survivors = await reconcileAtStartup(manifest, companion)
     transport = new CompanionTransportFactory(companion, home)
     const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
@@ -138,12 +138,12 @@ async function main(): Promise<void> {
       loadedConfig.panels,
     )
     try {
-      const outcome = await panelSessions.reconcile(manifest.entries.map((entry) => entry.instanceId))
+      const outcome = await panelSessions.reconcile(manifest.entries.map((entry) => entry.agentId))
       if (outcome.unresolved.length > 0) {
-        process.stderr.write(`fmx: ${outcome.unresolved.length} Tool panel session(s) unreachable; left for the next start\n`)
+        process.stderr.write(`fmx: ${outcome.unresolved.length} tools panel session(s) unreachable; left for the next start\n`)
       }
     } catch (error) {
-      process.stderr.write(`fmx: could not reconcile Tool panel sessions: ${errorMessage(error)}\n`)
+      process.stderr.write(`fmx: could not reconcile tools panel sessions: ${errorMessage(error)}\n`)
     }
     // Constructing the renderer starts its input parser but does not expose the
     // alternate screen. That gives a responsive host one frame to answer the
@@ -194,23 +194,23 @@ async function main(): Promise<void> {
       worktreeRoot: loadedConfig.worktreeRoot,
       slug: loadedConfig.slug,
       controlSocketPath,
-      initialSidebarWidth: persistedState.sidebarWidth,
-      initialSidebarHidden: persistedState.sidebarHidden,
-      initialActiveInstanceId: persistedState.activeInstanceId,
+      initialTrayWidth: persistedState.trayWidth,
+      initialTrayHidden: persistedState.trayHidden,
+      initialActiveAgentId: persistedState.activeAgentId,
       initialProjectLaunches: persistedState.projectLaunches,
       onProjectLaunch: (launches) => {
         persistedState.projectLaunches = launches
         persistState()
       },
-      onSidebarWidthChange: (width) => {
-        persistedState.sidebarWidth = width
+      onTrayWidthChange: (width) => {
+        persistedState.trayWidth = width
         // State persistence is an enhancement; a failed write must never
         // disturb the running session.
         persistState()
       },
-      onSidebarHiddenChange: (hidden) => {
-        if (hidden) persistedState.sidebarHidden = true
-        else delete persistedState.sidebarHidden
+      onTrayHiddenChange: (hidden) => {
+        if (hidden) persistedState.trayHidden = true
+        else delete persistedState.trayHidden
         persistState()
       },
       initialPanelWidth: persistedState.panelWidth,
@@ -228,13 +228,13 @@ async function main(): Promise<void> {
         persistedState.activePanelId = id
         persistState()
       },
-      onActiveInstanceChange: (instanceId) => {
-        if (instanceId === null) {
-          if (persistedState.activeInstanceId === undefined) return
-          delete persistedState.activeInstanceId
+      onActiveAgentChange: (agentId) => {
+        if (agentId === null) {
+          if (persistedState.activeAgentId === undefined) return
+          delete persistedState.activeAgentId
         } else {
-          if (persistedState.activeInstanceId === instanceId) return
-          persistedState.activeInstanceId = instanceId
+          if (persistedState.activeAgentId === agentId) return
+          persistedState.activeAgentId = agentId
         }
         persistState()
       },
@@ -297,15 +297,15 @@ async function main(): Promise<void> {
  * drawn: adopt what a crash left unrecorded, drop what has ended, and hand
  * back what survived for the multiplexer to attach. A join that fails is
  * reported and changes nothing — a failed read must never be taken for an
- * empty Companion — and fmx starts with nothing attached, the Instances
+ * empty Companion — and fmx starts with nothing attached, the Agents
  * left where they are for the next start.
  */
-async function reconcileAtStartup(manifest: InstanceManifest, companion: CompanionCommand): Promise<ManifestEntry[]> {
+async function reconcileAtStartup(manifest: AgentManifest, companion: CompanionCommand): Promise<ManifestEntry[]> {
   let outcome: ReconcileOutcome
   try {
-    outcome = await reconcileInstances(manifest, companion)
+    outcome = await reconcileAgents(manifest, companion)
   } catch (error) {
-    process.stderr.write(`fmx: could not reconcile instances: ${errorMessage(error)}\n`)
+    process.stderr.write(`fmx: could not reconcile agents: ${errorMessage(error)}\n`)
     return []
   }
   if (outcome.cleared.length > 0) {

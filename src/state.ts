@@ -6,20 +6,20 @@ const STATE_PATH_ENV_VAR = "FMX_STATE_PATH"
 
 /** Machine-owned UI state, kept out of the hand-edited config.toml. */
 export type PersistedState = {
-  sidebarWidth?: number
+  trayWidth?: number
   /** Hidden by the toggle key; absent when shown, so an untouched state.json
    * stays as it was. */
-  sidebarHidden?: boolean
-  /** Absolute Tool panel width, kept while the panel is hidden. */
+  trayHidden?: boolean
+  /** Absolute tools panel width, kept while the panel is hidden. */
   panelWidth?: number
   /** Explicit visibility. Absence uses the feature's default. */
   panelVisible?: boolean
   /** Stable configured panel id selected most recently. */
   activePanelId?: string
-  /** Instances started per directory, which orders the project picker. */
+  /** Agents started per directory, which orders the project picker. */
   projectLaunches?: Record<string, number>
   /** Stable Manifest identity of the agent that most recently owned focus. */
-  activeInstanceId?: string
+  activeAgentId?: string
 }
 
 /** Everything fmx keeps for itself lives here, alongside the config file the
@@ -59,13 +59,13 @@ export async function loadState(path = statePath()): Promise<PersistedState> {
 
   const state: PersistedState = {}
   if (
-    typeof document.sidebarWidth === "number" &&
-    Number.isInteger(document.sidebarWidth) &&
-    document.sidebarWidth > 0
+    typeof document.trayWidth === "number" &&
+    Number.isInteger(document.trayWidth) &&
+    document.trayWidth > 0
   ) {
-    state.sidebarWidth = document.sidebarWidth
+    state.trayWidth = document.trayWidth
   }
-  if (document.sidebarHidden === true) state.sidebarHidden = true
+  if (document.trayHidden === true) state.trayHidden = true
   if (
     typeof document.panelWidth === "number" &&
     Number.isInteger(document.panelWidth) &&
@@ -82,8 +82,8 @@ export async function loadState(path = statePath()): Promise<PersistedState> {
   }
   const launches = readLaunches(document.projectLaunches)
   if (launches) state.projectLaunches = launches
-  if (typeof document.activeInstanceId === "string" && /^[0-9a-f]{32}$/u.test(document.activeInstanceId)) {
-    state.activeInstanceId = document.activeInstanceId
+  if (typeof document.activeAgentId === "string" && /^[0-9a-f]{32}$/u.test(document.activeAgentId)) {
+    state.activeAgentId = document.activeAgentId
   }
   return state
 }

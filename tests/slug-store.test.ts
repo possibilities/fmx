@@ -28,9 +28,9 @@ describe("slugDirectory", () => {
 describe("storeSlug", () => {
   test("round-trips a slug through the store, creating the directory", async () => {
     const path = join(await directory(), "nested")
-    expect(storeSlug(path, SESSION, "name-every-instance")).toBe("name-every-instance")
-    expect(readSlug(path, SESSION)).toBe("name-every-instance")
-    expect(await readFile(join(path, SESSION), "utf8")).toBe("name-every-instance\n")
+    expect(storeSlug(path, SESSION, "name-every-agent")).toBe("name-every-agent")
+    expect(readSlug(path, SESSION)).toBe("name-every-agent")
+    expect(await readFile(join(path, SESSION), "utf8")).toBe("name-every-agent\n")
   })
 
   test("suffixes a slug another session already answers to", async () => {
@@ -60,8 +60,8 @@ describe("storeSlug", () => {
 describe("resolveRef", () => {
   test("resolves a slug to its session, and a session id to itself", async () => {
     const path = await directory()
-    storeSlug(path, SESSION, "name-every-instance")
-    expect(resolveRef(path, "name-every-instance")).toBe(SESSION)
+    storeSlug(path, SESSION, "name-every-agent")
+    expect(resolveRef(path, "name-every-agent")).toBe(SESSION)
     expect(resolveRef(path, SESSION)).toBe(SESSION)
   })
 

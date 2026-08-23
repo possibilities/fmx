@@ -1,5 +1,5 @@
 /**
- * Decoding for the line-delimited JSON that fx instances report over fmx's
+ * Decoding for the line-delimited JSON that fx agents report over fmx's
  * agent socket. Pure: no I/O, no renderer, no process state.
  *
  * fx opens a fresh connection per message, writes one newline-terminated

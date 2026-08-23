@@ -17,7 +17,7 @@ const FAKE_FX = `#!/bin/sh
 printf '%s|%s\\n' "$FX_MODEL" "$PWD" >> "$FMX_TEST_RECORD"
 for argument in "$@"; do asked="$argument"; done
 printf '%s' "$asked" > "$FMX_TEST_ASKED"
-printf '{"output":"Name Every Instance","exit_code":0}\\n'
+printf '{"output":"Name Every Agent","exit_code":0}\\n'
 `
 
 type Harness = {
@@ -40,7 +40,7 @@ async function harness(options: { prompted?: boolean } = {}): Promise<Harness> {
     join(sessionDirectory, "events.jsonl"),
     `${JSON.stringify({
       kind: "recovery_checkpoint_set",
-      payload: { checkpoint: { user: { text: "name every instance from its first prompt" } } },
+      payload: { checkpoint: { user: { text: "name every agent from its first prompt" } } },
     })}\n`,
     "utf8",
   )
@@ -93,7 +93,7 @@ test("names a session from its first prompt, at the provider's small model", asy
   })
   try {
     namer.note(SESSION)
-    expect(await named(namer, SESSION)).toBe("name-every-instance")
+    expect(await named(namer, SESSION)).toBe("name-every-agent")
 
     const workspace = inferenceWorkspace(fixture.env, fixture.home)
     const [model, askedIn] = (await readFile(fixture.recordPath, "utf8")).trim().split("|")
@@ -106,7 +106,7 @@ test("names a session from its first prompt, at the provider's small model", asy
       join(fixture.env.XDG_CONFIG_HOME!, "fmx", "slugs", SESSION),
       "utf8",
     )
-    expect(stored.trim()).toBe("name-every-instance")
+    expect(stored.trim()).toBe("name-every-agent")
     const settings = JSON.parse(await readFile(fixture.settingsPath, "utf8"))
     expect(settings.effort).toBe("max")
     expect(settings.workspaces[workspace]).toEqual({ effort: "low" })
@@ -137,7 +137,7 @@ test("a stored slug is answered without paying for another completion", async ()
   })
   try {
     second.note(SESSION)
-    expect(second.slugFor(SESSION)).toBe("name-every-instance")
+    expect(second.slugFor(SESSION)).toBe("name-every-agent")
     expect((await readFile(fixture.recordPath, "utf8")).trim().split("\n")).toHaveLength(1)
   } finally {
     second.stop()
@@ -165,7 +165,7 @@ test("naming that is turned off never reaches for fx", async () => {
 
 test("a prompt fmx typed itself names the session without waiting for fx", async () => {
   // No session log at all: fx has not written the prompt down yet, which is
-  // the state naming starts in for every instance launched with one.
+  // the state naming starts in for every agent launched with one.
   const fixture = await harness({ prompted: false })
   const namer = new SlugNamer({
     fxPath: fixture.fxPath,
@@ -175,8 +175,8 @@ test("a prompt fmx typed itself names the session without waiting for fx", async
     onSlug: () => {},
   })
   try {
-    namer.note(SESSION, { text: "name every instance", workspaceRoot: fixture.home })
-    expect(await named(namer, SESSION)).toBe("name-every-instance")
+    namer.note(SESSION, { text: "name every agent", workspaceRoot: fixture.home })
+    expect(await named(namer, SESSION)).toBe("name-every-agent")
   } finally {
     namer.stop()
   }
@@ -231,11 +231,11 @@ test("fx writing the prompt wakes naming, rather than a sweep noticing it", asyn
       join(fixture.home, ".fx", "sessions", SESSION, "events.jsonl"),
       `${JSON.stringify({
         kind: "recovery_checkpoint_set",
-        payload: { checkpoint: { user: { text: "name every instance" } } },
+        payload: { checkpoint: { user: { text: "name every agent" } } },
       })}\n`,
       "utf8",
     )
-    expect(await named(namer, SESSION)).toBe("name-every-instance")
+    expect(await named(namer, SESSION)).toBe("name-every-agent")
     // The sweep behind the watch is five seconds; only the watch is this fast.
     expect(Date.now() - started).toBeLessThan(2_000)
   } finally {

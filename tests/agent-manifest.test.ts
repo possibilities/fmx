@@ -4,13 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import {
   identityFor,
-  InstanceManifest,
-  isInstanceId,
+  AgentManifest,
+  isAgentId,
   loadManifest,
   manifestPath,
   mintIdentity,
   parseManifest,
-} from "../src/instance-manifest.ts"
+} from "../src/agent-manifest.ts"
 
 const HOME = "abc123def456"
 const withDirectory = async (run: (dir: string) => Promise<void>) => {
@@ -25,10 +25,10 @@ const params = (cwd = "/work") => ({ cwd, fxPath: "/usr/local/bin/fx", fxArgs: [
 
 test("an identity carries one token under three names", () => {
   const identity = mintIdentity()
-  expect(isInstanceId(identity.instanceId)).toBe(true)
-  expect(identity.paneId).toBe(`p_${identity.instanceId}`)
-  expect(identity.zmxName).toBe(`fmx-${identity.instanceId}`)
-  expect(mintIdentity().instanceId).not.toBe(identity.instanceId)
+  expect(isAgentId(identity.agentId)).toBe(true)
+  expect(identity.paneId).toBe(`p_${identity.agentId}`)
+  expect(identity.zmxName).toBe(`fmx-${identity.agentId}`)
+  expect(mintIdentity().agentId).not.toBe(identity.agentId)
   expect(identityFor("0".repeat(32)).zmxName).toBe(`fmx-${"0".repeat(32)}`)
 })
 
@@ -45,7 +45,7 @@ test("parsing keeps valid entries and drops each bad one on its own", () => {
     version: 1,
     homeId: HOME,
     nextDisplayId: 2,
-    instances: [
+    agents: [
       { ...good, displayId: 4, cwd: "/w", fxPath: "/fx", fxArgs: ["--x"], createdAt: 1, fxSessionId: "s1", phase: "running" },
       { ...other, paneId: "p_wrong", displayId: 5, cwd: "/w", fxPath: "/fx", fxArgs: [], createdAt: 1, phase: "running" },
       { ...identityFor("c".repeat(32)), displayId: 4, cwd: "/w", fxPath: "/fx", fxArgs: [], createdAt: 1, phase: "creating" },
@@ -56,18 +56,18 @@ test("parsing keeps valid entries and drops each bad one on its own", () => {
     ],
   }
   const manifest = parseManifest(JSON.stringify(document), HOME)
-  expect(manifest.instances.map((entry) => entry.instanceId)).toEqual([good.instanceId])
-  expect(manifest.instances[0]!.fxSessionId).toBe("s1")
+  expect(manifest.agents.map((entry) => entry.agentId)).toEqual([good.agentId])
+  expect(manifest.agents[0]!.fxSessionId).toBe("s1")
   // A Manifest written before status checkpoints existed remains valid.
-  expect(manifest.instances[0]!.agentStatus).toBeNull()
+  expect(manifest.agents[0]!.agentStatus).toBeNull()
   // The counter never hands out a number an entry already holds.
   expect(manifest.nextDisplayId).toBe(5)
 })
 
 test("another Home's manifest, an old version, or garbage reads as empty", () => {
-  expect(parseManifest("not json", HOME).instances).toEqual([])
-  expect(parseManifest(JSON.stringify({ version: 0, homeId: HOME, instances: [] }), HOME).instances).toEqual([])
-  const foreign = { version: 1, homeId: "other", nextDisplayId: 9, instances: [] }
+  expect(parseManifest("not json", HOME).agents).toEqual([])
+  expect(parseManifest(JSON.stringify({ version: 0, homeId: HOME, agents: [] }), HOME).agents).toEqual([])
+  const foreign = { version: 1, homeId: "other", nextDisplayId: 9, agents: [] }
   const manifest = parseManifest(JSON.stringify(foreign), HOME)
   expect(manifest.homeId).toBe(HOME)
   expect(manifest.nextDisplayId).toBe(1)
@@ -76,59 +76,59 @@ test("another Home's manifest, an old version, or garbage reads as empty", () =>
 test("creation is written before it is acknowledged, and acknowledged in place", async () => {
   await withDirectory(async (dir) => {
     const path = join(dir, "instances.json")
-    const manifest = await InstanceManifest.open(path, HOME)
+    const manifest = await AgentManifest.open(path, HOME)
     const entry = await manifest.beginCreate(params())
     expect(entry.phase).toBe("creating")
     expect(entry.displayId).toBe(1)
 
     // The crash window: what is on disk right now says `creating`.
     const onDisk = await loadManifest(path, HOME)
-    expect(onDisk.instances).toHaveLength(1)
-    expect(onDisk.instances[0]!.phase).toBe("creating")
+    expect(onDisk.agents).toHaveLength(1)
+    expect(onDisk.agents[0]!.phase).toBe("creating")
 
-    await manifest.markRunning(entry.instanceId)
-    expect((await loadManifest(path, HOME)).instances[0]!.phase).toBe("running")
+    await manifest.markRunning(entry.agentId)
+    expect((await loadManifest(path, HOME)).agents[0]!.phase).toBe("running")
 
-    await manifest.setFxSessionId(entry.instanceId, "sess-1")
-    expect((await loadManifest(path, HOME)).instances[0]!.fxSessionId).toBe("sess-1")
+    await manifest.setFxSessionId(entry.agentId, "sess-1")
+    expect((await loadManifest(path, HOME)).agents[0]!.fxSessionId).toBe("sess-1")
 
-    await manifest.setAgentStatus(entry.instanceId, {
+    await manifest.setAgentStatus(entry.agentId, {
       state: "blocked",
       attention: "question",
       seen: false,
     })
-    expect((await loadManifest(path, HOME)).instances[0]!.agentStatus).toEqual({
+    expect((await loadManifest(path, HOME)).agents[0]!.agentStatus).toEqual({
       state: "blocked",
       attention: "question",
       seen: false,
     })
 
-    await manifest.remove(entry.instanceId)
-    expect((await loadManifest(path, HOME)).instances).toEqual([])
+    await manifest.remove(entry.agentId)
+    expect((await loadManifest(path, HOME)).agents).toEqual([])
     // Removed numbers are never reused.
     expect((await manifest.beginCreate(params())).displayId).toBe(2)
   })
 })
 
-test("an adopted Instance's arguments may be unknown, and that survives a reload", async () => {
+test("an adopted Agent's arguments may be unknown, and that survives a reload", async () => {
   await withDirectory(async (dir) => {
     const path = join(dir, "m.json")
-    const manifest = await InstanceManifest.open(path, HOME)
+    const manifest = await AgentManifest.open(path, HOME)
     await manifest.adopt({ ...params(), fxArgs: null, identity: mintIdentity() })
-    expect((await loadManifest(path, HOME)).instances[0]!.fxArgs).toBeNull()
+    expect((await loadManifest(path, HOME)).agents[0]!.fxArgs).toBeNull()
   })
 })
 
 test("a snapshot handed out does not alias the manifest", async () => {
   await withDirectory(async (dir) => {
-    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
     const entry = await manifest.beginCreate({ ...params(), fxArgs: ["a"] })
-    await manifest.setAgentStatus(entry.instanceId, { state: "idle", attention: null, seen: true })
-    const snapshot = manifest.get(entry.instanceId)!
+    await manifest.setAgentStatus(entry.agentId, { state: "idle", attention: null, seen: true })
+    const snapshot = manifest.get(entry.agentId)!
     entry.fxArgs!.push("b")
     entry.phase = "running"
     snapshot.agentStatus!.state = "working"
-    expect(manifest.get(entry.instanceId)).toMatchObject({
+    expect(manifest.get(entry.agentId)).toMatchObject({
       fxArgs: ["a"],
       phase: "creating",
       agentStatus: { state: "idle", attention: null, seen: true },
@@ -138,7 +138,7 @@ test("a snapshot handed out does not alias the manifest", async () => {
 
 test("adopting an unrecorded session gives it a fresh number and no second entry", async () => {
   await withDirectory(async (dir) => {
-    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
     await manifest.beginCreate(params())
     const identity = mintIdentity()
     const adopted = await manifest.adopt({ ...params("/elsewhere"), identity, fxSessionId: "s9" })
@@ -152,13 +152,13 @@ test("adopting an unrecorded session gives it a fresh number and no second entry
 test("writes are atomic and serialized: concurrent mutations all land, no temp file survives", async () => {
   await withDirectory(async (dir) => {
     const path = join(dir, "m.json")
-    const manifest = await InstanceManifest.open(path, HOME)
+    const manifest = await AgentManifest.open(path, HOME)
     const created = await Promise.all(Array.from({ length: 6 }, () => manifest.beginCreate(params())))
     expect(new Set(created.map((entry) => entry.displayId)).size).toBe(6)
-    await Promise.all(created.map((entry) => manifest.markRunning(entry.instanceId)))
+    await Promise.all(created.map((entry) => manifest.markRunning(entry.agentId)))
     const reread = await loadManifest(path, HOME)
-    expect(reread.instances).toHaveLength(6)
-    expect(reread.instances.every((entry) => entry.phase === "running")).toBe(true)
+    expect(reread.agents).toHaveLength(6)
+    expect(reread.agents.every((entry) => entry.phase === "running")).toBe(true)
     expect(readdirSync(dir)).toEqual(["m.json"])
     // Pretty-printed JSON with a trailing newline, like state.json.
     expect((await readFile(path, "utf8")).endsWith("}\n")).toBe(true)
@@ -167,7 +167,7 @@ test("writes are atomic and serialized: concurrent mutations all land, no temp f
 
 test("a write that fails does not wedge the next one", async () => {
   await withDirectory(async (dir) => {
-    const manifest = await InstanceManifest.open(join(dir, "m.json"), HOME)
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
     await expect(manifest.markRunning("0".repeat(32))).rejects.toThrow("not in manifest")
     const entry = await manifest.beginCreate(params())
     expect(entry.displayId).toBe(1)
@@ -177,8 +177,8 @@ test("a write that fails does not wedge the next one", async () => {
 test("opening a manifest another Home wrote starts fresh without touching the file until a write", async () => {
   await withDirectory(async (dir) => {
     const path = join(dir, "m.json")
-    await writeFile(path, JSON.stringify({ version: 1, homeId: "other", nextDisplayId: 3, instances: [] }))
-    const manifest = await InstanceManifest.open(path, HOME)
+    await writeFile(path, JSON.stringify({ version: 1, homeId: "other", nextDisplayId: 3, agents: [] }))
+    const manifest = await AgentManifest.open(path, HOME)
     expect(manifest.entries).toEqual([])
     expect(JSON.parse(await readFile(path, "utf8")).homeId).toBe("other")
   })

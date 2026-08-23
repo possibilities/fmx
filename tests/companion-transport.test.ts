@@ -2,14 +2,14 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { CompanionTransportFactory } from "../src/companion-transport.ts"
-import { InstanceManifest, type ManifestEntry } from "../src/instance-manifest.ts"
-import { InstanceEndedError, type InstanceTransport, type TransportHandlers } from "../src/instance-transport.ts"
+import { AgentManifest, type ManifestEntry } from "../src/agent-manifest.ts"
+import { AgentEndedError, type AgentTransport, type TransportHandlers } from "../src/agent-transport.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 
 /**
- * The Companion behind the Instance transport seam, against the real
+ * The Companion behind the Agent transport seam, against the real
  * binary: what the multiplexer sees when it starts, attaches to, loses, and
- * outlives an Instance. Needs FMX_ZMX_PATH; sessions live in a private
+ * outlives an Agent. Needs FMX_ZMX_PATH; sessions live in a private
  * directory under /tmp and every one this file starts is ended by it.
  */
 const ZMX = process.env.FMX_ZMX_PATH
@@ -38,7 +38,7 @@ const CHILD_SCRIPT = [
 let dir = ""
 let companion: CompanionCommand
 let factory: CompanionTransportFactory
-let manifest: InstanceManifest
+let manifest: AgentManifest
 
 /** A consumer of one transport: everything it was told, in order. */
 type Watcher = {
@@ -49,7 +49,7 @@ type Watcher = {
   lost: Error | null
 }
 
-const watch = (transport: InstanceTransport): Watcher => {
+const watch = (transport: AgentTransport): Watcher => {
   const watcher: Watcher = { text: "", restores: 0, readies: 0, exited: null, lost: null }
   const handlers: TransportHandlers = {
     output: (bytes) => {
@@ -77,7 +77,7 @@ const watch = (transport: InstanceTransport): Watcher => {
 const claim = async (): Promise<ManifestEntry> =>
   manifest.beginCreate({ cwd: dir, fxPath: "/bin/sh", fxArgs: ["-c", CHILD_SCRIPT], createdAt: Date.now() })
 
-const start = async (entry: ManifestEntry): Promise<InstanceTransport> =>
+const start = async (entry: ManifestEntry): Promise<AgentTransport> =>
   factory.start({
     entry,
     command: [entry.fxPath, ...(entry.fxArgs ?? [])],
@@ -91,7 +91,7 @@ beforeAll(async () => {
   dir = await mkdtemp("/tmp/fmxz-tr-")
   companion = new CompanionCommand(dir, { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" }, ZMX!)
   factory = new CompanionTransportFactory(companion, HOME, { scrollbackLines: 200 })
-  manifest = InstanceManifest.ephemeral(HOME)
+  manifest = AgentManifest.ephemeral(HOME)
 })
 
 afterAll(async () => {
@@ -120,7 +120,7 @@ test.skipIf(!ENABLED)("start creates a labelled session, attaches with a restore
   expect(watcher.restores).toBe(1)
   const session = await companion.inspect(entry.zmxName)
   expect(session.state).toBe("live")
-  expect(session.labels).toEqual({ owner: "fmx", home: HOME, instance: entry.instanceId, pane: entry.paneId })
+  expect(session.labels).toEqual({ owner: "fmx", home: HOME, agent: entry.agentId, pane: entry.paneId })
   expect(session.clients).toBe(1)
 
   transport.write(new TextEncoder().encode("hello\n"))
@@ -166,7 +166,7 @@ test.skipIf(!ENABLED)("an exit is exact, final output comes first, and the recor
   expect((await companion.inspect(entry.zmxName)).state).toBe("absent")
 })
 
-test.skipIf(!ENABLED)("attaching to an ended Instance says so, with its status", async () => {
+test.skipIf(!ENABLED)("attaching to an ended Agent says so, with its status", async () => {
   const entry = await claim()
   const transport = await start(entry)
   const watcher = watch(transport)
@@ -177,8 +177,8 @@ test.skipIf(!ENABLED)("attaching to an ended Instance says so, with its status",
   await waitFor(async () => (await companion.inspect(entry.zmxName)).state === "exited")
 
   const error = await factory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
-  expect(error).toBeInstanceOf(InstanceEndedError)
-  expect((error as InstanceEndedError).exit?.signal).toBeGreaterThan(0)
+  expect(error).toBeInstanceOf(AgentEndedError)
+  expect((error as AgentEndedError).exit?.signal).toBeGreaterThan(0)
   expect((await companion.inspect(entry.zmxName)).state).toBe("absent")
 })
 
@@ -206,7 +206,7 @@ test.skipIf(!ENABLED)("a daemon that vanishes is a lost transport, never an exit
   // the settle window, which an attach reads as ended and clears.
   expect((await companion.inspect(entry.zmxName)).state).toBe("refused")
   const error = await factory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
-  expect(error).toBeInstanceOf(InstanceEndedError)
+  expect(error).toBeInstanceOf(AgentEndedError)
   expect((await companion.inspect(entry.zmxName)).state).toBe("absent")
 })
 

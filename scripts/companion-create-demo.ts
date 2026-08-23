@@ -54,7 +54,7 @@ const untilExited = async (name: string) => {
 const survivors: string[] = []
 try {
   step(`create: returns only once the child is running (private ZMX_DIR=${dir})`)
-  const created = await show("create", "--json", "--labels", "owner=fmx profile=p1 instance=a1", "fmx-a1", "--", "sh", "-c", 'echo "fx would start here"; while IFS= read -r l; do [ "$l" = quit ] && exit 7; echo "got: $l"; done')
+  const created = await show("create", "--json", "--labels", "owner=fmx profile=p1 agent=a1", "fmx-a1", "--", "sh", "-c", 'echo "fx would start here"; while IFS= read -r l; do [ "$l" = quit ] && exit 7; echo "got: $l"; done')
   survivors.push("fmx-a1")
   const pid = created.pid as number
   console.log(`  the reported pid is the child's, and it is alive: kill -0 ${pid} -> ${(() => { try { process.kill(pid, 0); return "ok" } catch { return "gone" } })()}`)
@@ -71,7 +71,7 @@ try {
   await show("inspect", "--json", "fmx-a2")
 
   step("a second profile's session, and a session nobody owns")
-  await show("create", "--json", "--labels", "owner=fmx profile=p2 instance=b1", "fmx-b1", "--", "sleep", "30")
+  await show("create", "--json", "--labels", "owner=fmx profile=p2 agent=b1", "fmx-b1", "--", "sleep", "30")
   survivors.push("fmx-b1")
   await show("create", "--json", "unowned", "--", "sleep", "30")
   survivors.push("unowned")

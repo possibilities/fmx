@@ -13,8 +13,8 @@ import { existsSync } from "node:fs"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { AgentSocket, AgentSocketActiveError, defaultSocketPath } from "../src/agent-socket.ts"
-import { identityFor, InstanceManifest, mintIdentity } from "../src/instance-manifest.ts"
-import { ownershipLabels, reconcile, reconcileInstances } from "../src/instance-reconcile.ts"
+import { identityFor, AgentManifest, mintIdentity } from "../src/agent-manifest.ts"
+import { ownershipLabels, reconcile, reconcileAgents } from "../src/agent-reconcile.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { companionEnvironment, homeIdFor } from "../src/zmx-environment.ts"
 
@@ -40,18 +40,18 @@ const step = async (text: string) => {
 const say = (text: string) => console.log(`  ${text}`)
 const short = (id: string) => id.slice(0, 8) + "…"
 const FX = ["sh", "-c", "while IFS= read -r l; do [ \"$l\" = quit ] && exit 3; done"]
-const create = (instanceId: string) =>
+const create = (agentId: string) =>
   companion.create({
-    name: identityFor(instanceId).zmxName,
+    name: identityFor(agentId).zmxName,
     command: FX,
     cwd: dir,
     env,
-    labels: ownershipLabels(home, instanceId),
+    labels: ownershipLabels(home, agentId),
   })
 const showManifest = async () => {
   const text = existsSync(manifestPath) ? await readFile(manifestPath, "utf8") : "(no file)"
-  const doc = JSON.parse(text.startsWith("{") ? text : "{}") as { instances?: { instanceId: string; displayId: number; phase: string }[] }
-  say(dim(`instances.json: ${(doc.instances ?? []).map((e) => `#${e.displayId} ${short(e.instanceId)} ${e.phase}`).join(", ") || "empty"}`))
+  const doc = JSON.parse(text.startsWith("{") ? text : "{}") as { agents?: { agentId: string; displayId: number; phase: string }[] }
+  say(dim(`instances.json: ${(doc.agents ?? []).map((e) => `#${e.displayId} ${short(e.agentId)} ${e.phase}`).join(", ") || "empty"}`))
 }
 const showSessions = async () => {
   const sessions = await companion.list()
@@ -61,43 +61,43 @@ const showSessions = async () => {
 
 try {
   await step(`a private Home: id ${home} (digest of ${dir})`)
-  const manifest = await InstanceManifest.open(manifestPath, home)
+  const manifest = await AgentManifest.open(manifestPath, home)
   say(`manifest ${manifestPath}`)
   say(`Companion sessions in ${join(dir, "zmx")}`)
 
-  await step("a normal start: the Manifest claims the Instance before the Companion is asked")
+  await step("a normal start: the Manifest claims the Agent before the Companion is asked")
   const ok = await manifest.beginCreate({ cwd: dir, fxPath: FX[0]!, fxArgs: FX.slice(1), createdAt: Date.now() })
   await showManifest()
-  const okCreated = await create(ok.instanceId)
+  const okCreated = await create(ok.agentId)
   say(`Companion acknowledged: pid ${okCreated.pid} in ${okCreated.socketPath.replace(dir, "…")}`)
-  await manifest.markRunning(ok.instanceId)
+  await manifest.markRunning(ok.agentId)
   await showManifest()
 
   await step("crash #1: the entry was written, then fmx died before the Companion was asked")
   const ghost = await manifest.beginCreate({ cwd: dir, fxPath: FX[0]!, fxArgs: FX.slice(1), createdAt: Date.now() })
-  say(`#${ghost.displayId} ${short(ghost.instanceId)} says creating; no session exists for it`)
+  say(`#${ghost.displayId} ${short(ghost.agentId)} says creating; no session exists for it`)
 
   await step("crash #2: the Companion acknowledged, then fmx died before marking it running")
   const half = await manifest.beginCreate({ cwd: dir, fxPath: FX[0]!, fxArgs: FX.slice(1), createdAt: Date.now() })
-  await create(half.instanceId)
-  say(`#${half.displayId} ${short(half.instanceId)} still says creating; the session is live`)
+  await create(half.agentId)
+  say(`#${half.displayId} ${short(half.agentId)} still says creating; the session is live`)
 
   await step("crash #3: a session this Home created, whose Manifest entry was lost entirely")
   const orphan = mintIdentity()
-  await create(orphan.instanceId)
-  say(`${short(orphan.instanceId)} is live and labeled ours; the Manifest has never heard of it`)
+  await create(orphan.agentId)
+  say(`${short(orphan.agentId)} is live and labeled ours; the Manifest has never heard of it`)
 
-  await step("an Instance whose fx exited while no fmx was running")
+  await step("an Agent whose fx exited while no fmx was running")
   const ended = await manifest.beginCreate({ cwd: dir, fxPath: FX[0]!, fxArgs: FX.slice(1), createdAt: Date.now() })
-  const endedCreated = await create(ended.instanceId)
-  await manifest.markRunning(ended.instanceId)
+  const endedCreated = await create(ended.agentId)
+  await manifest.markRunning(ended.agentId)
   process.kill(endedCreated.pid, "SIGTERM")
   await companion.settle(ended.zmxName)
-  say(`#${ended.displayId} ${short(ended.instanceId)}: the Companion holds its exit record`)
+  say(`#${ended.displayId} ${short(ended.agentId)}: the Companion holds its exit record`)
 
   await step("sessions that are not ours: another Home's, and one nobody labeled")
   const foreign = mintIdentity()
-  await companion.create({ name: foreign.zmxName, command: ["sleep", "60"], cwd: dir, env, labels: ownershipLabels("0000deadbeef", foreign.instanceId) })
+  await companion.create({ name: foreign.zmxName, command: ["sleep", "60"], cwd: dir, env, labels: ownershipLabels("0000deadbeef", foreign.agentId) })
   await companion.create({ name: "hand-started", command: ["sleep", "60"], cwd: dir, env })
 
   await step("what the Companion holds, as found, before anything is decided")
@@ -107,31 +107,31 @@ try {
   await step("the join: pure, from those two inputs")
   const plan = reconcile(manifest.entries, sessions, home)
   say(`attach    ${plan.attach.map((i) => `#${i.entry.displayId}`).join(" ") || "-"}`)
-  say(`adopt     ${plan.adopt.map((i) => short(i.instanceId)).join(" ") || "-"}`)
+  say(`adopt     ${plan.adopt.map((i) => short(i.agentId)).join(" ") || "-"}`)
   say(`remove    ${plan.remove.map((i) => `#${i.entry.displayId}${i.session ? " (exit record)" : " (no session)"}`).join(", ") || "-"}`)
   say(`unresolved ${plan.unresolved.length}   ignored ${plan.ignored.map((s) => s.name.replace(/^fmx-(.{8}).*/, "fmx-$1…")).join(", ")}`)
 
   await step("apply it: adopt, remove, consume the exit record")
-  const outcome = await reconcileInstances(manifest, companion)
+  const outcome = await reconcileAgents(manifest, companion)
   say(`attached ${outcome.attached.length}, adopted ${outcome.adopted.map((e) => `#${e.displayId}`).join(" ")}, removed ${outcome.removed.length}`)
   await showManifest()
   await showSessions()
   say(`exit record for #${ended.displayId} consumed: inspect says ${(await companion.inspect(ended.zmxName)).state}`)
 
   await step("a second start finds nothing to do")
-  const again = await reconcileInstances(manifest, companion)
+  const again = await reconcileAgents(manifest, companion)
   say(`attached ${again.attached.length}, adopted ${again.adopted.length}, removed ${again.removed.length}`)
 
   await step("a daemon killed -9 leaves a socket that refuses: given a settle window, then cleared")
-  const unresolvedId = manifest.entries.find((e) => e.instanceId === half.instanceId)!
-  const daemon = Bun.spawnSync(["pgrep", "-f", `create --json --labels owner=fmx home=${home} instance=${unresolvedId.instanceId}`])
+  const unresolvedId = manifest.entries.find((e) => e.agentId === half.agentId)!
+  const daemon = Bun.spawnSync(["pgrep", "-f", `create --json --labels owner=fmx home=${home} agent=${unresolvedId.agentId}`])
   const daemonPid = Number(daemon.stdout.toString().trim().split("\n")[0])
   const child = (await companion.inspect(unresolvedId.zmxName)).pid!
   process.kill(daemonPid, "SIGKILL")
   process.kill(child, "SIGKILL")
   await sleep(300)
   say(`before: inspect says ${(await companion.inspect(unresolvedId.zmxName)).state}`)
-  const held = await reconcileInstances(manifest, companion, { settleMs: 500 })
+  const held = await reconcileAgents(manifest, companion, { settleMs: 500 })
   say(`cleared: ${held.cleared.map((s) => `${s.name.replace(/^fmx-(.{8}).*/, "fmx-$1…")} (was ${s.state})`).join(", ")}; removed #${held.removed.map((r) => r.entry.displayId).join(" #")}`)
   await showManifest()
   say(`socket still on disk: ${existsSync(join(dir, "zmx", unresolvedId.zmxName))}; inspect now says ${(await companion.inspect(unresolvedId.zmxName)).state}`)

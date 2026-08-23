@@ -17,16 +17,16 @@ import { projectNameFor, readGitContext, treeNameFor } from "../src/git-context.
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { slugDirectory, storeSlug } from "../src/slug-store.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 const FAILING_FX = fileURLToPath(new URL("./fixtures/failing-fx.sh", import.meta.url))
 const SESSION_ID = "1732673860000-123456789-deadbeef"
 
-test("reports an fx spawn failure after removing its provisional instance", async () => {
+test("reports an fx spawn failure after removing its provisional agent", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: "/definitely/missing/fx",
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -54,7 +54,7 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
     exitOnCtrlC: false,
   })
   const options = {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -135,7 +135,7 @@ test("toasts project and Worktree on start, then uses the Slug on exit", async (
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-lifecycle-${process.pid}.sock` })
   await agentSocket.start()
   storeSlug(slugDirectory(process.env, home), SESSION_ID, "clear-cloud")
-  const options = instanceOptions()
+  const options = agentOptions()
   const multiplexer = new Multiplexer(setup.renderer, {
     ...options,
     fxPath: FAKE_FX,
@@ -154,7 +154,7 @@ test("toasts project and Worktree on start, then uses the Slug on exit", async (
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined, 2_000)
     await waitForText(setup, `${location} / agent 1 started`, 2_000)
 
-    // The pane id is the Instance's identity, minted with its Manifest entry.
+    // The pane id is the Agent's identity, minted with its Manifest entry.
     const paneId = options.manifest.entries[0]!.paneId
     await sendFrame(
       agentSocket,
@@ -175,10 +175,10 @@ test("toasts project and Worktree on start, then uses the Slug on exit", async (
   }
 })
 
-test("falls back to the Instance id and includes a nonzero exit code", async () => {
+test("falls back to the Agent id and includes a nonzero exit code", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAILING_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -204,7 +204,7 @@ test("shows an untracked tree in italics outside Git", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
   const cwd = await mkdtemp(join(tmpdir(), "fmx-untracked-"))
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd,
     keybindings: resolveKeybindings().keybindings,

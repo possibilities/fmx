@@ -96,11 +96,11 @@ test("blocked and working outrank whether the pane was seen", () => {
   expect(displayStateFor(store.get("p_1"), Number.MAX_SAFE_INTEGER)).toBe("working")
 })
 
-test("an instance that has never reported is unknown", () => {
+test("an agent that has never reported is unknown", () => {
   expect(displayStateFor(null, 0)).toBe("unknown")
 })
 
-test("forgets a pane once its instance is gone", () => {
+test("forgets a pane once its agent is gone", () => {
   const store = registry()
   fold(store, report("idle"))
   store.forget("p_1")

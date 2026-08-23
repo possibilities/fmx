@@ -110,5 +110,5 @@ function finishGracefulExit(): never {
 
 function recordLifecycle(event: string, argv: string[] = []): void {
   const path = process.env.FMX_TEST_LOG
-  if (path) appendFileSync(path, `${event} ${process.env.FMX_INSTANCE_ID ?? "?"} ${JSON.stringify(argv)}\n`)
+  if (path) appendFileSync(path, `${event} ${process.env.FMX_AGENT_ID ?? "?"} ${JSON.stringify(argv)}\n`)
 }

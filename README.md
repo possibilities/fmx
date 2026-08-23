@@ -66,14 +66,14 @@ With no roots configured fmx exits 1 and names this setting and the config
 file that needs it. The first root is fmx's default working directory, including
 for agents started with `ctrl-b c`.
 
-### Tool panel
+### tools panel
 
-The Tool panel is a resizable dock on the right for terminal tools that belong
-to the Instance in the center. It starts hidden; `ctrl-b r` toggles it and
-`ctrl-b o` hands keyboard focus between the Instance and its selected tool.
+The tools panel is a resizable dock on the right for terminal tools that belong
+to the Agent in the center. It starts hidden; `ctrl-b r` toggles it and
+`ctrl-b o` hands keyboard focus between the Agent and its selected tool.
 When several tools are configured, a one-line link rail switches between them;
-`ctrl-b [` and `ctrl-b ]` select the previous and next link. Switching Instances
-switches the tools to that Instance's directory and identity too.
+`ctrl-b [` and `ctrl-b ]` select the previous and next link. Switching Agents
+switches the tools to that Agent's directory and identity too.
 
 Configure tools as argv arrays — no shell evaluates them:
 
@@ -125,13 +125,13 @@ line reaches the agents directly when fmx cannot — to look at one from a
 plain terminal, or to end one fmx no longer shows:
 
 ```sh
-fmx-zmx list                     # every Instance or persistent tool, live or ended
+fmx-zmx list                     # every Agent or persistent tool, live or ended
 fmx-zmx attach fmx-<id>          # the agent's terminal, as it stands (ctrl-\ detaches)
 fmx-zmx kill fmx-<id>            # end an agent
 ```
 
 Names are `fmx-` followed by the agent's id, as `fmx-zmx list` shows them.
-Persistent Tool panel terminals have opaque `fmxp-...` names in the same list;
+Persistent tools panel terminals have opaque `fmxp-...` names in the same list;
 use the exact name shown to attach to or end one by hand.
 The companion keeps its sessions in its own directory, `/tmp/fmx-<uid>/zmx`,
 private to the user and separate from any zmx of your own, so these commands
@@ -173,7 +173,7 @@ configured effort.
 
 Every key and click has a command, so an agent running inside fmx can do what
 a hand can — and read what a hand can see. `fmx control <command>` talks to
-the fmx it is running in (over `FMX_SOCKET_PATH`, which every instance is started with)
+the fmx it is running in (over `FMX_SOCKET_PATH`, which every agent is started with)
 and prints one JSON object; from outside, `--socket PATH` names one, or the
 only fmx running is used. Exit status: `0` ok, `1` refused, `2` usage, `3` no
 fmx reachable, `4` timed out.
@@ -186,25 +186,25 @@ fmx control launch --project ~/code/x --worktree --model gpt-5.6-luna --effort m
 fmx control launch --editable --project ~/code/x --worktree   # open the dialog, prefilled
 fmx control draft show|set|submit|cancel|wait [id]
 fmx control focus next|previous|3|<slug>
-fmx control instance list
-fmx control instance wait 3 --state done,blocked --timeout 600000
-fmx control instance send 3 "now run them"
-fmx control sidebar --width 30 --hide       # or --show, --toggle
+fmx control agent list
+fmx control agent wait 3 --state done,blocked --timeout 600000
+fmx control agent send 3 "now run them"
+fmx control tray --width 30 --hide       # or --show, --toggle
 fmx control panel --show --select diff --focus panel
 fmx control panel --width 40 --next         # also --previous, --hide, --toggle
 fmx control keys                        # every binding and the command it stands for
 fmx control catalog                     # the models and efforts the dialog offers
 ```
 
-`orient` answers with `you` — the caller's own instance: directory, project,
+`orient` answers with `you` — the caller's own agent: directory, project,
 branch, slug, state, its subagents, and whether it is the one on screen — alongside every
-instance, the sidebar's rows as they are drawn, the Tool panel's availability,
+agent, the tray's rows as they are drawn, the tools panel's availability,
 links, selection, size, visibility, and focus owner, and whatever surface is open.
-Reading never marks an instance seen; `focus` does, as clicking its row does.
+Reading never marks an agent seen; `focus` does, as clicking its row does.
 Subagents recorded by fx appear as non-selectable status rows nested beneath
-their parent instance, in both the sidebar and `orient`.
+their parent agent, in both the tray and `orient`.
 
-`launch` without `--editable` starts the agent and answers with its instance.
+`launch` without `--editable` starts the agent and answers with its agent.
 It does not take the screen unless `--focus` is given: an agent starting
 workers should not keep stealing the human's view. With `--editable` it opens
 the launch dialog instead, prefilled with whatever was given — a project but no
@@ -215,11 +215,11 @@ submit` or `draft cancel`; `draft wait` (or `launch --editable --wait`) blocks
 until either has happened and says what came of it. A dialog the human opened
 is a draft too, so an agent can finish one as well as start one.
 
-`instance wait` blocks until an instance reaches a state — by default any that
+`agent wait` blocks until an agent reaches a state — by default any that
 needs someone: `idle`, `done`, or `blocked`. A prompt that has gone in but not
 yet been picked up holds the wait, so waiting right after `launch` or `send`
 means waiting for the work, not for the startup idle. `done` is `idle` that
-nobody has looked at since; an instance on screen is always seen.
+nobody has looked at since; an agent on screen is always seen.
 
 ## Development
 

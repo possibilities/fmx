@@ -3,14 +3,14 @@ import { unlink } from "node:fs/promises"
 import { connectCompanionTerminal, COMPANION_SCROLLBACK_LINES } from "./companion-transport.ts"
 import { isPanelId, type PanelDefinition } from "./config.ts"
 import { createPanelEnvironment } from "./fx-environment.ts"
-import { OWNER_LABEL } from "./instance-reconcile.ts"
+import { OWNER_LABEL } from "./agent-reconcile.ts"
 import {
   HandlerRelay,
   stringEnvironment,
   type TerminalSize,
   type TerminalTransport,
   type TransportHandlers,
-} from "./instance-transport.ts"
+} from "./agent-transport.ts"
 import { CompanionCreateError, type CompanionCommand, type SessionEntry } from "./zmx-command.ts"
 
 const PANEL_SESSION_PREFIX = "fmxp"
@@ -24,15 +24,15 @@ const RETIREMENT_MAX_POLL_MS = 2_000
 
 export type PanelContext = {
   /** Stable Manifest identity, used in the Companion session name. */
-  instanceId: string
-  /** Human-facing Instance number, exported to the tool. */
+  agentId: string
+  /** Human-facing Agent number, exported to the tool. */
   displayId: number
   cwd: string
 }
 
 export type PanelSessionIdentity = {
   name: string
-  instanceId: string
+  agentId: string
   fingerprint: string
   labels: Record<string, string>
 }
@@ -47,7 +47,7 @@ export type PanelReconcileOutcome = {
 
 export interface PanelSessionController {
   open(definition: PanelDefinition, context: PanelContext, size: TerminalSize): Promise<TerminalTransport>
-  stopInstance(instanceId: string): Promise<void>
+  stopAgent(agentId: string): Promise<void>
   close(): void
 }
 
@@ -69,9 +69,9 @@ type Retirement = {
  */
 export class CompanionPanelSessions implements PanelSessionController {
   private closed = false
-  /** An Instance identity is never reused. Marking an ended one prevents an
+  /** An Agent identity is never reused. Marking an ended one prevents an
    * in-flight create from leaving a persistent tool behind after its owner. */
-  private readonly stoppedInstances = new Set<string>()
+  private readonly stoppedAgents = new Set<string>()
   private readonly retirements = new Map<string, Retirement>()
 
   constructor(
@@ -87,7 +87,7 @@ export class CompanionPanelSessions implements PanelSessionController {
   }
 
   async open(definition: PanelDefinition, context: PanelContext, size: TerminalSize): Promise<TerminalTransport> {
-    this.assertActive(context.instanceId)
+    this.assertActive(context.agentId)
     const environment = stringEnvironment(
       createPanelEnvironment(
         this.options.parentEnvironment ?? process.env,
@@ -101,18 +101,18 @@ export class CompanionPanelSessions implements PanelSessionController {
       return new LocalPanelTransport(definition.command, context.cwd, environment, size)
     }
 
-    const identity = panelSessionIdentity(this.homeId, context.instanceId, definition)
+    const identity = panelSessionIdentity(this.homeId, context.agentId, definition)
     let session = await this.companion.settle(identity.name, undefined, undefined, () => this.closed)
-    this.assertActive(context.instanceId)
+    this.assertActive(context.agentId)
     if (session.state === "live") return this.attachOwned(identity, session, size)
     if (session.state === "exited") {
       if (!ownedPanelSession(session, identity)) {
-        throw new Error(`Companion session ${identity.name} does not belong to this Tool panel`)
+        throw new Error(`Companion session ${identity.name} does not belong to this tools panel`)
       }
       await this.companion.forget(identity.name)
-      this.assertActive(context.instanceId)
+      this.assertActive(context.agentId)
     } else if (session.state === "refused" || session.state === "unreachable") {
-      throw new Error(`Tool panel ${definition.id} is unreachable${session.detail ? ` (${session.detail})` : ""}`)
+      throw new Error(`tools panel ${definition.id} is unreachable${session.detail ? ` (${session.detail})` : ""}`)
     }
 
     let socketPath: string
@@ -131,11 +131,11 @@ export class CompanionPanelSessions implements PanelSessionController {
       try {
         session = await this.companion.settle(identity.name, undefined, undefined, () => this.closed)
       } catch (settleError) {
-        if (this.stoppedInstances.has(context.instanceId)) this.scheduleRetirement(identity, true)
+        if (this.stoppedAgents.has(context.agentId)) this.scheduleRetirement(identity, true)
         if (this.closed) throw new Error("fmx is shutting down")
         throw settleError
       }
-      if (this.stoppedInstances.has(context.instanceId)) {
+      if (this.stoppedAgents.has(context.agentId)) {
         if (session.state === "live" && ownedPanelSession(session, identity)) {
           await this.stopAndForget(identity.name)
         } else if (session.state === "exited" && ownedPanelSession(session, identity)) {
@@ -143,15 +143,15 @@ export class CompanionPanelSessions implements PanelSessionController {
         } else if (session.state !== "exited") {
           this.scheduleRetirement(identity, true)
         }
-        throw new Error(`Instance ${context.displayId} has ended`)
+        throw new Error(`Agent ${context.displayId} has ended`)
       }
       if (this.closed) throw new Error("fmx is shutting down")
       if (session.state !== "live") throw error
       return this.attachOwned(identity, session, size)
     }
-    if (this.stoppedInstances.has(context.instanceId)) {
+    if (this.stoppedAgents.has(context.agentId)) {
       await this.stopAndForget(identity.name)
-      throw new Error(`Instance ${context.displayId} has ended`)
+      throw new Error(`Agent ${context.displayId} has ended`)
     }
     return connectCompanionTerminal(socketPath, size, {
       client: this.options.client ?? "fmx-panel",
@@ -159,14 +159,14 @@ export class CompanionPanelSessions implements PanelSessionController {
     })
   }
 
-  /** End every persistent tool belonging to an Instance that definitely ended. */
-  async stopInstance(instanceId: string): Promise<void> {
-    this.stoppedInstances.add(instanceId)
+  /** End every persistent tool belonging to an Agent that definitely ended. */
+  async stopAgent(agentId: string): Promise<void> {
+    this.stoppedAgents.add(agentId)
     await Promise.all(
       this.definitions
         .filter((definition) => definition.persistent)
         .map(async (definition) => {
-          const identity = panelSessionIdentity(this.homeId, instanceId, definition)
+          const identity = panelSessionIdentity(this.homeId, agentId, definition)
           let session: SessionEntry
           try {
             session = await this.companion.inspect(identity.name)
@@ -186,16 +186,16 @@ export class CompanionPanelSessions implements PanelSessionController {
   }
 
   /**
-   * Remove sessions whose Instance or panel definition no longer exists. Live
+   * Remove sessions whose Agent or panel definition no longer exists. Live
    * sessions are touched only when their full ownership labels agree.
    */
-  async reconcile(instanceIds: readonly string[]): Promise<PanelReconcileOutcome> {
+  async reconcile(agentIds: readonly string[]): Promise<PanelReconcileOutcome> {
     const outcome: PanelReconcileOutcome = { kept: [], stopped: [], forgotten: [], unresolved: [], ignored: [] }
     const expected = new Map<string, PanelSessionIdentity>()
-    for (const instanceId of instanceIds) {
+    for (const agentId of agentIds) {
       for (const definition of this.definitions) {
         if (!definition.persistent) continue
-        const identity = panelSessionIdentity(this.homeId, instanceId, definition)
+        const identity = panelSessionIdentity(this.homeId, agentId, definition)
         expected.set(identity.name, identity)
       }
     }
@@ -244,7 +244,7 @@ export class CompanionPanelSessions implements PanelSessionController {
     size: TerminalSize,
   ): Promise<TerminalTransport> {
     if (!ownedPanelSession(session, identity)) {
-      throw new Error(`Companion session ${identity.name} does not belong to this Tool panel`)
+      throw new Error(`Companion session ${identity.name} does not belong to this tools panel`)
     }
     if (!session.socketPath) throw new Error(`Companion session ${identity.name} has no terminal socket`)
     return connectCompanionTerminal(session.socketPath, size, {
@@ -287,7 +287,7 @@ export class CompanionPanelSessions implements PanelSessionController {
   private async retireWhenSettled(identity: PanelSessionIdentity, retirement: Retirement): Promise<void> {
     const deadline = Date.now() + RETIREMENT_WINDOW_MS
     let delayMs = RETIREMENT_INITIAL_POLL_MS
-    while (!this.closed && this.stoppedInstances.has(identity.instanceId) && Date.now() < deadline) {
+    while (!this.closed && this.stoppedAgents.has(identity.agentId) && Date.now() < deadline) {
       let session: SessionEntry
       try {
         session = await this.companion.inspect(identity.name)
@@ -310,9 +310,9 @@ export class CompanionPanelSessions implements PanelSessionController {
     }
   }
 
-  private assertActive(instanceId: string): void {
+  private assertActive(agentId: string): void {
     if (this.closed) throw new Error("fmx is shutting down")
-    if (this.stoppedInstances.has(instanceId)) throw new Error("the Tool panel's Instance has ended")
+    if (this.stoppedAgents.has(agentId)) throw new Error("the tools panel's agent has ended")
   }
 }
 
@@ -329,20 +329,20 @@ function panelIdFingerprint(id: string): string {
 
 export function panelSessionIdentity(
   homeId: string,
-  instanceId: string,
+  agentId: string,
   definition: PanelDefinition,
 ): PanelSessionIdentity {
   const fingerprint = panelDefinitionFingerprint(definition)
   return {
-    // 63 bytes with the current 12-byte Home and fingerprint plus 32-byte Instance id.
-    name: `${PANEL_SESSION_PREFIX}-${homeId}-${instanceId}-${fingerprint}`,
-    instanceId,
+    // 63 bytes with the current 12-byte Home and fingerprint plus 32-byte Agent id.
+    name: `${PANEL_SESSION_PREFIX}-${homeId}-${agentId}-${fingerprint}`,
+    agentId,
     fingerprint,
     labels: {
       owner: OWNER_LABEL,
       home: homeId,
       kind: PANEL_SESSION_KIND,
-      instance: instanceId,
+      agent: agentId,
       panel: definition.id,
       panel_id: panelIdFingerprint(definition.id),
       definition: fingerprint,
@@ -352,12 +352,12 @@ export function panelSessionIdentity(
 
 export function parsePanelSessionName(name: string): {
   homeId: string
-  instanceId: string
+  agentId: string
   fingerprint: string
 } | null {
   const match = /^fmxp-([0-9a-f]{12})-([0-9a-f]{32})-([0-9a-f]{12})$/u.exec(name)
   if (!match) return null
-  return { homeId: match[1]!, instanceId: match[2]!, fingerprint: match[3]! }
+  return { homeId: match[1]!, agentId: match[2]!, fingerprint: match[3]! }
 }
 
 function ownedPanelSession(session: SessionEntry, identity: PanelSessionIdentity): boolean {
@@ -373,7 +373,7 @@ function ownedPanelSessionForHome(session: SessionEntry, homeId: string): boolea
     session.labels.home === homeId &&
     session.labels.kind === PANEL_SESSION_KIND &&
     parsed?.homeId === homeId &&
-    session.labels.instance === parsed.instanceId &&
+    session.labels.agent === parsed.agentId &&
     session.labels.definition === parsed.fingerprint &&
     isPanelId(panelId) &&
     session.labels.panel_id === panelIdFingerprint(panelId)

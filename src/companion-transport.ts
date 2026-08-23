@@ -1,22 +1,22 @@
 import { unlink } from "node:fs/promises"
 import { CompanionConnection } from "./companion-client.ts"
-import type { ManifestEntry } from "./instance-manifest.ts"
-import { ownedInstanceId, ownershipLabels } from "./instance-reconcile.ts"
+import type { ManifestEntry } from "./agent-manifest.ts"
+import { ownedAgentId, ownershipLabels } from "./agent-reconcile.ts"
 import {
   HandlerRelay,
-  InstanceEndedError,
-  InstanceUnreachableError,
-  type InstanceLaunch,
-  type InstanceTransport,
-  type InstanceTransportFactory,
+  AgentEndedError,
+  AgentUnreachableError,
+  type AgentLaunch,
+  type AgentTransport,
+  type AgentTransportFactory,
   type TerminalTransport,
   type TerminalSize,
   type TransportHandlers,
-} from "./instance-transport.ts"
+} from "./agent-transport.ts"
 import { CompanionCreateError, type CompanionCommand, type SessionEntry } from "./zmx-command.ts"
 
 /**
- * How much of an Instance's terminal the Companion keeps for a restore. In
+ * How much of an Agent's terminal the Companion keeps for a restore. In
  * lines, because that is the Companion's unit; the visible terminal's own
  * allowance is 10 MB of bytes, and at the widths fx draws at this is under
  * half of that, measured.
@@ -26,13 +26,13 @@ export const COMPANION_SCROLLBACK_LINES = 50_000
 const EXIT_RECORD_WAIT_MS = 5000
 
 /**
- * The Companion as a source of Instances: `create` then a negotiated socket
+ * The Companion as a source of Agents: `create` then a negotiated socket
  * for a new one, a negotiated socket alone for one that is already running.
  * Every session it creates carries the Home's ownership labels, and every
  * exit it sees consumes the record the daemon leaves, so the next start's
- * join has nothing to clean up for an Instance that ended while watched.
+ * join has nothing to clean up for an Agent that ended while watched.
  */
-export class CompanionTransportFactory implements InstanceTransportFactory {
+export class CompanionTransportFactory implements AgentTransportFactory {
   private closed = false
 
   constructor(
@@ -46,7 +46,7 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
     this.closed = true
   }
 
-  async start(launch: InstanceLaunch): Promise<InstanceTransport> {
+  async start(launch: AgentLaunch): Promise<AgentTransport> {
     const { entry } = launch
     let socketPath: string
     try {
@@ -55,7 +55,7 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
         command: launch.command,
         cwd: launch.cwd,
         env: launch.env,
-        labels: ownershipLabels(this.homeId, entry.instanceId),
+        labels: ownershipLabels(this.homeId, entry.agentId),
         scrollbackLines: this.options.scrollbackLines ?? COMPANION_SCROLLBACK_LINES,
       })
       socketPath = created.socketPath
@@ -63,38 +63,38 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
       // A timeout is the one refusal that may have started fx anyway; what
       // it became is looked up, never assumed. Ended or absent: fx is not
       // running, and the start failed. Still starting: it may yet be, and
-      // the Instance is recovered rather than given up on.
+      // the Agent is recovered rather than given up on.
       if (!(error instanceof CompanionCreateError) || !error.sessionMayExist) throw error
       const session = await this.companion.settle(entry.zmxName, undefined, undefined, () => this.closed)
       if (session.state === "exited" || session.state === "absent") throw error
-      if (session.state !== "live" || !session.socketPath || ownedInstanceId(session, this.homeId) !== entry.instanceId) {
-        throw new InstanceUnreachableError(entry, error)
+      if (session.state !== "live" || !session.socketPath || ownedAgentId(session, this.homeId) !== entry.agentId) {
+        throw new AgentUnreachableError(entry, error)
       }
       socketPath = session.socketPath
     }
     // From here fx is running whatever happens: a failure to reach it is
-    // the transport's, and the Instance is recovered, never removed.
+    // the transport's, and the Agent is recovered, never removed.
     try {
       return await this.connect(entry, socketPath, launch.size)
     } catch (error) {
-      throw new InstanceUnreachableError(entry, error instanceof Error ? error : new Error(String(error)))
+      throw new AgentUnreachableError(entry, error instanceof Error ? error : new Error(String(error)))
     }
   }
 
-  async attach(entry: ManifestEntry, size: TerminalSize): Promise<InstanceTransport> {
+  async attach(entry: ManifestEntry, size: TerminalSize): Promise<AgentTransport> {
     const session = await this.companion.settle(entry.zmxName, undefined, undefined, () => this.closed)
     if (this.closed) throw new Error("fmx is shutting down")
     if (session.state === "exited") {
       await this.companion.forget(entry.zmxName).catch(() => {})
-      throw new InstanceEndedError(entry, session.exit ? { code: session.exit.code, signal: session.exit.signal } : null)
+      throw new AgentEndedError(entry, session.exit ? { code: session.exit.code, signal: session.exit.signal } : null)
     }
-    if (session.state === "absent") throw new InstanceEndedError(entry, null)
+    if (session.state === "absent") throw new AgentEndedError(entry, null)
     if (session.state === "refused") {
       // Still refused after the settle window: nothing holds the socket and
       // nothing will. The join clears the same thing on the next start; a
       // record, if the daemon got to write one, is consumed there too.
       if (session.socketPath) await unlink(session.socketPath).catch(() => {})
-      throw new InstanceEndedError(entry, null)
+      throw new AgentEndedError(entry, null)
     }
     if (session.state !== "live" || !session.socketPath) {
       throw new Error(`Companion session ${entry.zmxName} is ${session.state}${session.detail ? ` (${session.detail})` : ""}`)
@@ -102,7 +102,7 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
     return this.connect(entry, session.socketPath, size)
   }
 
-  private async connect(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<InstanceTransport> {
+  private async connect(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<AgentTransport> {
     return connectCompanionTerminal(socketPath, size, {
       client: this.options.client ?? "fmx",
       onExited: () => this.reap(entry),
@@ -161,7 +161,7 @@ class CompanionTransport implements TerminalTransport {
       this.exited = true
       this.relay.emit((handlers) => handlers.exit({ code: status.code, signal: status.signal }))
       // The record is the daemon's to write after this; a failure to consume
-      // it is not the Instance's problem.
+      // it is not the Agent's problem.
       void onExited().catch(() => {})
     })
     connection.onClose((reason) => {

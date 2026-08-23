@@ -18,7 +18,7 @@ import { indentFor, type TreeRow } from "./session-tree.ts"
 const ACTIVE_ROW_BLEND = 0.12
 /** Pull synthetic labels slightly toward a dark background so they read light gray. */
 const VIRTUAL_LABEL_BACKGROUND_BLEND = 0.22
-/** Inset the text; the row's shading still spans the full sidebar width. */
+/** Inset the text; the row's shading still spans the full tray width. */
 const ROW_PADDING_LEFT = 1
 const ICON_COLUMN = 2
 const MISSING_SESSION = "—"
@@ -87,7 +87,7 @@ export function rowText(row: TreeRow, width: number): string {
 }
 
 /**
- * The sidebar's tree of fx instances: project, branch, and one row per agent.
+ * The tray's tree of fx agents: project, branch, and one row per agent.
  * The active row is filled; the rails on the path up to it are drawn in the
  * foreground while every other rail stays dim.
  */
@@ -98,7 +98,7 @@ export class SessionList {
 
   constructor(
     private readonly renderer: CliRenderer,
-    private readonly onSelect: (instanceId: number) => void,
+    private readonly onSelect: (agentId: number) => void,
   ) {
     this.root = new BoxRenderable(renderer, {
       id: "fmx-session-list",
@@ -130,7 +130,7 @@ export class SessionList {
   }
 
   private buildRow(row: TreeRow, width: number, index: number): BoxRenderable {
-    const id = row.instanceId !== null ? `agent-${row.instanceId}` : `${row.kind}-${index}`
+    const id = row.agentId !== null ? `agent-${row.agentId}` : `${row.kind}-${index}`
     const container = new BoxRenderable(this.renderer, {
       id: `fmx-session-row-${id}`,
       width: "100%",
@@ -145,7 +145,7 @@ export class SessionList {
         // makes a fast switch feel delayed by the human's click duration.
         event.preventDefault()
         event.stopPropagation()
-        if (row.instanceId !== null) this.onSelect(row.instanceId)
+        if (row.agentId !== null) this.onSelect(row.agentId)
       },
       onMouseUp: (event) => {
         event.preventDefault()

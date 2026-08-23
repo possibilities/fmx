@@ -56,7 +56,7 @@ export function homeId(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * Where the Companion keeps sockets and exit records. Under `/tmp` rather
  * than the config directory because macOS caps a socket path near 104 bytes
- * and a session name carries a 32-character instance id; and because the
+ * and a session name carries a 32-character agent id; and because the
  * sessions themselves do not survive a reboot, so neither need their records.
  */
 export function companionDirectory(
@@ -82,7 +82,7 @@ export function companionDirectories(
 /**
  * The environment a Companion command runs in, and therefore the one its
  * child inherits: the caller's (normally the fx environment already built
- * for the instance) with every inherited zmx variable removed and ours set.
+ * for the agent) with every inherited zmx variable removed and ours set.
  */
 export function companionEnvironment(
   parent: NodeJS.ProcessEnv,

@@ -98,7 +98,7 @@ test("loads a worktree root and falls back on one it cannot use", async () => {
   }
 })
 
-test("loads ordered Tool panel commands and defaults them to persistent", async () => {
+test("loads ordered tools panel commands and defaults them to persistent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-config-panels-"))
   const path = join(directory, "panels.toml")
   await writeFile(
@@ -129,7 +129,7 @@ test("loads ordered Tool panel commands and defaults them to persistent", async 
   }
 })
 
-test("drops malformed and duplicate Tool panel definitions independently", async () => {
+test("drops malformed and duplicate tools panel definitions independently", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-config-panels-"))
   const path = join(directory, "panels.toml")
   await writeFile(

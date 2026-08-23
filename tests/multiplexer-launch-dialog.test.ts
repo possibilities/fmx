@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
 
@@ -21,7 +21,7 @@ async function workspace(): Promise<{ home: string; code: string }> {
 
 function launcher(setup: Setup, home: string, code: string, roots = ["~/code"]): Multiplexer {
   return new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: "fx",
     cwd: join(code, "fmx"),
     keybindings: resolveKeybindings().keybindings,

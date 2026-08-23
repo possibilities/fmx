@@ -28,7 +28,7 @@ export type AgentRecord = {
   agentName: string | null
   /**
    * The registry-local version at the last state change. Compared against
-   * the multiplexer's per-instance "seen" version to tell `done` from
+   * the multiplexer's per-agent "seen" version to tell `done` from
    * `idle` without either side needing a clock or a callback into the other.
    */
   stateSeq: number
@@ -103,7 +103,7 @@ export class AgentRegistry {
     return this.records.get(paneId) ?? null
   }
 
-  /** Drop a pane's record once its instance is gone. */
+  /** Drop a pane's record once its agent is gone. */
   forget(paneId: string): void {
     this.records.delete(paneId)
   }

@@ -6,7 +6,7 @@ import { AgentSocket } from "../src/agent-socket.ts"
 import { debugPanelRequested, debugPanelWidth } from "../src/debug-panel.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
@@ -14,7 +14,7 @@ async function createMultiplexer(width: number, height: number, debugPanel: bool
   const setup = await createTestRenderer({ width, height })
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-panel-test-${process.pid}.sock` })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -65,7 +65,7 @@ test("claims the right third of the screen when enabled", async () => {
     expect(panel.width).toBe(30)
     expect(panel.height).toBe(24)
     expect(divider.width).toBe(1)
-    // sidebar | divider | content | divider | panel
+    // tray | divider | content | divider | panel
     expect(divider.x).toBe(panel.x - 1)
     expect(content.x + content.width).toBe(divider.x)
     expect(panel.x + panel.width).toBe(90)
@@ -87,15 +87,15 @@ test("leaves the layout untouched when disabled", async () => {
   }
 })
 
-test("measures the sidebar's third against what the panel leaves behind", async () => {
+test("measures the tray's third against what the panel leaves behind", async () => {
   const { setup, multiplexer, find } = await createMultiplexer(90, 24, true)
   try {
     await setup.renderOnce()
-    const sidebar = find("fmx-sidebar")!
+    const tray = find("fmx-tray")!
     // 90 - (30 panel + 1 divider) = 59 available; a third of that is 19.
     await setup.mockMouse.drag(26, 10, 40, 10)
     await setup.renderOnce()
-    expect(sidebar.width).toBe(19)
+    expect(tray.width).toBe(19)
   } finally {
     await multiplexer.shutdown()
   }

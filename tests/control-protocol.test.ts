@@ -43,19 +43,19 @@ describe("requests", () => {
 
 describe("replies", () => {
   test("round-trip success and failure", () => {
-    expect(decodeReply(encodeReply(successReply("1", { instance: 3 })).trim())).toEqual({
+    expect(decodeReply(encodeReply(successReply("1", { agent: 3 })).trim())).toEqual({
       id: "1",
       ok: true,
-      result: { instance: 3 },
+      result: { agent: 3 },
     })
     const failure = errorReply("2", { code: "busy", message: "something is open", data: { surface: "help" } })
     expect(decodeReply(encodeReply(failure).trim())).toEqual(failure)
   })
 
   test("map a ControlFailure to its code and anything else to failed", () => {
-    expect(failureFrom(new ControlFailure("not_found", "no instance 9"))).toEqual({
+    expect(failureFrom(new ControlFailure("not_found", "no agent 9"))).toEqual({
       code: "not_found",
-      message: "no instance 9",
+      message: "no agent 9",
     })
     expect(failureFrom(new Error("boom"))).toEqual({ code: "failed", message: "boom" })
   })

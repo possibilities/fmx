@@ -7,7 +7,7 @@ import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
-import { instanceOptions, type PtyTransport } from "./fixtures/pty-transport.ts"
+import { agentOptions, type PtyTransport } from "./fixtures/pty-transport.ts"
 
 /**
  * The multiplexer against the transport seam: what it does with the size,
@@ -21,7 +21,7 @@ async function harness(name: string) {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const agentSocket = new AgentSocket({ path: `/tmp/fmx-transport-test-${name}-${process.pid}.sock` })
   await agentSocket.start()
-  const options = instanceOptions()
+  const options = agentOptions()
   const multiplexer = new Multiplexer(setup.renderer, {
     ...options,
     fxPath: FAKE_FX,
@@ -32,7 +32,7 @@ async function harness(name: string) {
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
   const snapshot = () => control("orient") as Promise<Snapshot>
-  const paneOf = async (id: number) => (await snapshot()).instances.find((i) => i.id === id)!.pane_id
+  const paneOf = async (id: number) => (await snapshot()).agents.find((i) => i.id === id)!.pane_id
   const report = async (id: number, state: string) => {
     const paneId = await paneOf(id)
     await exchange(
@@ -78,7 +78,7 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
 test("a transport adopted after the layout pass is told the terminal's real size", async () => {
   const h = await harness("size")
   try {
-    // Hold the start until the renderer has laid the terminal out beside the sidebar.
+    // Hold the start until the renderer has laid the terminal out beside the tray.
     let release!: () => void
     h.options.transport.gate = new Promise((resolve) => {
       release = resolve
@@ -103,7 +103,7 @@ test("a transport adopted after the layout pass is told the terminal's real size
 
 test("selects the saved survivor before restoring any terminal", async () => {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
-  const options = instanceOptions()
+  const options = agentOptions()
   const firstClaim = options.manifest.claim({
     cwd: process.cwd(),
     fxPath: FAKE_FX,
@@ -117,12 +117,12 @@ test("selects the saved survivor before restoring any terminal", async () => {
     createdAt: 2,
   }).result
   const [first, second] = await Promise.all([
-    options.manifest.markRunning(firstClaim.instanceId),
-    options.manifest.markRunning(secondClaim.instanceId),
+    options.manifest.markRunning(firstClaim.agentId),
+    options.manifest.markRunning(secondClaim.agentId),
   ])
   const attached: string[] = []
   options.transport.attachBehavior = (entry) => {
-    attached.push(entry.instanceId)
+    attached.push(entry.agentId)
     return { bind() {}, write() {}, resize() {}, detach() {} }
   }
   const selections: Array<string | null> = []
@@ -132,26 +132,26 @@ test("selects the saved survivor before restoring any terminal", async () => {
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
     survivors: [first, second],
-    initialActiveInstanceId: second.instanceId,
-    onActiveInstanceChange: (instanceId) => selections.push(instanceId),
+    initialActiveAgentId: second.agentId,
+    onActiveAgentChange: (agentId) => selections.push(agentId),
   })
 
   try {
     await multiplexer.start()
     const snapshot = (await multiplexer.control.handle("orient", {}, NEVER)) as Snapshot
     expect(snapshot.active).toBe(2)
-    expect(snapshot.instances.map((instance) => [instance.id, instance.active])).toEqual([
+    expect(snapshot.agents.map((agent) => [agent.id, agent.active])).toEqual([
       [1, false],
       [2, true],
     ])
-    expect(snapshot.sidebar.rows.filter((row) => row.kind === "agent").map((row) => [row.instance, row.active])).toEqual([
+    expect(snapshot.tray.rows.filter((row) => row.kind === "agent").map((row) => [row.agent, row.active])).toEqual([
       [1, false],
       [2, true],
     ])
     expect((setup.renderer.root.findDescendantById("fx-1") as BoxRenderable).visible).toBe(false)
     expect((setup.renderer.root.findDescendantById("fx-2") as BoxRenderable).visible).toBe(true)
-    expect(attached[0]).toBe(second.instanceId)
-    expect(selections).toEqual([second.instanceId])
+    expect(attached[0]).toBe(second.agentId)
+    expect(selections).toEqual([second.agentId])
   } finally {
     await multiplexer.shutdown()
   }
@@ -169,7 +169,7 @@ test("a launch prompt armed before the transport arrives goes in once it has", a
     // fx reports before fmx has adopted the transport, and the settle passes.
     await h.report(1, "idle")
     await Bun.sleep(400)
-    expect((await h.snapshot()).instances[0]?.awaiting_work).toBe(true)
+    expect((await h.snapshot()).agents[0]?.awaiting_work).toBe(true)
     release()
     await launched
     // The prompt reaches the fake fx, which echoes what it is sent.
@@ -182,7 +182,7 @@ test("a launch prompt armed before the transport arrives goes in once it has", a
   }
 })
 
-test("a lost transport whose Instance has ended is removed like an exit", async () => {
+test("a lost transport whose Agent has ended is removed like an exit", async () => {
   const h = await harness("ended")
   try {
     h.setup.mockInput.pressKey("b", { ctrl: true })
@@ -192,8 +192,8 @@ test("a lost transport whose Instance has ended is removed like an exit", async 
     h.options.transport.attachBehavior = "ended"
     ;(h.options.transport.started[0] as PtyTransport).lose()
     await waitFor(() => (h.setup.renderer.root.findDescendantById("fx-1") as unknown) === undefined)
-    expect(h.options.manifest.get(entry.instanceId)).toBeNull()
-    expect(h.options.transport.attaches.get(entry.instanceId)).toBe(1)
+    expect(h.options.manifest.get(entry.agentId)).toBeNull()
+    expect(h.options.transport.attaches.get(entry.agentId)).toBe(1)
     expect(h.modal.visible).toBe(false)
   } finally {
     await h.close()
@@ -211,16 +211,16 @@ test("a lost transport that cannot be reached again leaves the screen but keeps 
     ;(h.options.transport.started[0] as PtyTransport).lose()
     await waitFor(() => (h.setup.renderer.root.findDescendantById("fx-1") as unknown) === undefined, 5_000)
     await h.setup.renderOnce()
-    expect(h.options.transport.attaches.get(entry.instanceId)).toBe(3)
-    expect(h.options.manifest.get(entry.instanceId)?.phase).toBe("running")
+    expect(h.options.transport.attaches.get(entry.agentId)).toBe(3)
+    expect(h.options.manifest.get(entry.agentId)?.phase).toBe("running")
     expect(h.modal.visible).toBe(true)
-    expect(h.setup.captureCharFrame()).toContain("lost instance 1")
+    expect(h.setup.captureCharFrame()).toContain("lost agent 1")
   } finally {
     await h.close()
   }
 })
 
-test("a lost transport that can be reached again is adopted and the Instance stays", async () => {
+test("a lost transport that can be reached again is adopted and the Agent stays", async () => {
   const h = await harness("recovered")
   try {
     h.setup.mockInput.pressKey("b", { ctrl: true })
@@ -235,7 +235,7 @@ test("a lost transport that can be reached again is adopted and the Instance sta
         entry,
         command: [FAKE_FX],
         cwd: process.cwd(),
-        env: { ...process.env, FMX_INSTANCE_ID: "1" } as Record<string, string>,
+        env: { ...process.env, FMX_AGENT_ID: "1" } as Record<string, string>,
         size: { cols: 80, rows: 24 },
       })
       return second
@@ -244,9 +244,9 @@ test("a lost transport that can be reached again is adopted and the Instance sta
     await waitFor(() => second !== null && second.lastResize !== null)
     await Bun.sleep(50)
     expect(h.setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
-    expect(h.options.manifest.get(entry.instanceId)?.phase).toBe("running")
+    expect(h.options.manifest.get(entry.agentId)?.phase).toBe("running")
     expect(h.modal.visible).toBe(false)
-    expect((await h.snapshot()).instances.map((i) => i.id)).toEqual([1])
+    expect((await h.snapshot()).agents.map((i) => i.id)).toEqual([1])
   } finally {
     await h.close()
   }

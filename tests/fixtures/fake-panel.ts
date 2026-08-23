@@ -15,6 +15,6 @@ setInterval(() => record("alive"), 25)
 function record(event: string): void {
   appendFileSync(
     logPath!,
-    `${event} ${label} ${process.pid} ${process.env.FMX_INSTANCE_ID ?? "?"} ${process.env.FMX_PANEL_ID ?? "?"} ${process.cwd()}\n`,
+    `${event} ${label} ${process.pid} ${process.env.FMX_AGENT_ID ?? "?"} ${process.env.FMX_PANEL_ID ?? "?"} ${process.cwd()}\n`,
   )
 }

@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 /**
- * Reading fx's own session store, which is where an instance's first prompt
+ * Reading fx's own session store, which is where an agent's first prompt
  * can be found. fx reports a session id over the agent socket and nothing
  * else about the conversation, so the prompt has to be read from the log fx
  * writes for itself.
@@ -55,7 +55,7 @@ export type FirstPrompt = {
 /**
  * The conversation's first user prompt, or null while fx has not recorded one.
  * Null is the ordinary answer for a session that exists but has not been
- * prompted yet — an instance parked at a trust dialog, or one simply waiting
+ * prompted yet — an agent parked at a trust dialog, or one simply waiting
  * for its human — and naming polls on it rather than treating it as a fault.
  */
 export async function readFirstPrompt(sessionDirectory: string): Promise<FirstPrompt | null> {

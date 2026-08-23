@@ -10,8 +10,8 @@ import type { Command } from "../src/cli.ts"
 import { runCommand } from "../src/control-client.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { ControlSocket } from "../src/control-socket.ts"
-import { loadManifest } from "../src/instance-manifest.ts"
-import { SIDEBAR_DEFAULT_WIDTH } from "../src/multiplexer.ts"
+import { loadManifest } from "../src/agent-manifest.ts"
+import { TRAY_DEFAULT_WIDTH } from "../src/multiplexer.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
@@ -31,9 +31,9 @@ const RESTORED_SESSION_A = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
 const RESTORED_SESSION_B = "1787368597000-1787368597000000000-cccccccccccccccc"
 const RESTORED_CHILD = "1787368609310-1787368609310138000-3e38dc7a8d7c16c2"
 
-// The embedded terminal starts past the sidebar and its one-column divider, so
+// The embedded terminal starts past the tray and its one-column divider, so
 // a drag aimed at fx must be addressed there rather than at the screen origin.
-const TERMINAL_ORIGIN_COLUMN = SIDEBAR_DEFAULT_WIDTH + 2
+const TERMINAL_ORIGIN_COLUMN = TRAY_DEFAULT_WIDTH + 2
 
 /** An SGR press, drag, and release across one row, as a human's swipe. */
 const dragAcross = (columns: number, row = 1) => {
@@ -128,7 +128,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
-        async () => (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances[0]?.phase === "running",
+        async () => (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents[0]?.phase === "running",
         5_000,
         () => output,
       )
@@ -142,7 +142,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(countOccurrences(lifecycle, "alive 1 ")).toBeGreaterThan(before)
       expect(lifecycle).not.toContain("graceful 1")
-      expect((await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances).toMatchObject([
+      expect((await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents).toMatchObject([
         { displayId: 1, phase: "running" },
       ])
     } finally {
@@ -201,12 +201,12 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
         async () =>
-          (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances.length === 1,
+          (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents.length === 1,
         5_000,
         () => output,
       )
       expect(
-        (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances[0]?.cwd,
+        (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents[0]?.cwd,
       ).toBe(await realpath(firstRoot))
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
@@ -228,7 +228,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "restores agent state and sidebar chrome without startup flashes",
+  "restores agent state and tray chrome without startup flashes",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-status-restore-e2e-"))
@@ -287,13 +287,13 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(() => firstOutput.output.includes("prefix+c"), 8_000, () => firstOutput.output)
       first.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
-      const firstEntry = (await manifest()).instances[0]!
+      const firstEntry = (await manifest()).agents[0]!
       await sendAgentFrame(agentSocketPath, sessionFrame(firstEntry.paneId, RESTORED_SESSION_A))
       await sendAgentFrame(agentSocketPath, stateFrame(firstEntry.paneId, "blocked", "question"))
 
       first.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
-      const secondEntry = (await manifest()).instances[1]!
+      const secondEntry = (await manifest()).agents[1]!
       await sendAgentFrame(agentSocketPath, sessionFrame(secondEntry.paneId, RESTORED_SESSION_B))
       await sendAgentFrame(agentSocketPath, stateFrame(secondEntry.paneId, "working"))
 
@@ -308,7 +308,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await sendAgentFrame(agentSocketPath, stateFrame(secondEntry.paneId, "idle"))
       await waitUntil(
         async () => {
-          const entries = (await manifest()).instances
+          const entries = (await manifest()).agents
           return (
             entries[0]?.agentStatus?.state === "blocked" &&
             entries[0]?.agentStatus?.attention === "question" &&
@@ -320,7 +320,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => firstOutput.output,
       )
       await waitUntil(
-        async () => (await orientation(tempDirectory, env))?.instances[1]?.subagents[0]?.state === "blocked",
+        async () => (await orientation(tempDirectory, env))?.agents[1]?.subagents[0]?.state === "blocked",
         5_000,
         () => firstOutput.output,
       )
@@ -335,17 +335,17 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(
         async () => {
           restored = await orientation(tempDirectory, env)
-          return restored?.instances.length === 2 && restored.instances[1]?.subagents.length === 1
+          return restored?.agents.length === 2 && restored.agents[1]?.subagents.length === 1
         },
         10_000,
         () => restoredOutput.output,
       )
 
-      expect(restored!.instances.map((instance) => [instance.state, instance.attention])).toEqual([
+      expect(restored!.agents.map((agent) => [agent.state, agent.attention])).toEqual([
         ["blocked", "question"],
         ["done", null],
       ])
-      expect(restored!.instances[1]!.subagents).toMatchObject([
+      expect(restored!.agents[1]!.subagents).toMatchObject([
         { session_id: RESTORED_CHILD, state: "blocked", attention: "permission" },
       ])
       // Both status checkpoints are seeded in the same synchronous turn that
@@ -441,12 +441,12 @@ test.skipIf(!PTY_TEST_ENABLED)(
         5_000,
         () => firstOutput.output,
       )
-      const second = (await manifest()).instances.find((entry) => entry.displayId === 2)!
+      const second = (await manifest()).agents.find((entry) => entry.displayId === 2)!
 
       first.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
       expect(await withTimeout(first.exited, 6_000, "first fmx did not detach")).toBe(0)
       first.terminal?.close()
-      expect(JSON.parse(await readFile(stateFile, "utf8")).activeInstanceId).toBe(second.instanceId)
+      expect(JSON.parse(await readFile(stateFile, "utf8")).activeAgentId).toBe(second.agentId)
 
       const restoredOutput = { output: "" }
       replacement = spawnFmx(restoredOutput)
@@ -454,19 +454,19 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(
         async () => {
           restored = await orientation(tempDirectory, env)
-          return restored?.instances.length === 2 && restored.active === 2
+          return restored?.agents.length === 2 && restored.active === 2
         },
         10_000,
         () => restoredOutput.output,
       )
-      expect(restored!.instances.map((instance) => [instance.id, instance.active])).toEqual([
+      expect(restored!.agents.map((agent) => [agent.id, agent.active])).toEqual([
         [1, false],
         [2, true],
       ])
       expect(
-        restored!.sidebar.rows
+        restored!.tray.rows
           .filter((row) => row.kind === "agent")
-          .map((row) => [row.instance, row.active]),
+          .map((row) => [row.agent, row.active]),
       ).toEqual([
         [1, false],
         [2, true],
@@ -516,7 +516,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
-        // Machine state stays in the temp directory: a sidebar width persisted
+        // Machine state stays in the temp directory: a tray width persisted
         // by a real session would move the layout out from under these tests.
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
         ...privateHome(tempDirectory),
@@ -666,7 +666,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
-        // Machine state stays in the temp directory: a sidebar width persisted
+        // Machine state stays in the temp directory: a tray width persisted
         // by a real session would move the layout out from under these tests.
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
         ...privateHome(tempDirectory),
@@ -711,7 +711,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       )
       expect(child.exitCode).toBeNull()
 
-      // The empty state is rendered synchronously with instance removal; give
+      // The empty state is rendered synchronously with agent removal; give
       // Bun a brief settle to release the exited child PTYs before fmx exits.
       await Bun.sleep(250)
       child.terminal?.write(Uint8Array.of(control("c")))
@@ -762,7 +762,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
-        // Machine state stays in the temp directory: a sidebar width persisted
+        // Machine state stays in the temp directory: a tray width persisted
         // by a real session would move the layout out from under these tests.
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
         ...privateHome(tempDirectory),
@@ -922,7 +922,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(
         async () => {
           const snapshot = await orientation(tempDirectory, env)
-          return snapshot?.instances.length === 1 && snapshot.panel.visible && snapshot.panel.selected === "persistent"
+          return snapshot?.agents.length === 1 && snapshot.panel.visible && snapshot.panel.selected === "persistent"
         },
         10_000,
         () => secondOutput.output,
@@ -1012,7 +1012,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
         // Both claims are acknowledged before fmx is taken down.
         await waitUntil(
           async () => {
-            const entries = (await manifest()).instances
+            const entries = (await manifest()).agents
             return entries.length === 2 && entries.every((entry) => entry.phase === "running")
           },
           5_000,
@@ -1027,11 +1027,11 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
           5_000,
           () => first.output,
         )
-        const firstInstance = (await manifest()).instances.find((entry) => entry.displayId === 1)!
+        const firstAgent = (await manifest()).agents.find((entry) => entry.displayId === 1)!
         await waitUntil(
           async () => {
             try {
-              return JSON.parse(await readFile(stateFile, "utf8")).activeInstanceId === firstInstance.instanceId
+              return JSON.parse(await readFile(stateFile, "utf8")).activeAgentId === firstAgent.agentId
             } catch {
               return false
             }
@@ -1057,13 +1057,13 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
         expect(await heartbeats(2)).toBeGreaterThan(beforeTwo)
         expect(await readLifecycle(lifecycleLog)).not.toContain("ctrl-c")
         expect(await readLifecycle(lifecycleLog)).not.toContain("graceful")
-        expect((await manifest()).instances.map((entry) => entry.displayId).sort()).toEqual([1, 2])
+        expect((await manifest()).agents.map((entry) => entry.displayId).sort()).toEqual([1, 2])
 
         // The next fmx for this Home finds both, numbered as they were, and
         // shows what was on their screens; nothing is started.
         await waitUntil(() => readyBanners(second.output) >= 1, 10_000, () => second.output)
         await Bun.sleep(300)
-        // The restored Instance is the first surface the renderer exposes:
+        // The restored Agent is the first surface the renderer exposes:
         // the empty state belongs only to a Home the join found empty.
         expect(second.output).not.toContain("prefix+c to create agent")
         expect(await readLifecycle(lifecycleLog)).not.toContain("start 3")
@@ -1075,8 +1075,8 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
         two.terminal?.write(Uint8Array.of(control("c"), control("c")))
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => second.output)
         expect(await readLifecycle(lifecycleLog)).toContain("terminal-response 1")
-        await waitUntil(async () => (await manifest()).instances.length === 1, 5_000, () => second.output)
-        expect((await manifest()).instances[0]?.displayId).toBe(2)
+        await waitUntil(async () => (await manifest()).agents.length === 1, 5_000, () => second.output)
+        expect((await manifest()).agents[0]?.displayId).toBe(2)
 
         two.terminal?.write(Uint8Array.of(control("c"), control("c")))
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 2"), 5_000, () => second.output)
@@ -1087,7 +1087,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
         await waitUntil(() => second.output.includes("press ctrl+c again to exit"), 5_000, () => second.output)
         two.terminal?.write(Uint8Array.of(control("c")))
         expect(await withTimeout(two.exited, 6_000, "fmx did not exit after confirmed ctrl+c")).toBe(0)
-        expect((await manifest()).instances).toEqual([])
+        expect((await manifest()).agents).toEqual([])
       } finally {
         if (one.exitCode === null) one.kill("SIGKILL")
         one.terminal?.close()

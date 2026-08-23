@@ -2,18 +2,18 @@ import { readdirSync, statSync } from "node:fs"
 import { basename, join } from "node:path"
 
 /**
- * Projects fmx can start an instance in: the configured roots and the
+ * Projects fmx can start an agent in: the configured roots and the
  * directories one level under them. Everything here is pure or a plain
  * directory read, so the launch dialog's ordering, cycling, and filtering can
  * be tested without a terminal.
  */
 
 export type ProjectChoice = {
-  /** Absolute directory an instance would be started in. */
+  /** Absolute directory an agent would be started in. */
   directory: string
   /** How the dialog writes it: home-relative, e.g. `~/code/fmx`. */
   display: string
-  /** How many instances have been started here. */
+  /** How many agents have been started here. */
   launches: number
 }
 

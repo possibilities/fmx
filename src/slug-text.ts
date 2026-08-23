@@ -1,5 +1,5 @@
 /**
- * The pure half of naming an instance: everything between the first prompt fx
+ * The pure half of naming an agent: everything between the first prompt fx
  * recorded and the slug that stands in for a session id. No filesystem, no
  * subprocess, no clock — so every branch here is reachable from a test.
  *
@@ -14,7 +14,7 @@
 export const EXCERPT_BUDGET = 1600
 
 /** Longest slug fmx will mint. Long enough for six words, short enough that a
- * sidebar row still fits a project and a branch above it. */
+ * tray row still fits a project and a branch above it. */
 export const SLUG_MAX_LENGTH = 64
 
 /**
@@ -83,7 +83,7 @@ export function buildInstruction(excerpt: string): string {
 /**
  * Strip ASCII control characters and Unicode bidi controls from model output
  * before slugging. `slugify` would drop them too, but a slug travels to a
- * sidebar row and, later, to a command line: nothing that can move a cursor or
+ * tray row and, later, to a command line: nothing that can move a cursor or
  * reorder text should survive this far in the first place.
  */
 export function stripUnsafeText(text: string): string {

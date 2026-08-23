@@ -3,7 +3,7 @@ import { buildTree, indentFor, type SessionEntry } from "../src/session-tree.ts"
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
-    instanceId: 1,
+    agentId: 1,
     project: "fmx",
     branch: "main",
     sessionId: "909bc46b64721838",
@@ -23,9 +23,9 @@ function shape(entries: SessionEntry[]): string[] {
 test("nests agents under their branch and project", () => {
   expect(
     shape([
-      entry({ instanceId: 1, sessionId: "909bc46b64721838" }),
-      entry({ instanceId: 2, sessionId: "5a75126ce54edb04" }),
-      entry({ instanceId: 3, branch: "feat/list", sessionId: "84af73d3e9e42cb1" }),
+      entry({ agentId: 1, sessionId: "909bc46b64721838" }),
+      entry({ agentId: 2, sessionId: "5a75126ce54edb04" }),
+      entry({ agentId: 3, branch: "feat/list", sessionId: "84af73d3e9e42cb1" }),
     ]),
   ).toEqual([
     "fmx",
@@ -39,7 +39,7 @@ test("nests agents under their branch and project", () => {
 
 test("keeps several projects apart", () => {
   expect(
-    shape([entry({ instanceId: 1 }), entry({ instanceId: 2, project: "fx", branch: "integration" })]),
+    shape([entry({ agentId: 1 }), entry({ agentId: 2, project: "fx", branch: "integration" })]),
   ).toEqual(["fmx", "  main", "    909bc46b64721838", "fx", "  integration", "    909bc46b64721838"])
 })
 
@@ -49,8 +49,8 @@ test("nests agents outside a repository under an untracked branch", () => {
 
 test("marks the active agent and every ancestor of it", () => {
   const rows = buildTree([
-    entry({ instanceId: 1 }),
-    entry({ instanceId: 2, branch: "feat/list", active: true }),
+    entry({ agentId: 1 }),
+    entry({ agentId: 2, branch: "feat/list", active: true }),
   ])
   expect(rows.map((row) => [row.kind, row.onPath])).toEqual([
     ["project", true],
@@ -70,26 +70,26 @@ test("marks the untracked branch as part of the active path", () => {
   ])
 })
 
-test("nothing is on the path when no instance is active", () => {
+test("nothing is on the path when no agent is active", () => {
   expect(buildTree([entry()]).every((row) => !row.onPath)).toBe(true)
 })
 
-test("only selectable agent rows carry an instance", () => {
+test("only selectable agent rows carry an agent", () => {
   const rows = buildTree([
     entry({
-      instanceId: 7,
+      agentId: 7,
       subagents: [
         { sessionId: "child", label: "reviewer", state: "working", attention: null, children: [] },
       ],
     }),
   ])
-  expect(rows.map((row) => row.instanceId)).toEqual([null, null, 7, null])
+  expect(rows.map((row) => row.agentId)).toEqual([null, null, 7, null])
 })
 
-test("preserves the order instances were created in", () => {
+test("preserves the order agents were created in", () => {
   const rows = buildTree([
-    entry({ instanceId: 3, sessionId: "aaa" }),
-    entry({ instanceId: 1, sessionId: "bbb" }),
+    entry({ agentId: 3, sessionId: "aaa" }),
+    entry({ agentId: 1, sessionId: "bbb" }),
   ])
   expect(rows.filter((row) => row.kind === "agent").map((row) => row.label)).toEqual(["aaa", "bbb"])
 })
@@ -103,10 +103,10 @@ test("indents two columns per level, with nothing that can render wide", () => {
 test("a named session shows its slug in place of its id", () => {
   expect(
     shape([
-      entry({ instanceId: 1, slug: "name-every-instance" }),
-      entry({ instanceId: 2, sessionId: "5a75126ce54edb04" }),
+      entry({ agentId: 1, slug: "name-every-agent" }),
+      entry({ agentId: 2, sessionId: "5a75126ce54edb04" }),
     ]),
-  ).toEqual(["fmx", "  main", "    name-every-instance", "    5a75126ce54edb04"])
+  ).toEqual(["fmx", "  main", "    name-every-agent", "    5a75126ce54edb04"])
 })
 
 test("nests subagents recursively beneath their parent agent", () => {
@@ -148,5 +148,5 @@ test("nests subagents recursively beneath their parent agent", () => {
     ["subagent", 4, "test-reader"],
     ["subagent", 3, "docs-reader"],
   ])
-  expect(rows.slice(3).every((row) => !row.active && !row.onPath && row.instanceId === null)).toBe(true)
+  expect(rows.slice(3).every((row) => !row.active && !row.onPath && row.agentId === null)).toBe(true)
 })

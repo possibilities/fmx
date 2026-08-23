@@ -1,55 +1,55 @@
-import { InstanceManifest, type ManifestEntry } from "../../src/instance-manifest.ts"
+import { AgentManifest, type ManifestEntry } from "../../src/agent-manifest.ts"
 import {
   HandlerRelay,
-  InstanceEndedError,
-  type InstanceLaunch,
-  type InstanceTransport,
-  type InstanceTransportFactory,
+  AgentEndedError,
+  type AgentLaunch,
+  type AgentTransport,
+  type AgentTransportFactory,
   type TerminalSize,
   type TransportHandlers,
-} from "../../src/instance-transport.ts"
+} from "../../src/agent-transport.ts"
 
 /**
- * A Bun PTY behind the Instance transport seam, for the renderer's tests:
+ * A Bun PTY behind the Agent transport seam, for the renderer's tests:
  * the multiplexer suites can start a fake fx and watch it without a
  * Companion on the machine. It is a test fixture and nothing more — a
  * detach here ends the process, because a test must not leak one, where
  * the Companion's detach leaves fx running.
  */
-export class PtyTransportFactory implements InstanceTransportFactory {
+export class PtyTransportFactory implements AgentTransportFactory {
   readonly started: PtyTransport[] = []
-  /** How many times `attach` was asked, per Instance. */
+  /** How many times `attach` was asked, per Agent. */
   readonly attaches = new Map<string, number>()
   /**
    * What `attach` does. A PTY cannot be re-attached, so by default an
-   * attach says the Instance ended; a test of the unreachable path makes it
+   * attach says the Agent ended; a test of the unreachable path makes it
    * fail some other way, and one of the recovered path hands back the PTY
    * it lost.
    */
-  attachBehavior: "ended" | "unreachable" | ((entry: ManifestEntry) => InstanceTransport) = "ended"
+  attachBehavior: "ended" | "unreachable" | ((entry: ManifestEntry) => AgentTransport) = "ended"
   /** Holds every `start` until released; for tests of what happens before `adopt`. */
   gate: Promise<void> | null = null
 
-  async start(launch: InstanceLaunch): Promise<InstanceTransport> {
+  async start(launch: AgentLaunch): Promise<AgentTransport> {
     const transport = new PtyTransport(launch)
     this.started.push(transport)
     if (this.gate) await this.gate
     return transport
   }
 
-  async attach(entry: ManifestEntry): Promise<InstanceTransport> {
-    this.attaches.set(entry.instanceId, (this.attaches.get(entry.instanceId) ?? 0) + 1)
-    if (this.attachBehavior === "ended") throw new InstanceEndedError(entry, null)
+  async attach(entry: ManifestEntry): Promise<AgentTransport> {
+    this.attaches.set(entry.agentId, (this.attaches.get(entry.agentId) ?? 0) + 1)
+    if (this.attachBehavior === "ended") throw new AgentEndedError(entry, null)
     if (this.attachBehavior === "unreachable") throw new Error("the Companion is not answering")
     return this.attachBehavior(entry)
   }
 }
 
-export class PtyTransport implements InstanceTransport {
+export class PtyTransport implements AgentTransport {
   private readonly relay = new HandlerRelay()
   private readonly process: ReturnType<typeof Bun.spawn>
   private closed = false
-  /** The last size the Instance asked for. */
+  /** The last size the Agent asked for. */
   lastResize: TerminalSize | null = null
   /** Simulate the transport going away under a running process. */
   lose(error = new Error("transport lost")): void {
@@ -64,7 +64,7 @@ export class PtyTransport implements InstanceTransport {
     this.relay.stop()
   }
 
-  constructor(launch: InstanceLaunch) {
+  constructor(launch: AgentLaunch) {
     this.process = Bun.spawn(launch.command, {
       cwd: launch.cwd,
       env: launch.env,
@@ -132,6 +132,6 @@ export class PtyTransport implements InstanceTransport {
 }
 
 /** The two options every multiplexer test needs and none cares about: a Manifest nothing writes, a PTY behind the seam. */
-export function instanceOptions(): { manifest: InstanceManifest; transport: PtyTransportFactory } {
-  return { manifest: InstanceManifest.ephemeral("test"), transport: new PtyTransportFactory() }
+export function agentOptions(): { manifest: AgentManifest; transport: PtyTransportFactory } {
+  return { manifest: AgentManifest.ephemeral("test"), transport: new PtyTransportFactory() }
 }

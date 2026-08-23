@@ -6,11 +6,11 @@ import {
   panelSessionIdentity,
   parsePanelSessionName,
 } from "../src/panel-session.ts"
-import type { TransportHandlers } from "../src/instance-transport.ts"
+import type { TransportHandlers } from "../src/agent-transport.ts"
 import { CompanionCommand, type SessionEntry, type SpawnResult, type Spawner } from "../src/zmx-command.ts"
 
 const HOME = "0123456789ab"
-const INSTANCE = "0123456789abcdef0123456789abcdef"
+const AGENT = "0123456789abcdef0123456789abcdef"
 
 const definition = (overrides: Partial<PanelDefinition> = {}): PanelDefinition => ({
   id: "diff",
@@ -20,20 +20,20 @@ const definition = (overrides: Partial<PanelDefinition> = {}): PanelDefinition =
   ...overrides,
 })
 
-test("persistent Tool panel identity follows Home, Instance, id, and argv but not presentation", () => {
+test("persistent Tool panel identity follows Home, Agent, id, and argv but not presentation", () => {
   const panel = definition()
-  const identity = panelSessionIdentity(HOME, INSTANCE, panel)
-  expect(identity.name).toBe(`fmxp-${HOME}-${INSTANCE}-${panelDefinitionFingerprint(panel)}`)
+  const identity = panelSessionIdentity(HOME, AGENT, panel)
+  expect(identity.name).toBe(`fmxp-${HOME}-${AGENT}-${panelDefinitionFingerprint(panel)}`)
   expect(parsePanelSessionName(identity.name)).toEqual({
     homeId: HOME,
-    instanceId: INSTANCE,
+    agentId: AGENT,
     fingerprint: identity.fingerprint,
   })
   expect(identity.labels).toEqual({
     owner: "fmx",
     home: HOME,
     kind: "panel",
-    instance: INSTANCE,
+    agent: AGENT,
     panel: "diff",
     panel_id: "df087996d45b",
     definition: identity.fingerprint,
@@ -46,12 +46,12 @@ test("persistent Tool panel identity follows Home, Instance, id, and argv but no
 })
 
 test("reconciliation keeps exact sessions, removes stale owned ones, and leaves label impostors alone", async () => {
-  const current = panelSessionIdentity(HOME, INSTANCE, definition())
-  const stale = panelSessionIdentity(HOME, INSTANCE, definition({ command: ["old-diff"] }))
-  const stranger = panelSessionIdentity(HOME, INSTANCE, definition({ id: "tests", command: ["tests"] }))
-  const exitedStranger = panelSessionIdentity(HOME, INSTANCE, definition({ id: "logs", command: ["logs"] }))
-  const retired = panelSessionIdentity(HOME, INSTANCE, definition({ id: "retired", command: ["retired"] }))
-  const ambiguous = panelSessionIdentity(HOME, INSTANCE, definition({ id: "status", command: ["status"] }))
+  const current = panelSessionIdentity(HOME, AGENT, definition())
+  const stale = panelSessionIdentity(HOME, AGENT, definition({ command: ["old-diff"] }))
+  const stranger = panelSessionIdentity(HOME, AGENT, definition({ id: "tests", command: ["tests"] }))
+  const exitedStranger = panelSessionIdentity(HOME, AGENT, definition({ id: "logs", command: ["logs"] }))
+  const retired = panelSessionIdentity(HOME, AGENT, definition({ id: "retired", command: ["retired"] }))
+  const ambiguous = panelSessionIdentity(HOME, AGENT, definition({ id: "status", command: ["status"] }))
   const sessions = new Map<string, SessionEntry>([
     [current.name, live(current.name, current.labels, definition().command)],
     [stale.name, live(stale.name, stale.labels, null)],
@@ -76,7 +76,7 @@ test("reconciliation keeps exact sessions, removes stale owned ones, and leaves 
   const companion = new CompanionCommand("/tmp/fmx-panel-test", {}, fakeSpawner(sessions, calls))
   const controller = new CompanionPanelSessions(companion, HOME, null, [definition()])
 
-  const outcome = await controller.reconcile([INSTANCE])
+  const outcome = await controller.reconcile([AGENT])
   expect(outcome.kept).toEqual([current.name])
   expect(outcome.stopped).toEqual([stale.name])
   expect(outcome.ignored).toEqual([stranger.name, exitedStranger.name])
@@ -92,9 +92,9 @@ test("reconciliation keeps exact sessions, removes stale owned ones, and leaves 
   expect(sessions.has(stranger.name)).toBe(true)
 })
 
-test("an Instance ending during create cannot leave a persistent tool behind", async () => {
+test("an Agent ending during create cannot leave a persistent tool behind", async () => {
   const panel = definition()
-  const identity = panelSessionIdentity(HOME, INSTANCE, panel)
+  const identity = panelSessionIdentity(HOME, AGENT, panel)
   const sessions = new Map<string, SessionEntry>()
   const calls: string[] = []
   const createStarted = Promise.withResolvers<void>()
@@ -110,9 +110,9 @@ test("an Instance ending during create cannot leave a persistent tool behind", a
   const companion = new CompanionCommand("/tmp/fmx-panel-race", {}, spawner)
   const controller = new CompanionPanelSessions(companion, HOME, null, [panel])
 
-  const opening = controller.open(panel, { instanceId: INSTANCE, displayId: 7, cwd: "/work" }, { cols: 80, rows: 24 })
+  const opening = controller.open(panel, { agentId: AGENT, displayId: 7, cwd: "/work" }, { cols: 80, rows: 24 })
   await createStarted.promise
-  await controller.stopInstance(INSTANCE)
+  await controller.stopAgent(AGENT)
   finishCreate.resolve()
 
   expect(await opening.catch((error) => error)).toBeInstanceOf(Error)
@@ -121,9 +121,9 @@ test("an Instance ending during create cannot leave a persistent tool behind", a
   expect(sessions.has(identity.name)).toBe(false)
 })
 
-test("a timed-out create that appears after its Instance ends is retired when it becomes live", async () => {
+test("a timed-out create that appears after its Agent ends is retired when it becomes live", async () => {
   const panel = definition()
-  const identity = panelSessionIdentity(HOME, INSTANCE, panel)
+  const identity = panelSessionIdentity(HOME, AGENT, panel)
   const sessions = new Map<string, SessionEntry>()
   const calls: string[] = []
   const createStarted = Promise.withResolvers<void>()
@@ -138,9 +138,9 @@ test("a timed-out create that appears after its Instance ends is retired when it
   const companion = new CompanionCommand("/tmp/fmx-panel-timeout-race", {}, spawner)
   const controller = new CompanionPanelSessions(companion, HOME, null, [panel])
 
-  const opening = controller.open(panel, { instanceId: INSTANCE, displayId: 7, cwd: "/work" }, { cols: 80, rows: 24 })
+  const opening = controller.open(panel, { agentId: AGENT, displayId: 7, cwd: "/work" }, { cols: 80, rows: 24 })
   await createStarted.promise
-  await controller.stopInstance(INSTANCE)
+  await controller.stopAgent(AGENT)
   finishCreate.resolve()
   expect(await opening.catch((error) => error)).toBeInstanceOf(Error)
 
@@ -156,7 +156,7 @@ test("a timed-out create that appears after its Instance ends is retired when it
 
 test("a transient inspection failure after a timed-out create still arms retirement", async () => {
   const panel = definition()
-  const identity = panelSessionIdentity(HOME, INSTANCE, panel)
+  const identity = panelSessionIdentity(HOME, AGENT, panel)
   const sessions = new Map<string, SessionEntry>()
   const calls: string[] = []
   const createStarted = Promise.withResolvers<void>()
@@ -173,10 +173,10 @@ test("a transient inspection failure after a timed-out create still arms retirem
   const companion = new CompanionCommand("/tmp/fmx-panel-inspect-race", {}, spawner)
   const controller = new CompanionPanelSessions(companion, HOME, null, [panel])
 
-  const opening = controller.open(panel, { instanceId: INSTANCE, displayId: 7, cwd: "/work" }, { cols: 80, rows: 24 })
+  const opening = controller.open(panel, { agentId: AGENT, displayId: 7, cwd: "/work" }, { cols: 80, rows: 24 })
   await createStarted.promise
   inspectionsFail = true
-  await controller.stopInstance(INSTANCE)
+  await controller.stopAgent(AGENT)
   finishCreate.resolve()
   expect(await opening.catch((error) => error)).toBeInstanceOf(Error)
 
@@ -191,7 +191,7 @@ test("a transient inspection failure after a timed-out create still arms retirem
   controller.close()
 })
 
-test.skipIf(typeof Bun.Terminal !== "function")("a non-persistent tool starts locally in the active Instance environment", async () => {
+test.skipIf(typeof Bun.Terminal !== "function")("a non-persistent tool starts locally in the active Agent environment", async () => {
   const companion = new CompanionCommand("/tmp/fmx-panel-unused", {}, async () => {
     throw new Error("a local tool must not call the Companion")
   })
@@ -200,7 +200,7 @@ test.skipIf(typeof Bun.Terminal !== "function")("a non-persistent tool starts lo
     command: [
       process.execPath,
       "-e",
-      'process.stdout.write(`${process.cwd()}|${process.env.FMX_INSTANCE_ID}|${process.env.FMX_PANEL_ID}|${process.env.FMX_SOCKET_PATH}\\n`); setInterval(() => {}, 1000)',
+      'process.stdout.write(`${process.cwd()}|${process.env.FMX_AGENT_ID}|${process.env.FMX_PANEL_ID}|${process.env.FMX_SOCKET_PATH}\\n`); setInterval(() => {}, 1000)',
     ],
     persistent: false,
   })
@@ -209,7 +209,7 @@ test.skipIf(typeof Bun.Terminal !== "function")("a non-persistent tool starts lo
   })
   const transport = await controller.open(
     panel,
-    { instanceId: INSTANCE, displayId: 7, cwd: process.cwd() },
+    { agentId: AGENT, displayId: 7, cwd: process.cwd() },
     { cols: 80, rows: 24 },
   )
   const output = Promise.withResolvers<string>()

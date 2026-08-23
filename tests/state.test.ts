@@ -17,10 +17,10 @@ describe("statePath", () => {
 describe("loadState", () => {
   test("round-trips through saveState, creating missing directories", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "fmx-state-")), "nested", "state.json")
-    const activeInstanceId = "0123456789abcdef0123456789abcdef"
-    await saveState({ sidebarWidth: 31, activeInstanceId }, path)
-    expect(await loadState(path)).toEqual({ sidebarWidth: 31, activeInstanceId })
-    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ sidebarWidth: 31, activeInstanceId })
+    const activeAgentId = "0123456789abcdef0123456789abcdef"
+    await saveState({ trayWidth: 31, activeAgentId }, path)
+    expect(await loadState(path)).toEqual({ trayWidth: 31, activeAgentId })
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ trayWidth: 31, activeAgentId })
   })
 
   test("round-trips Tool panel width, visibility, and selected tool", async () => {
@@ -47,16 +47,16 @@ describe("loadState", () => {
     await writeFile(path, "[1, 2]", "utf8")
     expect(await loadState(path)).toEqual({})
 
-    await writeFile(path, JSON.stringify({ sidebarWidth: -4 }), "utf8")
+    await writeFile(path, JSON.stringify({ trayWidth: -4 }), "utf8")
     expect(await loadState(path)).toEqual({})
 
-    await writeFile(path, JSON.stringify({ sidebarWidth: 20.5 }), "utf8")
+    await writeFile(path, JSON.stringify({ trayWidth: 20.5 }), "utf8")
     expect(await loadState(path)).toEqual({})
 
-    await writeFile(path, JSON.stringify({ sidebarWidth: "26" }), "utf8")
+    await writeFile(path, JSON.stringify({ trayWidth: "26" }), "utf8")
     expect(await loadState(path)).toEqual({})
 
-    await writeFile(path, JSON.stringify({ activeInstanceId: "not-an-instance" }), "utf8")
+    await writeFile(path, JSON.stringify({ activeAgentId: "not-an-agent" }), "utf8")
     expect(await loadState(path)).toEqual({})
 
     await writeFile(path, JSON.stringify({ panelWidth: 0, panelVisible: "yes", activePanelId: "Bad id" }), "utf8")
@@ -83,13 +83,13 @@ describe("loadState", () => {
 
   test("ignores unknown fields", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "fmx-state-")), "state.json")
-    await writeFile(path, JSON.stringify({ sidebarWidth: 24, future: true }), "utf8")
-    expect(await loadState(path)).toEqual({ sidebarWidth: 24 })
-    await writeFile(path, JSON.stringify({ sidebarHidden: "yes" }), "utf8")
+    await writeFile(path, JSON.stringify({ trayWidth: 24, future: true }), "utf8")
+    expect(await loadState(path)).toEqual({ trayWidth: 24 })
+    await writeFile(path, JSON.stringify({ trayHidden: "yes" }), "utf8")
     expect(await loadState(path)).toEqual({})
-    await writeFile(path, JSON.stringify({ sidebarHidden: false }), "utf8")
+    await writeFile(path, JSON.stringify({ trayHidden: false }), "utf8")
     expect(await loadState(path)).toEqual({})
-    await writeFile(path, JSON.stringify({ sidebarHidden: true }), "utf8")
-    expect(await loadState(path)).toEqual({ sidebarHidden: true })
+    await writeFile(path, JSON.stringify({ trayHidden: true }), "utf8")
+    expect(await loadState(path)).toEqual({ trayHidden: true })
   })
 })

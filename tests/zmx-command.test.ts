@@ -62,7 +62,7 @@ test("create passes identity, labels, the command after `--`, and the Companion'
     [["list"], { exitCode: 0, stdout: "[]", stderr: "" }],
   ])
   // fmx's own environment carries an outer surface's names; the fx environment built for the
-  // instance must win, with only the Companion's variables replaced.
+  // agent must win, with only the Companion's variables replaced.
   const companion = new CompanionCommand("/tmp/fmx-cmd-test-dir", { PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer" }, spawner)
   const created = await companion.create({
     name: "fmx-1",
@@ -162,7 +162,7 @@ test.skipIf(!ENABLED)("live: create, list with labels, inspect, kill, settle, fo
     command: ["sh", "-c", "echo hi; sleep 30"],
     cwd: "/tmp",
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ZMX_SESSION: "stranger" },
-    labels: { owner: "fmx", home: "h1", instance: "1".repeat(32), pane: "p_" + "1".repeat(32) },
+    labels: { owner: "fmx", home: "h1", agent: "1".repeat(32), pane: "p_" + "1".repeat(32) },
   })
   created.push(name)
   expect(result.socketPath).toBe(join(dir, name))

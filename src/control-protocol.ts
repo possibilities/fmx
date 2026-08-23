@@ -44,9 +44,9 @@ export type ControlReply =
 export const CONTROL_METHODS = [
   "orient",
   "detach",
-  "instance.list",
-  "instance.wait",
-  "instance.send",
+  "agent.list",
+  "agent.wait",
+  "agent.send",
   "launch",
   "focus",
   "draft.open",
@@ -55,7 +55,7 @@ export const CONTROL_METHODS = [
   "draft.submit",
   "draft.cancel",
   "draft.wait",
-  "sidebar",
+  "tray",
   "panel",
   "keys",
   "catalog",
@@ -78,8 +78,8 @@ export class ControlFailure extends Error {
 
 /* ---------------------------------------------------------------- results */
 
-/** One instance as the CLI sees it: the sidebar's model, not its drawing. */
-export type InstanceInfo = {
+/** One agent as the CLI sees it: the tray's model, not its drawing. */
+export type AgentInfo = {
   id: number
   pane_id: string
   cwd: string
@@ -94,11 +94,11 @@ export type InstanceInfo = {
   state: DisplayState
   attention: AgentAttention | null
   active: boolean
-  /** A prompt has been typed in — by launch or by `instance send` — and fx
-   * has not yet reported working on it. `instance wait` holds through it. */
+  /** A prompt has been typed in — by launch or by `agent send` — and fx
+   * has not yet reported working on it. `agent wait` holds through it. */
   awaiting_work: boolean
-  /** The fx subagents whose control records name this instance's session as
-   * their parent, nested as the sidebar nests them. Not targets: the sidebar
+  /** The fx subagents whose control records name this agent's session as
+   * their parent, nested as the tray nests them. Not targets: the tray
    * cannot select one either. */
   subagents: SubagentInfo[]
 }
@@ -111,11 +111,11 @@ export type SubagentInfo = {
   children: SubagentInfo[]
 }
 
-export type SidebarRow = {
+export type TrayRow = {
   kind: "project" | "branch" | "agent" | "subagent"
   depth: number
   text: string
-  instance: number | null
+  agent: number | null
   active: boolean
 }
 
@@ -146,8 +146,8 @@ export type DraftInfo = {
   fields: LaunchFields
   /** Added when the draft is read; what the model and effort rows offer. */
   choices?: LaunchChoices
-  /** The instance a submitted draft started, or why a failed one did not. */
-  outcome: { instance: number } | { error: string } | null
+  /** The agent a submitted draft started, or why a failed one did not. */
+  outcome: { agent: number } | { error: string } | null
 }
 
 export type Surface =
@@ -165,11 +165,11 @@ export type Snapshot = {
     cols: number
     rows: number
   }
-  /** The caller's own instance, when called from inside one. */
-  you: InstanceInfo | null
+  /** The caller's own agent, when called from inside one. */
+  you: AgentInfo | null
   active: number | null
-  instances: InstanceInfo[]
-  sidebar: { visible: boolean; hidden: boolean; width: number; rows: SidebarRow[] }
+  agents: AgentInfo[]
+  tray: { visible: boolean; hidden: boolean; width: number; rows: TrayRow[] }
   panel: PanelInfo
   surface: Surface
 }
@@ -180,7 +180,7 @@ export type PanelInfo = {
   hidden: boolean
   width: number
   selected: string | null
-  focused: "instance" | "panel"
+  focused: "agent" | "panel"
   tabs: { id: string; label: string; persistent: boolean; diagnostic?: boolean }[]
 }
 
@@ -198,7 +198,7 @@ export type KeysInfo = {
 /* ---------------------------------------------------------------- targets */
 
 /**
- * How a command names an instance. Numbers are instance ids; `current` is the
+ * How a command names an agent. Numbers are agent ids; `current` is the
  * caller's own; `next` and `previous` are relative to the active one; a bare
  * word is a slug first and a session-id prefix second.
  */

@@ -14,7 +14,7 @@ import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel } from "./debug-panel.ts"
 import { FmxTerminalRenderable } from "./fx-terminal.ts"
 import { hasDetectedBackground, modalColors, themeModeReport } from "./host-palette.ts"
-import type { TerminalSize, TerminalTransport } from "./instance-transport.ts"
+import type { TerminalSize, TerminalTransport } from "./agent-transport.ts"
 import type { PanelContext, PanelSessionController } from "./panel-session.ts"
 import type { SocketFrame } from "./socket-frames.ts"
 import { sanitizeTitle } from "./title-parser.ts"
@@ -50,8 +50,8 @@ type RuntimeState = "loading" | "ready" | "exited" | "failed" | "lost"
 
 /**
  * The right-side dock and the terminals shown inside it. A terminal runtime is
- * cached per Instance and configured tool for the lifetime of this fmx: local
- * tools therefore survive hiding, tab changes, and Instance switches, while
+ * cached per Agent and configured tool for the lifetime of this fmx: local
+ * tools therefore survive hiding, tab changes, and Agent switches, while
  * persistent tools keep living in the Companion after every transport lets go.
  */
 export class ToolPanel {
@@ -81,10 +81,10 @@ export class ToolPanel {
       tab: { id: definition.id, label: definition.label, persistent: definition.persistent },
     }))
     const debugEntry: ToolEntry[] = options.debugSocketPath
-      ? [{ kind: "debug", tab: { id: DEBUG_TOOL_ID, label: "Agent socket", persistent: false, diagnostic: true } }]
+      ? [{ kind: "debug", tab: { id: DEBUG_TOOL_ID, label: "agent socket", persistent: false, diagnostic: true } }]
       : []
     this.entries = [...terminalEntries, ...debugEntry]
-    if (this.entries.length === 0) throw new Error("a Tool panel needs at least one terminal or diagnostic tool")
+    if (this.entries.length === 0) throw new Error("a tools panel needs at least one terminal or diagnostic tool")
 
     const requested = this.entries.find((entry) => entry.tab.id === options.initialSelectedId)
     // Preserve the old FMX_DEBUG_PANEL behavior: without saved selection, the
@@ -116,7 +116,7 @@ export class ToolPanel {
     })
     this.contextStatus = new TextRenderable(renderer, {
       id: "fmx-tool-panel-status",
-      content: "no active Instance",
+      content: "no active agent",
       selectable: false,
       visible: false,
     })
@@ -175,7 +175,7 @@ export class ToolPanel {
 
   setContext(context: PanelContext | null): void {
     if (
-      this.context?.instanceId === context?.instanceId &&
+      this.context?.agentId === context?.agentId &&
       this.context?.displayId === context?.displayId &&
       this.context?.cwd === context?.cwd
     ) {
@@ -203,7 +203,7 @@ export class ToolPanel {
     return this.selectedId
   }
 
-  /** Keep terminal focus in the Tool panel, including across an async attach. */
+  /** Keep terminal focus in the tools panel, including across an async attach. */
   focus(): boolean {
     if (!this.visible || !this.focusable) return false
     this.wantsFocus = true
@@ -212,7 +212,7 @@ export class ToolPanel {
     return true
   }
 
-  /** Hand focus ownership back to the Instance. */
+  /** Hand focus ownership back to the Agent. */
   blur(): void {
     this.wantsFocus = false
     this.suspendFocus()
@@ -248,15 +248,15 @@ export class ToolPanel {
     this.runtimes.clear()
   }
 
-  /** An Instance ended, so no local renderer or PTY for its context remains. */
-  forgetContext(instanceId: string): void {
+  /** An Agent ended, so no local renderer or PTY for its context remains. */
+  forgetContext(agentId: string): void {
     for (const [key, runtime] of this.runtimes) {
-      if (runtime.context.instanceId !== instanceId) continue
+      if (runtime.context.agentId !== agentId) continue
       this.body.remove(runtime.root)
       runtime.destroy()
       this.runtimes.delete(key)
     }
-    if (this.context?.instanceId === instanceId) this.setContext(null)
+    if (this.context?.agentId === agentId) this.setContext(null)
   }
 
   private addLink(entry: ToolEntry): void {
@@ -318,7 +318,7 @@ export class ToolPanel {
   }
 
   private runtime(definition: PanelDefinition, context: PanelContext, forceRetry: boolean): ToolRuntime {
-    const key = runtimeKey(definition.id, context.instanceId)
+    const key = runtimeKey(definition.id, context.agentId)
     const existing = this.runtimes.get(key)
     if (existing && (!forceRetry || !existing.retryable)) return existing
     if (existing) {
@@ -327,7 +327,7 @@ export class ToolPanel {
       this.runtimes.delete(key)
     }
     const sessions = this.options.sessions
-    if (!sessions) throw new Error("configured Tool panels need a session controller")
+    if (!sessions) throw new Error("configured tools panels need a session controller")
     const runtime = new ToolRuntime(
       this.renderer,
       sessions,
@@ -351,7 +351,7 @@ export class ToolPanel {
   private currentRuntime(): ToolRuntime | null {
     const entry = this.entry(this.selectedId)
     if (entry?.kind !== "terminal" || !this.context) return null
-    return this.runtimes.get(runtimeKey(entry.definition.id, this.context.instanceId)) ?? null
+    return this.runtimes.get(runtimeKey(entry.definition.id, this.context.agentId)) ?? null
   }
 
   private entry(id: string): ToolEntry | undefined {
@@ -530,8 +530,8 @@ class ToolRuntime {
   }
 }
 
-function runtimeKey(panelId: string, instanceId: string): string {
-  return `${instanceId}\0${panelId}`
+function runtimeKey(panelId: string, agentId: string): string {
+  return `${agentId}\0${panelId}`
 }
 
 function errorMessage(error: unknown): string {

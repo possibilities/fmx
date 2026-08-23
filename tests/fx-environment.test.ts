@@ -25,7 +25,7 @@ test("fx child environment describes the embedded terminal, not the outer multip
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
     TERM_PROGRAM: "fmx",
-    FMX_INSTANCE_ID: "12",
+    FMX_AGENT_ID: "12",
   })
   expect(env.TMUX).toBeUndefined()
   expect(env.TMUX_PANE).toBeUndefined()
@@ -76,14 +76,14 @@ test("fmx's own agent socket replaces whatever was inherited", () => {
   expect(env.HERDR_ENV).toBeUndefined()
 })
 
-test("hands every instance the control socket, and clears one inherited from another fmx", () => {
+test("hands every agent the control socket, and clears one inherited from another fmx", () => {
   const env = createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work", null, "/tmp/fmx-42.ctl")
   expect(env.FMX_SOCKET_PATH).toBe("/tmp/fmx-42.ctl")
-  expect(env.FMX_INSTANCE_ID).toBe("3")
+  expect(env.FMX_AGENT_ID).toBe("3")
   expect(createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work").FMX_SOCKET_PATH).toBeUndefined()
 })
 
-test("applies model and effort to one instance without changing unrelated launches", () => {
+test("applies model and effort to one agent without changing unrelated launches", () => {
   const ambient = { FX_MODEL: "ambient-model", FX_EFFORT: "medium" }
   expect(createFxEnvironment(ambient, 3, "/work")).toMatchObject(ambient)
 
@@ -102,7 +102,7 @@ test("an inherited Companion session is not handed on to fx", () => {
   expect(env.ZMX_SESSION_PREFIX).toBeUndefined()
 })
 
-test("a Tool panel inherits the active Instance context but never its Agent socket", () => {
+test("a tools panel inherits the active Agent context but never its Agent socket", () => {
   const env = createPanelEnvironment(
     {
       HERDR_SOCKET_PATH: "/tmp/outer.sock",
@@ -118,7 +118,7 @@ test("a Tool panel inherits the active Instance context but never its Agent sock
   )
   expect(env).toMatchObject({
     PWD: "/work/tree",
-    FMX_INSTANCE_ID: "7",
+    FMX_AGENT_ID: "7",
     FMX_PANEL_ID: "diff",
     FMX_SOCKET_PATH: "/tmp/current.ctl",
   })

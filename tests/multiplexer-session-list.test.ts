@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 import { rowText, SessionList, stateIcon, truncate } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 
@@ -14,7 +14,7 @@ const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
-    instanceId: 1,
+    agentId: 1,
     project: "fmx",
     branch: "main",
     sessionId: SESSION_ID,
@@ -41,7 +41,7 @@ test("varies the blocked icon by what fx is waiting for", () => {
   expect(stateIcon("blocked", null)).toBe("×")
 })
 
-test("fits an agent row inside the default sidebar", () => {
+test("fits an agent row inside the default tray", () => {
   const [, , agent] = buildTree([entry()])
   // inset 1 + indent 4 + icon 2 + id 16 = 23 of 26.
   expect(rowText(agent!, 26)).toBe(SESSION_ID)
@@ -96,7 +96,7 @@ test("keeps session names in the terminal's gray before and after palette detect
 async function createList(width: number, height: number) {
   const setup = await createTestRenderer({ width, height })
   const selected: number[] = []
-  const list = new SessionList(setup.renderer, (instanceId) => selected.push(instanceId))
+  const list = new SessionList(setup.renderer, (agentId) => selected.push(agentId))
   setup.renderer.root.add(list.root)
   return { setup, list, selected }
 }
@@ -106,9 +106,9 @@ test("draws the tree and reports clicks on agent rows", async () => {
   try {
     list.render(
       buildTree([
-        entry({ instanceId: 1, state: "blocked", attention: "question" }),
-        entry({ instanceId: 2, sessionId: "5a75126ce54edb04", state: "working", active: true }),
-        entry({ instanceId: 3, branch: "feat/list", sessionId: "84af73d3e9e42cb1", state: "done" }),
+        entry({ agentId: 1, state: "blocked", attention: "question" }),
+        entry({ agentId: 2, sessionId: "5a75126ce54edb04", state: "working", active: true }),
+        entry({ agentId: 3, branch: "feat/list", sessionId: "84af73d3e9e42cb1", state: "done" }),
       ]),
       26,
     )
@@ -197,7 +197,7 @@ test("draws an untracked branch between a plain directory and its agent", async 
   }
 })
 
-test("selects an agent on mouse-down without starting sidebar text selection", async () => {
+test("selects an agent on mouse-down without starting tray text selection", async () => {
   const { setup, list, selected } = await createList(30, 10)
   try {
     list.render(buildTree([entry()]), 26)
@@ -235,7 +235,7 @@ test("a click on a project or branch row selects nothing", async () => {
 test("fills the active row and nothing else", async () => {
   const { setup, list } = await createList(30, 10)
   try {
-    list.render(buildTree([entry({ instanceId: 1 }), entry({ instanceId: 2, active: true })]), 26)
+    list.render(buildTree([entry({ agentId: 1 }), entry({ agentId: 2, active: true })]), 26)
     await setup.renderOnce()
 
     const rows = ["project-0", "branch-1", "agent-1", "agent-2"].map(
@@ -258,7 +258,7 @@ test("the indent keeps every row's text aligned", async () => {
     list.render(
       buildTree(
         (["blocked", "working", "done", "idle", "unknown"] as const).map((state, index) =>
-          entry({ instanceId: index + 1, state }),
+          entry({ agentId: index + 1, state }),
         ),
       ),
       26,
@@ -275,10 +275,10 @@ test("the indent keeps every row's text aligned", async () => {
   }
 })
 
-test("mounts the list into the sidebar", async () => {
+test("mounts the list into the tray", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -290,8 +290,8 @@ test("mounts the list into the sidebar", async () => {
   try {
     await setup.renderOnce()
     const list = setup.renderer.root.findDescendantById("fmx-session-list") as BoxRenderable
-    const sidebar = setup.renderer.root.findDescendantById("fmx-sidebar") as BoxRenderable
-    expect([list.x, list.width]).toEqual([sidebar.x, sidebar.width])
+    const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
+    expect([list.x, list.width]).toEqual([tray.x, tray.width])
   } finally {
     await multiplexer.shutdown()
   }

@@ -3,12 +3,12 @@ import { BoxRenderable, type RGBA, type TerminalColors, TextAttributes, TextRend
 import { createTestRenderer } from "@opentui/core/testing"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 
 test("themes the empty state and keyboard-opened help", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: "fx",
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,

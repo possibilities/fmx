@@ -167,7 +167,7 @@ export class CompanionCommand {
    * Every session in the directory, as found, deleting nothing. An empty or
    * missing directory is `[]`; anything that is not a JSON array is a
    * failure, never "no sessions" — a reconciliation that believed it would
-   * drop every Instance.
+   * drop every Agent.
    */
   async list(where: Record<string, string> = {}): Promise<SessionEntry[]> {
     const args = ["list", "--json"]

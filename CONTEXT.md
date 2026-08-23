@@ -1,15 +1,15 @@
 # fmx glossary
 
-**Instance** — one fx process together with the embedded terminal fmx renders
-it in. Instances are numbered by fmx, keep their number across fmx restarts,
+**Agent** — one fx process together with the embedded terminal fmx renders
+it in. Agents are numbered by fmx, keep their number across fmx restarts,
 and disappear when their fx exits — never when fmx does: the Companion holds
 the fx, and the next fmx for the Home attaches to it.
-_Avoid_: pane, tab, window, session.
+_Avoid_: pane, tab, window, session, instance.
 
-**Detach** — closing fmx while leaving every Instance and its fx running with
+**Detach** — closing fmx while leaving every Agent and its fx running with
 the Companion. `keys.detach` and `fmx control detach` request it explicitly;
-a signal, crash, or lost host terminal has the same Instance-lifecycle result.
-_Avoid_: exit or close for an Instance, quit.
+a signal, crash, or lost host terminal has the same Agent-lifecycle result.
+_Avoid_: exit or close for an Agent, quit.
 
 **Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns an
 fx process and its PTY so both survive fmx closing. fmx drives one over a
@@ -31,49 +31,49 @@ _Avoid_: lock file, version file, dependency.
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates
 and keys its agent socket. One Home runs one fmx at a time, and owns the
-Instances its Companion holds between runs. A new fmx briefly waits for a
+Agents its Companion holds between runs. A new fmx briefly waits for a
 closing predecessor to release the Home, but never displaces a live one.
 _Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
 is fx's own settings), installation, workspace.
 
 **Manifest** — `~/.config/fmx/instances.json`, the Home's own record of the
-Instances its Companion holds: one entry per Instance carrying its identity,
+Agents its Companion holds: one entry per Agent carrying its identity,
 display number, directory, the fx it runs, and the last Agent-socket status
 checkpoint, written before the Companion is asked to start anything and
-removed when the Instance ends. A claim, not the truth: the Companion's
+removed when the Agent ends. A claim, not the truth: the Companion's
 sessions are the truth, and a start joins the two — attaching what both know,
 adopting what only the Companion holds, dropping what only the Manifest
 remembers. It keeps no prompt text.
 _Avoid_: registry (that is the agent registry), state file (that is
 `state.json`), session list.
 
-**Transport** — what carries one Instance's terminal between fmx and the
+**Transport** — what carries one Agent's terminal between fmx and the
 Companion: bytes out, bytes in, the size, and the two ways it ends — fx
 ending, with a status, against the transport itself dropping, which says
-nothing about fx. The seam `FxInstance` renders through; the Companion's
+nothing about fx. The seam `FxAgent` renders through; the Companion's
 socket is the only one fmx ships.
 _Avoid_: connection (that is the socket underneath), PTY, backend.
 
-**Restore** — what the Companion sends first on every attach: the Instance's
+**Restore** — what the Companion sends first on every attach: the Agent's
 whole terminal as it stands, between a `RestoreBegin` the visible terminal
 resets at and a `Ready` after which bytes are live. A reconnect replays onto
-a clean screen for the same reason a first attach does. The Instance's last
+a clean screen for the same reason a first attach does. The Agent's last
 reported agent status is seeded before its row can render; subagent status is
 derived again from fx's control records and live locks.
 _Avoid_: replay, resync, history.
 
-**Agent socket** — the Unix socket fmx binds and points every instance at, and
-over which fx reports its own lifecycle. One socket serves all instances.
+**Agent socket** — the Unix socket fmx binds and points every agent at, and
+over which fx reports its own lifecycle. One socket serves all agents.
 _Avoid_: status socket, control socket, IPC socket.
 
-**Pane id** — the opaque string that identifies an instance on the agent
+**Pane id** — the opaque string that identifies an agent on the agent
 socket. It is the wire's word, not fmx's: fx addresses every request to a pane
-id, so fmx mints one per instance and never uses the term anywhere else. It is
-`p_<instance id>`, the same token as the Companion session name
-`fmx-<instance id>`, which is why an fx keeps reporting to the right Instance
+id, so fmx mints one per agent and never uses the term anywhere else. It is
+`p_<agent id>`, the same token as the Companion session name
+`fmx-<agent id>`, which is why an fx keeps reporting to the right Agent
 across fmx restarts.
-_Avoid_: instance id (that is the Manifest's 128-bit token; the number
-exported as `FMX_INSTANCE_ID` is the display id).
+_Avoid_: agent id (that is the Manifest's 128-bit token; the number
+exported as `FMX_AGENT_ID` is the display id).
 
 **Frame** — one of fx's requests over the agent socket: the raw line plus what
 fmx decoded from it. fmx's replies are not frames — they are generated by fmx,
@@ -81,46 +81,51 @@ identical every time, and say nothing about fx.
 _Avoid_: message, packet, event.
 
 **Debug panel** — the scrollable column of frames down the right third of the
-Tool panel, available as a diagnostic tool only when `FMX_DEBUG_PANEL` is set.
+tools panel, available as a diagnostic tool only when `FMX_DEBUG_PANEL` is set.
 Payloads are re-indented two spaces per level for reading; the frame keeps the
 raw wire line. An observation surface: it reads frames and never writes to the
 socket or to fx. Its `[clear]` button empties the view alone; the socket keeps
 running and later frames still arrive.
 _Avoid_: log pane, console, inspector.
 
-**Tool panel** — the resizable terminal dock to the right of the active
-Instance. Its configured terminal tools run in that Instance's directory and
+**Tools panel** — the resizable terminal dock to the right of the active
+Agent. Its configured terminal tools run in that Agent's directory and
 identity, switch context with it, and appear as a one-line link rail when more
 than one is available. The dock starts hidden, remembers its visibility,
 width, and selected tool, and does not exist when no configured or diagnostic
 tool is available. Persistent tools are owned by the Companion across Detach;
 non-persistent tools are recreated naturally with fmx.
-_Avoid_: right-hand panel, utility pane, inspector, global panel.
+_Avoid_: tool panel, right-hand panel, utility pane, inspector, global panel.
 
 **Toast** — a transient, bottom-center notice drawn over the active surface.
 Toasts use the terminal's detected palette with fallbacks, appear one at a
 time in arrival order, and do not take focus.
 _Avoid_: status bar, modal.
 
-**Session list** — the sidebar's tree of running instances: project, then
+**Tray** — the collapsible left column that carries the Session list: hidden
+while no agent runs or when toggled away, resizable by its divider, its width
+and visibility remembered across runs.
+_Avoid_: sidebar, panel.
+
+**Session list** — the tray's tree of running agents: project, then
 branch, then one row per agent carrying its status icon and its name — the
 slug once naming lands, the short session id until then.
 Depth is carried by indentation alone, with no connecting glyphs.
-Clicking an agent row switches to that instance; project and branch rows are
-not selectable. The switch happens on mouse-down and sidebar text itself is
+Clicking an agent row switches to that agent; project and branch rows are
+not selectable. The switch happens on mouse-down and tray text itself is
 not selectable, so pointer navigation never waits for release. Agent names use
 the terminal's native gray directly, so late palette detection does not
 restyle them. The selected-row background and divider are chosen together
 before first paint and do not change when the initial palette answer is late.
-The selected agent's stable Instance identity is machine state, restored before
+The selected agent's stable Agent identity is machine state, restored before
 the first frame so detach and reattach do not move focus back to agent one.
 _Avoid_: agent panel, tab bar, session picker.
 
 **Subagent row** — a non-selectable Session list row for an fx subagent whose
-filesystem control record names a visible Instance's session as its parent.
+filesystem control record names a visible Agent's session as its parent.
 It uses the agent-row status icon and nests recursively beneath that parent;
 its state comes from the control record and the subagent's own session lock.
-_Avoid_: child pane, sub-instance.
+_Avoid_: child pane, sub-agent.
 
 **Path** — the active agent and its ancestors. The active row takes a
 background fill and its ancestors are set in bold; nothing else marks them, so
@@ -131,24 +136,24 @@ _Avoid_: selection, breadcrumb.
 offered as projects, along with the root itself. Roots are scanned one level
 deep and never recursively; a root that is not on this machine contributes
 nothing. A Home must configure at least one before its TUI can start; its first
-root is fmx's working directory and the default for a direct new Instance.
+root is fmx's working directory and the default for a direct new Agent.
 _Avoid_: workspace root, search path, scan directory.
 
-**Launch dialog** — the modal that gathers what an instance is started with
+**Launch dialog** — the modal that gathers what an agent is started with
 before fx runs: a prompt, a project, whether to cut a worktree, and the launch
 level, one row each. `tab` moves between rows; a chooser row answers a letter
 by cycling to the next value starting with it, and space opens its picker.
 _Avoid_: new tab modal, launcher, form.
 
-**Launch level** — the Codex model and reasoning effort a new instance starts
+**Launch level** — the Codex model and reasoning effort a new agent starts
 with, passed to that fx alone through `FX_MODEL` and `FX_EFFORT`. Its allowed
 pairs come from fmx's small local catalog because fx does not expose the effort
 metadata from its provider catalog through `fx models --json`.
 _Avoid_: profile, preset, provider setting.
 
-**Launch prompt** — the text an instance starts working on. fx takes no prompt
+**Launch prompt** — the text an agent starts working on. fx takes no prompt
 on its command line, so fmx pastes it into the terminal and sends it once fx
-has reported itself over the agent socket. An instance launched with one is
+has reported itself over the agent socket. An agent launched with one is
 therefore already working when it is first looked at.
 _Avoid_: intent, initial message, seed.
 
@@ -173,13 +178,13 @@ highlighted project to the row rather than starting anything. Dismissing it
 changes nothing.
 _Avoid_: overlay, palette, fuzzy finder.
 
-**Launch count** — how many instances have been started in a directory, kept
+**Launch count** — how many agents have been started in a directory, kept
 in `state.json` and incremented by every start whichever key opened it. It
 orders the project picker and is never drawn in it.
 _Avoid_: frecency, history, usage.
 
-**Git context** — the worktree root and branch fmx reads for an instance's
-directory, because fx never reports where it is working. An instance outside a
+**Git context** — the worktree root and branch fmx reads for an agent's
+directory, because fx never reports where it is working. An agent outside a
 repository has none and nests under a virtual `(untracked)` branch in the
 session list.
 _Avoid_: repo info, workspace.
@@ -190,17 +195,17 @@ last socket-truth checkpoint, and a newer frame supersedes that. Which pane a
 human is looking at is fmx's own knowledge and lives in the multiplexer.
 _Avoid_: session state, pane state.
 
-**Seen** — whether the human has had an instance in front of them since its
-state last changed, tracked as a registry-local state version per instance
-rather than a clock. An idle instance that is not seen is **done** — finished and
+**Seen** — whether the human has had an agent in front of them since its
+state last changed, tracked as a registry-local state version per agent
+rather than a clock. An idle agent that is not seen is **done** — finished and
 unacknowledged — which is the only difference between the `✓` and `○` icons.
 _Avoid_: read, acknowledged, unread.
 
-**Slug** — the name an instance earns from its first prompt: `[a-z0-9-]+`,
+**Slug** — the name an agent earns from its first prompt: `[a-z0-9-]+`,
 three to six words, minted once by a metadata completion and kept. It stands
 in for the session id wherever one is accepted, which is why it is unique
 across the store and why a collision is suffixed rather than shared. An
-instance nobody has prompted has none, and shows its session id instead.
+agent nobody has prompted has none, and shows its session id instead.
 _Avoid_: title, label (that is what fx calls a pane through `pane.rename`),
 name.
 
@@ -225,13 +230,13 @@ _Avoid_: job, task, naming run.
 **Control socket** — the Unix socket `fmx control <command>` drives a running fmx
 through, bound beside the agent socket as `/tmp/fmx-<uid>-<home id>.ctl` — as
 stable as it, so an fx that outlives one fmx still reaches the next — and
-handed to every instance as `FMX_SOCKET_PATH`. Its own wire, not the agent socket's: that
+handed to every agent as `FMX_SOCKET_PATH`. Its own wire, not the agent socket's: that
 one speaks fx's protocol and answers before it acts, where a command needs its
 result. One request per connection; a waiting method holds the connection.
 _Avoid_: command socket, API socket, RPC.
 
-**Orientation** — what `fmx control orient` answers: the caller's own instance as
-`you`, every instance, the sidebar's rows as drawn, and whatever surface is
+**Orientation** — what `fmx control orient` answers: the caller's own agent as
+`you`, every agent, the tray's rows as drawn, and whatever surface is
 open. A read, which never marks anything seen.
 _Avoid_: status, state dump, introspection.
 
@@ -242,12 +247,12 @@ dialog the human started and a human can finish one an agent prefilled. Ids
 exist so an agent can never submit a draft it did not mean to.
 _Avoid_: pending launch, form state, staged launch.
 
-**Target** — how a command names an instance: its id, `current` for the
+**Target** — how a command names an agent: its id, `current` for the
 caller's own, `active` for the one on screen, `next` or `previous` relative to
 it, or a slug, with a session-id prefix as the fallback.
 _Avoid_: selector, handle, address.
 
-**Awaiting work** — an instance whose prompt has gone in, by launch or by
-`instance send`, and which fx has not yet reported working on. A wait holds
+**Awaiting work** — an agent whose prompt has gone in, by launch or by
+`agent send`, and which fx has not yet reported working on. A wait holds
 through it: the idle fx reports at startup is not the idle that means finished.
 _Avoid_: busy, pending, queued.

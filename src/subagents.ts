@@ -54,7 +54,7 @@ export type SubagentObserverOptions = {
 /**
  * A filesystem projection of fx's subagent store. The Agent socket has no
  * child-scoped lifecycle, so this joins child control records to the full
- * session ids fx already reported for live Instances.
+ * session ids fx already reported for live Agents.
  */
 export class SubagentObserver {
   private readonly sessionsDirectory: string

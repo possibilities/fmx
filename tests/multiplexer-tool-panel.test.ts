@@ -8,11 +8,11 @@ import { fileURLToPath } from "node:url"
 import type { PanelDefinition } from "../src/config.ts"
 import { type PanelInfo, ControlFailure, type Snapshot } from "../src/control-protocol.ts"
 import { FmxTerminalRenderable, FxTerminalRenderable } from "../src/fx-terminal.ts"
-import { HandlerRelay, type TerminalSize, type TerminalTransport, type TransportHandlers } from "../src/instance-transport.ts"
+import { HandlerRelay, type TerminalSize, type TerminalTransport, type TransportHandlers } from "../src/agent-transport.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import type { PanelContext, PanelSessionController } from "../src/panel-session.ts"
-import { instanceOptions } from "./fixtures/pty-transport.ts"
+import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 const NEVER = new AbortController().signal
@@ -33,8 +33,8 @@ class FakePanelSessions implements PanelSessionController {
     return transport
   }
 
-  async stopInstance(instanceId: string): Promise<void> {
-    this.stopped.push(instanceId)
+  async stopAgent(agentId: string): Promise<void> {
+    this.stopped.push(agentId)
   }
 
   close(): void {
@@ -89,7 +89,7 @@ async function harness(options: {
   const widths: number[] = []
   const selected: string[] = []
   const multiplexer = new Multiplexer(setup.renderer, {
-    ...instanceOptions(),
+    ...agentOptions(),
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
@@ -193,7 +193,7 @@ test("restores Tool panel visibility, width, and selection without drawing a rai
   }
 })
 
-test("the selected tool follows the active Instance and cached contexts resume without restarting", async () => {
+test("the selected tool follows the active Agent and cached contexts resume without restarting", async () => {
   const h = await harness({ initialPanelVisible: true, initialPanelId: "diff" })
   const root = await mkdtemp(join(tmpdir(), "fmx-tool-context-"))
   await mkdir(join(root, "alpha"))
@@ -205,7 +205,7 @@ test("the selected tool follows the active Instance and cached contexts resume w
       "launch",
       { directory: alpha, focus: true },
       NEVER,
-    )) as { instance: { id: number } }
+    )) as { agent: { id: number } }
     await Bun.sleep(10)
     expect(h.sessions.opens.map((entry) => [entry.definition.id, entry.context.cwd])).toEqual([["diff", alpha]])
 
@@ -213,14 +213,14 @@ test("the selected tool follows the active Instance and cached contexts resume w
       "launch",
       { directory: beta, focus: true },
       NEVER,
-    )) as { instance: { id: number } }
+    )) as { agent: { id: number } }
     await Bun.sleep(10)
     expect(h.sessions.opens.map((entry) => [entry.definition.id, entry.context.cwd])).toEqual([
       ["diff", alpha],
       ["diff", beta],
     ])
 
-    await h.multiplexer.control.handle("focus", { target: String(first.instance.id) }, NEVER)
+    await h.multiplexer.control.handle("focus", { target: String(first.agent.id) }, NEVER)
     await Bun.sleep(10)
     expect(h.sessions.opens).toHaveLength(2)
     expect((await h.control()).selected).toBe("diff")
@@ -233,7 +233,7 @@ test("the selected tool follows the active Instance and cached contexts resume w
     })
     expect(h.selected).toEqual(["tests"])
 
-    await h.multiplexer.control.handle("focus", { target: String(second.instance.id) }, NEVER)
+    await h.multiplexer.control.handle("focus", { target: String(second.agent.id) }, NEVER)
     await Bun.sleep(10)
     expect(h.sessions.opens.at(-1)).toMatchObject({ definition: { id: "tests" }, context: { cwd: beta } })
 
@@ -268,7 +268,7 @@ test("focus handoff routes typing to the selected tool while prefix actions stay
     expect(h.sessions.opens.at(-1)?.definition.id).toBe("tests")
     expect(diff.writes).toHaveLength(writesBeforePrefix)
 
-    expect(await h.control({ focus: "instance" })).toMatchObject({ focused: "instance" })
+    expect(await h.control({ focus: "agent" })).toMatchObject({ focused: "agent" })
     const tests = h.sessions.opens.at(-1)!.transport
     h.setup.mockInput.pressKey("y")
     await Bun.sleep(10)
@@ -277,7 +277,7 @@ test("focus handoff routes typing to the selected tool while prefix actions stay
     tests.exit()
     await Bun.sleep(10)
     await expect(h.control({ focus: "panel" })).rejects.toMatchObject({ code: "not_found" })
-    expect(await h.control()).toMatchObject({ focused: "instance" })
+    expect(await h.control()).toMatchObject({ focused: "agent" })
 
     await h.control({ select: "tests", focus: "panel" })
     expect(h.sessions.opens).toHaveLength(3)
@@ -287,21 +287,21 @@ test("focus handoff routes typing to the selected tool while prefix actions stay
   }
 })
 
-test("an Instance exit tears down its local Tool panel runtime and stops its owned persistent sessions", async () => {
+test("an Agent exit tears down its local Tool panel runtime and stops its owned persistent sessions", async () => {
   const h = await harness({ initialPanelVisible: true })
   try {
     await launchWithKeys(h)
     const opened = h.sessions.opens[0]!
     expect(opened.transport.detached).toBe(false)
 
-    const instance = h.setup.renderer.root.findDescendantById("fx-1")
-    expect(instance).toBeInstanceOf(FxTerminalRenderable)
-    if (!(instance instanceof FxTerminalRenderable)) return
-    instance.onData?.(Uint8Array.of(3, 3), "input")
+    const agent = h.setup.renderer.root.findDescendantById("fx-1")
+    expect(agent).toBeInstanceOf(FxTerminalRenderable)
+    if (!(agent instanceof FxTerminalRenderable)) return
+    agent.onData?.(Uint8Array.of(3, 3), "input")
     const deadline = Date.now() + 2_000
     while (h.sessions.stopped.length === 0 && Date.now() < deadline) await Bun.sleep(10)
 
-    expect(h.sessions.stopped).toEqual([opened.context.instanceId])
+    expect(h.sessions.stopped).toEqual([opened.context.agentId])
     expect(opened.transport.detached).toBe(true)
   } finally {
     await h.close()

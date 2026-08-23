@@ -53,12 +53,12 @@ describe("readFirstPrompt", () => {
       event("session_started", { id: SESSION_ID, workspace_root: "/work/fmx" }) +
         event("usage_checkpointed", { usage: {} }) +
         event("recovery_checkpoint_set", {
-          checkpoint: { turn_id: 1, user: { text: "name every instance", images: [] } },
+          checkpoint: { turn_id: 1, user: { text: "name every agent", images: [] } },
         }) +
         event("recovery_checkpoint_set", { checkpoint: { user: { text: "a later turn" } } }),
     )
     expect(await readFirstPrompt(directory)).toEqual({
-      text: "name every instance",
+      text: "name every agent",
       workspaceRoot: "/work/fmx",
     })
   })

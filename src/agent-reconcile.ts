@@ -1,35 +1,35 @@
 import { unlink } from "node:fs/promises"
-import { identityFor, isInstanceId, type InstanceManifest, type ManifestEntry } from "./instance-manifest.ts"
+import { identityFor, isAgentId, type AgentManifest, type ManifestEntry } from "./agent-manifest.ts"
 import type { CompanionCommand, SessionEntry } from "./zmx-command.ts"
 
 /**
  * The join between the Manifest's claims and the Companion's sessions. Pure:
- * it is handed both sides and answers what each Instance is, so every
+ * it is handed both sides and answers what each Agent is, so every
  * crash-window combination can be tested as a table.
  */
 
 export const OWNER_LABEL = "fmx"
 
 /** The labels every session this Home creates carries. */
-export function ownershipLabels(homeId: string, instanceId: string): Record<string, string> {
-  const identity = identityFor(instanceId)
-  return { owner: OWNER_LABEL, home: homeId, instance: instanceId, pane: identity.paneId }
+export function ownershipLabels(homeId: string, agentId: string): Record<string, string> {
+  const identity = identityFor(agentId)
+  return { owner: OWNER_LABEL, home: homeId, agent: agentId, pane: identity.paneId }
 }
 
 /** A session is this Home's only when every label and the name itself agree. */
-export function ownedInstanceId(session: SessionEntry, homeId: string): string | null {
-  const { owner, home, instance, pane } = session.labels
-  if (owner !== OWNER_LABEL || home !== homeId || !isInstanceId(instance)) return null
-  const identity = identityFor(instance)
+export function ownedAgentId(session: SessionEntry, homeId: string): string | null {
+  const { owner, home, agent, pane } = session.labels
+  if (owner !== OWNER_LABEL || home !== homeId || !isAgentId(agent)) return null
+  const identity = identityFor(agent)
   if (session.name !== identity.zmxName || pane !== identity.paneId) return null
-  return instance
+  return agent
 }
 
 export type Reconciliation = {
-  /** Manifest entry and a live owned session: the Instance survived. */
+  /** Manifest entry and a live owned session: the Agent survived. */
   attach: { entry: ManifestEntry; session: SessionEntry }[]
   /** Live owned session nobody wrote down: a crash between the Companion's start and `markRunning`, or a lost Manifest. */
-  adopt: { instanceId: string; session: SessionEntry }[]
+  adopt: { agentId: string; session: SessionEntry }[]
   /** Manifest entry whose session ended or never existed; `session` carries the exit record when there is one. */
   remove: { entry: ManifestEntry; session: SessionEntry | null }[]
   /** Exit records of this Home's sessions that no entry claims: a crash between `remove` and `forget`, or a lost Manifest. Consume them. */
@@ -64,7 +64,7 @@ export function reconcile(entries: readonly ManifestEntry[], sessions: readonly 
     // Live. A session under our name that does not carry our labels is not
     // ours to attach to — something else took the name — and the entry is
     // stale, but the session is left alone.
-    if (ownedInstanceId(session, homeId) === entry.instanceId) result.attach.push({ entry, session })
+    if (ownedAgentId(session, homeId) === entry.agentId) result.attach.push({ entry, session })
     else {
       result.remove.push({ entry, session: null })
       result.ignored.push(session)
@@ -79,9 +79,9 @@ export function reconcile(entries: readonly ManifestEntry[], sessions: readonly 
       else result.ignored.push(session)
       continue
     }
-    const instanceId = ownedInstanceId(session, homeId)
-    if (session.state === "live" && instanceId) result.adopt.push({ instanceId, session })
-    else if (session.state === "exited" && instanceId) result.forget.push(session)
+    const agentId = ownedAgentId(session, homeId)
+    if (session.state === "live" && agentId) result.adopt.push({ agentId, session })
+    else if (session.state === "exited" && agentId) result.forget.push(session)
     else result.ignored.push(session)
   }
   return result
@@ -109,8 +109,8 @@ export type ReconcileOptions = {
  * adopt what is live, remove what ended (consuming the exit record), and
  * give a session mid-teardown its settle window before deciding.
  */
-export async function reconcileInstances(
-  manifest: InstanceManifest,
+export async function reconcileAgents(
+  manifest: AgentManifest,
   companion: CompanionCommand,
   options: ReconcileOptions = {},
 ): Promise<ReconcileOutcome> {
@@ -129,15 +129,15 @@ export async function reconcileInstances(
 
   for (const { entry } of plan.attach) {
     // A live session is the acknowledgement a crash kept fmx from recording.
-    outcome.attached.push(entry.phase === "creating" ? await manifest.markRunning(entry.instanceId) : entry)
+    outcome.attached.push(entry.phase === "creating" ? await manifest.markRunning(entry.agentId) : entry)
   }
-  for (const { instanceId, session } of plan.adopt) {
+  for (const { agentId, session } of plan.adopt) {
     // The Companion's `cmd` is a display string, truncated past 256 bytes;
     // the executable is its first word, the arguments are not to be trusted.
     const [fxPath = ""] = session.command ?? []
     outcome.adopted.push(
       await manifest.adopt({
-        identity: identityFor(instanceId),
+        identity: identityFor(agentId),
         cwd: session.cwd ?? "/",
         fxPath: fxPath || "fx",
         fxArgs: null,
@@ -146,7 +146,7 @@ export async function reconcileInstances(
     )
   }
   for (const { entry, session } of plan.remove) {
-    await manifest.remove(entry.instanceId)
+    await manifest.remove(entry.agentId)
     if (session?.state === "exited") {
       try {
         await companion.forget(session.name)
@@ -174,7 +174,7 @@ export async function reconcileInstances(
       continue
     }
     if (entry) {
-      await manifest.remove(entry.instanceId)
+      await manifest.remove(entry.agentId)
       outcome.removed.push({ entry, session })
     }
     if (session.socketPath) await unlink(session.socketPath).catch(() => {})

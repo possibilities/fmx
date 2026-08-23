@@ -9,10 +9,10 @@ import { expandTilde } from "./projects.ts"
 import { buildInstruction, excerptFrom } from "./slug-text.ts"
 
 /**
- * Naming an instance, once, from the first thing its human asked for.
+ * Naming an agent, once, from the first thing its human asked for.
  *
  * fx reports a session id as soon as it has one, which is long before there is
- * anything to name — an instance can sit at a trust dialog, or simply wait, for
+ * anything to name — an agent can sit at a trust dialog, or simply wait, for
  * as long as its human is elsewhere. So an attempt watches the session's log
  * for a first prompt rather than demanding one, and gives up quietly when the
  * wait runs long; the next thing fx reports arms a fresh one. A conversation
@@ -41,7 +41,7 @@ const PROMPT_POLL_STEADY_MS = 2_000
 const MENTION_FILE_BYTES = 32 * 1024
 /** How long one attempt watches before releasing its session back to the next
  * report. Long enough to cover a human finishing a thought, short enough that
- * an abandoned instance stops costing timers. */
+ * an abandoned agent stops costing timers. */
 const PROMPT_WINDOW_MS = 10 * 60_000
 /** After a failed attempt, how long before a report may arm another. */
 const RETRY_COOLDOWN_MS = 60_000
@@ -60,7 +60,7 @@ export type SlugNamerOptions = {
 }
 
 /**
- * A prompt fmx already holds, because fmx is what typed it. An instance
+ * A prompt fmx already holds, because fmx is what typed it. An agent
  * launched with a prompt need not wait for fx to record what fmx dictated, so
  * naming starts the moment the session has an id — while fx is still reading
  * the prompt rather than seconds after it finishes.
