@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
-import { projectNameFor, readGitContext, worktreeNameFor } from "../src/git-context.ts"
+import { projectNameFor, readGitContext, treeNameFor } from "../src/git-context.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { slugDirectory, storeSlug } from "../src/slug-store.ts"
@@ -138,7 +138,7 @@ test("toasts project and Worktree on start, then uses the Slug on exit", async (
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined, 2_000)
-    await waitForText(setup, `${location} · agent 1 started`, 2_000)
+    await waitForText(setup, `${location} / agent 1 started`, 2_000)
 
     await sendFrame(
       agentSocket,
@@ -151,7 +151,7 @@ test("toasts project and Worktree on start, then uses the Slug on exit", async (
     if (!(terminal instanceof FxTerminalRenderable)) return
     terminal.onData?.(Uint8Array.of(3, 3), "input")
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
-    await waitForText(setup, `${location} · clear-cloud exited`, 2_000)
+    await waitForText(setup, `${location} / clear-cloud exited`, 2_000)
   } finally {
     await multiplexer.shutdown()
     agentSocket.close()
@@ -174,10 +174,10 @@ test("falls back to the Instance id and includes a nonzero exit code", async () 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("c")
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
-    await waitForText(setup, `${location} · agent 1 started`, 2_000)
+    await waitForText(setup, `${location} / agent 1 started`, 2_000)
 
     await Bun.sleep(110)
-    await waitForText(setup, `${location} · agent 1 exited · code 7`, 2_000)
+    await waitForText(setup, `${location} / agent 1 exited / code 7`, 2_000)
   } finally {
     await multiplexer.shutdown()
   }
@@ -228,7 +228,7 @@ async function waitForText(
 
 async function lifecycleLocation(cwd: string): Promise<string> {
   const context = await readGitContext(cwd)
-  return `${projectNameFor(context, cwd)} · ${worktreeNameFor(context, cwd)}`
+  return `${projectNameFor(context, cwd)} / ${treeNameFor(context, cwd)}`
 }
 
 async function sendFrame(agentSocket: AgentSocket, payload: string): Promise<void> {

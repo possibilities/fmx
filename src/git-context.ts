@@ -55,10 +55,12 @@ export function projectNameFor(context: GitContext | null, cwd: string): string 
   return basename(context?.mainRoot ?? cwd) || "workspace"
 }
 
-/** The directory name of the checkout this instance is actually working in.
- * Unlike the project name, this differs for every linked worktree. */
-export function worktreeNameFor(context: GitContext | null, cwd: string): string {
-  return basename(context?.root ?? cwd) || "workspace"
+/** The tree this instance is actually working in: a linked Worktree's own
+ * directory name, or the checked-out branch for the repository's main tree. */
+export function treeNameFor(context: GitContext | null, cwd: string): string {
+  if (!context) return basename(cwd) || "workspace"
+  if (context.root === context.mainRoot) return context.branch
+  return basename(context.root) || context.branch
 }
 
 async function runGit(cwd: string, args: string[]): Promise<string[] | null> {

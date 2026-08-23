@@ -69,7 +69,7 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
-import { readGitContext, projectNameFor, type GitContext, worktreeNameFor } from "./git-context.ts"
+import { readGitContext, projectNameFor, type GitContext, treeNameFor } from "./git-context.ts"
 import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
@@ -772,9 +772,9 @@ export class Multiplexer {
     const queued = previous.then(async () => {
       const git = await context
       if (this.shuttingDown || !shouldShow()) return
-      const location = `${projectNameFor(git, instance.cwd)} · ${worktreeNameFor(git, instance.cwd)}`
-      const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` · code ${exitCode}` : ""
-      this.toast.show(`${location} · ${identity} ${event}${code}`, tone)
+      const location = `${projectNameFor(git, instance.cwd)} / ${treeNameFor(git, instance.cwd)}`
+      const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` / code ${exitCode}` : ""
+      this.toast.show(`${location} / ${identity} ${event}${code}`, tone)
     })
     this.lifecycleNoticeTails.set(instance.id, queued)
     void queued.finally(() => {
