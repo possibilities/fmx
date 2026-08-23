@@ -26,6 +26,11 @@ import {
 const RAIL_WIDTH = 26
 const RAIL_MIN_WIDTH = 22
 const PREVIEW_MIN_WIDTH = 30
+const DEFAULT_SLIDESHOW_INTERVAL_MS = 3_000
+
+type UiGalleryAppOptions = {
+  slideshowIntervalMs?: number
+}
 
 type GalleryTheme = {
   background: RGBA
@@ -61,6 +66,10 @@ export class UiGalleryApp {
   private interactionGeneration = 0
   private interacting = false
   private interactionPending = false
+  private slideshow = false
+  private slideshowPaused = false
+  private slideshowTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly slideshowIntervalMs: number
   private palette: UiGalleryPaletteName = "dark"
   private selectedComponent = 0
   private closed = false
@@ -71,6 +80,7 @@ export class UiGalleryApp {
     private readonly renderer: CliRenderer,
     private readonly storiesByPalette: UiGalleryStoriesByPalette,
     sourceStories: readonly UiStory[],
+    options: UiGalleryAppOptions = {},
   ) {
     if (storiesByPalette.dark.length === 0 || storiesByPalette.light.length === 0) {
       throw new Error("the UI gallery needs at least one state in each theme")
@@ -81,6 +91,10 @@ export class UiGalleryApp {
     this.sourceById = new Map(sourceStories.map((story) => [story.id, story]))
     for (const story of storiesByPalette.dark) {
       if (!this.sourceById.has(story.id)) throw new Error(`the UI gallery is missing source state ${story.id}`)
+    }
+    this.slideshowIntervalMs = options.slideshowIntervalMs ?? DEFAULT_SLIDESHOW_INTERVAL_MS
+    if (!Number.isFinite(this.slideshowIntervalMs) || this.slideshowIntervalMs <= 0) {
+      throw new Error("the UI gallery slideshow interval must be positive")
     }
     this.components = UI_GALLERY_COMPONENTS.filter((component) =>
       storiesByPalette.dark.some((story) => story.component === component),
@@ -214,6 +228,14 @@ export class UiGalleryApp {
     return this.interacting
   }
 
+  get isSlideshow(): boolean {
+    return this.slideshow
+  }
+
+  get isSlideshowPaused(): boolean {
+    return this.slideshowPaused
+  }
+
   waitForInteraction(): Promise<void> {
     return this.interactionTask
   }
@@ -225,6 +247,7 @@ export class UiGalleryApp {
   close(): void {
     if (this.closed) return
     this.closed = true
+    this.clearSlideshowTimer()
     this.renderer.keyInput.off("keypress", this.keypressHandler)
     this.resolveDone()
   }
@@ -256,6 +279,10 @@ export class UiGalleryApp {
       }
       this.swallow(key)
       if (this.interacting) this.queueInteraction(() => this.forwardKey(key))
+      return
+    }
+    if (this.slideshow) {
+      this.handleSlideshowKey(key)
       return
     }
     if (key.name === "escape" || key.name === "q" || (key.ctrl === true && key.name === "c")) {
@@ -301,10 +328,12 @@ export class UiGalleryApp {
     }
     if (key.name === "t") {
       this.swallow(key)
-      this.leaveInteraction()
-      this.palette = this.palette === "dark" ? "light" : "dark"
-      this.applyTheme()
-      this.showActiveStory()
+      this.togglePalette()
+      return
+    }
+    if (key.name === "s") {
+      this.swallow(key)
+      this.startSlideshow()
       return
     }
     if (key.name === "[") {
@@ -372,9 +401,11 @@ export class UiGalleryApp {
     this.selectedComponent = Math.max(0, Math.min(this.components.length - 1, index))
     const component = this.activeComponent
     if (!this.stateByComponent.has(component)) this.stateByComponent.set(component, 0)
-    this.paintComponentList()
+    if (this.slideshow) this.applyTheme()
+    else this.paintComponentList()
     this.componentList.scrollChildIntoView(`ui-gallery-component-${slug(component)}`)
     this.showActiveStory()
+    if (this.slideshow) this.armSlideshow()
   }
 
   private cycleState(offset: number): void {
@@ -431,7 +462,123 @@ export class UiGalleryApp {
     })
     this.frame.add(this.frameText)
     this.previewScroll.add(this.frame)
+    this.paintFrameMode()
     this.renderer.requestRender()
+  }
+
+  private handleSlideshowKey(key: KeyEvent): void {
+    if (key.name === "escape" || key.name === "s") {
+      this.swallow(key)
+      this.stopSlideshow()
+      return
+    }
+    if (key.name === "q" || (key.ctrl === true && key.name === "c")) {
+      this.swallow(key)
+      this.close()
+      return
+    }
+    if (key.name === "space") {
+      this.swallow(key)
+      this.slideshowPaused = !this.slideshowPaused
+      if (this.slideshowPaused) this.clearSlideshowTimer()
+      else this.armSlideshow()
+      this.applyTheme()
+      return
+    }
+    if (key.name === "left" || key.name === "h") {
+      this.swallow(key)
+      this.advanceSlideshow(-1)
+      return
+    }
+    if (key.name === "right" || key.name === "l") {
+      this.swallow(key)
+      this.advanceSlideshow(1)
+      return
+    }
+    if (key.name === "t") {
+      this.swallow(key)
+      this.togglePalette()
+      return
+    }
+    if (key.name === "[") {
+      this.swallow(key)
+      this.previewScroll.scrollBy({ x: -4, y: 0 }, "absolute")
+      return
+    }
+    if (key.name === "]") {
+      this.swallow(key)
+      this.previewScroll.scrollBy({ x: 4, y: 0 }, "absolute")
+      return
+    }
+    if (key.name === "pageup") {
+      this.swallow(key)
+      this.previewScroll.scrollBy({ x: 0, y: -1 }, "viewport")
+      return
+    }
+    if (key.name === "pagedown") {
+      this.swallow(key)
+      this.previewScroll.scrollBy({ x: 0, y: 1 }, "viewport")
+    }
+  }
+
+  private startSlideshow(): void {
+    if (this.slideshow) return
+    this.leaveInteraction()
+    this.slideshow = true
+    this.slideshowPaused = false
+    this.applyTheme()
+    this.showActiveStory()
+    this.armSlideshow()
+  }
+
+  private stopSlideshow(): void {
+    if (!this.slideshow) return
+    this.clearSlideshowTimer()
+    this.slideshow = false
+    this.slideshowPaused = false
+    this.applyTheme()
+    this.showActiveStory()
+  }
+
+  private advanceSlideshow(offset: number): void {
+    const next = (this.slideIndex() + offset + this.stories.length) % this.stories.length
+    const story = this.stories[next]!
+    this.selectedComponent = this.components.indexOf(story.component)
+    this.stateByComponent.set(
+      story.component,
+      this.statesFor(story.component).findIndex((state) => state.id === story.id),
+    )
+    this.applyTheme()
+    this.componentList.scrollChildIntoView(`ui-gallery-component-${slug(story.component)}`)
+    this.showActiveStory()
+    this.armSlideshow()
+  }
+
+  private armSlideshow(): void {
+    this.clearSlideshowTimer()
+    if (!this.slideshow || this.slideshowPaused || this.closed) return
+    this.slideshowTimer = setTimeout(() => {
+      this.slideshowTimer = null
+      this.advanceSlideshow(1)
+    }, this.slideshowIntervalMs)
+  }
+
+  private clearSlideshowTimer(): void {
+    if (this.slideshowTimer === null) return
+    clearTimeout(this.slideshowTimer)
+    this.slideshowTimer = null
+  }
+
+  private slideIndex(): number {
+    const index = this.stories.findIndex((story) => story.id === this.activeStory.id)
+    return Math.max(0, index)
+  }
+
+  private togglePalette(): void {
+    this.leaveInteraction()
+    this.palette = this.palette === "dark" ? "light" : "dark"
+    this.applyTheme()
+    this.showActiveStory()
   }
 
   private beginInteraction(): void {
@@ -531,6 +678,18 @@ export class UiGalleryApp {
 
   private paintInteractionHint(): void {
     const theme = galleryTheme(this.palette)
+    if (this.slideshow) {
+      this.previewInteraction.content = new StyledText([
+        textChunk(
+          this.slideshowPaused ? "Ⅱ PAUSED" : "▶ PLAYING",
+          this.slideshowPaused ? theme.signal : theme.accent,
+          undefined,
+          TextAttributes.BOLD,
+        ),
+        textChunk(` · space ${this.slideshowPaused ? "resumes" : "pauses"} · ← → step · Esc returns`, theme.dim),
+      ])
+      return
+    }
     const instruction = this.activeStory.interaction
     if (!instruction) {
       this.previewInteraction.content = new StyledText([
@@ -550,14 +709,17 @@ export class UiGalleryApp {
   private paintFrameMode(): void {
     if (!this.frame) return
     const theme = galleryTheme(this.palette)
-    this.frame.borderColor = this.interacting ? theme.accent : theme.dim
-    this.frame.focusedBorderColor = this.interacting ? theme.accent : theme.dim
-    this.frame.title = this.interactionPending
-      ? " opening "
-      : this.interacting
-        ? " interactive · Esc returns "
-        : " viewport "
-    this.frame.titleColor = this.interacting ? theme.accent : theme.dim
+    const activeColor = this.slideshowPaused ? theme.signal : theme.accent
+    this.frame.borderColor = this.interacting || this.slideshow ? activeColor : theme.dim
+    this.frame.focusedBorderColor = this.interacting || this.slideshow ? activeColor : theme.dim
+    this.frame.title = this.slideshow
+      ? ` slide ${this.slideIndex() + 1}/${this.stories.length} · ${this.slideshowPaused ? "paused" : "playing"} `
+      : this.interactionPending
+        ? " opening "
+        : this.interacting
+          ? " interactive · Esc returns "
+          : " viewport "
+    this.frame.titleColor = this.interacting || this.slideshow ? activeColor : theme.dim
     this.renderer.requestRender()
   }
 
@@ -590,23 +752,44 @@ export class UiGalleryApp {
     this.identity.content = new StyledText([
       textChunk("UI GALLERY", theme.accent, undefined, TextAttributes.BOLD),
       textChunk(`  ${this.palette.toUpperCase()}`, theme.signal, undefined, TextAttributes.BOLD),
-      textChunk(`\n${this.components.length} components`, theme.foreground),
-      textChunk(` · ${this.stories.length} states`, theme.dim),
+      ...(this.slideshow
+        ? [
+            textChunk("\nSLIDESHOW", theme.foreground, undefined, TextAttributes.BOLD),
+            textChunk(` · ${this.slideIndex() + 1}/${this.stories.length}`, theme.dim),
+          ]
+        : [
+            textChunk(`\n${this.components.length} components`, theme.foreground),
+            textChunk(` · ${this.stories.length} states`, theme.dim),
+          ]),
     ])
-    this.hints.content = new StyledText([
-      textChunk("↑↓", theme.accent, undefined, TextAttributes.BOLD),
-      textChunk(" component · ", theme.dim),
-      textChunk("←→", theme.accent, undefined, TextAttributes.BOLD),
-      textChunk(" state", theme.dim),
-      textChunk("\nenter", theme.accent, undefined, TextAttributes.BOLD),
-      textChunk(" interact", theme.dim),
-      textChunk("\npgup/pgdn scroll", theme.dim),
-      textChunk("\n[ ] pan · ", theme.dim),
-      textChunk("t", theme.accent, undefined, TextAttributes.BOLD),
-      textChunk(" theme", theme.dim),
-      textChunk("\nq", theme.accent, undefined, TextAttributes.BOLD),
-      textChunk(" close", theme.dim),
-    ])
+    this.hints.content = this.slideshow
+      ? new StyledText([
+          textChunk("space", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(this.slideshowPaused ? " resume" : " pause", theme.dim),
+          textChunk("\n←→", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" previous/next", theme.dim),
+          textChunk("\nt", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" theme", theme.dim),
+          textChunk("\nesc", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" browse", theme.dim),
+          textChunk("\nq", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" close", theme.dim),
+        ])
+      : new StyledText([
+          textChunk("↑↓", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" component · ", theme.dim),
+          textChunk("←→", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" state", theme.dim),
+          textChunk("\nenter", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" interact", theme.dim),
+          textChunk("\ns", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" slideshow", theme.dim),
+          textChunk("\npg/dn scroll · [ ] pan", theme.dim),
+          textChunk("\nt", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" theme · ", theme.dim),
+          textChunk("q", theme.accent, undefined, TextAttributes.BOLD),
+          textChunk(" close", theme.dim),
+        ])
     this.paintInteractionHint()
     this.paintFrameMode()
     this.paintComponentList()

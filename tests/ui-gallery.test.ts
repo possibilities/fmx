@@ -98,3 +98,63 @@ test(
   },
   20_000,
 )
+
+test(
+  "slideshow mode traverses every state in catalog order and keeps theme independent",
+  async () => {
+    const built = await buildUiGallery()
+    const setup = await createTestRenderer({ width: 112, height: 34, kittyKeyboard: true, exitOnCtrlC: false })
+    const app = new UiGalleryApp(setup.renderer, built.stories, UI_STORIES, { slideshowIntervalMs: 50 })
+    try {
+      await setup.renderOnce()
+      setup.mockInput.pressKey("s")
+      await setup.renderOnce()
+      expect(app.isSlideshow).toBe(true)
+      expect(app.isSlideshowPaused).toBe(false)
+      expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
+      expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
+      expect(setup.captureCharFrame()).toContain("slide 1/20 · playing")
+
+      setup.mockInput.pressArrow("left")
+      await setup.renderOnce()
+      expect(app.activeComponent).toBe("Toast")
+      expect(app.activeStoryId).toBe(built.stories.dark.at(-1)!.id)
+      expect(setup.captureCharFrame()).toContain("slide 20/20")
+
+      setup.mockInput.pressArrow("right")
+      setup.mockInput.pressKey("t")
+      await setup.renderOnce()
+      expect(app.activePalette).toBe("light")
+      expect(app.activeStoryId).toBe(built.stories.light[0]!.id)
+      expect(setup.captureCharFrame()).toContain("UI GALLERY  LIGHT")
+
+      setup.mockInput.pressKey(" ")
+      await setup.renderOnce()
+      expect(app.isSlideshowPaused).toBe(true)
+      expect(setup.captureCharFrame()).toContain("Ⅱ PAUSED · space resumes")
+      await new Promise((resolve) => setTimeout(resolve, 70))
+      await setup.renderOnce()
+      expect(app.activeStoryId).toBe(built.stories.light[0]!.id)
+
+      setup.mockInput.pressKey(" ")
+      await new Promise((resolve) => setTimeout(resolve, 70))
+      await setup.renderOnce()
+      expect(app.isSlideshowPaused).toBe(false)
+      expect(app.activeStoryId).toBe(built.stories.light[1]!.id)
+      expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/20")
+
+      setup.mockInput.pressEscape()
+      await setup.renderOnce()
+      expect(app.isSlideshow).toBe(false)
+      expect(setup.captureCharFrame()).toContain("5 components · 20 states")
+      const stoppedStory = app.activeStoryId
+      await new Promise((resolve) => setTimeout(resolve, 70))
+      expect(app.activeStoryId).toBe(stoppedStory)
+    } finally {
+      await app.destroy()
+      setup.renderer.destroy()
+    }
+  },
+  20_000,
+)
