@@ -292,9 +292,13 @@ for extracted in "$work_dir/verify-xz/fmx" "$work_dir/verify-gz/fmx"; do
   [[ -f "$(dirname "$extracted")/THIRD_PARTY_NOTICES.md" ]]
   # The pair, as installed: fmx finds the Companion beside itself and
   # accepts it as the pinned build.
-  FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" "$extracted" doctor > "$work_dir/doctor.txt"
-  grep -q "^build  *$companion_build (the build this fmx was released with)" "$work_dir/doctor.txt"
-  grep -q "^companion  *$(dirname "$extracted")/fmx-zmx (beside " "$work_dir/doctor.txt"
+  if ! FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" "$extracted" doctor > "$work_dir/doctor.txt" \
+    || ! grep -q "^build  *$companion_build (the build this fmx was released with)" "$work_dir/doctor.txt" \
+    || ! grep -q "^companion  *.*/fmx-zmx (beside " "$work_dir/doctor.txt"; then
+    printf 'fmx release: the extracted pair did not pass fmx doctor:\n' >&2
+    cat "$work_dir/doctor.txt" >&2
+    exit 1
+  fi
 done
 
 printf 'fmx release: built %s %s with companion %s\n' "$platform" "$version" "$companion_build"
