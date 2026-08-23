@@ -26,7 +26,9 @@ companion keep running through an update; start a new fmx afterwards.
 
 ## Usage
 
-`ctrl-b` is the prefix key; `ctrl-b ?` lists the bindings. Rebind them in `~/.config/fmx/config.toml` in the `[keys]` table.
+`ctrl-b` is the prefix key; `ctrl-b ?` lists the bindings and `ctrl-b d`
+detaches fmx, leaving every agent running. Rebind them in
+`~/.config/fmx/config.toml` in the `[keys]` table.
 
 fmx opens without an agent. `ctrl-b c` starts one where fmx is running, and
 `ctrl-b l` opens the launch
@@ -71,8 +73,8 @@ exactly where it was. The next fmx started from the same configuration
 directory finds them, numbered as they were, with their screens restored,
 and picks up where the last one left off. An agent disappears only when it
 exits; with the last one gone fmx shows its empty state, and `ctrl-c` twice
-there closes it. There is no key to close or detach an agent: end it from
-inside, the way you would at a terminal.
+there closes it. `ctrl-b d` detaches fmx at any time. There is no key to
+close an agent: end it from inside, the way you would at a terminal.
 
 One fmx runs per configuration directory at a time; a second one started
 alongside says so and exits.
@@ -137,6 +139,7 @@ fmx reachable, `4` timed out.
 
 ```sh
 fmx control orient                      # where you are and what the interface shows
+fmx control detach                      # close fmx; every agent keeps running
 fmx control launch "write the tests"    # start an agent here, in the background
 fmx control launch --project ~/code/x --worktree --model gpt-5.6-luna --effort max --focus
 fmx control launch --editable --project ~/code/x --worktree   # open the dialog, prefilled

@@ -101,6 +101,8 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
   switch (command.name) {
     case "orient":
       return [{ method: "orient", params: withCaller({}), timeoutMs: REPLY_TIMEOUT_MS }]
+    case "detach":
+      return [{ method: "detach", params: {}, timeoutMs: REPLY_TIMEOUT_MS }]
     case "instance":
       switch (command.verb) {
         case "list":

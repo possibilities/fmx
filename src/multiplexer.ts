@@ -43,7 +43,7 @@ import {
   type Surface,
   type Target,
 } from "./control-protocol.ts"
-import type { ControlSurface } from "./control-socket.ts"
+import { afterControlReply, type ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { DebugPanel, debugPanelWidth } from "./debug-panel.ts"
 import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } from "./fx-environment.ts"
@@ -1358,6 +1358,9 @@ export class Multiplexer {
 
   private executeAction(action: KeyAction): void {
     switch (action.name) {
+      case "detach":
+        this.detach()
+        return
       case "new_tab":
         void this.createInstance().catch((error) => {
           if (!this.shuttingDown) this.showError("fx did not start", error)
@@ -1383,6 +1386,11 @@ export class Multiplexer {
         this.setSidebarHidden(!this.sidebarHidden)
         return
     }
+  }
+
+  /** Leave every Instance with the Companion and close fmx itself. */
+  private detach(): void {
+    void this.shutdown()
   }
 
   private cancelPrefix(): void {
@@ -1606,6 +1614,9 @@ export class Multiplexer {
     switch (method) {
       case "orient":
         return this.snapshot(caller)
+      case "detach":
+        this.refuseIfBusy()
+        return afterControlReply({ detached: true }, () => this.detach())
       case "instance.list":
         return { instances: this.instances.map((instance) => this.instanceInfo(instance)) }
       case "instance.wait":
@@ -1982,6 +1993,7 @@ export class Multiplexer {
   private keysInfo(): KeysInfo {
     const commands: Record<string, string> = {
       help: "fmx control keys --show",
+      detach: "fmx control detach",
       new_tab: "fmx control launch",
       launch: "fmx control launch --editable",
       previous_tab: "fmx control focus previous",
@@ -1989,7 +2001,7 @@ export class Multiplexer {
       toggle_sidebar: "fmx control sidebar --toggle",
     }
     const bindings: KeysInfo["bindings"] = {}
-    for (const action of ["help", "new_tab", "launch", "previous_tab", "next_tab", "toggle_sidebar"] as const) {
+    for (const action of ["help", "detach", "new_tab", "launch", "previous_tab", "next_tab", "toggle_sidebar"] as const) {
       bindings[action] = {
         keys: this.keybindings[action].map((binding) => binding.label),
         command: commands[action]!,
@@ -2022,6 +2034,7 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
   return [
     [keybindings.prefixLabel, "prefix mode"],
     [bindingLabel(keybindings.help), "keybinds"],
+    [bindingLabel(keybindings.detach), "detach fmx"],
     [bindingLabel(keybindings.new_tab), "new agent"],
     [bindingLabel(keybindings.launch), "launch agent"],
     [bindingLabel(keybindings.previous_tab), "prev agent"],
@@ -2123,4 +2136,3 @@ class WorktreeError extends ControlFailure {
 function launchErrorHeading(error: unknown): string {
   return error instanceof WorktreeError ? "worktree not created" : "fx did not start"
 }
-

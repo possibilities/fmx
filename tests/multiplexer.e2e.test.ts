@@ -77,6 +77,68 @@ async function endSurvivors(tempDirectory: string): Promise<void> {
 }
 
 test.skipIf(!PTY_TEST_ENABLED)(
+  "prefix+d detaches fmx and leaves its fx running",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-detach-e2e-"))
+    const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    let output = ""
+    const decoder = new TextDecoder()
+    const child = Bun.spawn(FMX_COMMAND, {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        FMX_FX_PATH: FAKE_FX,
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        FMX_CONFIG_PATH: join(tempDirectory, "missing-config.toml"),
+        FMX_STATE_PATH: join(tempDirectory, "state.json"),
+        ...privateHome(tempDirectory),
+        FMX_TEST_LOG: lifecycleLog,
+        FMX_TEST_HEARTBEAT: "1",
+      },
+      terminal: {
+        cols: 100,
+        rows: 24,
+        data: (_terminal, bytes) => {
+          output += decoder.decode(bytes, { stream: true })
+        },
+      },
+    })
+
+    try {
+      await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
+      await waitUntil(
+        async () => (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances[0]?.phase === "running",
+        5_000,
+        () => output,
+      )
+
+      const before = countOccurrences(await readLifecycle(lifecycleLog), "alive 1 ")
+      child.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(child.exited, 6_000, "fmx did not detach after prefix+d")).toBe(0)
+      child.terminal?.close()
+
+      await Bun.sleep(200)
+      const lifecycle = await readLifecycle(lifecycleLog)
+      expect(countOccurrences(lifecycle, "alive 1 ")).toBeGreaterThan(before)
+      expect(lifecycle).not.toContain("graceful 1")
+      expect((await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances).toMatchObject([
+        { displayId: 1, phase: "running" },
+      ])
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL")
+      child.terminal?.close()
+      await endSurvivors(tempDirectory)
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  15_000,
+)
+
+test.skipIf(!PTY_TEST_ENABLED)(
   "multiplexer uses configured bindings and leaves PTY exits to fx",
   async () => {
     await chmod(FAKE_FX, 0o755)

@@ -26,6 +26,8 @@ describe("commands", () => {
     expect(() => parseArgs(["doctor", "now"])).toThrow("unexpected argument: now")
     expect(() => parseArgs(["orient"])).toThrow("Commands: control, doctor.")
     expect(parseArgs(["control", "orient"]).command).toEqual({ name: "orient" })
+    expect(parseArgs(["control", "detach"]).command).toEqual({ name: "detach" })
+    expect(() => parseArgs(["control", "detach", "now"])).toThrow("unexpected argument: now")
     expect(() => parseArgs(["orient"])).toThrow("unknown command: orient")
     expect(() => parseArgs(["control"])).toThrow("control needs a command")
     expect(() => parseArgs(["control", "pane"])).toThrow("unknown control command: pane")

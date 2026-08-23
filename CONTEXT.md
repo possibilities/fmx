@@ -6,6 +6,11 @@ and disappear when their fx exits — never when fmx does: the Companion holds
 the fx, and the next fmx for the Home attaches to it.
 _Avoid_: pane, tab, window, session.
 
+**Detach** — closing fmx while leaving every Instance and its fx running with
+the Companion. `keys.detach` and `fmx control detach` request it explicitly;
+a signal, crash, or lost host terminal has the same Instance-lifecycle result.
+_Avoid_: exit or close for an Instance, quit.
+
 **Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns an
 fx process and its PTY so both survive fmx closing. fmx drives one over a
 versioned Unix socket instead of owning the PTY itself, and never through the

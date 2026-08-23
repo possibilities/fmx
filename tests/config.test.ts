@@ -105,7 +105,7 @@ test("falls back on malformed TOML and diagnoses unknown keys", async () => {
   await writeFile(malformed, "[keys\n")
   await writeFile(
     unknown,
-    "[keys]\ndetach = \"prefix+q\"\n[theme]\nname = \"terminal\"\n",
+    "[keys]\nclose_tab = \"prefix+q\"\n[theme]\nname = \"terminal\"\n",
   )
 
   try {
@@ -114,7 +114,7 @@ test("falls back on malformed TOML and diagnoses unknown keys", async () => {
     expect(malformedConfig.diagnostics.join("\n")).toContain("config parse error")
 
     const unknownConfig = await loadConfig(unknown)
-    expect(unknownConfig.diagnostics).toContain("unknown config key keys.detach; ignoring key")
+    expect(unknownConfig.diagnostics).toContain("unknown config key keys.close_tab; ignoring key")
     expect(unknownConfig.diagnostics).toContain("unknown config section [theme]; ignoring section")
   } finally {
     await rm(directory, { recursive: true, force: true })

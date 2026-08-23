@@ -85,6 +85,17 @@ test("sends the caller's instance with commands that have one", async () => {
   }
 })
 
+test("asks a running fmx to detach", async () => {
+  const { socket, calls } = await server(async () => ({ detached: true }), "detach")
+  try {
+    const outcome = await runCommand({ name: "detach" }, socket.path, environment())
+    expect(outcome).toEqual({ exitCode: EXIT_OK, result: { detached: true } })
+    expect(calls).toEqual([{ method: "detach", params: {} }])
+  } finally {
+    socket.close()
+  }
+})
+
 test("resolves prompt text from a file or stdin before sending", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-prompt-"))
   await writeFile(join(directory, "brief.md"), "do the thing\n")

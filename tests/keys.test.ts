@@ -27,9 +27,11 @@ describe("keybindings", () => {
     const { keybindings, diagnostics } = resolveKeybindings()
     expect(diagnostics).toEqual([])
     expect(keybindings.prefixLabel).toBe("ctrl+b")
+    expect(keybindings.detach.map((binding) => binding.label)).toEqual(["prefix+d"])
     expect(keybindings.new_tab.map((binding) => binding.label)).toEqual(["prefix+c"])
     expect(keybindings.launch.map((binding) => binding.label)).toEqual(["prefix+l"])
     expect(keybindings.toggle_sidebar.map((binding) => binding.label)).toEqual(["prefix+b"])
+    expect(actionForKey(keybindings, key({ name: "d" }), "prefix")).toEqual({ name: "detach" })
     expect(actionForKey(keybindings, key({ name: "b" }), "prefix")).toEqual({ name: "toggle_sidebar" })
   })
 

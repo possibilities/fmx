@@ -25,14 +25,14 @@
   open, so a key let through can reach nothing else.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
-- fmx has no quit/close/detach keys: fx exits govern the lifecycle. An
-  Instance disappears when its fx exits; the last exit leaves the empty
-  state, where ctrl-c twice is the only way out. fmx
-  closing — a signal, a crash, the terminal going away — is a detach, never
-  an exit: nothing is sent to fx, the Companion keeps it, and the next fmx
-  for the Home attaches to it. Do not bring back the Ctrl-C/TERM/KILL
-  escalation `stop()` used to do; ending an fx is the human's act, from
-  inside it, or `fmx-zmx kill` by hand.
+- `keys.detach` (default `prefix+d`) closes fmx, never an Instance: fx exits
+  govern the Instance lifecycle. An Instance disappears when its fx exits;
+  the last exit leaves the empty state, where ctrl-c twice also closes fmx.
+  An explicit detach, a signal, a crash, or the terminal going away sends
+  nothing to fx: the Companion keeps it, and the next fmx for the Home
+  attaches to it. Do not bring back the Ctrl-C/TERM/KILL escalation `stop()`
+  used to do; ending an fx is the human's act, from inside it, or
+  `fmx-zmx kill` by hand.
 - `FxInstance` renders; it never owns a process. Everything that carries fx
   goes through `InstanceTransport` (`src/instance-transport.ts`), and the
   one implementation in `src/` is the Companion's. The Bun PTY behind the

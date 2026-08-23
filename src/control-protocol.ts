@@ -43,6 +43,7 @@ export type ControlReply =
 
 export const CONTROL_METHODS = [
   "orient",
+  "detach",
   "instance.list",
   "instance.wait",
   "instance.send",

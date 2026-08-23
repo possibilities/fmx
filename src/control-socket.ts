@@ -20,9 +20,22 @@ export type ControlSurface = {
   handle(method: ControlMethod, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
 }
 
+/** A successful result whose action must wait until its reply is delivered. */
+export class AfterControlReply {
+  constructor(
+    readonly result: unknown,
+    readonly run: () => void,
+  ) {}
+}
+
+export function afterControlReply(result: unknown, run: () => void): AfterControlReply {
+  return new AfterControlReply(result, run)
+}
+
 type Connection = {
   assembler: LineAssembler
   abort: AbortController
+  afterReply: (() => void) | null
 }
 
 /**
@@ -87,39 +100,54 @@ export class ControlSocket {
     if (!connection) return
     connection.abort.abort()
     this.connections.delete(socket as object)
+    this.runAfterReply(connection)
   }
 
   private async acceptLine(socket: SocketConnection, connection: Connection, line: string): Promise<void> {
     const decoded = decodeRequest(line)
     if ("reply" in decoded) {
-      this.answer(socket, encodeReply(decoded.reply))
+      this.answer(socket, connection, encodeReply(decoded.reply))
       return
     }
     const { request } = decoded
     let reply: string
+    let afterReply: (() => void) | null = null
     try {
-      const result = await this.surface.handle(request.method, request.params, connection.abort.signal)
+      const handled = await this.surface.handle(request.method, request.params, connection.abort.signal)
+      const result = handled instanceof AfterControlReply ? handled.result : handled
+      if (handled instanceof AfterControlReply) afterReply = handled.run
       reply = encodeReply(successReply(request.id, result))
     } catch (error) {
       reply = encodeReply(errorReply(request.id, failureFrom(error)))
     }
-    if (connection.abort.signal.aborted) return
-    this.answer(socket, reply)
+    if (connection.abort.signal.aborted) {
+      afterReply?.()
+      return
+    }
+    connection.afterReply = afterReply
+    this.answer(socket, connection, reply)
   }
 
-  private answer(socket: SocketConnection, reply: string): void {
+  private answer(socket: SocketConnection, connection: Connection, reply: string): void {
     try {
       socket.write(reply)
       socket.end()
     } catch {
       // A client that gave up before the answer is ordinary.
+      this.runAfterReply(connection)
     }
+  }
+
+  private runAfterReply(connection: Connection): void {
+    const action = connection.afterReply
+    connection.afterReply = null
+    action?.()
   }
 
   private connectionFor(socket: SocketConnection): Connection {
     const existing = this.connections.get(socket as object)
     if (existing) return existing
-    const connection: Connection = { assembler: new LineAssembler(), abort: new AbortController() }
+    const connection: Connection = { assembler: new LineAssembler(), abort: new AbortController(), afterReply: null }
     this.connections.set(socket as object, connection)
     return connection
   }

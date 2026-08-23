@@ -16,6 +16,7 @@ export type LaunchFieldArgs = {
 
 export type Command =
   | { name: "orient" }
+  | { name: "detach" }
   | { name: "instance"; verb: "list" }
   | { name: "instance"; verb: "wait"; target: string; states?: string[]; timeoutMs?: number }
   | { name: "instance"; verb: "send"; target: string; text: TextSource }
@@ -53,7 +54,7 @@ export type CliOptions = {
 const CONTROL_GROUP = "control"
 /** The one other top-level command: a report on the installation, never a running fmx. */
 const DOCTOR_COMMAND = "doctor"
-const COMMAND_NAMES = ["orient", "instance", "launch", "draft", "focus", "sidebar", "keys", "catalog"] as const
+const COMMAND_NAMES = ["orient", "detach", "instance", "launch", "draft", "focus", "sidebar", "keys", "catalog"] as const
 const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
 const INSTANCE_VERBS = ["list", "wait", "send"] as const
 
@@ -129,6 +130,9 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
     case "orient":
       rejectExtra(args, "orient")
       return { name: "orient" }
+    case "detach":
+      rejectExtra(args, "detach")
+      return { name: "detach" }
     case "instance":
       return parseInstance(args)
     case "launch":
@@ -372,6 +376,8 @@ export function usage(topic: string | null = null): string {
       return INSTANCE_USAGE
     case "focus":
       return "Usage: fmx control focus <target>\n\n  target: instance id, slug, session-id prefix, next, previous, current\n"
+    case "detach":
+      return "Usage: fmx control detach\n\nDetach fmx and leave every agent running.\n"
     case "sidebar":
       return "Usage: fmx control sidebar [--width N] [--show | --hide | --toggle]\n"
     case "keys":
@@ -406,6 +412,7 @@ const CONTROL_USAGE = `Usage: fmx control <command> [args]
 Each command prints one JSON object.
 
   orient                       where you are and what the interface shows
+  detach                       close fmx; every agent keeps running
   launch [prompt] [flags]      start an agent; --editable opens the dialog instead
   draft show|set|submit|cancel|wait [id]
                                an open dialog an agent can finish or hand over

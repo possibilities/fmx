@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { existsSync, statSync } from "node:fs"
 import { exchange, UnreachableError } from "../src/control-client.ts"
 import { ControlFailure, type ControlMethod } from "../src/control-protocol.ts"
-import { ControlSocket, type ControlSurface } from "../src/control-socket.ts"
+import { afterControlReply, ControlSocket, type ControlSurface } from "../src/control-socket.ts"
 
 function socketPath(name: string): string {
   return `/tmp/fmx-ctl-test-${name}-${process.pid}.sock`
@@ -33,6 +33,24 @@ test("answers one request per connection and closes it", async () => {
     socket.close()
   }
   expect(existsSync(socket.path)).toBe(false)
+})
+
+test("runs an after-reply action only once the successful reply is delivered", async () => {
+  let deliveries = 0
+  const socket = new ControlSocket(
+    surface(async () => afterControlReply({ detached: true }, () => deliveries += 1)),
+    socketPath("after-reply"),
+  )
+  socket.start()
+  try {
+    const reply = await exchange(socket.path, "detach", {}, 1000)
+    expect(reply).toEqual({ id: expect.any(String), ok: true, result: { detached: true } })
+    const deadline = Date.now() + 1_000
+    while (deliveries === 0 && Date.now() < deadline) await Bun.sleep(1)
+    expect(deliveries).toBe(1)
+  } finally {
+    socket.close()
+  }
 })
 
 test("is readable by its owner alone", () => {
