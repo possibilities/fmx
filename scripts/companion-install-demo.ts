@@ -80,7 +80,7 @@ const fmxEnvironment: Record<string, string> = {
   FMX_STATE_PATH: join(temp, "state.json"),
   XDG_CONFIG_HOME: join(temp, "config"),
   FMX_ZMX_DIR: companionDirectory,
-  FMX_MANIFEST_PATH: join(temp, "instances.json"),
+  FMX_MANIFEST_PATH: join(temp, "agents.json"),
   FMX_TEST_LOG: lifecycleLog,
   FMX_TEST_HEARTBEAT: "1",
   FMX_TEST_PASSTHROUGH_KEYS: "1",

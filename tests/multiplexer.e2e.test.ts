@@ -65,7 +65,7 @@ function privateHome(tempDirectory: string): Record<string, string> {
     XDG_CONFIG_HOME: join(tempDirectory, "config"),
     FMX_ZMX_PATH: COMPANION!,
     FMX_ZMX_DIR: companionDirectoryFor(tempDirectory),
-    FMX_MANIFEST_PATH: join(tempDirectory, "instances.json"),
+    FMX_MANIFEST_PATH: join(tempDirectory, "agents.json"),
   }
 }
 
@@ -128,7 +128,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
-        async () => (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents[0]?.phase === "running",
+        async () => (await loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))).agents[0]?.phase === "running",
         5_000,
         () => output,
       )
@@ -142,7 +142,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(countOccurrences(lifecycle, "alive 1 ")).toBeGreaterThan(before)
       expect(lifecycle).not.toContain("graceful 1")
-      expect((await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents).toMatchObject([
+      expect((await loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))).agents).toMatchObject([
         { displayId: 1, phase: "running" },
       ])
     } finally {
@@ -201,12 +201,12 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
         async () =>
-          (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents.length === 1,
+          (await loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))).agents.length === 1,
         5_000,
         () => output,
       )
       expect(
-        (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).agents[0]?.cwd,
+        (await loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))).agents[0]?.cwd,
       ).toBe(await realpath(firstRoot))
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
@@ -277,7 +277,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       for (const reply of pendingReplies) sendHostReply(reply)
       return child
     }
-    const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
+    const manifest = () => loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))
     const agentSocketPath = defaultSocketPath(homeOf(tempDirectory))
 
     const firstOutput = { output: "" }
@@ -416,7 +416,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         },
       })
     }
-    const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
+    const manifest = () => loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))
 
     const firstOutput = { output: "" }
     const first = spawnFmx(firstOutput)
@@ -997,7 +997,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
           },
         })
       }
-      const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
+      const manifest = () => loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))
       const heartbeats = async (id: number) => countOccurrences(await readLifecycle(lifecycleLog), `alive ${id} `)
 
       const first = { output: "" }

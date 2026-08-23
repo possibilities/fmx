@@ -1,13 +1,13 @@
 # fmx agent notes
 
-- The `[keys]` table in `~/.config/fmx/config.toml` is intentionally a strict
-  subset of Herdr's keybinding schema: the same field names, binding strings,
-  string arrays, `prefix+` trigger syntax, and direct modified chords work in
-  both programs. Keep new fields compatible with Herdr's schema, and don't
-  mention Herdr in user-facing text (README, `--help`, diagnostics) — only
-  here. `keys.launch` is the one field Herdr has no counterpart for; a field
-  fmx alone needs is fine, but a field both have must keep Herdr's spelling
-  and meaning. Herdr ignores what it does not know, with a diagnostic.
+- The `[keys]` table in `~/.config/fmx/config.toml` intentionally shares
+  Herdr's binding grammar: binding strings, string arrays, `prefix+` trigger
+  syntax, and direct modified chords work in both programs. Common action
+  fields keep the same spelling and meaning. `keys.launch` and
+  `keys.toggle_tray` are fmx-owned: Herdr has no launch counterpart and calls
+  its own left surface a Sidebar, not a Tray. Herdr ignores fields it does not
+  know with a diagnostic. Do not mention Herdr in user-facing text (README,
+  `--help`, diagnostics) — only here.
 - `project_roots` is deliberately empty by default. Personal roots belong in
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.

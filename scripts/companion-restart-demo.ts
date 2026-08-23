@@ -31,7 +31,7 @@ const temp = await mkdtemp("/tmp/fmx-restart-demo-")
 const companionDirectory = `/tmp/fmxz-demo-${basename(temp).slice(-6)}`
 const home = homeIdFor(join(temp, "config", "fmx"))
 const lifecycleLog = join(temp, "lifecycle.log")
-const manifestPath = join(temp, "instances.json")
+const manifestPath = join(temp, "agents.json")
 const env = {
   ...process.env,
   FMX_FX_PATH: FAKE_FX,

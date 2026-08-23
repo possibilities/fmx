@@ -36,7 +36,7 @@ closing predecessor to release the Home, but never displaces a live one.
 _Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
 is fx's own settings), installation, workspace.
 
-**Manifest** — `~/.config/fmx/instances.json`, the Home's own record of the
+**Manifest** — `~/.config/fmx/agents.json`, the Home's own record of the
 Agents its Companion holds: one entry per Agent carrying its identity,
 display number, directory, the fx it runs, and the last Agent-socket status
 checkpoint, written before the Companion is asked to start anything and

@@ -27,7 +27,7 @@ if (!ZMX) {
 const PACE = Number(process.env.DEMO_PACE_MS ?? 0)
 const dir = await mkdtemp("/tmp/fmxz-recon-")
 const home = homeIdFor(dir)
-const manifestPath = join(dir, "instances.json")
+const manifestPath = join(dir, "agents.json")
 const env = companionEnvironment({ PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm-256color" }, join(dir, "zmx"))
 const companion = new CompanionCommand(join(dir, "zmx"), env, ZMX)
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -51,7 +51,7 @@ const create = (agentId: string) =>
 const showManifest = async () => {
   const text = existsSync(manifestPath) ? await readFile(manifestPath, "utf8") : "(no file)"
   const doc = JSON.parse(text.startsWith("{") ? text : "{}") as { agents?: { agentId: string; displayId: number; phase: string }[] }
-  say(dim(`instances.json: ${(doc.agents ?? []).map((e) => `#${e.displayId} ${short(e.agentId)} ${e.phase}`).join(", ") || "empty"}`))
+  say(dim(`agents.json: ${(doc.agents ?? []).map((e) => `#${e.displayId} ${short(e.agentId)} ${e.phase}`).join(", ") || "empty"}`))
 }
 const showSessions = async () => {
   const sessions = await companion.list()

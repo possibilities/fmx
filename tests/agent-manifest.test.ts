@@ -34,8 +34,8 @@ test("an identity carries one token under three names", () => {
 
 test("manifest path honors the override and otherwise sits beside state.json", () => {
   expect(manifestPath({ FMX_MANIFEST_PATH: "/x/m.json" }, "/home/u")).toBe("/x/m.json")
-  expect(manifestPath({}, "/home/u")).toBe("/home/u/.config/fmx/instances.json")
-  expect(manifestPath({ XDG_CONFIG_HOME: "/cfg" }, "/home/u")).toBe("/cfg/fmx/instances.json")
+  expect(manifestPath({}, "/home/u")).toBe("/home/u/.config/fmx/agents.json")
+  expect(manifestPath({ XDG_CONFIG_HOME: "/cfg" }, "/home/u")).toBe("/cfg/fmx/agents.json")
 })
 
 test("parsing keeps valid entries and drops each bad one on its own", () => {
@@ -75,7 +75,7 @@ test("another Home's manifest, an old version, or garbage reads as empty", () =>
 
 test("creation is written before it is acknowledged, and acknowledged in place", async () => {
   await withDirectory(async (dir) => {
-    const path = join(dir, "instances.json")
+    const path = join(dir, "agents.json")
     const manifest = await AgentManifest.open(path, HOME)
     const entry = await manifest.beginCreate(params())
     expect(entry.phase).toBe("creating")

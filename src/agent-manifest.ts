@@ -70,7 +70,7 @@ export function manifestPath(
   homeDirectory: string = homedir(),
 ): string {
   if (env[MANIFEST_PATH_ENV_VAR]) return env[MANIFEST_PATH_ENV_VAR]
-  return join(fmxDirectory(env, homeDirectory), "instances.json")
+  return join(fmxDirectory(env, homeDirectory), "agents.json")
 }
 
 export function mintIdentity(token: string = randomBytes(16).toString("hex")): AgentIdentity {
