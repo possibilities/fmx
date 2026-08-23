@@ -113,6 +113,7 @@ const DIVIDER_UNREVEALED_COLOR = "transparent"
 const HELP_MODAL_TITLE = " keys "
 const ERROR_MODAL_TITLE = " error "
 
+const CTRL_D_KEY = parseKeyCombo("ctrl+d")!
 const HELP_CLOSE_KEY = parseKeyCombo("?")!
 const MODIFIER_ONLY_KEYS = new Set([
   "leftshift",
@@ -138,7 +139,6 @@ const PROMPT_SUBMIT_MS = 120
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
 const EMPTY_STATE_CONTENT = "prefix+c to create agent\nprefix+l to prompt agent"
-const EXIT_CONFIRMATION_CONTENT = "press ctrl+c again to exit"
 export const EXIT_CONFIRMATION_TIMEOUT_MS = 2_000
 const MAX_SCROLLBACK_BYTES = 10_000_000
 
@@ -488,6 +488,7 @@ export class Multiplexer {
   private hostPalette: TerminalColors | null = null
   private shuttingDown = false
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
+  private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
   private readonly swallowedReleases = new Set<string>()
   private readonly slugNamer: SlugNamer
   /** Every launch dialog opening, by id, the open one included. */
@@ -729,6 +730,7 @@ export class Multiplexer {
     this.cancelPrefix()
     if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
     this.exitConfirmationTimer = null
+    this.exitConfirmationKey = null
     this.launchDialog.close()
     this.hideModal()
     this.slugNamer.stop()
@@ -1047,20 +1049,25 @@ export class Multiplexer {
   private refreshEmptyState(): void {
     const confirmingExit = this.exitConfirmationTimer !== null
     const palette = modalColors(this.hostPalette)
-    this.emptyState.content = confirmingExit ? EXIT_CONFIRMATION_CONTENT : EMPTY_STATE_CONTENT
+    this.emptyState.content = confirmingExit
+      ? `press ${this.exitConfirmationKey ?? "ctrl+c"} again to exit`
+      : EMPTY_STATE_CONTENT
     this.emptyState.fg = confirmingExit ? palette.foreground : palette.dim
   }
 
-  private requestExitConfirmation(): void {
+  private requestExitConfirmation(key: "ctrl+c" | "ctrl+d"): void {
     if (this.exitConfirmationTimer !== null) {
       clearTimeout(this.exitConfirmationTimer)
       this.exitConfirmationTimer = null
+      this.exitConfirmationKey = null
       void this.shutdown()
       return
     }
 
+    this.exitConfirmationKey = key
     this.exitConfirmationTimer = setTimeout(() => {
       this.exitConfirmationTimer = null
+      this.exitConfirmationKey = null
       if (!this.shuttingDown && this.instances.length === 0) this.refreshEmptyState()
     }, EXIT_CONFIRMATION_TIMEOUT_MS)
     this.refreshEmptyState()
@@ -1069,6 +1076,7 @@ export class Multiplexer {
   private cancelExitConfirmation(): void {
     if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
     this.exitConfirmationTimer = null
+    this.exitConfirmationKey = null
     this.refreshEmptyState()
   }
 
@@ -1310,10 +1318,11 @@ export class Multiplexer {
       return
     }
 
-    if (this.instances.length === 0 && isCancelKey(key)) {
+    const emptyStateExitKey = isCancelKey(key) ? "ctrl+c" : keyMatchesCombo(key, CTRL_D_KEY) ? "ctrl+d" : null
+    if (this.instances.length === 0 && emptyStateExitKey !== null) {
       this.swallow(key)
       this.cancelPrefix()
-      this.requestExitConfirmation()
+      this.requestExitConfirmation(emptyStateExitKey)
       return
     }
 

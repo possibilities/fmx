@@ -114,6 +114,40 @@ test("requires a second ctrl+c before the empty-state exit timeout", async () =>
   }
 })
 
+test("requires a second ctrl+d to exit from the empty state", async () => {
+  const setup = await createTestRenderer({
+    width: 80,
+    height: 24,
+    kittyKeyboard: true,
+    exitOnCtrlC: false,
+  })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...instanceOptions(),
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+  })
+  let done = false
+  void multiplexer.waitUntilDone().then(() => {
+    done = true
+  })
+
+  try {
+    multiplexer.start()
+    setup.mockInput.pressKey("d", { ctrl: true })
+    await setup.renderOnce()
+
+    expect(done).toBe(false)
+    expect(setup.captureCharFrame()).toContain("press ctrl+d again to exit")
+
+    setup.mockInput.pressKey("d", { ctrl: true })
+    await multiplexer.waitUntilDone()
+    expect(done).toBe(true)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("lays out sidebar, divider line, and content row", async () => {
   const { setup, multiplexer, sidebar, divider, content } = await createMultiplexer(90, 24)
   try {
