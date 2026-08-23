@@ -133,7 +133,10 @@ async function main(): Promise<void> {
     controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(agentSocket.path))
     controlSocket.start()
 
-    const hostPalette = await detectHostPalette(renderer)
+    // Detection takes seconds in a terminal that never answers, and a
+    // renderer destroyed under it never settles the query: a shutdown in
+    // that window must still reach the cleanup below.
+    const hostPalette = await Promise.race([detectHostPalette(renderer), app.waitUntilDone().then(() => null)])
     if (hostPalette) app.setHostPalette(hostPalette)
     await app.start()
     await app.waitUntilDone()

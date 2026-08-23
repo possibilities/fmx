@@ -664,6 +664,7 @@ export class Multiplexer {
    * one that fails is reported and the rest still come up.
    */
   async start(): Promise<void> {
+    if (this.shuttingDown) return
     this.subagents.start()
     // The host palette query has settled by the time an fx can launch; if it
     // never produced colors, the fallback is the best divider color there will

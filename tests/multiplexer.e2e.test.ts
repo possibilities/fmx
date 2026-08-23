@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { loadManifest } from "../src/instance-manifest.ts"
 import { SIDEBAR_DEFAULT_WIDTH } from "../src/multiplexer.ts"
+import { CompanionCommand } from "../src/zmx-command.ts"
+import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FAKE_FX = resolve(ROOT, "tests/fixtures/fake-fx.ts")
@@ -24,7 +28,53 @@ const dragAcross = (columns: number, row = 1) => {
   return `\u001b[<0;${from};${row}M\u001b[<32;${to};${row}M\u001b[<0;${to};${row}m`
 }
 
-const PTY_TEST_ENABLED = process.env.FMX_RUN_PTY_TESTS === "1" && typeof Bun.Terminal === "function"
+/**
+ * The real app needs a real Companion: FMX_ZMX_PATH, or `fmx-zmx` on PATH.
+ * Everything an fmx here touches — Home, Manifest, Companion directory — is
+ * under the test's temp directory, so nothing can meet a human's fmx.
+ */
+const COMPANION = process.env.FMX_ZMX_PATH ?? Bun.which(COMPANION_BINARY_NAME)
+const PTY_TEST_ENABLED =
+  process.env.FMX_RUN_PTY_TESTS === "1" && typeof Bun.Terminal === "function" && Boolean(COMPANION && existsSync(COMPANION))
+
+/**
+ * The Companion's directory for one test: under /tmp itself, not the
+ * system temp directory, because a socket path is capped near 104 bytes and
+ * a session name alone is 36 of them.
+ */
+const companionDirectoryFor = (tempDirectory: string) => `/tmp/fmxz-e2e-${basename(tempDirectory)}`
+
+/** The environment that keeps one fmx run private to its temp directory. */
+function privateHome(tempDirectory: string): Record<string, string> {
+  return {
+    XDG_CONFIG_HOME: join(tempDirectory, "config"),
+    FMX_ZMX_PATH: COMPANION!,
+    FMX_ZMX_DIR: companionDirectoryFor(tempDirectory),
+    FMX_MANIFEST_PATH: join(tempDirectory, "instances.json"),
+  }
+}
+
+/** The Home id an fmx under `privateHome` derives for itself. */
+const homeOf = (tempDirectory: string) => homeIdFor(join(tempDirectory, "config", "fmx"))
+
+/** End every fx the Companion still holds for a test, and consume what they leave. */
+async function endSurvivors(tempDirectory: string): Promise<void> {
+  const companion = new CompanionCommand(companionDirectoryFor(tempDirectory), process.env, COMPANION!)
+  let sessions = await companion.list().catch(() => [])
+  for (const session of sessions) {
+    if (session.state === "live") await companion.kill(session.name).catch(() => {})
+  }
+  const deadline = Date.now() + 8_000
+  while (Date.now() < deadline) {
+    sessions = await companion.list().catch(() => [])
+    if (sessions.every((session) => session.state === "exited" || session.state === "absent")) break
+    await Bun.sleep(50)
+  }
+  for (const session of sessions) {
+    if (session.state === "exited") await companion.forget(session.name).catch(() => {})
+  }
+  await rm(companionDirectoryFor(tempDirectory), { recursive: true, force: true })
+}
 
 test.skipIf(!PTY_TEST_ENABLED)(
   "multiplexer uses configured bindings and leaves PTY exits to fx",
@@ -48,6 +98,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         // Machine state stays in the temp directory: a sidebar width persisted
         // by a real session would move the layout out from under these tests.
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
+        ...privateHome(tempDirectory),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_HEARTBEAT: "1",
         FMX_TEST_KEYBOARD_MODE: "1",
@@ -168,6 +219,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL")
       child.terminal?.close()
+      await endSurvivors(tempDirectory)
       await rm(tempDirectory, { recursive: true, force: true })
     }
   },
@@ -195,6 +247,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         // Machine state stays in the temp directory: a sidebar width persisted
         // by a real session would move the layout out from under these tests.
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
+        ...privateHome(tempDirectory),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_PASSTHROUGH_KEYS: "1",
       },
@@ -251,6 +304,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL")
       child.terminal?.close()
+      await endSurvivors(tempDirectory)
       await rm(tempDirectory, { recursive: true, force: true })
     }
   },
@@ -288,6 +342,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         // Machine state stays in the temp directory: a sidebar width persisted
         // by a real session would move the layout out from under these tests.
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
+        ...privateHome(tempDirectory),
         FMX_TEST_LOG: lifecycleLog,
         FMX_TEST_BACKGROUND_QUERY: "1",
         FMX_TEST_THEME_UPDATES: "1",
@@ -342,66 +397,124 @@ test.skipIf(!PTY_TEST_ENABLED)(
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL")
       child.terminal?.close()
+      await endSurvivors(tempDirectory)
       await rm(tempDirectory, { recursive: true, force: true })
     }
   },
   15_000,
 )
 
-test.skipIf(!PTY_TEST_ENABLED || process.platform === "win32")(
-  "SIGQUIT gracefully shuts down every PTY",
-  async () => {
-    await chmod(FAKE_FX, 0o755)
-    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-signal-e2e-"))
-    const lifecycleLog = join(tempDirectory, "lifecycle.log")
-    const configFile = join(tempDirectory, "missing-config.toml")
-
-    let output = ""
-    const decoder = new TextDecoder()
-    const child = Bun.spawn(FMX_COMMAND, {
-      cwd: ROOT,
-      env: {
+for (const signal of ["SIGQUIT", "SIGKILL"] as const) {
+  test.skipIf(!PTY_TEST_ENABLED)(
+    `${signal} leaves every fx running, and the next fmx restores them`,
+    async () => {
+      await chmod(FAKE_FX, 0o755)
+      const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-restart-e2e-"))
+      const lifecycleLog = join(tempDirectory, "lifecycle.log")
+      const configFile = join(tempDirectory, "missing-config.toml")
+      const env = {
         ...process.env,
         FMX_FX_PATH: FAKE_FX,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         FMX_CONFIG_PATH: configFile,
-        // Machine state stays in the temp directory: a sidebar width persisted
-        // by a real session would move the layout out from under these tests.
         FMX_STATE_PATH: join(tempDirectory, "state.json"),
+        ...privateHome(tempDirectory),
         FMX_TEST_LOG: lifecycleLog,
+        FMX_TEST_HEARTBEAT: "1",
+        FMX_TEST_PASSTHROUGH_KEYS: "1",
         FMX_TEST_QUERY_ON_EXIT: "1",
-      },
-      terminal: {
-        cols: 100,
-        rows: 24,
-        data: (_terminal, bytes) => {
-          output += decoder.decode(bytes, { stream: true })
-        },
-      },
-    })
+      }
+      const decoder = new TextDecoder()
+      const spawnFmx = (sink: { output: string }) =>
+        Bun.spawn(FMX_COMMAND, {
+          cwd: ROOT,
+          env,
+          terminal: {
+            cols: 100,
+            rows: 24,
+            data: (_terminal, bytes) => {
+              sink.output += decoder.decode(bytes, { stream: true })
+            },
+          },
+        })
+      const manifest = () => loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))
+      const heartbeats = async (id: number) => countOccurrences(await readLifecycle(lifecycleLog), `alive ${id} `)
 
-    try {
-      await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
-      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
-      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
-      // Let the key-driven spawn finish unwinding before a signal starts
-      // shutdown; otherwise Bun can leave the child PTY's exit promise pending.
-      await Bun.sleep(250)
-      process.kill(child.pid, "SIGQUIT")
-      const code = await withTimeout(child.exited, 6_000, "fmx did not exit after SIGQUIT")
-      const lifecycle = await readLifecycle(lifecycleLog)
-      expect(code).toBe(131)
-      expect(lifecycle).toContain("terminal-response 1")
-      expect(lifecycle).toContain("graceful 1")
-    } finally {
-      if (child.exitCode === null) child.kill("SIGKILL")
-      child.terminal?.close()
-      await rm(tempDirectory, { recursive: true, force: true })
-    }
-  },
-  15_000,
-)
+      const first = { output: "" }
+      const one = spawnFmx(first)
+      let two: ReturnType<typeof spawnFmx> | null = null
+      try {
+        await waitUntil(() => first.output.includes("prefix+c"), 8_000, () => first.output)
+        one.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+        await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => first.output)
+        one.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+        await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => first.output)
+        // Both claims are acknowledged before fmx is taken down.
+        await waitUntil(
+          async () => {
+            const entries = (await manifest()).instances
+            return entries.length === 2 && entries.every((entry) => entry.phase === "running")
+          },
+          5_000,
+          () => first.output,
+        )
+
+        process.kill(one.pid, signal)
+        const code = await withTimeout(one.exited, 6_000, `fmx did not exit after ${signal}`)
+        expect(code).toBe(signal === "SIGQUIT" ? 131 : 137)
+        one.terminal?.close()
+
+        // Nothing was sent to fx: it is still running, and still its own process.
+        const beforeOne = await heartbeats(1)
+        const beforeTwo = await heartbeats(2)
+        await Bun.sleep(200)
+        expect(await heartbeats(1)).toBeGreaterThan(beforeOne)
+        expect(await heartbeats(2)).toBeGreaterThan(beforeTwo)
+        expect(await readLifecycle(lifecycleLog)).not.toContain("ctrl-c")
+        expect(await readLifecycle(lifecycleLog)).not.toContain("graceful")
+        expect((await manifest()).instances.map((entry) => entry.displayId).sort()).toEqual([1, 2])
+
+        // The next fmx for this Home finds both, numbered as they were, and
+        // shows what was on their screens; nothing is started.
+        const second = { output: "" }
+        two = spawnFmx(second)
+        await waitUntil(() => readyBanners(second.output) >= 1, 10_000, () => second.output)
+        await Bun.sleep(300)
+        expect(await readLifecycle(lifecycleLog)).not.toContain("start 3")
+        expect(countOccurrences(await readLifecycle(lifecycleLog), "start ")).toBe(2)
+
+        // Input reaches the restored fx; its own exit still removes it.
+        two.terminal?.write(Uint8Array.of(control("u")))
+        await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ctrl-u 1"), 5_000, () => second.output)
+        two.terminal?.write(Uint8Array.of(control("c"), control("c")))
+        await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => second.output)
+        expect(await readLifecycle(lifecycleLog)).toContain("terminal-response 1")
+        await waitUntil(async () => (await manifest()).instances.length === 1, 5_000, () => second.output)
+        expect((await manifest()).instances[0]?.displayId).toBe(2)
+
+        two.terminal?.write(Uint8Array.of(control("c"), control("c")))
+        await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 2"), 5_000, () => second.output)
+        await waitUntil(() => second.output.includes("prefix+c to create agent"), 5_000, () => second.output)
+        expect(two.exitCode).toBeNull()
+        await Bun.sleep(250)
+        two.terminal?.write(Uint8Array.of(control("c")))
+        await waitUntil(() => second.output.includes("press ctrl+c again to exit"), 5_000, () => second.output)
+        two.terminal?.write(Uint8Array.of(control("c")))
+        expect(await withTimeout(two.exited, 6_000, "fmx did not exit after confirmed ctrl+c")).toBe(0)
+        expect((await manifest()).instances).toEqual([])
+      } finally {
+        if (one.exitCode === null) one.kill("SIGKILL")
+        one.terminal?.close()
+        if (two && two.exitCode === null) two.kill("SIGKILL")
+        two?.terminal?.close()
+        await endSurvivors(tempDirectory)
+        await rm(tempDirectory, { recursive: true, force: true })
+      }
+    },
+    40_000,
+  )
+}
 
 function createHostPaletteResponder(
   send: (reply: string) => void,
@@ -487,6 +600,18 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 function countOccurrences(value: string, needle: string): number {
   return value.split(needle).length - 1
+}
+
+/**
+ * How many times the fake fx's banner was drawn. The renderer positions
+ * the cursor between words, so the banner is found in the text the escape
+ * sequences leave behind rather than as one string.
+ */
+function readyBanners(output: string): number {
+  const text = output
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, " ")
+    .replace(/\u001b\[[0-9;?<>=]*[A-Za-z]/g, " ")
+  return text.match(/fake\s+fx\s+ready/g)?.length ?? 0
 }
 
 async function readLifecycle(path: string): Promise<string> {
