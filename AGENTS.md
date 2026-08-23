@@ -201,10 +201,23 @@
   pinned build is always made by `scripts/build-companion.sh` — the release
   script, `scripts/install-companion.sh` (the editable checkout's
   `~/.local/bin/fmx-zmx`, which agentstart installs and zmax's pin step
-  refreshes), and nothing else; one build path, one set of flags. A
-  protocol bump will also need a plan for daemons still running the old
-  build when the new pair is installed — today there is none, because the
-  protocol has not moved.
+  refreshes), and nothing else; one build path, one set of flags. 
+- Bumping `PROTOCOL_VERSION` (`src/zmx-protocol.ts`, mirrored by the fork's
+  `src/ipc.zig`) is a pair-wide event with survivors: daemons started by the
+  previous Companion keep running the old protocol, the new fmx's `Hello`
+  is refused by them, and the new `fmx-zmx` CLI cannot reach them either —
+  every running agent on the machine becomes unreachable at once. Before
+  the first bump, build one of these and say which in an ADR: **drain** —
+  the Manifest records each Instance's Companion build, a start that finds
+  survivors on an older build leaves them on screen as unreachable with a
+  message naming the build, and the installer keeps the previous
+  `fmx-zmx` beside the new one as `fmx-zmx-<build>` so the human can attach
+  to or end them by hand; or **carry** — fmx keeps speaking every protocol
+  version a survivor may hold, negotiating down on `Welcome` (the refusal
+  already names both ranges), and the old one is retired only when no
+  Manifest on the machine records it. Drain is the cheaper first answer;
+  carry is what a long-lived deployment wants. Until one exists, the
+  protocol version does not move, whatever else the stack changes.
 - The two `tests/git-context.test.ts` cases that read `process.cwd()` assume a
   main checkout and fail in a linked worktree. That is the test's assumption,
   not a regression.
