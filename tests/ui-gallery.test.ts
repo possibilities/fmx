@@ -59,6 +59,19 @@ test(
       expect(app.activeStoryId).toBe(built.stories.dark[1]!.id)
       expect(setup.captureCharFrame()).toContain("state 2/3")
 
+      setup.mockInput.pressArrow("right")
+      setup.mockInput.pressArrow("right")
+      await setup.renderOnce()
+      expect(app.activeComponent).toBe("Session list")
+      expect(app.activeStoryId).toBe(built.stories.dark[3]!.id)
+      expect(setup.captureCharFrame()).toContain("state 1/3")
+
+      setup.mockInput.pressArrow("left")
+      setup.mockInput.pressArrow("left")
+      await setup.renderOnce()
+      expect(app.activeComponent).toBe("Multiplexer")
+      expect(app.activeStoryId).toBe(built.stories.dark[1]!.id)
+
       setup.mockInput.pressKey("t")
       await setup.renderOnce()
       expect(app.activePalette).toBe("light")

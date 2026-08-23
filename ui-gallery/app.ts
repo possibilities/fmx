@@ -410,11 +410,7 @@ export class UiGalleryApp {
 
   private cycleState(offset: number): void {
     this.leaveInteraction()
-    const component = this.activeComponent
-    const states = this.statesFor(component)
-    const next = (this.stateIndex(component) + offset + states.length) % states.length
-    this.stateByComponent.set(component, next)
-    this.showActiveStory()
+    this.advanceCatalog(offset)
   }
 
   private showActiveStory(): void {
@@ -487,12 +483,12 @@ export class UiGalleryApp {
     }
     if (key.name === "left" || key.name === "h") {
       this.swallow(key)
-      this.advanceSlideshow(-1)
+      this.advanceCatalog(-1)
       return
     }
     if (key.name === "right" || key.name === "l") {
       this.swallow(key)
-      this.advanceSlideshow(1)
+      this.advanceCatalog(1)
       return
     }
     if (key.name === "t") {
@@ -540,7 +536,7 @@ export class UiGalleryApp {
     this.showActiveStory()
   }
 
-  private advanceSlideshow(offset: number): void {
+  private advanceCatalog(offset: number): void {
     const next = (this.slideIndex() + offset + this.stories.length) % this.stories.length
     const story = this.stories[next]!
     this.selectedComponent = this.components.indexOf(story.component)
@@ -548,7 +544,8 @@ export class UiGalleryApp {
       story.component,
       this.statesFor(story.component).findIndex((state) => state.id === story.id),
     )
-    this.applyTheme()
+    if (this.slideshow) this.applyTheme()
+    else this.paintComponentList()
     this.componentList.scrollChildIntoView(`ui-gallery-component-${slug(story.component)}`)
     this.showActiveStory()
     this.armSlideshow()
@@ -559,7 +556,7 @@ export class UiGalleryApp {
     if (!this.slideshow || this.slideshowPaused || this.closed) return
     this.slideshowTimer = setTimeout(() => {
       this.slideshowTimer = null
-      this.advanceSlideshow(1)
+      this.advanceCatalog(1)
     }, this.slideshowIntervalMs)
   }
 

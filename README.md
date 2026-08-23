@@ -237,12 +237,13 @@ bun run test:pty  # requires a host that permits PTY allocation, and the compani
 ```
 
 The UI gallery is an executable catalog of fmx's interesting OpenTUI
-components and blocks. Up/down chooses a component, left/right cycles through
-its states, and `t` toggles the entire gallery between dark and light without
-changing either selection. On a state that benefits from live input, Enter
-hands its real keys and mouse controls to the component and Escape returns to
-gallery navigation. Press `s` for a looping slideshow of all states in catalog
-order; Space pauses or resumes, left/right steps across component boundaries,
+components and blocks. Up/down chooses a component, while left/right follows
+the catalog in order, crossing into the previous or next component rather than
+wrapping inside one group. `t` toggles the entire gallery between dark and
+light without changing either selection. On a state that benefits from live
+input, Enter hands its real keys and mouse controls to the component and Escape
+returns to gallery navigation. Press `s` for a looping slideshow of all states
+in catalog order; Space pauses or resumes, left/right steps across component boundaries,
 and Escape returns to browsing. The theme remains independently toggleable
 throughout. Page up/page down scrolls a large frame, `[`/`]` pans it
 horizontally, and `q` closes the gallery. States use deterministic transports

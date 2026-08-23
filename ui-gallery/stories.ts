@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert"
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 import type { KeyEvent } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentSocket, FrameListener } from "../src/agent-socket.ts"
@@ -21,7 +21,10 @@ import {
 import type { UiStory, UiStoryContext } from "./story.ts"
 
 const ROOT = resolve(import.meta.dir, "..")
-const GALLERY_CWD = resolve(ROOT, "..")
+// A normal checkout is itself `fmx`; a managed Worktree sits directly under
+// an untracked directory with that name. Either gives the story the same
+// project row without depending on the checkout topology.
+const GALLERY_CWD = basename(ROOT) === "fmx" ? ROOT : resolve(ROOT, "..")
 const NEVER = new AbortController().signal
 const SESSION_ID = "909bc46b64721838"
 const AGENT_SCREEN =
