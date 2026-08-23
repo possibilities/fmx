@@ -193,8 +193,7 @@ test.skipIf(!ENABLED)("a daemon that vanishes is a lost transport, never an exit
   process.kill(Number(parent.trim()), "SIGKILL")
   await waitFor(() => watcher.lost !== null)
   expect(watcher.exited).toBeNull()
-  // The child goes with its controlling terminal; the socket file is what a
-  // SIGKILLed daemon leaves, and the join's to clear. Here, this test's.
+  // The child goes with its controlling terminal.
   await waitFor(() => {
     try {
       process.kill(session.pid!, 0)
@@ -203,5 +202,27 @@ test.skipIf(!ENABLED)("a daemon that vanishes is a lost transport, never an exit
       return true
     }
   })
-  await rm(session.socketPath!, { force: true })
+  // The socket file is what a SIGKILLed daemon leaves: still refused after
+  // the settle window, which an attach reads as ended and clears.
+  expect((await companion.inspect(entry.zmxName)).state).toBe("refused")
+  const error = await factory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
+  expect(error).toBeInstanceOf(InstanceEndedError)
+  expect((await companion.inspect(entry.zmxName)).state).toBe("absent")
+})
+
+test.skipIf(!ENABLED)("the child's environment is the one given, with nothing of the Companion's", async () => {
+  const entry = await manifest.beginCreate({ cwd: dir, fxPath: "/bin/sh", fxArgs: ["-c", "env; sleep 30"], createdAt: Date.now() })
+  const transport = await factory.start({
+    entry,
+    command: [entry.fxPath, ...(entry.fxArgs ?? [])],
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm", MARK: "given" },
+    size: { cols: 120, rows: 24 },
+  })
+  const watcher = watch(transport)
+  await waitFor(() => watcher.readies === 1 && watcher.text.includes("MARK=given"))
+  expect(watcher.text).not.toContain("ZMX_SESSION=")
+  expect(watcher.text).not.toContain("ZMX_DIR=")
+  expect(watcher.text).not.toContain("ZMX_NO_DETACH_KEY=")
+  transport.detach()
 })

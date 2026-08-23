@@ -63,8 +63,9 @@ to a crash, a signal, or a dropped connection — leaves every agent running
 exactly where it was. The next fmx started from the same configuration
 directory finds them, numbered as they were, with their screens restored,
 and picks up where the last one left off. An agent disappears only when it
-exits; the last exit still closes fmx. There is no key to close or detach
-an agent: end it from inside, the way you would at a terminal.
+exits; with the last one gone fmx shows its empty state, and `ctrl-c` twice
+there closes it. There is no key to close or detach an agent: end it from
+inside, the way you would at a terminal.
 
 One fmx runs per configuration directory at a time; a second one started
 alongside says so and exits.

@@ -76,10 +76,10 @@ test("create passes identity, labels, the command after `--`, and the Companion'
   expect(calls[0]).toEqual({
     args: ["create", "--json", "--labels", "owner=fmx", "--timeout-ms", "500", "fmx-1", "--", "/fx", "--x"],
     cwd: "/work",
-    env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/tmp/fmx-cmd-test-dir", ZMX_NO_DETACH_KEY: "1" },
+    env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/tmp/fmx-cmd-test-dir" },
   })
   await companion.list()
-  expect(calls[1]?.env).toEqual({ PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer", ZMX_DIR: "/tmp/fmx-cmd-test-dir", ZMX_NO_DETACH_KEY: "1" })
+  expect(calls[1]?.env).toEqual({ PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer", ZMX_DIR: "/tmp/fmx-cmd-test-dir" })
   await rm("/tmp/fmx-cmd-test-dir", { recursive: true, force: true })
 })
 

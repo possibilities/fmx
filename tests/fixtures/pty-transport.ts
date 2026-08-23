@@ -18,15 +18,30 @@ import {
  */
 export class PtyTransportFactory implements InstanceTransportFactory {
   readonly started: PtyTransport[] = []
+  /** How many times `attach` was asked, per Instance. */
+  readonly attaches = new Map<string, number>()
+  /**
+   * What `attach` does. A PTY cannot be re-attached, so by default an
+   * attach says the Instance ended; a test of the unreachable path makes it
+   * fail some other way, and one of the recovered path hands back the PTY
+   * it lost.
+   */
+  attachBehavior: "ended" | "unreachable" | ((entry: ManifestEntry) => InstanceTransport) = "ended"
+  /** Holds every `start` until released; for tests of what happens before `adopt`. */
+  gate: Promise<void> | null = null
 
   async start(launch: InstanceLaunch): Promise<InstanceTransport> {
     const transport = new PtyTransport(launch)
     this.started.push(transport)
+    if (this.gate) await this.gate
     return transport
   }
 
   async attach(entry: ManifestEntry): Promise<InstanceTransport> {
-    throw new InstanceEndedError(entry, null)
+    this.attaches.set(entry.instanceId, (this.attaches.get(entry.instanceId) ?? 0) + 1)
+    if (this.attachBehavior === "ended") throw new InstanceEndedError(entry, null)
+    if (this.attachBehavior === "unreachable") throw new Error("the Companion is not answering")
+    return this.attachBehavior(entry)
   }
 }
 
@@ -34,6 +49,8 @@ export class PtyTransport implements InstanceTransport {
   private readonly relay = new HandlerRelay()
   private readonly process: ReturnType<typeof Bun.spawn>
   private closed = false
+  /** The last size the Instance asked for. */
+  lastResize: TerminalSize | null = null
   /** Simulate the transport going away under a running process. */
   lose(error = new Error("transport lost")): void {
     if (this.closed) return
@@ -89,6 +106,7 @@ export class PtyTransport implements InstanceTransport {
 
   resize(size: TerminalSize): void {
     if (this.closed) return
+    this.lastResize = size
     try {
       this.process.terminal?.resize(size.cols, size.rows)
     } catch {

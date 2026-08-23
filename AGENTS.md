@@ -26,7 +26,8 @@
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
 - fmx has no quit/close/detach keys: fx exits govern the lifecycle. An
-  Instance disappears when its fx exits; the last exit shuts fmx down. fmx
+  Instance disappears when its fx exits; the last exit leaves the empty
+  state, where ctrl-c twice is the only way out. fmx
   closing — a signal, a crash, the terminal going away — is a detach, never
   an exit: nothing is sent to fx, the Companion keeps it, and the next fmx
   for the Home attaches to it. Do not bring back the Ctrl-C/TERM/KILL
@@ -54,8 +55,16 @@
   live session is re-attached (and replays onto the reset), an ended one is
   removed exactly as an Exit would remove it, and one that cannot be reached
   after a few tries leaves the screen but stays in the Manifest for the next
-  start's join. Only `InstanceEndedError` or an `Exit` frame may remove an
-  Instance's Manifest entry.
+  start's join. Only `InstanceEndedError`, an `Exit` frame, or a `start` that
+  rejects with fx never started may remove an Instance's Manifest entry; a
+  `start` whose fx is running but unreachable (`InstanceUnreachableError`)
+  is marked `running` and recovered like a lost transport.
+- `adopt` re-sends the terminal's current size. The transport was opened at
+  whatever size the terminal had when it was asked for — 80×24 before the
+  first layout pass — and the resize the layout pass fires finds no
+  transport to tell; without the re-send fx draws at the wrong size until
+  the next host resize. The same ordering is why `armPrompt` waits for the
+  transport when fx reports first: `create` returns with fx already up.
 - Palette detection can take seconds in a terminal that never answers, and a
   renderer destroyed under it never settles the query; `index.ts` races it
   against shutdown so a signal in that window still reaches the socket

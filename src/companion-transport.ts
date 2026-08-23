@@ -1,9 +1,11 @@
+import { unlink } from "node:fs/promises"
 import { CompanionConnection } from "./companion-client.ts"
 import type { ManifestEntry } from "./instance-manifest.ts"
-import { ownershipLabels } from "./instance-reconcile.ts"
+import { ownedInstanceId, ownershipLabels } from "./instance-reconcile.ts"
 import {
   HandlerRelay,
   InstanceEndedError,
+  InstanceUnreachableError,
   type InstanceLaunch,
   type InstanceTransport,
   type InstanceTransportFactory,
@@ -30,11 +32,18 @@ const EXIT_RECORD_WAIT_MS = 5000
  * join has nothing to clean up for an Instance that ended while watched.
  */
 export class CompanionTransportFactory implements InstanceTransportFactory {
+  private closed = false
+
   constructor(
     private readonly companion: CompanionCommand,
     private readonly homeId: string,
     private readonly options: { scrollbackLines?: number; client?: string } = {},
   ) {}
+
+  /** fmx is leaving: stop waiting on anything. What is not consumed is the next start's. */
+  close(): void {
+    this.closed = true
+  }
 
   async start(launch: InstanceLaunch): Promise<InstanceTransport> {
     const { entry } = launch
@@ -51,22 +60,41 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
       socketPath = created.socketPath
     } catch (error) {
       // A timeout is the one refusal that may have started fx anyway; what
-      // it became is looked up, never assumed.
+      // it became is looked up, never assumed. Ended or absent: fx is not
+      // running, and the start failed. Still starting: it may yet be, and
+      // the Instance is recovered rather than given up on.
       if (!(error instanceof CompanionCreateError) || !error.sessionMayExist) throw error
-      const session = await this.companion.settle(entry.zmxName)
-      if (session.state !== "live" || !session.socketPath) throw error
+      const session = await this.companion.settle(entry.zmxName, undefined, undefined, () => this.closed)
+      if (session.state === "exited" || session.state === "absent") throw error
+      if (session.state !== "live" || !session.socketPath || ownedInstanceId(session, this.homeId) !== entry.instanceId) {
+        throw new InstanceUnreachableError(entry, error)
+      }
       socketPath = session.socketPath
     }
-    return this.connect(entry, socketPath, launch.size)
+    // From here fx is running whatever happens: a failure to reach it is
+    // the transport's, and the Instance is recovered, never removed.
+    try {
+      return await this.connect(entry, socketPath, launch.size)
+    } catch (error) {
+      throw new InstanceUnreachableError(entry, error instanceof Error ? error : new Error(String(error)))
+    }
   }
 
   async attach(entry: ManifestEntry, size: TerminalSize): Promise<InstanceTransport> {
-    const session = await this.companion.settle(entry.zmxName)
+    const session = await this.companion.settle(entry.zmxName, undefined, undefined, () => this.closed)
+    if (this.closed) throw new Error("fmx is shutting down")
     if (session.state === "exited") {
       await this.companion.forget(entry.zmxName).catch(() => {})
       throw new InstanceEndedError(entry, session.exit ? { code: session.exit.code, signal: session.exit.signal } : null)
     }
     if (session.state === "absent") throw new InstanceEndedError(entry, null)
+    if (session.state === "refused") {
+      // Still refused after the settle window: nothing holds the socket and
+      // nothing will. The join clears the same thing on the next start; a
+      // record, if the daemon got to write one, is consumed there too.
+      if (session.socketPath) await unlink(session.socketPath).catch(() => {})
+      throw new InstanceEndedError(entry, null)
+    }
     if (session.state !== "live" || !session.socketPath) {
       throw new Error(`Companion session ${entry.zmxName} is ${session.state}${session.detail ? ` (${session.detail})` : ""}`)
     }
@@ -91,11 +119,11 @@ export class CompanionTransportFactory implements InstanceTransportFactory {
   private async reap(entry: ManifestEntry): Promise<void> {
     const deadline = Date.now() + EXIT_RECORD_WAIT_MS
     let session: SessionEntry = await this.companion.inspect(entry.zmxName)
-    while (session.state !== "exited" && session.state !== "absent" && Date.now() < deadline) {
+    while (session.state !== "exited" && session.state !== "absent" && Date.now() < deadline && !this.closed) {
       await new Promise((resolve) => setTimeout(resolve, 50))
       session = await this.companion.inspect(entry.zmxName)
     }
-    if (session.state === "exited") await this.companion.forget(entry.zmxName)
+    if (session.state === "exited" && !this.closed) await this.companion.forget(entry.zmxName)
   }
 }
 

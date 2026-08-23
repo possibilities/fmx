@@ -16,7 +16,7 @@ import { Multiplexer } from "./multiplexer.ts"
 import { loadState, saveState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
 import { CompanionCommand } from "./zmx-command.ts"
-import { companionDirectory, homeId, resolveCompanion } from "./zmx-environment.ts"
+import { companionDirectories, companionDirectory, ensureCompanionDirectories, homeId, resolveCompanion } from "./zmx-environment.ts"
 
 async function main(): Promise<void> {
   let options
@@ -69,14 +69,18 @@ async function main(): Promise<void> {
   const debugPanel = debugPanelRequested()
   const agentSocket = new AgentSocket({ homeId: home })
   let controlSocket: ControlSocket | null = null
+  let transport: CompanionTransportFactory | null = null
+  let manifest: InstanceManifest | null = null
 
   try {
     // The socket is the Home's singleton; only its holder may touch the
     // Manifest, so the join runs after the bind and before anything is drawn.
     await agentSocket.start()
+    await ensureCompanionDirectories(companionDirectories())
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath)
-    const manifest = await InstanceManifest.open(manifestPath(), home)
+    manifest = await InstanceManifest.open(manifestPath(), home)
     const survivors = await reconcileAtStartup(manifest, companion)
+    transport = new CompanionTransportFactory(companion, home)
     renderer = await createCliRenderer({
       exitOnCtrlC: false,
       exitSignals: [],
@@ -88,7 +92,7 @@ async function main(): Promise<void> {
       cwd: workspace,
       keybindings: loadedConfig.keybindings,
       manifest,
-      transport: new CompanionTransportFactory(companion, home),
+      transport,
       survivors,
       agentSocket,
       debugPanel,
@@ -146,6 +150,10 @@ async function main(): Promise<void> {
     throw error
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+    // Nothing the Companion is still being asked about is waited for; what
+    // is not consumed is the next start's. The Manifest's last write is.
+    transport?.close()
+    await manifest?.settled()
     controlSocket?.close()
     // Only the fmx that bound the socket may unlink it; the one refused at
     // start never had it.

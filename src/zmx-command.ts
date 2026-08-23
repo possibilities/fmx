@@ -137,7 +137,7 @@ export class CompanionCommand {
    * created into an inherited zmx.
    */
   async create(request: CreateRequest): Promise<Created> {
-    await mkdir(this.directory, { recursive: true })
+    await mkdir(this.directory, { recursive: true, mode: 0o700 })
     const args = ["create", "--json"]
     if (request.labels && Object.keys(request.labels).length > 0) {
       args.push("--labels", formatLabels(request.labels))
@@ -205,11 +205,11 @@ export class CompanionCommand {
     }
   }
 
-  /** Poll `inspect` until the session settles out of `refused`/`unreachable`. */
-  async settle(name: string, timeoutMs = 3000, intervalMs = 50): Promise<SessionEntry> {
+  /** Poll `inspect` until the session settles out of `refused`/`unreachable`, or `stop` says to. */
+  async settle(name: string, timeoutMs = 3000, intervalMs = 50, stop: () => boolean = () => false): Promise<SessionEntry> {
     const deadline = Date.now() + timeoutMs
     let entry = await this.inspect(name)
-    while ((entry.state === "refused" || entry.state === "unreachable") && Date.now() < deadline) {
+    while ((entry.state === "refused" || entry.state === "unreachable") && Date.now() < deadline && !stop()) {
       await new Promise((resolve) => setTimeout(resolve, intervalMs))
       entry = await this.inspect(name)
     }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { access, constants, realpath } from "node:fs/promises"
+import { access, constants, mkdir, realpath, stat } from "node:fs/promises"
 import { userInfo } from "node:os"
 import { isAbsolute, resolve } from "node:path"
 import { fmxDirectory } from "./state.ts"
@@ -51,8 +51,20 @@ export function companionDirectory(
   env: NodeJS.ProcessEnv = process.env,
   uid: number = userInfo().uid,
 ): string {
-  if (env[COMPANION_DIRECTORY_ENV_VAR]) return env[COMPANION_DIRECTORY_ENV_VAR]
-  return `/tmp/fmx-${uid}/zmx`
+  return companionDirectories(env, uid).at(-1)!
+}
+
+/**
+ * The directories fmx owns on the way to the Companion's, outermost first:
+ * `/tmp/fmx-<uid>` and its `zmx` by default, or just the one an override
+ * names — whatever is above that is the caller's.
+ */
+export function companionDirectories(
+  env: NodeJS.ProcessEnv = process.env,
+  uid: number = userInfo().uid,
+): string[] {
+  if (env[COMPANION_DIRECTORY_ENV_VAR]) return [env[COMPANION_DIRECTORY_ENV_VAR]]
+  return [`/tmp/fmx-${uid}`, `/tmp/fmx-${uid}/zmx`]
 }
 
 /**
@@ -71,10 +83,26 @@ export function companionEnvironment(
     env[key] = value
   }
   env.ZMX_DIR = directory
-  // The detach chord is for a human at `zmx attach`; fmx is the only client
-  // of these sessions and every byte it sends belongs to fx.
-  env.ZMX_NO_DETACH_KEY = "1"
   return env
+}
+
+/**
+ * Make the Companion's directory ours, or refuse it. `/tmp` is shared, so
+ * the path is predictable and anyone could have made it first: a directory
+ * another user owns, or one others can write to, could hold sockets that
+ * answer as our sessions and be joined as them. Both levels are created
+ * private and checked every start; nothing is created into one that fails.
+ */
+export async function ensureCompanionDirectories(directories: readonly string[], uid: number = userInfo().uid): Promise<void> {
+  for (const path of directories) {
+    await mkdir(path, { recursive: true, mode: 0o700 })
+    const info = await stat(path)
+    if (!info.isDirectory()) throw new Error(`Companion directory ${path} is not a directory`)
+    if (info.uid !== uid) throw new Error(`Companion directory ${path} is owned by uid ${info.uid}, not ${uid}; refusing to use it`)
+    if ((info.mode & 0o077) !== 0) {
+      throw new Error(`Companion directory ${path} is readable or writable by others (mode ${(info.mode & 0o777).toString(8)}); refusing to use it`)
+    }
+  }
 }
 
 /**

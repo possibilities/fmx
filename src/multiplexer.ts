@@ -50,6 +50,7 @@ import { createFxEnvironment, type FxAgentSocketBinding, type FxLaunchLevel } fr
 import type { InstanceManifest, ManifestEntry } from "./instance-manifest.ts"
 import {
   InstanceEndedError,
+  InstanceUnreachableError,
   type InstanceExit,
   type InstanceTransport,
   type InstanceTransportFactory,
@@ -219,6 +220,8 @@ class FxInstance {
   launchPrompt: string | null = null
   /** A launch prompt waiting for fx to be ready to be typed into. */
   private pendingPrompt: string | null = null
+  /** fx reported before the transport arrived; the prompt is armed again at `adopt`. */
+  private promptWaitingForTransport = false
   /** A prompt has gone in and fx has not yet said it is working on it. */
   awaitingWork = false
   private promptTimer: ReturnType<typeof setTimeout> | null = null
@@ -297,6 +300,13 @@ class FxInstance {
     if (this.pendingPrompt === null || this.promptTimer !== null) return
     this.promptTimer = setTimeout(() => {
       this.promptTimer = null
+      // fx can report before the transport is adopted — `create` returns
+      // once fx is running, and fx speaks first. The prompt waits for the
+      // transport rather than being dropped on the floor.
+      if (this.status === "starting") {
+        this.promptWaitingForTransport = true
+        return
+      }
       const prompt = this.pendingPrompt
       this.pendingPrompt = null
       if (prompt === null || this.status !== "running") return
@@ -345,7 +355,16 @@ class FxInstance {
         this.events.onLost(this, error)
       },
     })
+    // The transport was opened at the size the terminal had when it was
+    // asked for; the layout pass has usually run since, and its resize
+    // found no transport to tell. A size that has not changed is a no-op
+    // at the PTY.
+    transport.resize(this.currentSize())
     if (this.status === "starting") this.status = "running"
+    if (this.promptWaitingForTransport) {
+      this.promptWaitingForTransport = false
+      this.armPrompt()
+    }
   }
 
   /** Whether a transport is carrying this instance right now. */
@@ -745,10 +764,11 @@ export class Multiplexer {
     const instance = this.addInstance(entry, cwd, focus)
     instance.setPendingPrompt(prompt)
     this.countLaunch(cwd)
+    let transport: InstanceTransport
     try {
       await saved
       if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-      const transport = await this.options.transport.start({
+      transport = await this.options.transport.start({
         entry,
         // The claim's, not the option's: what the Manifest says was started is what is started.
         command: [entry.fxPath, ...(entry.fxArgs ?? [])],
@@ -765,20 +785,29 @@ export class Multiplexer {
         ),
         size: instance.currentSize(),
       })
-      // fx is running whatever happened here meanwhile; the record says so
-      // before anything else, because this is the acknowledgement a crash
-      // loses.
-      await this.options.manifest.markRunning(entry.instanceId)
-      if (this.shuttingDown || !this.instances.includes(instance)) {
-        transport.detach()
-        return null
-      }
-      instance.adopt(transport)
     } catch (error) {
+      if (error instanceof InstanceUnreachableError) {
+        // fx is running; only the way to it failed. It is recovered like a
+        // lost transport, never removed — the Manifest says so first.
+        await this.options.manifest.markRunning(entry.instanceId).catch(() => {})
+        void this.recoverInstance(instance, error)
+        return instance
+      }
       this.removeInstance(instance)
-      await this.options.manifest.remove(entry.instanceId)
+      // A write that fails here is the same disk that failed above; the
+      // reason the start failed is the one to show.
+      await this.options.manifest.remove(entry.instanceId).catch(() => {})
       throw error
     }
+    // fx is running whatever happens from here; the record says so before
+    // anything else, because this is the acknowledgement a crash loses. A
+    // write that fails leaves `creating` on disk, which the join resolves.
+    await this.options.manifest.markRunning(entry.instanceId).catch(() => {})
+    if (this.shuttingDown || !this.instances.includes(instance)) {
+      transport.detach()
+      return null
+    }
+    instance.adopt(transport)
     return instance
   }
 
@@ -804,7 +833,7 @@ export class Multiplexer {
     } catch (error) {
       this.removeInstance(instance)
       if (error instanceof InstanceEndedError) {
-        await this.options.manifest.remove(entry.instanceId)
+        await this.options.manifest.remove(entry.instanceId).catch(() => {})
         return
       }
       // Unreachable is not ended: the claim stays for the next start.
@@ -832,9 +861,12 @@ export class Multiplexer {
 
   /** fx ended: the Instance, its claim, and whatever the Companion recorded all go. */
   private handleInstanceExit(instance: FxInstance): void {
+    // The claim goes even mid-shutdown: the record is being consumed
+    // regardless, and an entry without one is an exit the next start
+    // cannot explain.
+    void this.options.manifest.remove(instance.entry.instanceId).catch(() => {})
     if (this.shuttingDown) return
     this.removeInstance(instance)
-    void this.options.manifest.remove(instance.entry.instanceId).catch(() => {})
   }
 
   /**
@@ -847,6 +879,7 @@ export class Multiplexer {
   private async recoverInstance(instance: FxInstance, lost: Error): Promise<void> {
     let error: unknown = lost
     for (let attempt = 0; attempt < RECOVERY_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RECOVERY_INTERVAL_MS))
       if (this.shuttingDown || !this.instances.includes(instance)) return
       try {
         const transport = await this.options.transport.attach(instance.entry, instance.currentSize())
@@ -863,7 +896,6 @@ export class Multiplexer {
         }
         error = caught
       }
-      await new Promise((resolve) => setTimeout(resolve, RECOVERY_INTERVAL_MS))
     }
     if (this.shuttingDown || !this.removeInstance(instance)) return
     this.showError(`lost instance ${instance.id}`, error)

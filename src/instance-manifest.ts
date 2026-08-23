@@ -289,6 +289,11 @@ export class InstanceManifest {
     })
   }
 
+  /** Resolves once every write queued so far has landed or failed. */
+  settled(): Promise<void> {
+    return this.queue.then(() => {})
+  }
+
   private mutate<T>(change: (manifest: Manifest) => T): Promise<T> {
     try {
       const { result, saved } = this.apply(change)

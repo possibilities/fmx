@@ -68,7 +68,12 @@ export type InstanceLaunch = {
  * fmx that started it or only lost its transport.
  */
 export interface InstanceTransportFactory {
-  /** Start fx and attach to it. Resolves once attached; rejects with fx not running. */
+  /**
+   * Start fx and attach to it. Resolves once attached. Rejects with
+   * `InstanceUnreachableError` when fx was started but could not be
+   * attached to — it is running, and the Instance is to be recovered, not
+   * removed — and with anything else when fx was not started at all.
+   */
   start(launch: InstanceLaunch): Promise<InstanceTransport>
   /**
    * Attach to a running Instance. Rejects with `InstanceEndedError` when
@@ -89,6 +94,16 @@ export class InstanceEndedError extends Error {
         ? `instance ${entry.displayId} ended with ${exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`}`
         : `instance ${entry.displayId} is gone`,
     )
+  }
+}
+
+/** fx is running; only the transport to it failed. */
+export class InstanceUnreachableError extends Error {
+  constructor(
+    readonly entry: ManifestEntry,
+    readonly cause: Error,
+  ) {
+    super(`instance ${entry.displayId} is running but could not be reached: ${cause.message}`)
   }
 }
 
@@ -114,7 +129,11 @@ export class HandlerRelay {
     this.handlers = handlers
     const held = this.backlog
     this.backlog = []
-    for (const deliver of held) deliver(handlers)
+    for (const deliver of held) {
+      // A held handler may stop the relay (an Exit detaches); nothing after it goes out.
+      if (this.stopped) return
+      deliver(handlers)
+    }
   }
 
   /** After this nothing is delivered: the consumer let go. */
