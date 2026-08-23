@@ -2,6 +2,7 @@
 
 import { createCliRenderer, type CliRenderer, type TerminalColors } from "@opentui/core"
 import { realpath } from "node:fs/promises"
+import { homedir } from "node:os"
 import { AgentSocket, AgentSocketActiveError } from "./agent-socket.ts"
 import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
@@ -13,6 +14,7 @@ import { InstanceManifest, type ManifestEntry, manifestPath } from "./instance-m
 import { reconcileInstances, type ReconcileOutcome } from "./instance-reconcile.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
+import { expandTilde } from "./projects.ts"
 import { loadState, saveState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
 import { CompanionCommand } from "./zmx-command.ts"
@@ -76,7 +78,7 @@ async function main(): Promise<void> {
   if (loadedConfig.projectRoots.length === 0) {
     throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${configPath()}`)
   }
-  const workspace = await realpath(process.cwd())
+  const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
   const fxPath = await resolveFx(process.env.FMX_FX_PATH ?? "fx")
   const companionPath = await resolveCompanion()
   const persistedState = await loadState()

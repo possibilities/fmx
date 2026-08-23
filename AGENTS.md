@@ -11,6 +11,8 @@
 - `project_roots` is deliberately empty by default. Personal roots belong in
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.
+  The first configured root is fmx's working directory and therefore the cwd
+  for a direct `keys.new_tab` launch.
   TUI startup refuses an empty resolved list with exit 1 and the exact config
   line to add; control commands, `--help`, `--version`, and `doctor` do not
   need project roots because they never open the TUI.

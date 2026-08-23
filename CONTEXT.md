@@ -111,7 +111,8 @@ _Avoid_: selection, breadcrumb.
 **Project root** — a directory named by `project_roots` whose children are
 offered as projects, along with the root itself. Roots are scanned one level
 deep and never recursively; a root that is not on this machine contributes
-nothing. A Home must configure at least one before its TUI can start.
+nothing. A Home must configure at least one before its TUI can start; its first
+root is fmx's working directory and the default for a direct new Instance.
 _Avoid_: workspace root, search path, scan directory.
 
 **Launch dialog** — the modal that gathers what an instance is started with

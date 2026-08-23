@@ -30,8 +30,8 @@ companion keep running through an update; start a new fmx afterwards.
 detaches fmx, leaving every agent running. Rebind them in
 `~/.config/fmx/config.toml` in the `[keys]` table.
 
-fmx opens without an agent. `ctrl-b c` starts one where fmx is running, and
-`ctrl-b l` opens the launch
+fmx opens without an agent. `ctrl-b c` starts one in the first configured
+project root, and `ctrl-b l` opens the launch
 dialog instead, which asks what to start it with: a prompt, a project, and
 whether to cut a fresh worktree for it, plus a Codex model and reasoning
 effort. `tab` moves between the rows and enter starts the agent.
@@ -63,7 +63,8 @@ project_roots = ["~/code", "~/src"]
 ```
 
 With no roots configured fmx exits 1 and names this setting and the config
-file that needs it.
+file that needs it. The first root is fmx's default working directory, including
+for agents started with `ctrl-b c`.
 
 ### Agents outlive fmx
 

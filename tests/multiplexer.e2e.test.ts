@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,7 +13,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FAKE_FX = resolve(ROOT, "tests/fixtures/fake-fx.ts")
 const FMX_COMMAND = process.env.FMX_BINARY_PATH
   ? [resolve(ROOT, process.env.FMX_BINARY_PATH)]
-  : [process.execPath, "src/index.ts"]
+  : [process.execPath, resolve(ROOT, "src/index.ts")]
 
 const configWithRoot = (extra = "") => `project_roots = [${JSON.stringify(ROOT)}]\n${extra}`
 
@@ -140,6 +140,78 @@ test.skipIf(!PTY_TEST_ENABLED)(
     }
   },
   15_000,
+)
+
+test.skipIf(!PTY_TEST_ENABLED)(
+  "prefix+c starts fx in the first configured project root",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-first-root-e2e-"))
+    const firstRoot = join(tempDirectory, "first-root")
+    const secondRoot = join(tempDirectory, "second-root")
+    const launchDirectory = join(tempDirectory, "somewhere-else")
+    const lifecycleLog = join(tempDirectory, "lifecycle.log")
+    const configFile = join(tempDirectory, "config.toml")
+    await Promise.all([
+      writeFile(configFile, `project_roots = [${JSON.stringify(firstRoot)}, ${JSON.stringify(secondRoot)}]\n`),
+      mkdir(firstRoot),
+      mkdir(secondRoot),
+      mkdir(launchDirectory),
+    ])
+
+    let output = ""
+    const decoder = new TextDecoder()
+    const child = Bun.spawn(FMX_COMMAND, {
+      cwd: launchDirectory,
+      env: {
+        ...process.env,
+        FMX_FX_PATH: FAKE_FX,
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        FMX_CONFIG_PATH: configFile,
+        FMX_STATE_PATH: join(tempDirectory, "state.json"),
+        ...privateHome(tempDirectory),
+        FMX_TEST_LOG: lifecycleLog,
+      },
+      terminal: {
+        cols: 100,
+        rows: 24,
+        data: (_terminal, bytes) => {
+          output += decoder.decode(bytes, { stream: true })
+        },
+      },
+    })
+
+    try {
+      await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
+      await waitUntil(
+        async () =>
+          (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances.length === 1,
+        5_000,
+        () => output,
+      )
+      expect(
+        (await loadManifest(join(tempDirectory, "instances.json"), homeOf(tempDirectory))).instances[0]?.cwd,
+      ).toBe(await realpath(firstRoot))
+
+      child.terminal?.write(Uint8Array.of(control("c"), control("c")))
+      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
+      await waitUntil(() => output.includes("prefix+c to create agent"), 5_000, () => output)
+      await Bun.sleep(250)
+      child.terminal?.write(Uint8Array.of(control("c")))
+      await waitUntil(() => output.includes("press ctrl+c again to exit"), 5_000, () => output)
+      child.terminal?.write(Uint8Array.of(control("c")))
+      expect(await withTimeout(child.exited, 6_000, "fmx did not exit after first-root test")).toBe(0)
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL")
+      child.terminal?.close()
+      await endSurvivors(tempDirectory)
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  20_000,
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
