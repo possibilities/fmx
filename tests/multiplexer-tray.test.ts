@@ -51,7 +51,7 @@ test("starts without an fx, hiding the tray and centering dimmed prefix actions"
     expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 80, 24])
     expect(emptyState).toBeInstanceOf(TextRenderable)
     expect([emptyState.x, emptyState.y, emptyState.width, emptyState.height]).toEqual([28, 11, 24, 2])
-    expect(rgb(emptyState.fg)).toEqual([48, 48, 48])
+    expect(rgb(emptyState.fg)).toEqual([80, 80, 80])
     expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
     expect(setup.captureCharFrame()).toContain("prefix+l to prompt agent")
     expect(setup.captureCharFrame()).not.toContain("ctrl+space+c")
@@ -289,22 +289,25 @@ test("themes the divider from the host palette", async () => {
     // would flash and then swap once the real theme arrives.
     expect(divider.borderColor.toInts()[3]).toBe(0)
 
-    // A palette without usable colors still reveals the fallback.
+    // A palette without usable colors still reveals the fallback: fx's own
+    // divider gray (xterm 240).
     multiplexer.setHostPalette(hostPalette({}))
-    expect(rgb(divider.borderColor)).toEqual([76, 86, 106])
+    expect(rgb(divider.borderColor)).toEqual([88, 88, 88])
 
-    // Detected foreground + background: a faint blend 20% toward the foreground.
+    // Detected foreground + background: the divider step, 30% of the way
+    // from the background to the foreground.
     multiplexer.setHostPalette(
       hostPalette({ 8: "#334455" }, { foreground: "#f1f2f3", background: "#102030" }),
     )
-    expect(rgb(divider.borderColor)).toEqual([61, 74, 87])
+    expect(rgb(divider.borderColor)).toEqual([84, 95, 107])
 
-    // Without both defaults, fall back through the palette grays.
+    // ANSI slots alone say nothing about the canvas; the ramp needs the
+    // defaults, so this is the fallback tier again.
     multiplexer.setHostPalette(hostPalette({ 8: "#334455" }))
-    expect(rgb(divider.borderColor)).toEqual([51, 68, 85])
+    expect(rgb(divider.borderColor)).toEqual([88, 88, 88])
 
     multiplexer.setHostPalette(hostPalette({ 7: "#667788" }))
-    expect(rgb(divider.borderColor)).toEqual([102, 119, 136])
+    expect(rgb(divider.borderColor)).toEqual([88, 88, 88])
   } finally {
     await multiplexer.shutdown()
   }

@@ -65,13 +65,7 @@ import {
 } from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
-import {
-  hasDetectedBackground,
-  MODAL_FALLBACK_COLORS,
-  type ModalColors,
-  modalColors,
-  themeModeReport,
-} from "./host-palette.ts"
+import { hasDetectedBackground, hostRamp, RAMP_FALLBACK, type Ramp, themeModeReport } from "./host-palette.ts"
 import {
   actionForKey,
   isCancelKey,
@@ -98,7 +92,7 @@ import type { SocketFrame } from "./socket-frames.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
-import { Toast } from "./toast.ts"
+import { Toast, type ToastTone } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
 import type { PanelSessionController } from "./panel-session.ts"
 import { ToolPanel } from "./tool-panel.ts"
@@ -643,7 +637,7 @@ export class Multiplexer {
     this.emptyState = new TextRenderable(renderer, {
       id: "fmx-empty-state",
       content: EMPTY_STATE_CONTENT,
-      fg: MODAL_FALLBACK_COLORS.dim,
+      fg: RAMP_FALLBACK.dim,
       selectable: false,
     })
     this.content.add(this.emptyState)
@@ -699,7 +693,7 @@ export class Multiplexer {
       left: 0,
       width: "100%",
       height: "100%",
-      backgroundColor: MODAL_FALLBACK_COLORS.backdrop,
+      backgroundColor: RAMP_FALLBACK.backdrop,
       zIndex: 100,
       visible: false,
       onMouseDown: () => this.hideModal(),
@@ -716,8 +710,8 @@ export class Multiplexer {
       paddingX: 1,
       border: true,
       borderStyle: "single",
-      borderColor: MODAL_FALLBACK_COLORS.accent,
-      backgroundColor: MODAL_FALLBACK_COLORS.background,
+      borderColor: RAMP_FALLBACK.focus,
+      backgroundColor: RAMP_FALLBACK.background,
       title: HELP_MODAL_TITLE,
       titleAlignment: "left",
       visible: false,
@@ -725,9 +719,9 @@ export class Multiplexer {
     })
     this.modalText = new TextRenderable(renderer, {
       id: "fmx-modal-text",
-      content: styledHelpContent(this.keybindings, modalColors(this.hostPalette)),
-      fg: MODAL_FALLBACK_COLORS.foreground,
-      bg: MODAL_FALLBACK_COLORS.background,
+      content: styledHelpContent(this.keybindings, hostRamp(this.hostPalette)),
+      fg: RAMP_FALLBACK.foreground,
+      bg: RAMP_FALLBACK.background,
       selectable: false,
     })
     this.modal.add(this.modalText)
@@ -876,7 +870,7 @@ export class Multiplexer {
     this.countLaunch(cwd)
     // "started" means fx is running, whether or not it could be reached.
     let started = false
-    this.queueLifecycleNotice(agent, `agent ${agent.id}`, "started", "success", null, () => started)
+    this.queueLifecycleNotice(agent, `agent ${agent.id}`, "started", "neutral", null, () => started)
     let transport: AgentTransport
     try {
       await saved
@@ -1050,7 +1044,7 @@ export class Multiplexer {
     agent: FxAgent,
     identity: string,
     event: "started" | "exited",
-    tone: "success" | "neutral" | "error",
+    tone: ToastTone,
     exitCode: number | null,
     shouldShow: () => boolean = () => true,
   ): void {
@@ -1219,7 +1213,7 @@ export class Multiplexer {
 
   private refreshEmptyState(): void {
     const confirmingExit = this.exitConfirmationTimer !== null
-    const palette = modalColors(this.hostPalette)
+    const palette = hostRamp(this.hostPalette)
     this.emptyState.content = confirmingExit
       ? `press ${this.exitConfirmationKey ?? "ctrl+c"} again to exit`
       : EMPTY_STATE_CONTENT
@@ -1522,7 +1516,7 @@ export class Multiplexer {
 
   private applyDividerPalette(colors: TerminalColors | null): void {
     if (!this.startupChromeLocked) {
-      const color = modalColors(colors).divider
+      const color = hostRamp(colors).divider
       this.divider.borderColor = color
       this.divider.focusedBorderColor = color
       if (this.panelDivider) {
@@ -1536,10 +1530,12 @@ export class Multiplexer {
     this.refreshSessionList()
   }
 
+  /** The modal takes keys, so its border is the focus hue — or the error hue
+   * when what took the screen is a failure. */
   private applyModalPalette(colors: TerminalColors | null): void {
-    const palette = modalColors(colors)
+    const palette = hostRamp(colors)
     const isError = this.modalKind === "spawn-error"
-    const borderColor = isError ? palette.error : palette.accent
+    const borderColor = isError ? palette.error : palette.focus
     this.modalBackdrop.backgroundColor = palette.backdrop
     this.modal.backgroundColor = palette.background
     this.modal.borderColor = borderColor
@@ -1547,7 +1543,7 @@ export class Multiplexer {
     // Every surface fmx draws over fx names itself in its own border, so what
     // took the screen is legible before any of its content is read.
     this.modal.title = isError ? ERROR_MODAL_TITLE : HELP_MODAL_TITLE
-    this.modal.titleColor = palette.key
+    this.modal.titleColor = palette.foreground
     this.modalText.fg = palette.foreground
     this.modalText.bg = palette.background
     this.modalText.content =
@@ -2430,21 +2426,24 @@ function helpPlainText(keybindings: Keybindings): string {
   return entries.map(([key, description]) => ` ${key.padEnd(keyColumn)}${description}`).join("\n")
 }
 
-function styledHelpContent(keybindings: Keybindings, colors: ModalColors): StyledText {
+/** Keys are labels — bold, one step down the ramp; what they do is the text. */
+function styledHelpContent(keybindings: Keybindings, ramp: Ramp): StyledText {
   const entries = helpEntries(keybindings)
   const keyColumn = helpKeyColumn(entries)
   const chunks: TextChunk[] = []
   for (const [index, [key, description]] of entries.entries()) {
-    chunks.push(fg(colors.foreground)(index === 0 ? " " : "\n "))
-    chunks.push(bold(fg(colors.key)(key.padEnd(keyColumn))))
-    chunks.push(fg(colors.foreground)(description))
+    chunks.push(fg(ramp.foreground)(index === 0 ? " " : "\n "))
+    chunks.push(bold(fg(ramp.secondary)(key.padEnd(keyColumn))))
+    chunks.push(fg(ramp.foreground)(description))
   }
   return new StyledText(chunks)
 }
 
-function styledSpawnErrorContent(heading: string, lines: string[], colors: ModalColors): StyledText {
-  const chunks: TextChunk[] = [bold(fg(colors.error)(` ${heading}`)), fg(colors.foreground)("\n\n ")]
-  chunks.push(fg(colors.foreground)(lines.join("\n ")))
+/** The border already says failure; the heading is fx's red role, which is
+ * a gray one step below primary, set bold. */
+function styledSpawnErrorContent(heading: string, lines: string[], ramp: Ramp): StyledText {
+  const chunks: TextChunk[] = [bold(fg(ramp.accent)(` ${heading}`)), fg(ramp.foreground)("\n\n ")]
+  chunks.push(fg(ramp.foreground)(lines.join("\n ")))
   return new StyledText(chunks)
 }
 

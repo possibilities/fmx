@@ -106,12 +106,20 @@
   divider until that initial query settles; a late answer may theme everything
   else but must not repaint those two startup surfaces. Unlock afterward so a
   real later theme change still applies.
-  Session names use indexed ANSI gray rather than a guessed RGB fallback, so
-  they must not be restyled when that late palette answer arrives.
+  Session names are indexed ANSI gray (slot 8, dim on any theme) until the
+  host answers and the Ramp's dim step after; under that lock a late answer
+  leaves them, like the fill and the divider, as they were first drawn.
 - A Runtime resize clears the whole physical screen before OpenTUI's next
   frame. That clear is what leaves genuinely blank unused space on a larger
   observing Client when a smaller Client becomes sizing owner; do not replace
   it with a rectangle sized to the owner.
+- Every color fmx paints on a surface of its own comes from `hostRamp`
+  (`src/host-palette.ts`): fx's five gray steps as blends of the host's
+  background toward its foreground, fx's dark column as the fallback tier.
+  Focus (host blue) and error (host red) are the only hues, each with one
+  job. A new surface takes its colors from the Ramp; a state gets a glyph
+  and a weight, never a hue; a surface fx never draws is recorded as a
+  carve-out in fxnk's `style/STYLE.md` before it ships.
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
   non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.

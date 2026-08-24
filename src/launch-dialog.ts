@@ -10,7 +10,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import { CODEX_MODELS, DEFAULT_CODEX_MODEL, type CodexModel } from "./codex-catalog.ts"
-import { MODAL_FALLBACK_COLORS, type ModalColors, modalColors } from "./host-palette.ts"
+import { hostRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
 import { isCancelKey } from "./keybindings.ts"
 import { cycleByLetter, matchProjects, type ProjectChoice } from "./projects.ts"
 import { isStructuralKey, PromptEditor } from "./prompt-editor.ts"
@@ -103,7 +103,7 @@ export class LaunchDialog {
   private readonly filterText: TextRenderable
   private readonly pickerRows: BoxRenderable
 
-  private colors: ModalColors = MODAL_FALLBACK_COLORS
+  private ramp: Ramp = RAMP_FALLBACK
   private projects: ProjectChoice[] = []
   private selected = 0
   private focus = 0
@@ -130,7 +130,7 @@ export class LaunchDialog {
       left: 0,
       width: "100%",
       height: "100%",
-      backgroundColor: MODAL_FALLBACK_COLORS.backdrop,
+      backgroundColor: RAMP_FALLBACK.backdrop,
       zIndex: 100,
       visible: false,
       onMouseDown: () => this.close(),
@@ -144,8 +144,8 @@ export class LaunchDialog {
       paddingX: 1,
       border: true,
       borderStyle: "single",
-      borderColor: MODAL_FALLBACK_COLORS.accent,
-      backgroundColor: MODAL_FALLBACK_COLORS.background,
+      borderColor: RAMP_FALLBACK.focus,
+      backgroundColor: RAMP_FALLBACK.background,
       title: DIALOG_TITLE,
       titleAlignment: "left",
       onMouseDown: (event) => event.stopPropagation(),
@@ -200,8 +200,8 @@ export class LaunchDialog {
       paddingX: 1,
       border: true,
       borderStyle: "single",
-      borderColor: MODAL_FALLBACK_COLORS.accent,
-      backgroundColor: MODAL_FALLBACK_COLORS.background,
+      borderColor: RAMP_FALLBACK.focus,
+      backgroundColor: RAMP_FALLBACK.background,
       title: " project ",
       titleAlignment: "left",
       onMouseDown: (event) => event.stopPropagation(),
@@ -335,21 +335,23 @@ export class LaunchDialog {
     if (this.open) this.layout()
   }
 
+  /** The dialog takes keys, so its border is the focus hue; its title is a
+   * title, in the foreground; labels sit one step down the ramp. */
   applyPalette(colors: TerminalColors | null): void {
-    this.colors = modalColors(colors)
-    this.root.backgroundColor = this.colors.backdrop
+    this.ramp = hostRamp(colors)
+    this.root.backgroundColor = this.ramp.backdrop
     for (const box of [this.dialog, this.picker]) {
-      box.backgroundColor = this.colors.background
-      box.borderColor = this.colors.accent
-      box.focusedBorderColor = this.colors.accent
-      box.titleColor = this.colors.key
+      box.backgroundColor = this.ramp.background
+      box.borderColor = this.ramp.focus
+      box.focusedBorderColor = this.ramp.focus
+      box.titleColor = this.ramp.foreground
     }
     for (const text of [...this.rowTexts.values(), this.filterText]) {
-      text.fg = this.colors.foreground
-      text.bg = this.colors.background
+      text.fg = this.ramp.foreground
+      text.bg = this.ramp.background
     }
-    this.promptRow.backgroundColor = this.colors.background
-    this.editor.applyPalette(this.colors)
+    this.promptRow.backgroundColor = this.ramp.background
+    this.editor.applyPalette(this.ramp)
     if (this.open) this.layout()
   }
 
@@ -647,8 +649,8 @@ export class LaunchDialog {
       const text = this.rowTexts.get(row)
       if (!text) continue
       text.content = new StyledText([
-        index === this.focus ? bold(fg(this.colors.accent)("▎ ")) : fg(this.colors.background)("  "),
-        fg(this.colors.key)(row.padEnd(LABEL_COLUMN)),
+        index === this.focus ? bold(fg(this.ramp.focus)("▎ ")) : fg(this.ramp.background)("  "),
+        fg(this.ramp.secondary)(row.padEnd(LABEL_COLUMN)),
         ...this.rowValue(row, project, available),
       ])
     }
@@ -663,17 +665,17 @@ export class LaunchDialog {
       case "project":
         return [
           project
-            ? fg(this.colors.foreground)(truncate(project.display, width))
-            : fg(this.colors.key)(truncate(EMPTY, width)),
+            ? fg(this.ramp.foreground)(truncate(project.display, width))
+            : fg(this.ramp.secondary)(truncate(EMPTY, width)),
         ]
       case "worktree":
         return this.worktreeAvailable === false
-          ? [fg(this.colors.dim)(truncate(WORKTREE_UNAVAILABLE, width))]
-          : [fg(this.colors.foreground)(this.worktree ? "yes" : "no")]
+          ? [fg(this.ramp.dim)(truncate(WORKTREE_UNAVAILABLE, width))]
+          : [fg(this.ramp.foreground)(this.worktree ? "yes" : "no")]
       case "model":
-        return [fg(this.colors.foreground)(truncate(this.currentModel().id, width))]
+        return [fg(this.ramp.foreground)(truncate(this.currentModel().id, width))]
       case "effort":
-        return [fg(this.colors.foreground)(this.effort)]
+        return [fg(this.ramp.foreground)(this.effort)]
     }
   }
 
@@ -691,10 +693,10 @@ export class LaunchDialog {
     center(this.picker, width, rowCount + 4)
 
     this.filterText.content = new StyledText([
-      bold(fg(this.colors.accent)("> ")),
+      bold(fg(this.ramp.focus)("> ")),
       this.filter.length > 0
-        ? fg(this.colors.foreground)(this.filter)
-        : fg(this.colors.dim)(PICKER_HINT),
+        ? fg(this.ramp.foreground)(this.filter)
+        : fg(this.ramp.dim)(PICKER_HINT),
     ])
 
     this.clearRows()
@@ -703,7 +705,7 @@ export class LaunchDialog {
       this.pickerRows.add(
         new TextRenderable(this.renderer, {
           id: "fmx-launch-picker-empty",
-          content: new StyledText([fg(this.colors.key)("no match")]),
+          content: new StyledText([fg(this.ramp.secondary)("no match")]),
           height: 1,
           selectable: false,
         }),
@@ -717,7 +719,7 @@ export class LaunchDialog {
         width: "100%",
         height: 1,
         flexShrink: 0,
-        backgroundColor: this.colors.background,
+        backgroundColor: this.ramp.background,
         onMouseDown: (event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -727,14 +729,15 @@ export class LaunchDialog {
       })
       const isHighlighted = index === this.highlighted
       const meta = choice.meta ? `  ${choice.meta}` : ""
+      const text = truncate(`${choice.label}${meta}`, Math.max(4, inner - 2))
+      // The highlighted choice is fx's selected completion row: bold, in the
+      // foreground. The focus caret beside it is the one hue in the picker.
       row.add(
         new TextRenderable(this.renderer, {
           id: `fmx-launch-picker-text-${index}`,
           content: new StyledText([
-            isHighlighted ? bold(fg(this.colors.accent)("▎ ")) : fg(this.colors.background)("  "),
-            fg(isHighlighted ? this.colors.foreground : this.colors.key)(
-              truncate(`${choice.label}${meta}`, Math.max(4, inner - 2)),
-            ),
+            isHighlighted ? bold(fg(this.ramp.focus)("▎ ")) : fg(this.ramp.background)("  "),
+            isHighlighted ? bold(fg(this.ramp.foreground)(text)) : fg(this.ramp.secondary)(text),
           ]),
           selectable: false,
         }),

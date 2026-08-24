@@ -59,7 +59,7 @@ test("shows a placeholder until fx reports its session", () => {
   expect(rowText(agent!, 26)).toBe("—")
 })
 
-test("keeps session names in the terminal's gray before and after palette detection", async () => {
+test("draws session names in the terminal's gray until the host answers, then in the ramp's dim step", async () => {
   const { setup, list } = await createList(30, 10)
   const palette: TerminalColors = {
     palette: Array.from({ length: 16 }, (_, index) => `#${index.toString(16).repeat(6)}`),
@@ -83,10 +83,17 @@ test("keeps session names in the terminal's gray before and after palette detect
     expect(sessionColor()?.intent).toBe("indexed")
     expect(sessionColor()?.slot).toBe(8)
 
-    list.applyPalette(palette)
+    // A late initial answer, with the startup chrome locked, leaves the
+    // names as they were drawn.
+    list.applyPalette(palette, true)
     list.render(buildTree([entry()]), 26)
     expect(sessionColor()?.intent).toBe("indexed")
     expect(sessionColor()?.slot).toBe(8)
+
+    list.applyPalette(palette)
+    list.render(buildTree([entry()]), 26)
+    expect(sessionColor()?.intent).not.toBe("indexed")
+    expect(sessionColor()?.toInts().slice(0, 3)).toEqual([128, 128, 128])
   } finally {
     list.root.destroy()
     setup.renderer.destroy()
@@ -190,7 +197,8 @@ test("draws an untracked branch between a plain directory and its agent", async 
     const untracked = label.chunks.find((chunk) => chunk.text === "(untracked)")!
     expect(untracked.attributes! & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
     expect(untracked.attributes! & TextAttributes.BOLD).toBe(0)
-    expect(untracked.fg?.toInts().slice(0, 3)).toEqual([176, 182, 194])
+    // The fallback tier's secondary step: fx's 250.
+    expect(untracked.fg?.toInts().slice(0, 3)).toEqual([188, 188, 188])
   } finally {
     list.root.destroy()
     setup.renderer.destroy()

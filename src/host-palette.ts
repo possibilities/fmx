@@ -1,7 +1,5 @@
 import type { TerminalColors, ThemeMode } from "@opentui/core"
 
-const DIM_TEXT_BLEND = 0.3
-
 const OSC = "\x1b]"
 const ST = "\x1b\\"
 const ANSI_PALETTE_SIZE = 16
@@ -46,6 +44,14 @@ export function hasDetectedBackground(colors: TerminalColors): boolean {
   return detectedTerminalColor(colors.defaultBackground) !== null
 }
 
+/** Both defaults answered, so the ramp is the host's rather than the fallback tier. */
+export function hasDetectedDefaults(colors: TerminalColors | null): boolean {
+  return (
+    detectedTerminalColor(colors?.defaultForeground) !== null &&
+    detectedTerminalColor(colors?.defaultBackground) !== null
+  )
+}
+
 /** Ghostty's color-scheme notification consumed by fx's theme monitor. */
 export function themeModeReport(mode: ThemeMode): Uint8Array {
   return mode === "light" ? LIGHT_THEME_REPORT : DARK_THEME_REPORT
@@ -74,70 +80,86 @@ export function detectedTerminalColor(color: string | null | undefined): string 
 }
 
 /**
- * Colors for fmx's own surfaces drawn over the terminal — the help modal, the
- * spawn error, the launch dialog. They are derived from the host's palette so
- * fmx never paints a theme the terminal did not choose; the fallbacks are only
- * for a host that answers no color query at all.
+ * The ramp: every color fmx paints on a surface of its own — the tray, the
+ * Tools panel and its rule tab, the help and error modals, the launch dialog,
+ * the toast.
+ *
+ * fx draws with five fixed grays. fmx reproduces the relationships between
+ * them as blends between the host terminal's own background and foreground,
+ * so fmx never paints a theme the terminal did not choose. The ratios are
+ * fx's (fxnk `style/tokens.json`: 255/252/250/245/240 on a dark canvas,
+ * 235/238/241/247/250 on a light one); the fallback tier, for a host that
+ * answers no color query, is fx's dark column exactly. Two hues survive —
+ * focus, the host's blue, and error, the host's red. Nothing else takes a
+ * hue: state is carried by glyph and weight.
  */
-export const MODAL_FALLBACK_COLORS = {
-  background: "#232938",
-  foreground: "#d8dee9",
-  accent: "#7dd3fc",
+const RAMP_BLEND = {
+  /** fx 252 — one step below primary: semantic-state text, a done marker. */
+  accent: 0.85,
+  /** fx 250 — labels and secondary text. */
+  secondary: 0.75,
+  /** fx 245 — chrome, standing hints, agent names. */
+  dim: 0.5,
+  /** fx 240 — hairlines, nearest the background. */
+  divider: 0.3,
+  /** Below the divider: a raised fill — the active tray row, the toast body. */
+  surface: 0.12,
+} as const
+
+export const RAMP_FALLBACK = {
+  background: "#1c1c1c",
+  surface: "#353535",
+  divider: "#585858",
+  dim: "#8a8a8a",
+  secondary: "#bcbcbc",
+  accent: "#d0d0d0",
+  foreground: "#eeeeee",
+  focus: "#7dd3fc",
+  error: "#e5484d",
   backdrop: "#00000033",
-  error: "#f87171",
-  key: "#a3a3a3",
-  dim: "#6b7280",
-  divider: "#4c566a",
 }
 
-export type ModalColors = typeof MODAL_FALLBACK_COLORS
+export type Ramp = typeof RAMP_FALLBACK
 
-export function modalColors(colors: TerminalColors | null): ModalColors {
+/** fx's light-column primary, for a host whose background answered light but
+ * whose foreground did not. */
+const LIGHT_FALLBACK_FOREGROUND = "#262626"
+
+export function hostRamp(colors: TerminalColors | null): Ramp {
+  const focus = ansi(colors, 4, 12) ?? RAMP_FALLBACK.focus
+  const error = ansi(colors, 1, 9) ?? RAMP_FALLBACK.error
+  const detectedForeground = detectedTerminalColor(colors?.defaultForeground)
+  const detectedBackground = detectedTerminalColor(colors?.defaultBackground)
+  if (!detectedForeground && !detectedBackground) return { ...RAMP_FALLBACK, focus, error }
+
+  const background = detectedBackground ?? RAMP_FALLBACK.background
   const foreground =
-    detectedTerminalColor(colors?.defaultForeground) ?? MODAL_FALLBACK_COLORS.foreground
+    detectedForeground ??
+    (detectedBackground && isLight(detectedBackground) ? LIGHT_FALLBACK_FOREGROUND : RAMP_FALLBACK.foreground)
+  const step = (amount: number) => mixHexColors(background, foreground, amount)
   return {
+    background,
+    surface: step(RAMP_BLEND.surface),
+    divider: step(RAMP_BLEND.divider),
+    dim: step(RAMP_BLEND.dim),
+    secondary: step(RAMP_BLEND.secondary),
+    accent: step(RAMP_BLEND.accent),
     foreground,
-    background: detectedTerminalColor(colors?.defaultBackground) ?? MODAL_FALLBACK_COLORS.background,
-    accent:
-      detectedTerminalColor(colors?.palette[4]) ??
-      detectedTerminalColor(colors?.palette[12]) ??
-      MODAL_FALLBACK_COLORS.accent,
-    backdrop: MODAL_FALLBACK_COLORS.backdrop,
-    error:
-      detectedTerminalColor(colors?.palette[1]) ??
-      detectedTerminalColor(colors?.palette[9]) ??
-      MODAL_FALLBACK_COLORS.error,
-    key:
-      detectedTerminalColor(colors?.palette[7]) ??
-      detectedTerminalColor(colors?.palette[8]) ??
-      foreground,
-    dim: dimColor(colors, foreground),
-    divider: dividerColor(colors),
+    focus,
+    error,
+    backdrop: RAMP_FALLBACK.backdrop,
   }
 }
 
-// Blending the background slightly toward the foreground keeps a divider a
-// faint hairline in any theme; a full palette gray reads visibly heavier.
-const DIVIDER_BLEND = 0.2
-
-/** Hairlines: the tray and Tools panel dividers and the Tools panel's tab
- * rule. The faintest step in the ramp, nearest the background. */
-function dividerColor(colors: TerminalColors | null): string {
-  const background = detectedTerminalColor(colors?.defaultBackground)
-  const foreground = detectedTerminalColor(colors?.defaultForeground)
-  if (background && foreground) return mixHexColors(background, foreground, DIVIDER_BLEND)
-  return (
-    detectedTerminalColor(colors?.palette[8]) ??
-    detectedTerminalColor(colors?.palette[7]) ??
-    MODAL_FALLBACK_COLORS.divider
-  )
+/** Weighted channel brightness is enough to tell a light canvas from a dark one. */
+function isLight(color: string): boolean {
+  const red = parseInt(color.slice(1, 3), 16)
+  const green = parseInt(color.slice(3, 5), 16)
+  const blue = parseInt(color.slice(5, 7), 16)
+  return red * 0.299 + green * 0.587 + blue * 0.114 > 128
 }
 
-/** Standing instructional text — a hint that is always on screen — sits
- * nearer the background than any other text, the way the divider does: it has
- * to be readable when looked for and recede when it is not. */
-function dimColor(colors: TerminalColors | null, foreground: string): string {
-  const background = detectedTerminalColor(colors?.defaultBackground)
-  if (background) return mixHexColors(background, foreground, DIM_TEXT_BLEND)
-  return detectedTerminalColor(colors?.palette[8]) ?? MODAL_FALLBACK_COLORS.dim
+/** Prefer the normal ANSI slot, fall back to its bright twin. */
+function ansi(colors: TerminalColors | null, normal: number, bright: number): string | null {
+  return detectedTerminalColor(colors?.palette[normal]) ?? detectedTerminalColor(colors?.palette[bright])
 }

@@ -8,7 +8,8 @@ export async function runUiGallery(args: readonly string[] = process.argv.slice(
   const options = parseArgs(args)
   const built = await buildUiGallery()
   if (options.check) {
-    process.stdout.write(`UI gallery: ${built.stories.dark.length} states rendered and asserted in 2 themes\n`)
+    const themes = Object.keys(built.stories).length
+    process.stdout.write(`UI gallery: ${built.stories.dark.length} states rendered and asserted in ${themes} themes\n`)
     return
   }
 

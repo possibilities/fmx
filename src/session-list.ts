@@ -11,34 +11,17 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
-import { detectedTerminalColor, mixHexColors } from "./host-palette.ts"
+import { hasDetectedDefaults, hostRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
 import { indentFor, type TreeRow } from "./session-tree.ts"
 
-/** How far the active row's background sits from the terminal's own. */
-const ACTIVE_ROW_BLEND = 0.12
-/** Pull synthetic labels slightly toward a dark background so they read light gray. */
-const VIRTUAL_LABEL_BACKGROUND_BLEND = 0.22
 /** Inset the text; the row's shading still spans the full tray width. */
 const ROW_PADDING_LEFT = 1
 const ICON_COLUMN = 2
 const MISSING_SESSION = "—"
-/** Let the terminal render its own ANSI gray from the first frame. Unlike an
- * RGB fallback, this does not change when palette detection finishes. */
+/** Agent names before the host palette answers: the terminal's own ANSI gray,
+ * which reads as dim text on a light theme and a dark one alike. Once the
+ * host has answered they take the ramp's dim step. */
 const SESSION_COLOR = RGBA.fromIndex(8)
-
-const FALLBACK_COLORS = {
-  foreground: "#d8dee9",
-  blocked: "#f87171",
-  working: "#facc15",
-  done: "#2dd4bf",
-  idle: "#4ade80",
-  unknown: "#6b7280",
-  session: SESSION_COLOR,
-  virtual: "#b0b6c2",
-  activeBackground: "#2a2f3a",
-}
-
-type ListColors = typeof FALLBACK_COLORS
 
 /**
  * The icon carries the whole status. A blocked pane varies its glyph by what
@@ -68,6 +51,26 @@ export function stateIcon(state: DisplayState, attention: AgentAttention | null)
 }
 
 /**
+ * Which step of the ramp a status glyph is drawn in. The glyph says what the
+ * state is; the ramp says how loudly. Blocked is the brightest thing in the
+ * tray — what needs the human — and is also set bold. Done sits one step
+ * brighter than its row, the way fx marks a finished tool call. Everything
+ * else recedes. No hue: the shapes are distinct on their own.
+ */
+export function stateRole(state: DisplayState): "foreground" | "accent" | "dim" {
+  switch (state) {
+    case "blocked":
+      return "foreground"
+    case "done":
+      return "accent"
+    case "working":
+    case "idle":
+    case "unknown":
+      return "dim"
+  }
+}
+
+/**
  * Text is only ever cut at the right-hand end of a row, so an ellipsis never
  * appears mid-line.
  */
@@ -88,12 +91,13 @@ export function rowText(row: TreeRow, width: number): string {
 
 /**
  * The tray's tree of fx agents: project, branch, and one row per agent.
- * The active row is filled; the rails on the path up to it are drawn in the
- * foreground while every other rail stays dim.
+ * Project and branch labels are the foreground, bold along the path to the
+ * active agent; agent names are dim; the active row alone is filled.
  */
 export class SessionList {
   readonly root: BoxRenderable
-  private colors: ListColors = FALLBACK_COLORS
+  private ramp: Ramp = RAMP_FALLBACK
+  private sessionColor: RGBA | string = SESSION_COLOR
   private rows: BoxRenderable[] = []
 
   constructor(
@@ -115,10 +119,20 @@ export class SessionList {
     this.renderer.requestRender()
   }
 
-  applyPalette(colors: TerminalColors | null, preserveActiveBackground = false): void {
-    const activeBackground = this.colors.activeBackground
-    this.colors = listColors(colors)
-    if (preserveActiveBackground) this.colors.activeBackground = activeBackground
+  /**
+   * The selected-row fill and the agent names are on screen from the first
+   * frame; while the startup chrome is locked, a late initial palette answer
+   * themes everything else and leaves those two as they were drawn.
+   */
+  applyPalette(colors: TerminalColors | null, preserveStartupChrome = false): void {
+    const surface = this.ramp.surface
+    const sessionColor = this.sessionColor
+    this.ramp = hostRamp(colors)
+    this.sessionColor = hasDetectedDefaults(colors) ? this.ramp.dim : SESSION_COLOR
+    if (preserveStartupChrome) {
+      this.ramp = { ...this.ramp, surface }
+      this.sessionColor = sessionColor
+    }
   }
 
   private clearRows(): void {
@@ -137,9 +151,9 @@ export class SessionList {
       height: 1,
       flexShrink: 0,
       paddingLeft: ROW_PADDING_LEFT,
-      // Only the active row is filled. Its ancestors are marked by their
-      // rails, so two faint backgrounds never have to be told apart.
-      backgroundColor: row.active ? this.colors.activeBackground : undefined,
+      // Only the active row is filled. Its ancestors are marked by weight, so
+      // two faint backgrounds never have to be told apart.
+      backgroundColor: row.active ? this.ramp.surface : undefined,
       onMouseDown: (event) => {
         // Navigation is a press action, like a keybinding: waiting for release
         // makes a fast switch feel delayed by the human's click duration.
@@ -165,16 +179,17 @@ export class SessionList {
   }
 
   private styleRow(row: TreeRow, width: number): StyledText {
-    const chunks: TextChunk[] = [fg(this.colors.foreground)(indentFor(row.depth))]
+    const chunks: TextChunk[] = [fg(this.ramp.foreground)(indentFor(row.depth))]
     if (isAgentRow(row)) {
-      chunks.push(fg(this.colors[row.state])(`${stateIcon(row.state, row.attention)} `))
-      chunks.push(fg(this.colors.session)(rowText(row, width)))
+      const glyph = fg(this.ramp[stateRole(row.state)])(`${stateIcon(row.state, row.attention)} `)
+      chunks.push(row.state === "blocked" ? bold(glyph) : glyph)
+      chunks.push(fg(this.sessionColor)(rowText(row, width)))
       return new StyledText(chunks)
     }
-    // With no rails to brighten, an ancestor of the active agent is marked by
-    // weight instead: the path still reads without costing a column. Virtual
-    // branches stay light gray, italic, and unbolded even on that path.
-    const label = fg(row.virtual ? this.colors.virtual : this.colors.foreground)(rowText(row, width))
+    // An ancestor of the active agent is marked by weight: the path reads
+    // without costing a column. A virtual branch is one step down the ramp,
+    // italic, and never bold, even on that path.
+    const label = fg(row.virtual ? this.ramp.secondary : this.ramp.foreground)(rowText(row, width))
     chunks.push(row.virtual ? italic(label) : row.onPath ? bold(label) : label)
     return new StyledText(chunks)
   }
@@ -182,43 +197,4 @@ export class SessionList {
 
 function isAgentRow(row: TreeRow): boolean {
   return row.kind === "agent" || row.kind === "subagent"
-}
-
-function listColors(colors: TerminalColors | null): ListColors {
-  const foreground = detectedTerminalColor(colors?.defaultForeground) ?? FALLBACK_COLORS.foreground
-  const background = detectedTerminalColor(colors?.defaultBackground)
-  return {
-    foreground,
-    blocked: ansi(colors, 1, 9) ?? FALLBACK_COLORS.blocked,
-    working: ansi(colors, 3, 11) ?? FALLBACK_COLORS.working,
-    done: ansi(colors, 6, 14) ?? FALLBACK_COLORS.done,
-    idle: ansi(colors, 2, 10) ?? FALLBACK_COLORS.idle,
-    unknown: ansi(colors, 8, 7) ?? FALLBACK_COLORS.unknown,
-    session: SESSION_COLOR,
-    virtual:
-      background && colorBrightness(background) < colorBrightness(foreground)
-        ? mixHexColors(foreground, background, VIRTUAL_LABEL_BACKGROUND_BLEND)
-        : background
-          ? foreground
-          : FALLBACK_COLORS.virtual,
-    activeBackground:
-      background && foreground
-        ? mixHexColors(background, foreground, ACTIVE_ROW_BLEND)
-        : FALLBACK_COLORS.activeBackground,
-  }
-}
-
-/** Weighted channel brightness is enough to tell a dark palette from a light one. */
-function colorBrightness(color: string): number {
-  const red = parseInt(color.slice(1, 3), 16)
-  const green = parseInt(color.slice(3, 5), 16)
-  const blue = parseInt(color.slice(5, 7), 16)
-  return red * 0.299 + green * 0.587 + blue * 0.114
-}
-
-/** Prefer the normal ANSI slot, fall back to its bright twin. */
-function ansi(colors: TerminalColors | null, index: number, bright: number): string | null {
-  return (
-    detectedTerminalColor(colors?.palette[index]) ?? detectedTerminalColor(colors?.palette[bright])
-  )
 }

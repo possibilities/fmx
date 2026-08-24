@@ -3,10 +3,10 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { UiGalleryApp } from "../ui-gallery/app.ts"
 import { buildUiGallery, validateUiStories } from "../ui-gallery/build.ts"
 import { UI_STORIES } from "../ui-gallery/stories.ts"
-import { UI_GALLERY_COMPONENTS } from "../ui-gallery/story.ts"
+import { UI_GALLERY_COMPONENTS, UI_GALLERY_PALETTE_NAMES } from "../ui-gallery/story.ts"
 
 test(
-  "every component state renders in both themes and the catalog navigates each axis independently",
+  "every component state renders in every theme and the catalog navigates each axis independently",
   async () => {
     expect(() => validateUiStories(UI_STORIES)).not.toThrow()
     expect(UI_GALLERY_COMPONENTS).toEqual([
@@ -17,14 +17,14 @@ test(
       "Toast",
     ])
     const toastStates = UI_STORIES.filter((story) => story.component === "Toast")
-    expect(toastStates).toHaveLength(3)
+    expect(toastStates).toHaveLength(2)
     expect(new Set(toastStates.map((story) => `${story.viewport.cols}×${story.viewport.rows}`))).toEqual(
       new Set(["62×12"]),
     )
     const built = await buildUiGallery()
-    expect(built.stories.dark).toHaveLength(UI_STORIES.length)
-    expect(built.stories.light).toHaveLength(UI_STORIES.length)
-    for (const palette of ["dark", "light"] as const) {
+    expect(UI_GALLERY_PALETTE_NAMES).toEqual(["dark", "light", "fallback"])
+    for (const palette of UI_GALLERY_PALETTE_NAMES) {
+      expect(built.stories[palette]).toHaveLength(UI_STORIES.length)
       expect(new Set(built.stories[palette].map((story) => story.component))).toEqual(
         new Set(UI_GALLERY_COMPONENTS),
       )
@@ -49,7 +49,7 @@ test(
     try {
       await setup.renderOnce()
       expect(setup.captureCharFrame()).toContain("UI GALLERY")
-      expect(setup.captureCharFrame()).toContain("5 components · 21 states")
+      expect(setup.captureCharFrame()).toContain("5 components · 20 states")
       expect(app.activeComponent).toBe("Multiplexer")
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
 
@@ -126,13 +126,13 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("slide 1/21 · playing")
+      expect(setup.captureCharFrame()).toContain("slide 1/20 · playing")
 
       setup.mockInput.pressArrow("left")
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Toast")
       expect(app.activeStoryId).toBe(built.stories.dark.at(-1)!.id)
-      expect(setup.captureCharFrame()).toContain("slide 21/21")
+      expect(setup.captureCharFrame()).toContain("slide 20/20")
 
       setup.mockInput.pressArrow("right")
       setup.mockInput.pressKey("t")
@@ -155,12 +155,12 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.light[1]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/21")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/20")
 
       setup.mockInput.pressEscape()
       await setup.renderOnce()
       expect(app.isSlideshow).toBe(false)
-      expect(setup.captureCharFrame()).toContain("5 components · 21 states")
+      expect(setup.captureCharFrame()).toContain("5 components · 20 states")
       const stoppedStory = app.activeStoryId
       await new Promise((resolve) => setTimeout(resolve, 70))
       expect(app.activeStoryId).toBe(stoppedStory)

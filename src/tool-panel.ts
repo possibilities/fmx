@@ -12,7 +12,7 @@ import {
 import type { PanelDefinition } from "./config.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { FmxTerminalRenderable } from "./fx-terminal.ts"
-import { hasDetectedBackground, modalColors, themeModeReport } from "./host-palette.ts"
+import { hasDetectedBackground, hostRamp, themeModeReport } from "./host-palette.ts"
 import type { TerminalSize, TerminalTransport } from "./agent-transport.ts"
 import type { PanelContext, PanelSessionController } from "./panel-session.ts"
 import { sanitizeTitle } from "./title-parser.ts"
@@ -230,7 +230,7 @@ export class ToolPanel {
   applyPalette(colors: TerminalColors | null, themeMode: ThemeMode | null): void {
     this.colors = colors
     this.themeMode = themeMode
-    this.contextStatus.fg = modalColors(colors).dim
+    this.contextStatus.fg = hostRamp(colors).dim
     for (const runtime of this.runtimes.values()) runtime.applyPalette(colors, themeMode)
     this.refreshLinks()
   }
@@ -285,7 +285,7 @@ export class ToolPanel {
   /** Repaint the rule tab: the selected label bold in the foreground, the
    * others dim, and the hairline beneath drawn heavy under the selection. */
   private refreshLinks(): void {
-    const colors = modalColors(this.colors)
+    const colors = hostRamp(this.colors)
     const rule: StyledText["chunks"] = []
     let drawn = 0
     for (const entry of this.entries) {
@@ -447,7 +447,7 @@ class ToolRuntime {
 
   applyPalette(colors: TerminalColors | null, themeMode: ThemeMode | null): void {
     this.colors = colors
-    this.status.fg = modalColors(colors).dim
+    this.status.fg = hostRamp(colors).dim
     if (!colors || !this.terminal.applyHostPalette(colors)) return
     if (this.transport && themeMode && hasDetectedBackground(colors)) {
       this.writeInput(themeModeReport(themeMode), "response")

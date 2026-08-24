@@ -39,7 +39,8 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect(modalBackdrop.visible).toBe(false)
     expect(modal.visible).toBe(false)
     expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
-    expect(rgb(emptyState.fg)).toEqual([174, 179, 185])
+    // dim: halfway from the host background to its foreground.
+    expect(rgb(emptyState.fg)).toEqual([129, 137, 146])
 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("?")
@@ -51,7 +52,7 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect([modalBackdrop.x, modalBackdrop.y, modalBackdrop.width, modalBackdrop.height]).toEqual([0, 0, 80, 24])
     expect(modal.borderStyle).toBe("single")
     expect(modal.title).toBe(" keys ")
-    expect(rgb(modal.titleColor)).toEqual([119, 136, 153])
+    expect(rgb(modal.titleColor)).toEqual([16, 32, 48])
     expect(helpFrame).toContain("keybinds")
     expect(helpFrame).toContain("prefix+c")
     expect([modalText.x - modal.x, modalText.y - modal.y]).toEqual([2, 1])
@@ -66,7 +67,8 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect(rgb(modalText.bg)).toEqual([241, 242, 243])
     const keyChunk = modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))
     const labelChunk = modalText.chunks.find((chunk) => chunk.text === "new agent")
-    expect(rgb(keyChunk?.fg)).toEqual([119, 136, 153])
+    // Keys are labels: bold, one step down the ramp (secondary, 75%).
+    expect(rgb(keyChunk?.fg)).toEqual([72, 85, 97])
     expect((keyChunk?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
     expect(rgb(labelChunk?.fg)).toEqual([16, 32, 48])
 
@@ -77,8 +79,8 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect(rgb(modal.borderColor)).toEqual([51, 204, 221])
     expect(rgb(modalText.fg)).toEqual([232, 233, 234])
     expect(rgb(modalText.bg)).toEqual([17, 18, 19])
-    expect(rgb(modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))?.fg)).toEqual([136, 153, 170])
-    expect(rgb(emptyState.fg)).toEqual([82, 83, 84])
+    expect(rgb(modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))?.fg)).toEqual([178, 179, 180])
+    expect(rgb(emptyState.fg)).toEqual([125, 126, 127])
 
     await setup.mockMouse.click(modal.x + 1, modal.y + 1)
     await setup.renderOnce()

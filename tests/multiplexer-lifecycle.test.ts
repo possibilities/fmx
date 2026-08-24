@@ -87,9 +87,11 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
     expect(setup.captureCharFrame()).toContain("fx did not start")
     expect(setup.captureCharFrame()).toContain("ENOENT")
     expect(setup.captureCharFrame()).not.toContain("dismiss")
+    // The border carries the failure hue; the heading is fx's red role,
+    // which is the accent gray, one step below the foreground.
     expect(rgb(modal.borderColor)).toEqual([204, 51, 68])
     expect(rgb(modalText.chunks.find((chunk) => chunk.text.includes("fx did not start"))?.fg)).toEqual([
-      204, 51, 68,
+      189, 195, 206,
     ])
 
     setup.mockInput.pressEscape()

@@ -120,10 +120,22 @@ fx has no tab surface to copy; this is fmx's own, derived from fx's principles
 and recorded as a carve-out in fxnk's style guide.
 _Avoid_: link rail, tab bar, underlined tab, accent tab.
 
-**Toast** — a transient, bottom-center notice drawn over the active surface.
-Toasts use the terminal's detected palette with fallbacks, appear one at a
-time in arrival order, and do not take focus.
-_Avoid_: status bar, modal.
+**Ramp** — the gray steps every surface fmx draws itself is painted in:
+foreground, accent, secondary, dim, and divider, plus a surface fill below
+the divider, each a fixed fraction of the way from the host terminal's
+background to its foreground in fx's own ratios (`hostRamp` in
+`src/host-palette.ts`). A host that answers no color query gets fx's dark
+grays exactly. Two hues survive it, each with one job: focus, the host's
+blue, on the border of a surface that takes keys and on the caret and
+cursor; error, the host's red, on the border of a surface that reports a
+failure. A state is a glyph and a weight, never a hue.
+_Avoid_: theme, palette (that is the host's answer), modal colors.
+
+**Toast** — a transient, bottom-center notice drawn over the active surface:
+foreground text on the Ramp's surface fill inside a dim hairline, which only
+a notice reporting a failure colors, in the error hue. Toasts appear one at a
+time in arrival order and do not take focus.
+_Avoid_: status bar, modal, success toast.
 
 **Tray** — the collapsible left column that carries the Session list: hidden
 while no agent runs or when toggled away, resizable by its divider, its width
@@ -136,12 +148,15 @@ native session name once fx reports one, the short session id until then.
 Depth is carried by indentation alone, with no connecting glyphs.
 Clicking an agent row switches to that agent; project and branch rows are
 not selectable. The switch happens on mouse-down and tray text itself is
-not selectable, so pointer navigation never waits for release. Agent names use
-the terminal's native gray directly, so late palette detection does not
-restyle them. The selected-row background and divider are chosen together
-before first paint and do not change when the initial palette answer is late.
-The selected agent's stable Agent identity is machine state, restored before
-the first frame so detach and reattach do not move focus back to agent one.
+not selectable, so pointer navigation never waits for release. Project and
+branch labels are the Ramp's foreground and agent names its dim step; the
+status icon carries its state by shape and weight, never hue — blocked bold
+in the foreground, done in the accent step, the rest dim. Before the host
+palette answers, names are the terminal's own ANSI gray, and — like the
+selected-row fill and the divider — what was drawn at first paint stays
+through a late initial answer. The selected agent's stable Agent identity is
+machine state, restored before the first frame so detach and reattach do not
+move focus back to agent one.
 _Avoid_: agent panel, tab bar, session picker.
 
 **Subagent row** — a non-selectable Session list row for an fx subagent whose
@@ -150,9 +165,9 @@ It uses the agent-row status icon and nests recursively beneath that parent;
 its state comes from the control record and the subagent's own session lock.
 _Avoid_: child pane, sub-agent.
 
-**Path** — the active agent and its ancestors. The active row takes a
-background fill and its ancestors are set in bold; nothing else marks them, so
-two faint backgrounds never have to be told apart.
+**Path** — the active agent and its ancestors. The active row takes the
+Ramp's surface fill and its ancestors are set in bold; nothing else marks
+them, so two faint backgrounds never have to be told apart.
 _Avoid_: selection, breadcrumb.
 
 **Project root** — a directory named by `project_roots` whose children are
@@ -265,9 +280,10 @@ _Avoid_: busy, pending, queued.
 
 **UI gallery** — the developer-only TUI that browses fmx-owned OpenTUI
 components and blocks. Each component has executable states that mount the real
-renderables under deterministic fakes; the selected theme applies to the whole
-gallery independently of the selected component and state. Useful states can
-accept their real keys and mouse controls inside an isolated exact-size
-renderer. `gallery:check` renders and asserts every state under both themes
-headlessly.
+renderables under deterministic fakes; the selected theme — a dark host, a
+light host, or the fallback tier a host that answered nothing gets — applies
+to the whole gallery independently of the selected component and state. Useful
+states can accept their real keys and mouse controls inside an isolated
+exact-size renderer. `gallery:check` renders and asserts every state under
+every theme headlessly.
 _Avoid_: Storybook (there is no Storybook runtime), screenshot suite.

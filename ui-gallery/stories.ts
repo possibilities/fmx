@@ -338,7 +338,7 @@ export const UI_STORIES: readonly UiStory[] = [
       await mountToolPanel(context, new GalleryPanelSessions("failed"))
     },
   },
-  ...(["success", "neutral", "error"] as const).map((tone): UiStory => toastStory(tone)),
+  ...(["neutral", "error"] as const).map((tone): UiStory => toastStory(tone)),
 ]
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
@@ -406,7 +406,7 @@ async function mountToolPanel(
   })
   panel.setWidth(context.setup.renderer.width)
   context.canvas.add(panel.root)
-  panel.applyPalette(context.palette, context.palette.defaultBackground === "#eef2f1" ? "light" : "dark")
+  panel.applyPalette(context.palette, context.themeMode)
   if (withContext) panel.setContext({ agentId: "gallery-agent", displayId: 1, cwd: "/Users/demo/code/fmx" })
   panel.setVisible(true)
   await settlePromises()
@@ -420,15 +420,18 @@ async function mountToolPanel(
 
 function toastStory(tone: ToastTone): UiStory {
   const content = {
-    success: "fmx / main / agent 3 started",
-    neutral: "fmx / main / steady-moon exited",
+    neutral: "fmx / main / steady-moon started",
     error: "fmx / main / agent 5 exited / code 7",
+  }[tone]
+  const description = {
+    neutral: "A lifecycle notice on a raised surface: the words carry the event, the dim hairline carries nothing.",
+    error: "A failure is the one notice that spends a hue — the host's red, on the border alone.",
   }[tone]
   return {
     id: `toast-${tone}`,
     component: "Toast",
     title: `${tone[0]!.toUpperCase()}${tone.slice(1)} notice`,
-    description: `${tone} lifecycle tone using colors derived from the host palette.`,
+    description,
     viewport: { cols: 62, rows: 12 },
     expectedText: [content],
     arrange(context) {
@@ -502,7 +505,10 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       home: ROOT,
       toastDurationMs: 60_000,
     })
-    multiplexer.setHostPalette(context.palette)
+    // The path index.ts takes: the first answer, or none, is what the startup
+    // chrome is drawn from.
+    multiplexer.lockStartupChrome(context.palette)
+    multiplexer.unlockStartupChrome()
     context.defer(async () => {
       await multiplexer.shutdown()
       panelSessions?.close()

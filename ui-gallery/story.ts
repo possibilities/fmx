@@ -1,5 +1,6 @@
-import { BoxRenderable, type CapturedFrame, type KeyEvent, type TerminalColors } from "@opentui/core"
+import { BoxRenderable, type CapturedFrame, type KeyEvent, type TerminalColors, type ThemeMode } from "@opentui/core"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
+import { RAMP_FALLBACK } from "../src/host-palette.ts"
 
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
@@ -10,7 +11,11 @@ export const UI_GALLERY_COMPONENTS = [
 ] as const
 
 export type UiGalleryComponent = (typeof UI_GALLERY_COMPONENTS)[number]
-export type UiGalleryPaletteName = "dark" | "light"
+/** Two simulated hosts and, third, a host that answered no color query at
+ * all — the tier fmx falls back to, which should look like fx's own dark
+ * theme. `t` cycles them in this order. */
+export const UI_GALLERY_PALETTE_NAMES = ["dark", "light", "fallback"] as const
+export type UiGalleryPaletteName = (typeof UI_GALLERY_PALETTE_NAMES)[number]
 
 export type UiStory = {
   id: string
@@ -28,7 +33,10 @@ export type UiStory = {
 export type UiStoryContext = {
   setup: TestRendererSetup
   canvas: BoxRenderable
-  palette: TerminalColors
+  /** Null for the fallback theme: nothing was detected. */
+  palette: TerminalColors | null
+  paletteName: UiGalleryPaletteName
+  themeMode: ThemeMode
   defer(cleanup: () => void | Promise<void>): void
 }
 
@@ -83,7 +91,7 @@ export class UiStorySession {
       left: 0,
       width: "100%",
       height: "100%",
-      backgroundColor: palette.defaultBackground ?? "#171c23",
+      backgroundColor: palette?.defaultBackground ?? RAMP_FALLBACK.background,
     })
     setup.renderer.root.add(canvas)
     const cleanups: Array<() => void | Promise<void>> = []
@@ -91,6 +99,8 @@ export class UiStorySession {
       setup,
       canvas,
       palette,
+      paletteName,
+      themeMode: paletteName === "light" ? "light" : "dark",
       defer(cleanup) {
         cleanups.push(cleanup)
       },
@@ -218,9 +228,10 @@ const ANSI_LIGHT = [
   "#17201e",
 ] as const
 
-export const UI_GALLERY_PALETTES: Readonly<Record<UiGalleryPaletteName, TerminalColors>> = {
+export const UI_GALLERY_PALETTES: Readonly<Record<UiGalleryPaletteName, TerminalColors | null>> = {
   dark: terminalPalette(ANSI_DARK, "#dbe3eb", "#171c23"),
   light: terminalPalette(ANSI_LIGHT, "#17201e", "#eef2f1"),
+  fallback: null,
 }
 
 export async function renderUiStory(

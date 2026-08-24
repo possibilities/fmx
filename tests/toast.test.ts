@@ -14,7 +14,7 @@ test("centers queued toasts above the bottom edge and themes them from the termi
   if (!(text instanceof TextRenderable)) return
 
   try {
-    toast.show("agent 1 started", "success")
+    toast.show("agent 1 started", "neutral")
     toast.show("agent 2 exited · code 7", "error")
     await setup.renderOnce()
 
@@ -22,16 +22,19 @@ test("centers queued toasts above the bottom edge and themes them from the termi
     expect([toast.root.x, toast.root.y, toast.root.width, toast.root.height]).toEqual([30, 20, 19, 3])
     expect(setup.captureCharFrame()).toContain("agent 1 started")
     expect(setup.captureCharFrame()).not.toContain("agent 2 exited")
+    // The surface is lifted 12% off the host background; a neutral notice
+    // gets the dim hairline and the foreground — no hue for "started".
     expect(rgb(toast.root.backgroundColor)).toEqual([43, 57, 71])
-    expect(rgb(toast.root.borderColor)).toEqual([34, 187, 68])
-    expect(rgb(text.fg)).toEqual([34, 187, 68])
+    expect(rgb(toast.root.borderColor)).toEqual([128, 137, 145])
+    expect(rgb(text.fg)).toEqual([240, 241, 242])
 
     await Bun.sleep(40)
     await setup.renderOnce()
     expect(setup.captureCharFrame()).not.toContain("agent 1 started")
     expect(setup.captureCharFrame()).toContain("agent 2 exited · code 7")
+    // A failure spends the host's red on the border alone.
     expect(rgb(toast.root.borderColor)).toEqual([204, 51, 68])
-    expect(rgb(text.fg)).toEqual([204, 51, 68])
+    expect(rgb(text.fg)).toEqual([240, 241, 242])
 
     await Bun.sleep(40)
     await setup.renderOnce()
@@ -49,7 +52,7 @@ test("truncates within a narrow viewport and hides when the Toast cannot fit", a
   setup.renderer.root.add(toast.root)
 
   try {
-    toast.show("agent 123456789 started", "success")
+    toast.show("agent 123456789 started", "neutral")
     setup.resize(12, 5)
     toast.layout()
     await setup.renderOnce()

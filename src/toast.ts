@@ -7,7 +7,7 @@ import {
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
-import { detectedTerminalColor, mixHexColors } from "./host-palette.ts"
+import { hostRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
 
 export const TOAST_DURATION_MS = 3_000
 
@@ -15,25 +15,16 @@ const TOAST_HEIGHT = 3
 const TOAST_HORIZONTAL_INSET = 1
 const TOAST_CONTENT_OVERHEAD = 4
 const TOAST_MIN_WIDTH = 8
-const TOAST_SURFACE_BLEND = 0.12
 
-const FALLBACK_COLORS = {
-  background: "#2a2f3a",
-  border: "#6b7280",
-  foreground: "#d8dee9",
-  success: "#4ade80",
-  error: "#f87171",
-}
-
-export type ToastTone = "success" | "neutral" | "error"
+/** A notice reports a failure or it does not; the words carry everything
+ * else ("started", "exited"), the way fx's semantic states are all one gray. */
+export type ToastTone = "neutral" | "error"
 
 type ToastMessage = {
   text: string
   tone: ToastTone
   italic: readonly string[]
 }
-
-type ToastColors = typeof FALLBACK_COLORS
 
 type ToastOptions = {
   durationMs?: number
@@ -51,7 +42,7 @@ export class Toast {
   private readonly text: TextRenderable
   private readonly durationMs: number
   private readonly queue: ToastMessage[] = []
-  private colors: ToastColors = FALLBACK_COLORS
+  private ramp: Ramp = RAMP_FALLBACK
   private current: ToastMessage | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private destroyed = false
@@ -69,8 +60,8 @@ export class Toast {
       paddingX: 1,
       border: true,
       borderStyle: "single",
-      borderColor: FALLBACK_COLORS.border,
-      backgroundColor: FALLBACK_COLORS.background,
+      borderColor: RAMP_FALLBACK.dim,
+      backgroundColor: RAMP_FALLBACK.surface,
       zIndex: 50,
       visible: false,
     })
@@ -78,8 +69,8 @@ export class Toast {
       id: "fmx-toast-text",
       content: "",
       height: 1,
-      fg: FALLBACK_COLORS.foreground,
-      bg: FALLBACK_COLORS.background,
+      fg: RAMP_FALLBACK.foreground,
+      bg: RAMP_FALLBACK.surface,
       selectable: false,
     })
     this.root.add(this.text)
@@ -96,7 +87,7 @@ export class Toast {
   }
 
   applyPalette(colors: TerminalColors | null): void {
-    this.colors = toastColors(colors)
+    this.ramp = hostRamp(colors)
     this.paint()
   }
 
@@ -147,34 +138,16 @@ export class Toast {
     this.renderer.requestRender()
   }
 
+  /** Text on a raised surface. The toast takes no keys, so its border is a
+   * dim hairline rather than the focus hue; only a failure colors it. */
   private paint(): void {
-    const tone = this.current?.tone ?? "neutral"
-    const signal =
-      tone === "success" ? this.colors.success : tone === "error" ? this.colors.error : this.colors.border
-    this.root.backgroundColor = this.colors.background
-    this.root.borderColor = signal
-    this.root.focusedBorderColor = signal
-    this.text.bg = this.colors.background
-    this.text.fg = tone === "neutral" ? this.colors.foreground : signal
+    const border = this.current?.tone === "error" ? this.ramp.error : this.ramp.dim
+    this.root.backgroundColor = this.ramp.surface
+    this.root.borderColor = border
+    this.root.focusedBorderColor = border
+    this.text.bg = this.ramp.surface
+    this.text.fg = this.ramp.foreground
   }
-}
-
-function toastColors(colors: TerminalColors | null): ToastColors {
-  const foreground = detectedTerminalColor(colors?.defaultForeground) ?? FALLBACK_COLORS.foreground
-  const background = detectedTerminalColor(colors?.defaultBackground)
-  return {
-    foreground,
-    background: background
-      ? mixHexColors(background, foreground, TOAST_SURFACE_BLEND)
-      : FALLBACK_COLORS.background,
-    border: ansi(colors, 8, 7) ?? FALLBACK_COLORS.border,
-    success: ansi(colors, 2, 10) ?? FALLBACK_COLORS.success,
-    error: ansi(colors, 1, 9) ?? FALLBACK_COLORS.error,
-  }
-}
-
-function ansi(colors: TerminalColors | null, normal: number, bright: number): string | null {
-  return detectedTerminalColor(colors?.palette[normal]) ?? detectedTerminalColor(colors?.palette[bright])
 }
 
 function truncate(value: string, width: number): string {

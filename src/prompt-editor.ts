@@ -8,7 +8,7 @@ import {
 import { unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ModalColors } from "./host-palette.ts"
+import type { Ramp } from "./host-palette.ts"
 import {
   createKillRing,
   killDirectionFor,
@@ -190,13 +190,13 @@ export class PromptEditor {
     return rows
   }
 
-  applyPalette(colors: ModalColors): void {
-    this.root.backgroundColor = colors.background
-    this.root.focusedBackgroundColor = colors.background
-    this.root.textColor = colors.foreground
-    this.root.focusedTextColor = colors.foreground
-    this.root.placeholderColor = colors.dim
-    this.root.cursorColor = colors.accent
+  applyPalette(ramp: Ramp): void {
+    this.root.backgroundColor = ramp.background
+    this.root.focusedBackgroundColor = ramp.background
+    this.root.textColor = ramp.foreground
+    this.root.focusedTextColor = ramp.foreground
+    this.root.placeholderColor = ramp.dim
+    this.root.cursorColor = ramp.focus
   }
 
   /**

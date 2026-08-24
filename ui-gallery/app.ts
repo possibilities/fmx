@@ -12,8 +12,10 @@ import {
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
+import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import {
   UI_GALLERY_COMPONENTS,
+  UI_GALLERY_PALETTE_NAMES,
   UI_GALLERY_PALETTES,
   type RenderedUiStory,
   type UiStory,
@@ -82,12 +84,13 @@ export class UiGalleryApp {
     sourceStories: readonly UiStory[],
     options: UiGalleryAppOptions = {},
   ) {
-    if (storiesByPalette.dark.length === 0 || storiesByPalette.light.length === 0) {
-      throw new Error("the UI gallery needs at least one state in each theme")
+    for (const palette of UI_GALLERY_PALETTE_NAMES) {
+      if (storiesByPalette[palette].length === 0) throw new Error("the UI gallery needs at least one state in each theme")
     }
-    const darkIds = storiesByPalette.dark.map((story) => story.id).join("\0")
-    const lightIds = storiesByPalette.light.map((story) => story.id).join("\0")
-    if (darkIds !== lightIds) throw new Error("the UI gallery themes must contain the same states")
+    const idsByPalette = new Set(
+      UI_GALLERY_PALETTE_NAMES.map((palette) => storiesByPalette[palette].map((story) => story.id).join("\0")),
+    )
+    if (idsByPalette.size !== 1) throw new Error("the UI gallery themes must contain the same states")
     this.sourceById = new Map(sourceStories.map((story) => [story.id, story]))
     for (const story of storiesByPalette.dark) {
       if (!this.sourceById.has(story.id)) throw new Error(`the UI gallery is missing source state ${story.id}`)
@@ -573,7 +576,8 @@ export class UiGalleryApp {
 
   private togglePalette(): void {
     this.leaveInteraction()
-    this.palette = this.palette === "dark" ? "light" : "dark"
+    const next = (UI_GALLERY_PALETTE_NAMES.indexOf(this.palette) + 1) % UI_GALLERY_PALETTE_NAMES.length
+    this.palette = UI_GALLERY_PALETTE_NAMES[next]!
     this.applyTheme()
     this.showActiveStory()
   }
@@ -843,7 +847,7 @@ function frameText(
         textChunk(
           "\n",
           foreground,
-          RGBA.fromHex(UI_GALLERY_PALETTES[palette].defaultBackground ?? "#171c23"),
+          RGBA.fromHex(UI_GALLERY_PALETTES[palette]?.defaultBackground ?? RAMP_FALLBACK.background),
         ),
       )
     }
@@ -853,6 +857,17 @@ function frameText(
 
 function galleryTheme(name: UiGalleryPaletteName): GalleryTheme {
   const palette = UI_GALLERY_PALETTES[name]
+  if (!palette) {
+    // Nothing detected: the gallery's own chrome takes the same tier fmx does.
+    return {
+      background: RGBA.fromHex(RAMP_FALLBACK.background),
+      foreground: RGBA.fromHex(RAMP_FALLBACK.foreground),
+      dim: RGBA.fromHex(RAMP_FALLBACK.dim),
+      accent: RGBA.fromHex(RAMP_FALLBACK.accent),
+      signal: RGBA.fromHex(RAMP_FALLBACK.focus),
+      selectedBackground: RGBA.fromHex(RAMP_FALLBACK.surface),
+    }
+  }
   return {
     background: RGBA.fromHex(palette.defaultBackground ?? "#171c23"),
     foreground: RGBA.fromHex(palette.defaultForeground ?? "#dbe3eb"),

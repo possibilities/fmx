@@ -2,6 +2,9 @@ import { UI_STORIES } from "./stories.ts"
 import {
   renderUiStories,
   UI_GALLERY_COMPONENTS,
+  UI_GALLERY_PALETTE_NAMES,
+  type RenderedUiStory,
+  type UiGalleryPaletteName,
   type UiGalleryStoriesByPalette,
   type UiStory,
 } from "./story.ts"
@@ -12,9 +15,9 @@ export type UiGalleryBuild = {
 
 export async function buildUiGallery(stories: readonly UiStory[] = UI_STORIES): Promise<UiGalleryBuild> {
   validateUiStories(stories)
-  const dark = await renderUiStories(stories, "dark")
-  const light = await renderUiStories(stories, "light")
-  return { stories: { dark, light } }
+  const rendered = {} as Record<UiGalleryPaletteName, readonly RenderedUiStory[]>
+  for (const palette of UI_GALLERY_PALETTE_NAMES) rendered[palette] = await renderUiStories(stories, palette)
+  return { stories: rendered }
 }
 
 export function validateUiStories(stories: readonly UiStory[]): void {
