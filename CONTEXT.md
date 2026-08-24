@@ -88,12 +88,19 @@ _Avoid_: message, packet, event.
 
 **Tools panel** — the resizable terminal dock to the right of the active
 Agent. Its configured terminal tools run in that Agent's directory and
-identity, switch context with it, and appear as a one-line link rail when more
-than one is available. The dock starts hidden, remembers its visibility,
+identity, switch context with it, and appear as a rule tab when more than one
+is available. The dock starts hidden, remembers its visibility,
 width, and selected tool, and does not exist when no configured tool is
 available. Persistent tools are owned by the Companion across Detach;
 non-persistent tools are recreated naturally with fmx.
 _Avoid_: tool panel, right-hand panel, utility pane, inspector, global panel.
+
+**Rule tab** — the Tools panel's two-row switcher: tool labels over a hairline,
+the selected label bold in the foreground with the hairline drawn heavy beneath
+it, every other label dim. State is weight and glyph, never hue or underline.
+fx has no tab surface to copy; this is fmx's own, derived from fx's principles
+and recorded as a carve-out in fxnk's style guide.
+_Avoid_: link rail, tab bar, underlined tab, accent tab.
 
 **Toast** — a transient, bottom-center notice drawn over the active surface.
 Toasts use the terminal's detected palette with fallbacks, appear one at a

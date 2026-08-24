@@ -1,5 +1,6 @@
 import {
   BoxRenderable,
+  bold,
   type CliRenderer,
   type EmbeddedTerminalDataSource,
   fg,
@@ -7,7 +8,6 @@ import {
   type TerminalColors,
   TextRenderable,
   type ThemeMode,
-  underline,
 } from "@opentui/core"
 import type { PanelDefinition } from "./config.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
@@ -18,6 +18,14 @@ import type { PanelContext, PanelSessionController } from "./panel-session.ts"
 import { sanitizeTitle } from "./title-parser.ts"
 
 const MAX_SCROLLBACK_BYTES = 10_000_000
+// The rail is a rule tab: labels over a hairline whose span under the
+// selected label is drawn heavy in the foreground. fx has no tab surface to
+// copy, so this is fmx's own, built from fx's principles — selection by
+// weight and glyph, never hue or underline. See fxnk style/STYLE.md
+// "Switching items in a panel".
+const RULE_LIGHT = "\u2500" // ─
+const RULE_HEAVY = "\u2501" // ━
+const LINK_PADDING = 1
 const TERMINAL_RESET = new Uint8Array([0x1b, 0x63])
 
 export type ToolPanelTab = {
@@ -48,12 +56,15 @@ type RuntimeState = "loading" | "ready" | "exited" | "failed" | "lost"
 export class ToolPanel {
   readonly root: BoxRenderable
   private readonly rail: BoxRenderable
+  private readonly labels: BoxRenderable
+  private readonly rule: TextRenderable
   private readonly body: BoxRenderable
   private readonly contextStatus: TextRenderable
   private readonly entries: ToolEntry[]
   private readonly links = new Map<string, TextRenderable>()
   private readonly runtimes = new Map<string, ToolRuntime>()
   private selectedId: string
+  private width = 0
   private context: PanelContext | null = null
   private visible = false
   private wantsFocus = false
@@ -84,11 +95,26 @@ export class ToolPanel {
     this.rail = new BoxRenderable(renderer, {
       id: "fmx-tool-panel-rail",
       width: "100%",
+      height: 2,
+      flexShrink: 0,
+      flexDirection: "column",
+      visible: this.entries.length > 1,
+    })
+    this.labels = new BoxRenderable(renderer, {
+      id: "fmx-tool-panel-labels",
+      width: "100%",
       height: 1,
       flexShrink: 0,
       flexDirection: "row",
-      visible: this.entries.length > 1,
     })
+    this.rule = new TextRenderable(renderer, {
+      id: "fmx-tool-panel-rule",
+      width: "100%",
+      height: 1,
+      selectable: false,
+    })
+    this.rail.add(this.labels)
+    this.rail.add(this.rule)
     this.body = new BoxRenderable(renderer, {
       id: "fmx-tool-panel-body",
       width: "100%",
@@ -135,7 +161,9 @@ export class ToolPanel {
   }
 
   setWidth(width: number): void {
+    this.width = width
     this.root.width = width
+    this.refreshLinks()
   }
 
   setVisible(visible: boolean): void {
@@ -238,11 +266,11 @@ export class ToolPanel {
     })
     const link = new BoxRenderable(this.renderer, {
       id: `fmx-tool-panel-tab-${entry.tab.id}`,
-      width: [...entry.tab.label].length + 2,
+      width: [...entry.tab.label].length + LINK_PADDING * 2,
       height: 1,
       flexShrink: 0,
-      paddingLeft: 1,
-      paddingRight: 1,
+      paddingLeft: LINK_PADDING,
+      paddingRight: LINK_PADDING,
       onMouseDown: (event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -251,19 +279,30 @@ export class ToolPanel {
     })
     link.add(text)
     this.links.set(entry.tab.id, text)
-    this.rail.add(link)
+    this.labels.add(link)
   }
 
+  /** Repaint the rule tab: the selected label bold in the foreground, the
+   * others dim, and the hairline beneath drawn heavy under the selection. */
   private refreshLinks(): void {
     const colors = modalColors(this.colors)
+    const rule: StyledText["chunks"] = []
+    let drawn = 0
     for (const entry of this.entries) {
       const text = this.links.get(entry.tab.id)
       if (!text) continue
       const active = entry.tab.id === this.selectedId
       text.content = new StyledText([
-        active ? underline(fg(colors.accent)(entry.tab.label)) : fg(colors.dim)(entry.tab.label),
+        active ? bold(fg(colors.foreground)(entry.tab.label)) : fg(colors.dim)(entry.tab.label),
       ])
+      const span = [...entry.tab.label].length
+      rule.push(fg(colors.divider)(RULE_LIGHT.repeat(LINK_PADDING)))
+      rule.push(active ? fg(colors.foreground)(RULE_HEAVY.repeat(span)) : fg(colors.divider)(RULE_LIGHT.repeat(span)))
+      rule.push(fg(colors.divider)(RULE_LIGHT.repeat(LINK_PADDING)))
+      drawn += span + LINK_PADDING * 2
     }
+    if (this.width > drawn) rule.push(fg(colors.divider)(RULE_LIGHT.repeat(this.width - drawn)))
+    this.rule.content = new StyledText(rule)
   }
 
   private activateCurrent(forceRetry = false): ToolRuntime | null {

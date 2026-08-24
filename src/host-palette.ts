@@ -87,6 +87,7 @@ export const MODAL_FALLBACK_COLORS = {
   error: "#f87171",
   key: "#a3a3a3",
   dim: "#6b7280",
+  divider: "#4c566a",
 }
 
 export type ModalColors = typeof MODAL_FALLBACK_COLORS
@@ -111,7 +112,25 @@ export function modalColors(colors: TerminalColors | null): ModalColors {
       detectedTerminalColor(colors?.palette[8]) ??
       foreground,
     dim: dimColor(colors, foreground),
+    divider: dividerColor(colors),
   }
+}
+
+// Blending the background slightly toward the foreground keeps a divider a
+// faint hairline in any theme; a full palette gray reads visibly heavier.
+const DIVIDER_BLEND = 0.2
+
+/** Hairlines: the tray and Tools panel dividers and the Tools panel's tab
+ * rule. The faintest step in the ramp, nearest the background. */
+function dividerColor(colors: TerminalColors | null): string {
+  const background = detectedTerminalColor(colors?.defaultBackground)
+  const foreground = detectedTerminalColor(colors?.defaultForeground)
+  if (background && foreground) return mixHexColors(background, foreground, DIVIDER_BLEND)
+  return (
+    detectedTerminalColor(colors?.palette[8]) ??
+    detectedTerminalColor(colors?.palette[7]) ??
+    MODAL_FALLBACK_COLORS.divider
+  )
 }
 
 /** Standing instructional text — a hint that is always on screen — sits

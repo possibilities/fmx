@@ -146,8 +146,17 @@ test("configured Tool panels exist but start hidden and remember a resized width
     expect(activeLink).toBeInstanceOf(TextRenderable)
     expect(inactiveLink).toBeInstanceOf(TextRenderable)
     if (activeLink instanceof TextRenderable && inactiveLink instanceof TextRenderable) {
-      expect(activeLink.chunks[0]!.attributes! & TextAttributes.UNDERLINE).toBe(TextAttributes.UNDERLINE)
+      expect(activeLink.chunks[0]!.attributes! & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
+      expect(activeLink.chunks[0]!.attributes! & TextAttributes.UNDERLINE).toBe(0)
+      expect(inactiveLink.chunks[0]!.attributes! & TextAttributes.BOLD).toBe(0)
       expect(inactiveLink.chunks[0]!.attributes! & TextAttributes.UNDERLINE).toBe(0)
+    }
+    const rule = h.setup.renderer.root.findDescendantById("fmx-tool-panel-rule")
+    expect(rule).toBeInstanceOf(TextRenderable)
+    if (rule instanceof TextRenderable) {
+      const drawn = rule.chunks.map((chunk) => chunk.text).join("")
+      expect(drawn).toBe(`─${"━".repeat(4)}─${"─".repeat(7)}${"─".repeat(30 - 13)}`)
+      expect(drawn).toHaveLength(panel.width)
     }
 
     await h.setup.mockMouse.drag(divider.x, 10, 68, 10)

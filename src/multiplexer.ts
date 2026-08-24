@@ -66,12 +66,10 @@ import {
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
 import {
-  detectedTerminalColor,
   hasDetectedBackground,
   MODAL_FALLBACK_COLORS,
   type ModalColors,
   modalColors,
-  mixHexColors,
   themeModeReport,
 } from "./host-palette.ts"
 import {
@@ -112,10 +110,6 @@ const TRAY_MIN_WIDTH = 16
 const TRAY_MAX_SCREEN_FRACTION = 1 / 3
 const TOOL_PANEL_MIN_WIDTH = 16
 const TOOL_PANEL_MAX_SCREEN_FRACTION = 1 / 3
-// Blending the background slightly toward the foreground keeps the divider a
-// faint hairline in any theme; a full palette gray reads visibly heavier.
-const DIVIDER_BLEND = 0.2
-const DIVIDER_FALLBACK_COLOR = "#4c566a"
 // Dividers stay invisible until the host palette is known (or fx starts and it
 // is definitively unknowable) so the theme-derived color never flashes over a
 // guessed one on startup.
@@ -1528,7 +1522,7 @@ export class Multiplexer {
 
   private applyDividerPalette(colors: TerminalColors | null): void {
     if (!this.startupChromeLocked) {
-      const color = dividerColor(colors)
+      const color = modalColors(colors).divider
       this.divider.borderColor = color
       this.divider.focusedBorderColor = color
       if (this.panelDivider) {
@@ -2418,16 +2412,6 @@ export class Multiplexer {
 
 type HelpEntry = readonly [key: string, description: string]
 
-function dividerColor(colors: TerminalColors | null): string {
-  const background = detectedTerminalColor(colors?.defaultBackground)
-  const foreground = detectedTerminalColor(colors?.defaultForeground)
-  if (background && foreground) return mixHexColors(background, foreground, DIVIDER_BLEND)
-  return (
-    detectedTerminalColor(colors?.palette[8]) ??
-    detectedTerminalColor(colors?.palette[7]) ??
-    DIVIDER_FALLBACK_COLOR
-  )
-}
 
 function helpEntries(keybindings: Keybindings): HelpEntry[] {
   return [

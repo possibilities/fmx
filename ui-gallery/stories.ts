@@ -270,7 +270,7 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "tools-panel-ready",
     component: "Tools panel",
     title: "Running test tool",
-    description: "A live tool terminal beneath the link rail, with the selected link underlined.",
+    description: "A live tool terminal beneath the rule tab: the selected label bold, the hairline heavy under it.",
     viewport: { cols: 66, rows: 18 },
     expectedText: ["Diff", "Tests", "bun test v1.4.0", "214 pass", "Watching for changes"],
     async arrange(context) {
@@ -283,6 +283,22 @@ export const UI_STORIES: readonly UiStory[] = [
         true,
         "tests",
       )
+    },
+  },
+  {
+    id: "tools-panel-rule-tab",
+    component: "Tools panel",
+    title: "Rule tab",
+    description:
+      "Three tools on the rule tab: selection by weight and the heavy rule span, no hue, no underline. fx has no tab surface, so this is fmx's own, built from fx's principles.",
+    viewport: { cols: 60, rows: 12 },
+    expectedText: ["Diff", "Tests", "Logs", "━━━━━"],
+    interaction: "Click a label to select it.",
+    async arrange(context) {
+      await mountToolPanel(context, new GalleryPanelSessions("ready", "logs output\r\n"), true, "tests", [
+        ...PANELS,
+        { id: "logs", label: "Logs", command: ["tail", "-f", "dev.log"], persistent: false },
+      ])
     },
   },
   {
@@ -381,9 +397,10 @@ async function mountToolPanel(
   sessions: GalleryPanelSessions,
   withContext = true,
   selected = "diff",
+  definitions: PanelDefinition[] = PANELS,
 ): Promise<ToolPanel> {
   const panel = new ToolPanel(context.setup.renderer, {
-    definitions: PANELS,
+    definitions,
     sessions,
     initialSelectedId: selected,
   })
