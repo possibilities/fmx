@@ -18,8 +18,14 @@
 - `project_roots` is deliberately empty by default. Personal roots belong in
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.
-  The first configured root is fmx's working directory and therefore the cwd
-  for a direct `keys.new_tab` launch.
+  The first configured root is fmx's working directory, and the launch
+  dialog opens on it when no agent is active. Only the roots and children
+  that are inside a git repository are offered: an Agent runs in a repository
+  or it does not run, which `performLaunch` enforces for every launch — a key
+  or a command — with `readGitContext`, while the scan and the control
+  socket's parameter checks use the synchronous `isRepositoryDirectory` walk
+  because neither can wait for git. A repository with nothing committed yet is
+  a project; it just cannot offer a Worktree.
   TUI startup refuses an empty resolved list with exit 1 and the exact config
   line to add; control commands, `--help`, `--version`, and `doctor` do not
   need project roots because they never open the TUI.

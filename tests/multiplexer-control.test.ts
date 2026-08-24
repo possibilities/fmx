@@ -10,6 +10,7 @@ import { AdeSocket } from "../src/ade-events.ts"
 import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
 
@@ -22,7 +23,7 @@ type Setup = Awaited<ReturnType<typeof createTestRenderer>>
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-control-")))
   const code = join(home, "code")
-  for (const name of ["alpha", "beta"]) await mkdir(join(code, name), { recursive: true })
+  for (const name of ["alpha", "beta"]) await initRepository(join(code, name), "trunk")
   return { home, code }
 }
 
@@ -191,10 +192,10 @@ test("launches in the background once something is on screen, and says where the
     expect(snapshot.tray.visible).toBe(true)
     expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
       ["project", 0, "beta", null],
-      ["branch", 1, "(untracked)", null],
+      ["branch", 1, "trunk", null],
       ["agent", 2, "· —", 2],
       ["project", 0, "alpha", null],
-      ["branch", 1, "(untracked)", null],
+      ["branch", 1, "trunk", null],
       ["agent", 2, "· —", 1],
     ])
 
@@ -237,7 +238,7 @@ test("includes filesystem subagents in the tray orientation", async () => {
     )
     expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
       ["project", 0, "alpha", null],
-      ["branch", 1, "(untracked)", null],
+      ["branch", 1, "trunk", null],
       ["agent", 2, "· ba9a9f7e16e5ef8c", 1],
       ["subagent", 3, "✓ test-subagent", null],
     ])
@@ -257,9 +258,17 @@ test("refuses a launch it cannot honour without drawing anything", async () => {
     const missing = await failure(h.launch({ directory: join(h.code, "nowhere") }))
     expect(missing.code).toBe("invalid_params")
 
+    // A directory outside any repository is not somewhere an agent can run.
+    const loose = join(h.home, "loose")
+    await mkdir(loose, { recursive: true })
+    const outside = await failure(h.launch({ directory: loose }))
+    expect(outside.code).toBe("invalid_params")
+    expect(outside.message).toContain("not a git repository")
+
+    // The projects here have nothing committed, so nothing to branch from.
     const worktree = await failure(h.launch({ directory: join(h.code, "beta"), worktree: true }))
     expect(worktree.code).toBe("failed")
-    expect(worktree.message).toContain("not a git repository")
+    expect(worktree.message).toContain("no commit to branch from")
     const snapshot = (await h.control("orient")) as Snapshot
     expect(snapshot.surface).toEqual({ kind: "none" })
     expect(snapshot.agents).toEqual([])
@@ -621,7 +630,6 @@ test("lists the keys with their command equivalents, and resizes the tray", asyn
       bindings: {
         help: { keys: ["prefix+?"], command: "fmx control keys --show" },
         detach: { keys: ["prefix+d"], command: null },
-        new_tab: { keys: ["prefix+c"], command: "fmx control launch" },
         launch: { keys: ["prefix+l"], command: "fmx control launch --editable" },
         previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
         next_tab: { keys: ["prefix+n"], command: "fmx control focus next" },

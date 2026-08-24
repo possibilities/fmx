@@ -46,7 +46,6 @@ test("uses the configured prefix and renders configured bindings", async () => {
       "│  ctrl+space  prefix mode    │",
       "│  prefix+?    keybinds       │",
       "│  prefix+d    detach client  │",
-      "│  prefix+c    new agent      │",
       "│  prefix+l    launch agent   │",
       "│  prefix+p    prev agent     │",
       "│  prefix+n    next agent     │",

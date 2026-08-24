@@ -83,7 +83,8 @@ export type AgentInfo = {
   pane_id: string
   cwd: string
   project: string
-  /** null until git has answered, or forever when the directory is untracked. */
+  /** null when git has no answer for the directory: an agent is launched
+   * into a repository, so this is a checkout that went away under it. */
   branch: string | null
   /** Whether the directory is a linked worktree rather than the main checkout. */
   worktree: boolean | null
@@ -122,7 +123,7 @@ export type LaunchFields = {
   prompt: string
   directory: string
   worktree: boolean
-  /** null while the repository check for `directory` is still running. */
+  /** null while the check for a commit to branch from is still running. */
   worktree_available: boolean | null
   model: string
   effort: string

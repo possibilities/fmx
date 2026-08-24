@@ -101,9 +101,10 @@ export async function createWorktree(
 export async function readHeadCommit(cwd: string): Promise<string> {
   const head = await runGit(cwd, ["rev-parse", "HEAD"])
   const sha = head.stdout.trim()
-  if (!head.ok || !sha) {
-    throw new Error(head.stderr || "the project has no commit to branch from")
-  }
+  // Every project is a repository, so the one thing left that fails here is
+  // an unborn HEAD. Git's own words for that name a revision the human never
+  // asked about; the sentence the Worktree row uses says it plainly.
+  if (!head.ok || !sha) throw new Error("the project has no commit to branch from")
   return sha
 }
 

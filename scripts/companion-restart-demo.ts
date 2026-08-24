@@ -12,7 +12,7 @@
  * fmx. `DEMO_PACE_MS` slows the steps down for watching. Everything the demo
  * creates is removed at the end.
  */
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 import { loadManifest } from "../src/agent-manifest.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
@@ -32,12 +32,15 @@ const companionDirectory = `/tmp/fmxz-demo-${basename(temp).slice(-6)}`
 const home = homeIdFor(join(temp, "config", "fmx"))
 const lifecycleLog = join(temp, "lifecycle.log")
 const manifestPath = join(temp, "agents.json")
+const configFile = join(temp, "config.toml")
+await writeFile(configFile, `project_roots = [${JSON.stringify(ROOT)}]\n`)
 const env = {
   ...process.env,
   FMX_FX_PATH: FAKE_FX,
   TERM: "xterm-256color",
   COLORTERM: "truecolor",
-  FMX_CONFIG_PATH: join(temp, "none.toml"),
+  // A repository to launch into: an agent runs in one or it does not run.
+  FMX_CONFIG_PATH: configFile,
   FMX_STATE_PATH: join(temp, "state.json"),
   XDG_CONFIG_HOME: join(temp, "config"),
   FMX_ZMX_PATH: ZMX,
@@ -83,6 +86,18 @@ const showCompanion = async () => {
 }
 const CTRL = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
+/** ctrl-b l opens the launch dialog; the returns commit the empty prompt and
+ * launch into the project it opened on. */
+const launch = async (fmx: Fmx) => {
+  const drawn = fmx.output().split(LAUNCH_PROMPT_ROW).length
+  fmx.key(CTRL("b"), "l".charCodeAt(0))
+  await until(() => fmx.output().split(LAUNCH_PROMPT_ROW).length > drawn, "the launch dialog")
+  fmx.key(13)
+  await sleep(50)
+  fmx.key(13)
+}
+const LAUNCH_PROMPT_ROW = "what should the agent do?"
+
 type Fmx = { process: ReturnType<typeof Bun.spawn>; output: () => string; key: (...bytes: number[]) => void }
 const startFmx = (): Fmx => {
   let output = ""
@@ -109,13 +124,13 @@ let second: Fmx | null = null
 try {
   await step(`start fmx under a private Home (${home}); its Companion keeps sessions in ${companionDirectory}`)
   first = startFmx()
-  await until(() => first!.output().includes("prefix+c"), "the empty state")
+  await until(() => first!.output().includes("prefix+l"), "the empty state")
   note(`fmx is pid ${first.process.pid}, showing its empty state`)
 
-  await step("ctrl-b c twice: two agents, each created in the Companion, not spawned by fmx")
-  first.key(CTRL("b"), "c".charCodeAt(0))
+  await step("ctrl-b l twice: two agents, each created in the Companion, not spawned by fmx")
+  await launch(first)
   await until(async () => (await lifecycle()).includes("ready 1"), "agent 1")
-  first.key(CTRL("b"), "c".charCodeAt(0))
+  await launch(first)
   await until(async () => (await lifecycle()).includes("ready 2"), "agent 2")
   await until(async () => (await loadManifest(manifestPath, home)).agents.every((e) => e.phase === "running"), "both claims acknowledged")
   await showManifest()
@@ -138,28 +153,36 @@ try {
   await until(() => banners(second!.output()) >= 1, "a restored screen")
   await sleep(300)
   note(`fmx is pid ${second.process.pid}; agents started by the new fmx: ${((await lifecycle()).match(/^start /gm)?.length ?? 0) - 2}`)
-  note(`the visible terminal shows agent 1's restored banner (${banners(second.output())} on screen so far)`)
+  note(`the visible terminal shows the selected agent's restored banner (${banners(second.output())} on screen so far)`)
   await showManifest()
   await showCompanion()
 
-  await step("type into the restored agent: ctrl-u reaches agent 1")
+  // state.json remembers the selected Agent by identity, so the restore comes
+  // back on agent 2 — the one that was on screen when fmx was killed.
+  await step("type into the restored agent: ctrl-u reaches agent 2")
   second.key(CTRL("u"))
-  await until(async () => (await lifecycle()).includes("ctrl-u 1"), "agent 1 to see ctrl-u")
-  note("agent 1 logged ctrl-u")
+  await until(async () => (await lifecycle()).includes("ctrl-u 2"), "agent 2 to see ctrl-u")
+  note("agent 2 logged ctrl-u")
 
-  await step("ctrl-c ctrl-c inside agent 1: its own exit removes it, and only it")
+  await step("ctrl-c ctrl-c inside agent 2: its own exit removes it, and only it")
   second.key(CTRL("c"), CTRL("c"))
-  await until(async () => (await lifecycle()).includes("graceful 1"), "agent 1 to exit")
+  await until(async () => (await lifecycle()).includes("graceful 2"), "agent 2 to exit")
   await until(async () => (await loadManifest(manifestPath, home)).agents.length === 1, "its claim to go")
   await showManifest()
   const remaining = (await loadManifest(manifestPath, home)).agents[0]!.zmxName
-  await until(async () => (await companion.list()).every((s) => s.name === remaining), "its record to be consumed", 8000)
+  // The Runtime holds a Companion session of its own (`fmxr-`); only the
+  // Agent sessions (`fmx-`) are what this step is counting.
+  await until(
+    async () => (await companion.list()).filter((s) => s.name.startsWith("fmx-")).every((s) => s.name === remaining),
+    "its record to be consumed",
+    8000,
+  )
   await showCompanion()
 
-  await step("ctrl-c ctrl-c inside agent 2: the last exit leaves the empty state, and ctrl-c twice closes fmx")
+  await step("ctrl-c ctrl-c inside agent 1: the last exit leaves the empty state, and ctrl-c twice closes fmx")
   second.key(CTRL("c"), CTRL("c"))
-  await until(async () => (await lifecycle()).includes("graceful 2"), "agent 2 to exit")
-  await until(() => second!.output().includes("prefix+c to create agent"), "the empty state")
+  await until(async () => (await lifecycle()).includes("graceful 1"), "agent 1 to exit")
+  await until(() => second!.output().includes("prefix+l to launch agent"), "the empty state")
   await sleep(300)
   second.key(CTRL("c"))
   await until(() => second!.output().includes("press ctrl+c again to exit"), "the exit confirmation")

@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { projectNameFor, readGitContext, treeNameFor } from "../src/git-context.ts"
+import {
+  isRepositoryDirectory,
+  projectNameFor,
+  readGitContext,
+  treeNameFor,
+} from "../src/git-context.ts"
 
 test("reads the worktree root and branch of a repository", async () => {
   const context = await readGitContext(process.cwd())
@@ -41,6 +46,41 @@ test("answers null outside a repository", async () => {
   }
 })
 
+test("answers for a repository with nothing committed yet", async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "fmx-git-unborn-")))
+  try {
+    await Bun.spawn(["git", "-C", directory, "init", "--quiet", "--initial-branch=trunk"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    }).exited
+    const context = await readGitContext(directory)
+    expect(context?.root).toBe(directory)
+    expect(context?.mainRoot).toBe(directory)
+    expect(context?.branch).toBe("trunk")
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("recognizes a repository directory without spawning git", async () => {
+  const scratch = await realpath(await mkdtemp(join(tmpdir(), "fmx-git-walk-")))
+  try {
+    expect(isRepositoryDirectory(scratch)).toBe(false)
+    await Bun.spawn(["git", "-C", scratch, "init", "--quiet"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    }).exited
+    expect(isRepositoryDirectory(scratch)).toBe(true)
+    // The walk climbs the way git's own discovery does, so a directory deep
+    // inside a checkout answers as readily as its root.
+    const nested = join(scratch, "src", "deep")
+    await mkdir(nested, { recursive: true })
+    expect(isRepositoryDirectory(nested)).toBe(true)
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 test("answers null for a directory that is not there", async () => {
   expect(await readGitContext(join(tmpdir(), "fmx-absent-directory"))).toBeNull()
 })
@@ -74,5 +114,6 @@ test("names a linked Worktree by its own root and the main tree by its branch", 
   expect(
     treeNameFor({ root: "/work/agentbrain", mainRoot: "/work/agentbrain", branch: "main" }),
   ).toBe("main")
-  expect(treeNameFor(null)).toBe("(untracked)")
+  // Nothing stands in for a branch git could not answer for.
+  expect(treeNameFor(null)).toBeNull()
 })

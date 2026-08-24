@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { mkdir, mkdtemp, realpath } from "node:fs/promises"
+import { mkdtemp, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -12,6 +12,8 @@ import { HandlerRelay, type TerminalSize, type TerminalTransport, type Transport
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import type { PanelContext, PanelSessionController } from "../src/panel-session.ts"
+import { initRepository } from "./fixtures/git-workspace.ts"
+import { pressLaunch } from "./fixtures/launch-keys.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -127,8 +129,7 @@ async function harness(options: {
 }
 
 async function launchWithKeys(h: Awaited<ReturnType<typeof harness>>): Promise<void> {
-  h.setup.mockInput.pressKey("b", { ctrl: true })
-  h.setup.mockInput.pressKey("c")
+  pressLaunch(h.setup)
   await Bun.sleep(20)
   await h.setup.renderOnce()
 }
@@ -341,8 +342,8 @@ test("restores Tool panel visibility, width, and selection without drawing a rai
 test("the selected tool follows the active Agent and cached contexts resume without restarting", async () => {
   const h = await harness({ initialPanelVisible: true, initialPanelId: "diff" })
   const root = await mkdtemp(join(tmpdir(), "fmx-tool-context-"))
-  await mkdir(join(root, "alpha"))
-  await mkdir(join(root, "beta"))
+  await initRepository(join(root, "alpha"))
+  await initRepository(join(root, "beta"))
   const alpha = await realpath(join(root, "alpha"))
   const beta = await realpath(join(root, "beta"))
   try {

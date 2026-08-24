@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { launchAgent } from "./fixtures/launch-keys.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import { rowText, SessionList, stateIcon, stateRole, truncate } from "../src/session-list.ts"
@@ -291,23 +292,18 @@ test("draws recursive subagent state rows without making them selectable", async
   }
 })
 
-test("draws an untracked branch between a plain directory and its agent", async () => {
+test("hangs an agent with no branch straight off its project", async () => {
   const { setup, list } = await createList(30, 10)
   try {
     list.render(buildTree([entry({ project: "arthack", branch: null, active: true })]), 26)
     await setup.renderOnce()
 
+    // No rung stands in for the branch, so the agent moves up one level
+    // rather than sitting under a label naming something that is not there.
     const frame = setup.captureCharFrame().split("\n")
     expect(frame[0]).toStartWith(" arthack")
-    expect(frame[1]).toStartWith("   (untracked)")
-    expect(frame[2]).toStartWith(`     ○ ${SESSION_ID}`)
-
-    const label = setup.renderer.root.findDescendantById("fmx-session-row-text-branch-1") as TextRenderable
-    const untracked = label.chunks.find((chunk) => chunk.text === "(untracked)")!
-    expect(untracked.attributes! & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
-    expect(untracked.attributes! & TextAttributes.BOLD).toBe(0)
-    // The fallback tier's secondary step: fx's 250.
-    expect(untracked.fg?.toInts().slice(0, 3)).toEqual([188, 188, 188])
+    expect(frame[1]).toStartWith(`   ○ ${SESSION_ID}`)
+    expect(setup.renderer.root.findDescendantById("fmx-session-row-branch-1")).toBeUndefined()
   } finally {
     list.root.destroy()
     setup.renderer.destroy()
@@ -401,9 +397,8 @@ test("mounts the list into the tray", async () => {
     keybindings: resolveKeybindings().keybindings,
     agentSocket: new AgentSocket({ path: `/tmp/fmx-list-test-${process.pid}.sock` }),
   })
-  multiplexer.start()
-  setup.mockInput.pressKey("b", { ctrl: true })
-  setup.mockInput.pressKey("c")
+  await multiplexer.start()
+  await launchAgent(setup)
   try {
     await setup.renderOnce()
     const list = setup.renderer.root.findDescendantById("fmx-session-list") as BoxRenderable

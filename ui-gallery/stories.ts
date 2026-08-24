@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert"
-import { basename, resolve } from "node:path"
+import { resolve } from "node:path"
 import { BoxRenderable, type KeyEvent } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentSocket, FrameListener } from "../src/agent-socket.ts"
@@ -24,10 +24,10 @@ import {
 import type { UiStory, UiStoryContext } from "./story.ts"
 
 const ROOT = resolve(import.meta.dir, "..")
-// A normal checkout is itself `fmx`; a managed Worktree sits directly under
-// an untracked directory with that name. Either gives the story the same
-// project row without depending on the checkout topology.
-const GALLERY_CWD = basename(ROOT) === "fmx" ? ROOT : resolve(ROOT, "..")
+// The checkout itself, whether it is `fmx` or a Worktree cut from it: an
+// agent runs in a repository, and the project row is named for the
+// repository either one belongs to rather than for the directory it sits in.
+const GALLERY_CWD = ROOT
 const NEVER = new AbortController().signal
 const SESSION_ID = "909bc46b64721838"
 const AGENT_SCREEN =
@@ -60,10 +60,10 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "multiplexer-empty",
     component: "Multiplexer",
     title: "No Agents",
-    description: "An empty Home keeps the full work surface quiet and centers the two ways to begin.",
+    description: "An empty Home keeps the full work surface quiet and centers the one way to begin.",
     viewport: { cols: 86, rows: 24 },
-    expectedText: ["prefix+c to create agent", "prefix+l to prompt agent"],
-    interaction: "Use ctrl+b c to create an Agent, or ctrl+b ? to open the key reference.",
+    expectedText: ["prefix+l to launch agent"],
+    interaction: "Use ctrl+b l to launch an Agent, or ctrl+b ? to open the key reference.",
     arrange: mountMultiplexer({ screen: AGENT_SCREEN }),
   },
   {
@@ -129,9 +129,9 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "session-list-hierarchy",
     component: "Session list",
     title: "Projects, branches, and Subagents",
-    description: "The active path, recursive Subagent rows, and an untracked Agent in a second project.",
+    description: "The active path, recursive Subagent rows, and an Agent whose checkout is gone in a second project.",
     viewport: { cols: 42, rows: 16 },
-    expectedText: ["fmx", "feature/ui-gallery", "coordinate-the-review", "reviewer", "test-reader", "(untracked)"],
+    expectedText: ["fmx", "feature/ui-gallery", "coordinate-the-review", "reviewer", "test-reader", "draft-release-notes"],
     arrange(context) {
       mountSessionList(context, [
         entry({
@@ -219,9 +219,9 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "launch-dialog-unavailable-worktree",
     component: "Launch dialog",
     title: "Unavailable Worktree",
-    description: "The Worktree row explains why it cannot be enabled for an untracked project.",
+    description: "The Worktree row explains why it cannot be enabled for a Project with nothing committed yet.",
     viewport: { cols: 84, rows: 24 },
-    expectedText: ["~/code/zmax", "unavailable — not a repository"],
+    expectedText: ["~/code/zmax", "unavailable — no commit to branch from"],
     interaction: "Move between rows to inspect which choices remain available.",
     arrange(context) {
       const dialog = mountLaunchDialog(context, { directory: PROJECTS[4]!.directory })

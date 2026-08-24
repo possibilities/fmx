@@ -1,11 +1,12 @@
 import { readdirSync, statSync } from "node:fs"
 import { basename, join } from "node:path"
+import { isRepositoryDirectory } from "./git-context.ts"
 
 /**
- * Projects fmx can start an agent in: the configured roots and the
- * directories one level under them. Everything here is pure or a plain
- * directory read, so the launch dialog's ordering, cycling, and filtering can
- * be tested without a terminal.
+ * Projects fmx can start an agent in: the git repositories among the
+ * configured roots and the directories one level under them. Everything here
+ * is pure or a plain directory read, so the launch dialog's ordering,
+ * cycling, and filtering can be tested without a terminal.
  */
 
 export type ProjectChoice = {
@@ -32,7 +33,8 @@ export function tildeDisplay(directory: string, home: string): string {
 /**
  * Each root one level deep, offering the root itself as a choice too — work
  * can live at `~/code` directly. A root that is not there is a config written
- * for another machine, not a fault: it contributes nothing.
+ * for another machine, not a fault: it contributes nothing. Only directories
+ * inside a repository are offered, because only those can carry an agent.
  */
 export function scanProjectRoots(roots: readonly string[], home: string): string[] {
   const found: string[] = []
@@ -40,7 +42,7 @@ export function scanProjectRoots(roots: readonly string[], home: string): string
   const offer = (directory: string) => {
     if (seen.has(directory)) return
     seen.add(directory)
-    found.push(directory)
+    if (isRepositoryDirectory(directory)) found.push(directory)
   }
 
   for (const root of roots) {

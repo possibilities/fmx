@@ -43,8 +43,24 @@ test("keeps several projects apart", () => {
   ).toEqual(["fx", "  integration", "    909bc46b64721838", "fmx", "  main", "    909bc46b64721838"])
 })
 
-test("nests agents outside a repository under an untracked branch", () => {
-  expect(shape([entry({ branch: null })])).toEqual(["fmx", "  (untracked)", "    909bc46b64721838"])
+test("hangs an agent git has no answer for straight off its project", () => {
+  expect(shape([entry({ branch: null })])).toEqual(["fmx", "  909bc46b64721838"])
+})
+
+test("nests the subagents of a branchless agent one rung shallower too", () => {
+  const rows = buildTree([
+    entry({
+      branch: null,
+      subagents: [
+        { sessionId: "child", label: "reviewer", state: "working", attention: null, children: [] },
+      ],
+    }),
+  ])
+  expect(rows.map((row) => [row.kind, row.depth, row.label])).toEqual([
+    ["project", 0, "fmx"],
+    ["agent", 1, "909bc46b64721838"],
+    ["subagent", 2, "reviewer"],
+  ])
 })
 
 test("marks the active agent and every ancestor of it", () => {
@@ -61,11 +77,10 @@ test("marks the active agent and every ancestor of it", () => {
   ])
 })
 
-test("marks the untracked branch as part of the active path", () => {
+test("marks the project of a branchless active agent as part of the path", () => {
   const rows = buildTree([entry({ branch: null, active: true })])
   expect(rows.map((row) => [row.label, row.onPath])).toEqual([
     ["fmx", true],
-    ["(untracked)", true],
     ["909bc46b64721838", true],
   ])
 })

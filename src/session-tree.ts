@@ -1,5 +1,4 @@
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
-import { UNTRACKED_TREE_NAME } from "./git-context.ts"
 import type { SubagentEntry } from "./subagents.ts"
 
 /**
@@ -11,7 +10,8 @@ import type { SubagentEntry } from "./subagents.ts"
 export type SessionEntry = {
   agentId: number
   project: string
-  /** null when the agent is not in a git worktree. */
+  /** null only when git has no answer for the agent's directory: a launch
+   * requires a repository, so this is a checkout that went away under it. */
   branch: string | null
   sessionId: string | null
   /** Fx's native session name, once it has one. The row falls back to the
@@ -35,17 +35,15 @@ export type TreeRow = {
   active: boolean
   /** The active agent and every ancestor of it: the path through the tree. */
   onPath: boolean
-  /** True only for a synthetic grouping row rather than repository data. */
-  virtual: boolean
 }
 
 /**
  * Group entries into rows, newest agent first. Creation order is reversed
  * before grouping, so a project or branch sorts by its newest agent and the
  * newest agent stands at the top of its branch. Nothing else — state,
- * attention, activity — moves a row. Agents outside a repository keep the
- * same project → branch → agent shape through a virtual `(untracked)`
- * branch.
+ * attention, activity — moves a row. An entry git has no answer for keeps its
+ * project row and hangs directly from it: nothing stands in for a branch that
+ * is not there.
  */
 export function buildTree(entries: SessionEntry[]): TreeRow[] {
   const rows: TreeRow[] = []
@@ -62,34 +60,34 @@ export function buildTree(entries: SessionEntry[]): TreeRow[] {
       attention: null,
       active: false,
       onPath: active?.project === project,
-      virtual: false,
     })
 
     for (const [branch, branchEntries] of groupBy(projectEntries, (entry) => entry.branch)) {
-      rows.push({
-        kind: "branch",
-        depth: 1,
-        label: branch ?? UNTRACKED_TREE_NAME,
-        agentId: null,
-        state: "unknown",
-        attention: null,
-        active: false,
-        onPath: active?.project === project && active.branch === branch,
-        virtual: branch === null,
-      })
+      if (branch !== null) {
+        rows.push({
+          kind: "branch",
+          depth: 1,
+          label: branch,
+          agentId: null,
+          state: "unknown",
+          attention: null,
+          active: false,
+          onPath: active?.project === project && active.branch === branch,
+        })
+      }
+      const depth = branch === null ? 1 : 2
       for (const entry of branchEntries) {
         rows.push({
           kind: "agent",
-          depth: 2,
+          depth,
           label: entry.name ?? entry.sessionId ?? "",
           agentId: entry.agentId,
           state: entry.state,
           attention: entry.attention,
           active: entry.active,
           onPath: entry.active,
-          virtual: false,
         })
-        appendSubagents(rows, entry.subagents, 3)
+        appendSubagents(rows, entry.subagents, depth + 1)
       }
     }
   }
@@ -108,7 +106,6 @@ function appendSubagents(rows: TreeRow[], subagents: SubagentEntry[], depth: num
       attention: subagent.attention,
       active: false,
       onPath: false,
-      virtual: false,
     })
     appendSubagents(rows, subagent.children, depth + 1)
   }

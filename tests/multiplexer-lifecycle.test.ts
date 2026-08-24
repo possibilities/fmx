@@ -3,7 +3,6 @@ import {
   BoxRenderable,
   type RGBA,
   type TerminalColors,
-  TextAttributes,
   TextRenderable,
 } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
@@ -16,6 +15,7 @@ import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { projectNameFor, readGitContext, treeNameFor } from "../src/git-context.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { launchAgent, pressLaunch } from "./fixtures/launch-keys.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -33,13 +33,10 @@ test("reports an fx spawn failure after removing its provisional agent", async (
 
   try {
     await multiplexer.start()
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
     // On screen from the claim, gone again with the reason once the start fails.
-    expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
-    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("fx did not start")
+    pressLaunch(setup)
+    await waitForText(setup, "fx did not start", 4_000)
+    expect(setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
   } finally {
     await multiplexer.shutdown()
   }
@@ -71,12 +68,10 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
   try {
     multiplexer.setHostPalette(hostPalette("#cc3344"))
     await multiplexer.start()
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
+    await launchAgent(setup)
     options.fxPath = "/definitely/missing/fx"
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
-    await waitFor(() => setup.renderer.root.findDescendantById("fx-2") === undefined, 2_000)
+    pressLaunch(setup)
+    await waitFor(() => modalBackdrop.visible, 4_000)
     await setup.renderOnce()
 
     expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
@@ -110,7 +105,7 @@ test("rolls back a later spawn failure without stopping the active fx", async ()
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
     await setup.renderOnce()
     expect(done).toBe(false)
-    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
+    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
 
     setup.mockInput.pressKey("c", { ctrl: true })
     await setup.renderOnce()
@@ -155,9 +150,7 @@ test("toasts project and Worktree on start, then uses the native session name on
 
   try {
     await multiplexer.start()
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
-    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined, 2_000)
+    await launchAgent(setup)
     await waitForText(setup, `${location} / agent 1 started`, 2_000)
 
     // The pane id is the Agent's identity, minted with its Manifest entry.
@@ -194,9 +187,7 @@ test("falls back to the Agent id and includes a nonzero exit code", async () => 
 
   try {
     await multiplexer.start()
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
-    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined, 2_000)
+    pressLaunch(setup)
     await waitForText(setup, `${location} / agent 1 started`, 2_000)
 
     await Bun.sleep(110)
@@ -206,9 +197,9 @@ test("falls back to the Agent id and includes a nonzero exit code", async () => 
   }
 })
 
-test("shows an untracked tree in italics outside Git", async () => {
+test("offers nothing to launch outside a repository", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
-  const cwd = await mkdtemp(join(tmpdir(), "fmx-untracked-"))
+  const cwd = await mkdtemp(join(tmpdir(), "fmx-no-repository-"))
   const multiplexer = new Multiplexer(setup.renderer, {
     ...agentOptions(),
     fxPath: FAKE_FX,
@@ -219,15 +210,14 @@ test("shows an untracked tree in italics outside Git", async () => {
 
   try {
     await multiplexer.start()
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
-    await waitForText(setup, `${basename(cwd)} / (untracked) / agent 1 started`, 2_000)
+    pressLaunch(setup)
+    await setup.renderOnce()
 
-    const text = setup.renderer.root.findDescendantById("fmx-toast-text")
-    expect(text).toBeInstanceOf(TextRenderable)
-    if (!(text instanceof TextRenderable)) return
-    const untracked = text.chunks.find((chunk) => chunk.text === "(untracked)")
-    expect((untracked?.attributes ?? 0) & TextAttributes.ITALIC).toBe(TextAttributes.ITALIC)
+    // The directory fmx was started in is not a repository, so the project
+    // row has nothing on it and the enter that would launch does nothing.
+    expect(setup.captureCharFrame()).toContain("no repositories found")
+    expect(setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
+    expect(basename(cwd)).not.toBe("")
   } finally {
     await multiplexer.shutdown()
     await rm(cwd, { recursive: true, force: true })
@@ -279,7 +269,9 @@ async function waitForText(
 
 async function lifecycleLocation(cwd: string): Promise<string> {
   const context = await readGitContext(cwd)
-  return `${projectNameFor(context, cwd)} / ${treeNameFor(context)}`
+  const project = projectNameFor(context, cwd)
+  const tree = treeNameFor(context)
+  return tree === null ? project : `${project} / ${tree}`
 }
 
 async function sendFrame(agentSocket: AgentSocket, payload: string): Promise<void> {

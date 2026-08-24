@@ -37,8 +37,7 @@ test(
           .filter((story) => story.component === "Multiplexer")
           .map((story) => [story.id, story.text.split("\n")]),
       )
-      expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("prefix+c to create agent")
-      expect(multiplexer.get("multiplexer-empty")?.[12]).toContain("prefix+l to prompt agent")
+      expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("prefix+l to launch agent")
       expect(multiplexer.get("multiplexer-working")?.[0]).toContain("Working on the UI gallery")
       expect(multiplexer.get("multiplexer-working")?.[23]).toContain("│")
       expect(multiplexer.get("multiplexer-tools")?.[0]).toContain("Diff  Tests")

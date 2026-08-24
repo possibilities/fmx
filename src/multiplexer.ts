@@ -78,11 +78,11 @@ import {
   type ResolvedBinding,
 } from "./keybindings.ts"
 import {
+  isRepositoryDirectory,
   readGitContext,
   projectNameFor,
   type GitContext,
   treeNameFor,
-  UNTRACKED_TREE_NAME,
 } from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
 import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
@@ -144,7 +144,7 @@ const PROMPT_SUBMIT_MS = 120
 /** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
-const EMPTY_STATE_CONTENT = "prefix+c to create agent\nprefix+l to prompt agent"
+const EMPTY_STATE_CONTENT = "prefix+l to launch agent"
 export const EXIT_CONFIRMATION_TIMEOUT_MS = 2_000
 const MAX_SCROLLBACK_BYTES = 10_000_000
 
@@ -873,7 +873,9 @@ export class Multiplexer {
    * claim: a start that fails takes it down again with the reason.
    */
   private async createAgent(
-    cwd: string = this.options.cwd,
+    // Named, never defaulted: `performLaunch` is the only caller and it has
+    // already held this directory to a Git context.
+    cwd: string,
     prompt = "",
     focus = true,
     launchLevel: FxLaunchLevel | null = null,
@@ -889,9 +891,14 @@ export class Multiplexer {
     const agent = this.addAgent(entry, cwd, focus)
     agent.setPendingPrompt(prompt)
     this.countLaunch(cwd)
-    // "started" means fx is running, whether or not it could be reached.
-    let started = false
-    this.queueLifecycleNotice(agent, `agent ${agent.id}`, "started", "neutral", null, () => started)
+    // "started" means fx is running, whether or not it could be reached. The
+    // notice waits on the attempt itself rather than reading a flag when it
+    // happens to run: everything it needs may already be in hand.
+    let markStarted: (started: boolean) => void = () => {}
+    const startAttempt = new Promise<boolean>((resolve) => {
+      markStarted = resolve
+    })
+    this.queueLifecycleNotice(agent, `agent ${agent.id}`, "started", "neutral", null, () => startAttempt)
     let transport: AgentTransport
     try {
       await saved
@@ -918,11 +925,12 @@ export class Multiplexer {
       if (error instanceof AgentUnreachableError) {
         // fx is running; only the way to it failed. It is recovered like a
         // lost transport, never removed — the Manifest says so first.
-        started = true
+        markStarted(true)
         await this.options.manifest.markRunning(entry.agentId).catch(() => {})
         void this.recoverAgent(agent, error)
         return agent
       }
+      markStarted(false)
       this.removeAgent(agent)
       // A write that fails here is the same disk that failed above; the
       // reason the start failed is the one to show.
@@ -932,7 +940,7 @@ export class Multiplexer {
     // fx is running whatever happens from here; the record says so before
     // anything else, because this is the acknowledgement a crash loses. A
     // write that fails leaves `creating` on disk, which the join resolves.
-    started = true
+    markStarted(true)
     await this.options.manifest.markRunning(entry.agentId).catch(() => {})
     if (this.shuttingDown || !this.agents.includes(agent)) {
       transport.detach()
@@ -1067,18 +1075,18 @@ export class Multiplexer {
     event: "started" | "exited",
     tone: ToastTone,
     exitCode: number | null,
-    shouldShow: () => boolean = () => true,
+    shouldShow: () => boolean | Promise<boolean> = () => true,
   ): void {
     const context = this.loadGitContext(agent.cwd)
     const previous = this.lifecycleNoticeTails.get(agent.id) ?? Promise.resolve()
     const queued = previous.then(async () => {
       const git = await context
-      if (this.shuttingDown || !shouldShow()) return
-      const location = `${projectNameFor(git, agent.cwd)} / ${treeNameFor(git)}`
+      if (this.shuttingDown || !(await shouldShow())) return
+      const project = projectNameFor(git, agent.cwd)
+      const tree = treeNameFor(git)
+      const location = tree === null ? project : `${project} / ${tree}`
       const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` / code ${exitCode}` : ""
-      this.toast.show(`${location} / ${identity} ${event}${code}`, tone, {
-        italic: git ? [] : [UNTRACKED_TREE_NAME],
-      })
+      this.toast.show(`${location} / ${identity} ${event}${code}`, tone)
     })
     this.lifecycleNoticeTails.set(agent.id, queued)
     void queued.finally(() => {
@@ -1665,11 +1673,6 @@ export class Multiplexer {
         // Runtime. Treat a leaked or stale binding as inert: terminal input
         // must never turn one Client's Detach into a shared shutdown.
         return
-      case "new_tab":
-        void this.createAgent().catch((error) => {
-          if (!this.shuttingDown) this.showError("fx did not start", error)
-        })
-        return
       case "launch":
         try {
           this.showLaunchDialog()
@@ -1715,16 +1718,17 @@ export class Multiplexer {
   }
 
   /**
-   * The projects on offer, freshly scanned so a directory made a minute ago is
-   * already there. fmx's own workspace joins the list unconditionally, which
-   * keeps the dialog useful before any root is configured.
+   * The projects on offer, freshly scanned so a repository made a minute ago
+   * is already there. fmx's own workspace joins the list when it is one too,
+   * which keeps the dialog useful before any root is configured.
    */
   private projectChoices(): ProjectChoice[] {
     const home = this.options.home ?? homedir()
     const scanned = scanProjectRoots(this.options.projectRoots ?? [], home)
-    const directories = scanned.includes(this.options.cwd)
-      ? scanned
-      : [...scanned, this.options.cwd]
+    const directories =
+      scanned.includes(this.options.cwd) || !isRepositoryDirectory(this.options.cwd)
+        ? scanned
+        : [...scanned, this.options.cwd]
     return orderProjects(directories, this.projectLaunches, home)
   }
 
@@ -1807,8 +1811,18 @@ export class Multiplexer {
     }
   }
 
-  /** Cut the worktree if asked, then start fx; throws with the reason. */
+  /**
+   * Check the repository, cut the worktree if asked, then start fx; throws
+   * with the reason. Every launch passes here, by key or by command, which is
+   * what makes the repository a condition of running an agent rather than a
+   * rule each caller has to remember. The context git answers with is kept,
+   * so the row this launch adds is drawn under its branch from the first
+   * frame rather than a beat later.
+   */
   private async performLaunch(request: LaunchRequest, focus: boolean): Promise<FxAgent> {
+    const origin = await readGitContext(request.directory)
+    if (!origin) throw new NotARepositoryError(request.directory)
+    this.gitContexts.set(request.directory, origin)
     let directory = request.directory
     if (request.worktree) {
       try {
@@ -1816,6 +1830,8 @@ export class Multiplexer {
       } catch (error) {
         throw new WorktreeError(errorMessage(error))
       }
+      const cut = await readGitContext(directory)
+      if (cut) this.gitContexts.set(directory, cut)
     }
     if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
     const agent = await this.createAgent(directory, request.prompt, focus, {
@@ -1838,19 +1854,20 @@ export class Multiplexer {
     return plan.checkout
   }
 
-  /** Whether a worktree can be cut in `directory`, answered from the git
-   * contexts the session list already keeps. */
+  /**
+   * Whether a worktree can be cut in `directory`. Every project on the row is
+   * a repository, so the only thing left to ask is whether it has a commit to
+   * branch from — a repository with nothing committed yet cannot offer one.
+   */
   private answerWorktreeAvailability(directory: string): void {
-    const known = this.gitContexts.get(directory)
-    if (known) {
-      this.launchDialog.setWorktreeAvailability(directory, true)
-      return
-    }
-    void readGitContext(directory).then((context) => {
+    const answer = (available: boolean) => {
       if (this.shuttingDown) return
-      if (context) this.gitContexts.set(directory, context)
-      this.launchDialog.setWorktreeAvailability(directory, context !== null)
-    })
+      this.launchDialog.setWorktreeAvailability(directory, available)
+    }
+    void readHeadCommit(directory).then(
+      () => answer(true),
+      () => answer(false),
+    )
   }
 
   /** Every start counts, whichever key opened it, so the picker's order
@@ -2157,6 +2174,9 @@ export class Multiplexer {
       } catch {
         throw new ControlFailure("invalid_params", `${directory} is not a directory`)
       }
+      // Refused here rather than at the launch so a draft can never be left
+      // holding a directory no agent could ever be started in.
+      if (!isRepositoryDirectory(resolved)) throw new NotARepositoryError(directory)
       prefill.directory = resolved
     }
     const prompt = optionalString(fields, "prompt")
@@ -2378,7 +2398,6 @@ export class Multiplexer {
     const commands: Record<string, string | null> = {
       help: "fmx control keys --show",
       detach: null,
-      new_tab: "fmx control launch",
       launch: "fmx control launch --editable",
       previous_tab: "fmx control focus previous",
       next_tab: "fmx control focus next",
@@ -2392,7 +2411,6 @@ export class Multiplexer {
     for (const action of [
       "help",
       "detach",
-      "new_tab",
       "launch",
       "previous_tab",
       "next_tab",
@@ -2425,7 +2443,6 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
     [keybindings.prefixLabel, "prefix mode"],
     [bindingLabel(keybindings.help), "keybinds"],
     [bindingLabel(keybindings.detach), "detach client"],
-    [bindingLabel(keybindings.new_tab), "new agent"],
     [bindingLabel(keybindings.launch), "launch agent"],
     [bindingLabel(keybindings.previous_tab), "prev agent"],
     [bindingLabel(keybindings.next_tab), "next agent"],
@@ -2530,6 +2547,16 @@ class WorktreeError extends ControlFailure {
   }
 }
 
+/** An agent runs in a repository or it does not run. */
+class NotARepositoryError extends ControlFailure {
+  constructor(directory: string) {
+    super("invalid_params", `${directory} is not a git repository`)
+    this.name = "NotARepositoryError"
+  }
+}
+
 function launchErrorHeading(error: unknown): string {
-  return error instanceof WorktreeError ? "worktree not created" : "fx did not start"
+  if (error instanceof WorktreeError) return "worktree not created"
+  if (error instanceof NotARepositoryError) return "agent not started"
+  return "fx did not start"
 }

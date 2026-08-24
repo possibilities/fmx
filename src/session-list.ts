@@ -3,7 +3,6 @@ import {
   BoxRenderable,
   type CliRenderer,
   fg,
-  italic,
   RGBA,
   StyledText,
   type TerminalColors,
@@ -201,10 +200,9 @@ export class SessionList {
       return new StyledText(chunks)
     }
     // An ancestor of the active agent is marked by weight: the path reads
-    // without costing a column. A virtual branch is one step down the ramp,
-    // italic, and never bold, even on that path.
-    const label = fg(row.virtual ? this.ramp.secondary : this.ramp.foreground)(rowText(row, width))
-    chunks.push(row.virtual ? italic(label) : row.onPath ? bold(label) : label)
+    // without costing a column.
+    const label = fg(this.ramp.foreground)(rowText(row, width))
+    chunks.push(row.onPath ? bold(label) : label)
     return new StyledText(chunks)
   }
 }

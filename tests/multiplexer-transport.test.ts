@@ -8,6 +8,7 @@ import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
+import { pressLaunch } from "./fixtures/launch-keys.ts"
 import { agentOptions, type PtyTransport } from "./fixtures/pty-transport.ts"
 
 /**
@@ -116,8 +117,7 @@ test("a transport adopted after the layout pass is told the terminal's real size
     h.options.transport.gate = new Promise((resolve) => {
       release = resolve
     })
-    h.setup.mockInput.pressKey("b", { ctrl: true })
-    h.setup.mockInput.pressKey("c")
+    pressLaunch(h.setup)
     await waitFor(() => h.options.transport.started.length === 1)
     const transport = h.options.transport.started[0]!
     await h.setup.renderOnce()
@@ -251,8 +251,7 @@ test("a launch prompt armed before the transport arrives goes in once it has", a
 test("a lost transport whose Agent has ended is removed like an exit", async () => {
   const h = await harness("ended")
   try {
-    h.setup.mockInput.pressKey("b", { ctrl: true })
-    h.setup.mockInput.pressKey("c")
+    pressLaunch(h.setup)
     await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
     const entry = h.options.manifest.entries[0]!
     h.options.transport.attachBehavior = "ended"
@@ -269,8 +268,7 @@ test("a lost transport whose Agent has ended is removed like an exit", async () 
 test("a lost transport that cannot be reached again leaves the screen but keeps its claim", async () => {
   const h = await harness("unreachable")
   try {
-    h.setup.mockInput.pressKey("b", { ctrl: true })
-    h.setup.mockInput.pressKey("c")
+    pressLaunch(h.setup)
     await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
     const entry = h.options.manifest.entries[0]!
     h.options.transport.attachBehavior = "unreachable"
@@ -289,8 +287,7 @@ test("a lost transport that cannot be reached again leaves the screen but keeps 
 test("a lost transport that can be reached again is adopted and the Agent stays", async () => {
   const h = await harness("recovered")
   try {
-    h.setup.mockInput.pressKey("b", { ctrl: true })
-    h.setup.mockInput.pressKey("c")
+    pressLaunch(h.setup)
     await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
     const entry = h.options.manifest.entries[0]!
     const first = h.options.transport.started[0] as PtyTransport

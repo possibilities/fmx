@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
+import { launchAgent, launchAgentQuietly, pressLaunch } from "./fixtures/launch-keys.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -22,10 +23,10 @@ async function createMultiplexer(width: number, height: number) {
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
+    toastDurationMs: 1,
   })
-  multiplexer.start()
-  setup.mockInput.pressKey("b", { ctrl: true })
-  setup.mockInput.pressKey("c")
+  await multiplexer.start()
+  await launchAgentQuietly(setup)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
@@ -57,14 +58,17 @@ test("starts without an fx, hiding the tray and centering dimmed prefix actions"
     expect(divider.visible).toBe(false)
     expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 80, 24])
     expect(emptyState).toBeInstanceOf(TextRenderable)
-    expect([emptyState.x, emptyState.y, emptyState.width, emptyState.height]).toEqual([28, 11, 24, 2])
+    expect([emptyState.x, emptyState.y, emptyState.width, emptyState.height]).toEqual([28, 11, 24, 1])
     expect(rgb(emptyState.fg)).toEqual([80, 80, 80])
-    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
-    expect(setup.captureCharFrame()).toContain("prefix+l to prompt agent")
-    expect(setup.captureCharFrame()).not.toContain("ctrl+space+c")
+    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
+    expect(setup.captureCharFrame()).not.toContain("ctrl+space+l")
 
+    // The configured prefix drives the dialog the default one would.
     setup.mockInput.pressKey(" ", { ctrl: true })
-    setup.mockInput.pressKey("c")
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressEnter()
+    setup.mockInput.pressEnter()
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined)
     await setup.renderOnce()
 
     expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
@@ -102,8 +106,7 @@ test("paints the full owner frame when empty before and after the last Agent", a
     await setup.renderOnce()
     expectOwnerBackground([0, 0, 0, 255])
 
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
+    pressLaunch(setup)
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined)
     await waitForText(setup, "fake fx ready")
     const terminal = setup.renderer.root.findDescendantById("fx-1")
@@ -143,12 +146,12 @@ test("requires a second ctrl+c before the empty-state exit timeout", async () =>
 
     expect(done).toBe(false)
     expect(setup.captureCharFrame()).toContain("press ctrl+c again to exit")
-    expect(setup.captureCharFrame()).not.toContain("prefix+c to create agent")
+    expect(setup.captureCharFrame()).not.toContain("prefix+l to launch agent")
 
     await Bun.sleep(EXIT_CONFIRMATION_TIMEOUT_MS + 50)
     await setup.renderOnce()
     expect(done).toBe(false)
-    expect(setup.captureCharFrame()).toContain("prefix+c to create agent")
+    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
 
     setup.mockInput.pressKey("c", { ctrl: true })
     await setup.renderOnce()
@@ -234,8 +237,7 @@ test("toggles the tray with prefix+b and keeps it hidden across a new agent", as
     expect([content.x, content.width]).toEqual([0, 90])
 
     // A second agent does not bring the tray back on its own.
-    setup.mockInput.pressKey("b", { ctrl: true })
-    setup.mockInput.pressKey("c")
+    await launchAgent(setup, 2)
     await setup.renderOnce()
     expect(setup.renderer.root.findDescendantById("fx-2")).toBeDefined()
     expect(tray.visible).toBe(false)
@@ -262,9 +264,8 @@ test("restores a persisted hidden tray and reports each toggle", async () => {
     initialTrayHidden: true,
     onTrayHiddenChange: (hidden) => hiddenChanges.push(hidden),
   })
-  multiplexer.start()
-  setup.mockInput.pressKey("b", { ctrl: true })
-  setup.mockInput.pressKey("c")
+  await multiplexer.start()
+  await launchAgent(setup)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -399,9 +400,8 @@ test("restores a persisted width and reports changes on drag end", async () => {
     initialTrayWidth: 26,
     onTrayWidthChange: (width) => widthChanges.push(width),
   })
-  multiplexer.start()
-  setup.mockInput.pressKey("b", { ctrl: true })
-  setup.mockInput.pressKey("c")
+  await multiplexer.start()
+  await launchAgent(setup)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -429,9 +429,8 @@ test("clamps a stale persisted width to the current screen", async () => {
     keybindings: resolveKeybindings().keybindings,
     initialTrayWidth: 70,
   })
-  multiplexer.start()
-  setup.mockInput.pressKey("b", { ctrl: true })
-  setup.mockInput.pressKey("c")
+  await multiplexer.start()
+  await launchAgent(setup)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()

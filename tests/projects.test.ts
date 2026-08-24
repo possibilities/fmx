@@ -37,11 +37,17 @@ describe("expandTilde and tildeDisplay", () => {
 })
 
 describe("scanProjectRoots", () => {
+  /** A directory is a project only if it is inside a repository. */
+  async function repository(directory: string): Promise<string> {
+    await mkdir(join(directory, ".git"), { recursive: true })
+    return directory
+  }
+
   test("offers each root and its directories, skipping files and dotfiles", async () => {
     const home = await mkdtemp(join(tmpdir(), "fmx-projects-"))
-    const code = join(home, "code")
-    await mkdir(join(code, "fmx"), { recursive: true })
-    await mkdir(join(code, "alpha"), { recursive: true })
+    const code = await repository(join(home, "code"))
+    await repository(join(code, "fmx"))
+    await repository(join(code, "alpha"))
     await mkdir(join(code, ".hidden"), { recursive: true })
     await writeFile(join(code, "notes.md"), "", "utf8")
     await symlink(join(code, "alpha"), join(code, "linked"))
@@ -54,9 +60,31 @@ describe("scanProjectRoots", () => {
     ])
   })
 
+  test("offers a directory inside a repository that is not its root", async () => {
+    const home = await mkdtemp(join(tmpdir(), "fmx-projects-"))
+    const monorepo = await repository(join(home, "monorepo"))
+    const packages = join(monorepo, "packages")
+    await mkdir(join(packages, "api"), { recursive: true })
+
+    expect(scanProjectRoots(["~/monorepo/packages"], home)).toEqual([
+      packages,
+      join(packages, "api"),
+    ])
+  })
+
+  test("offers nothing from a root that is outside a repository", async () => {
+    const home = await mkdtemp(join(tmpdir(), "fmx-projects-"))
+    const code = join(home, "code")
+    await mkdir(join(code, "notes"), { recursive: true })
+    const tracked = await repository(join(code, "fmx"))
+
+    expect(scanProjectRoots(["~/code"], home)).toEqual([tracked])
+  })
+
   test("ignores a root that is not there and never repeats a directory", async () => {
     const home = await mkdtemp(join(tmpdir(), "fmx-projects-"))
-    await mkdir(join(home, "code", "fmx"), { recursive: true })
+    await repository(join(home, "code"))
+    await repository(join(home, "code", "fmx"))
 
     expect(scanProjectRoots(["~/code", "~/gone", "~/code"], home)).toEqual([
       join(home, "code"),

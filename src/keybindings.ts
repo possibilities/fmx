@@ -6,7 +6,6 @@ type KeysConfig = {
   prefix: string
   help: BindingConfig
   detach: BindingConfig
-  new_tab: BindingConfig
   launch: BindingConfig
   previous_tab: BindingConfig
   next_tab: BindingConfig
@@ -21,7 +20,6 @@ const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   prefix: "ctrl+b",
   help: "prefix+?",
   detach: "prefix+d",
-  new_tab: "prefix+c",
   launch: "prefix+l",
   previous_tab: "prefix+p",
   next_tab: "prefix+n",
@@ -36,7 +34,6 @@ const KEY_CONFIG_FIELDS = [
   "prefix",
   "help",
   "detach",
-  "new_tab",
   "launch",
   "previous_tab",
   "next_tab",
@@ -73,7 +70,6 @@ export type Keybindings = {
   prefixLabel: string
   help: ResolvedBinding[]
   detach: ResolvedBinding[]
-  new_tab: ResolvedBinding[]
   launch: ResolvedBinding[]
   previous_tab: ResolvedBinding[]
   next_tab: ResolvedBinding[]
@@ -190,7 +186,6 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
     prefixLabel: formatKeyCombo(prefix),
     help: [],
     detach: [],
-    new_tab: [],
     launch: [],
     previous_tab: [],
     next_tab: [],

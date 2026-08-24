@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { mkdir, mkdtemp } from "node:fs/promises"
+import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { initRepository, initRepositoryWithCommit } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
@@ -13,8 +14,11 @@ type Setup = Awaited<ReturnType<typeof createTestRenderer>>
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await mkdtemp(join(tmpdir(), "fmx-launch-"))
   const code = join(home, "code")
+  // Only a repository is a project, so every choice on the row is one. None
+  // has a commit yet, which is what leaves the Worktree row unavailable
+  // until a test gives one something to branch from.
   for (const name of ["agentlaunch", "fmx", "zulu"]) {
-    await mkdir(join(code, name), { recursive: true })
+    await initRepository(join(code, name))
   }
   return { home, code }
 }
@@ -30,18 +34,7 @@ function launcher(setup: Setup, home: string, code: string, roots = ["~/code"]):
   })
 }
 
-async function initRepository(directory: string): Promise<void> {
-  const git = (...args: string[]) =>
-    Bun.spawn(["git", "-C", directory, ...args], { stdout: "ignore", stderr: "ignore" }).exited
-  await git("init", "--quiet")
-  await git("config", "user.email", "fmx@example.invalid")
-  await git("config", "user.name", "fmx test")
-  await Bun.write(join(directory, "README.md"), "test\n")
-  await git("add", "README.md")
-  await git("commit", "--quiet", "-m", "initial")
-}
-
-/** Repository checks are subprocesses, so a row that depends on one settles a
+/** Availability checks are subprocesses, so a row that depends on one settles a
  * few frames after the keystroke that asked for it. */
 async function waitForFrame(setup: Setup, text: string): Promise<string> {
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -341,7 +334,7 @@ test("leaves the dialog on ctrl+c from either layer", async () => {
 
 test("offers the worktree toggle where there is a commit to branch from", async () => {
   const { home, code } = await workspace()
-  await initRepository(join(code, "fmx"))
+  await initRepositoryWithCommit(join(code, "fmx"))
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
   const multiplexer = launcher(setup, home, code)
 
@@ -362,7 +355,7 @@ test("offers the worktree toggle where there is a commit to branch from", async 
   }
 })
 
-test("says so on a project no worktree can be cut from", async () => {
+test("says so on a project with nothing to branch from", async () => {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
   const multiplexer = launcher(setup, home, code)
@@ -374,7 +367,7 @@ test("says so on a project no worktree can be cut from", async () => {
     setup.mockInput.pressKey("z")
     const frame = await waitForFrame(setup, "worktree  unavailable")
     expect(frame).toContain("project   ~/code/zulu")
-    expect(frame).toContain("worktree  unavailable — not a repository")
+    expect(frame).toContain("worktree  unavailable — no commit to branch from")
 
     // And refuses to turn on, rather than failing after the launch is sent.
     setup.mockInput.pressTab()

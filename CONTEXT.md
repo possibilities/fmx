@@ -168,14 +168,15 @@ _Avoid_: sidebar, panel.
 **Session list** — the tray's tree of running agents: project, then
 branch, then one row per agent carrying its status icon and its name — the
 native session name once fx reports one, the short session id until then.
+An agent whose Git context git has no answer for hangs straight off its
+project, one rung shallower, rather than under a stand-in branch.
 Depth is carried by indentation alone, with no connecting glyphs.
 Clicking an agent row switches to that agent; project and branch rows are
 not selectable. The switch happens on mouse-down and tray text itself is
 not selectable, so pointer navigation never waits for release. Project and
-branch labels are the Ramp's foreground (a virtual branch its secondary
-step, italic) and agent names its dim step; the status icon carries its
-state by shape and weight, never hue — blocked bold in the foreground, done
-in the accent step, the rest dim. Before the host
+branch labels are the Ramp's foreground and agent names its dim step; the
+status icon carries its state by shape and weight, never hue — blocked bold
+in the foreground, done in the accent step, the rest dim. Before the host
 palette answers, names are the terminal's own ANSI gray, and — like the
 selected-row fill and the divider — what was drawn at first paint stays
 through a late initial answer. The selected agent's stable Agent identity is
@@ -195,10 +196,11 @@ them, so two faint backgrounds never have to be told apart.
 _Avoid_: selection, breadcrumb.
 
 **Project root** — a directory named by `project_roots` whose children are
-offered as projects, along with the root itself. Roots are scanned one level
-deep and never recursively; a root that is not on this machine contributes
-nothing. A Home must configure at least one before its TUI can start; its first
-root is fmx's working directory and the default for a direct new Agent.
+offered as Projects, along with the root itself. Roots are scanned one level
+deep and never recursively; a root that is not on this machine, or not inside
+a repository, contributes nothing. A Home must configure at least one before
+its TUI can start; its first root is fmx's working directory and what the
+launch dialog opens on when no agent is active.
 _Avoid_: workspace root, search path, scan directory.
 
 **Launch dialog** — the modal that gathers what an agent is started with
@@ -231,8 +233,16 @@ _Avoid_: input, textarea, prompt field.
 project has checked out. Its branch and its directory share one name,
 `<project>-<ordinal>`, and the ordinal counts against the main repository, so
 launching from inside `fmx-1` produces `fmx-2` rather than `fmx-1-1`. A
-project with no commit to branch from cannot offer one.
+Project with no commit to branch from cannot offer one, which is the only
+thing the launch dialog's Worktree row has left to ask.
 _Avoid_: branch, checkout, clone.
+
+**Project** — a directory an agent can be started in, which is to say a
+directory inside a git repository. A Project root and its children qualify or
+they are not offered, a named directory that does not is refused, and a
+repository with nothing committed yet is a Project that cannot offer a
+Worktree.
+_Avoid_: workspace, folder, tracked directory.
 
 **Project picker** — the filterable list the launch dialog opens on space.
 Typing filters by subsequence, so `agl` finds `agentlaunch`; enter applies the
@@ -246,10 +256,11 @@ orders the project picker and is never drawn in it.
 _Avoid_: frecency, history, usage.
 
 **Git context** — the worktree root and branch fmx reads for an agent's
-directory, because fx never reports where it is working. An agent outside a
-repository has none and nests under a virtual `(untracked)` branch in the
-session list.
-_Avoid_: repo info, workspace.
+directory, because fx never reports where it is working. Every launch is held
+to one, so an agent without a context is a checkout that went away under a
+running one: its Session list row hangs straight off its project, with no rung
+standing in for the branch that is not there.
+_Avoid_: repo info, workspace, untracked.
 
 **Agent record** — what fx has reported about one pane: state, attention, and
 label folded from Agent-socket frames, plus the eager ADE session identity when

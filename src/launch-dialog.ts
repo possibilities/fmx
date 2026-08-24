@@ -49,8 +49,8 @@ type PickerChoice = {
 const DIALOG_CHROME_HEIGHT = ROWS.length + 1
 
 const PICKER_HINT = "type to filter"
-const EMPTY = "no projects found — set project_roots in the config"
-const WORKTREE_UNAVAILABLE = "unavailable — not a repository"
+const EMPTY = "no repositories found — set project_roots in the config"
+const WORKTREE_UNAVAILABLE = "unavailable — no commit to branch from"
 
 export type LaunchRequest = {
   directory: string
@@ -269,8 +269,8 @@ export class LaunchDialog {
     this.projects.push(choice)
   }
 
-  /** Change rows in place; `worktree` waits for the repository check the way
-   * a `y` on the row does, so it can still come back as `false`. */
+  /** Change rows in place; `worktree` waits for the availability check the
+   * way a `y` on the row does, so it can still come back as `false`. */
   apply(fields: LaunchPrefill): void {
     if (fields.directory !== undefined) {
       this.offerProject({ directory: fields.directory, display: fields.directory, launches: 0 })
@@ -327,7 +327,7 @@ export class LaunchDialog {
   }
 
   /** The answer to an earlier `onProjectChange`. A stale answer is dropped, so
-   * a slow repository check cannot overwrite a newer selection. */
+   * a slow availability check cannot overwrite a newer selection. */
   setWorktreeAvailability(directory: string, available: boolean): void {
     if (this.projects[this.selected]?.directory !== directory) return
     this.worktreeAvailable = available
