@@ -214,7 +214,10 @@ async function main(): Promise<void> {
         Math.max(1, process.stdout.columns || createdRenderer.width),
         Math.max(1, process.stdout.rows || createdRenderer.height),
       )
-      process.stdout.write(clearToUnusedSpace(runtimePalette))
+      // The clear homes the physical cursor before OpenTUI's resized frame is
+      // ready. Keep that intermediate position invisible; the frame starts by
+      // concealing the cursor itself and restores its own final cursor state.
+      process.stdout.write(clearToUnusedSpace(runtimePalette, { concealCursor: true }))
     }
     process.stdout.on("resize", runtimeResizeHandler)
     // A live host-theme change updates the shared frame through Multiplexer;

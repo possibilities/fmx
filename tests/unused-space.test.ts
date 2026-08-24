@@ -44,6 +44,12 @@ test("the clear paints a flat field, homes the cursor, and resets the drawing co
   )
 })
 
+test("a resize clear conceals the cursor before homing it", () => {
+  expect(clearToUnusedSpace(hostPalette("#202830"), { concealCursor: true })).toBe(
+    "\x1b[?25l\x1b[48;2;44;52;59m\x1b[2J\x1b[H\x1b[0m",
+  )
+})
+
 test("the pending-palette paint covers only the sizing-owner rectangle with the terminal default", () => {
   const paint = paintSizingOwnerDefaultBackground(3, 2)
   expect(paint).toBe("\x1b[49m\x1b[1;1H\x1b[3X\x1b[2;1H\x1b[3X\x1b[H\x1b[0m")

@@ -12,12 +12,16 @@ export function unusedSpaceBackground(colors: TerminalColors | null): string {
 }
 
 /** Paint every physical Client before OpenTUI repaints only the owner-sized frame. */
-export function clearToUnusedSpace(colors: TerminalColors | null): string {
+export function clearToUnusedSpace(
+  colors: TerminalColors | null,
+  options: { concealCursor?: boolean } = {},
+): string {
   const background = unusedSpaceBackground(colors)
   const red = parseInt(background.slice(1, 3), 16)
   const green = parseInt(background.slice(3, 5), 16)
   const blue = parseInt(background.slice(5, 7), 16)
-  return `\x1b[48;2;${red};${green};${blue}m\x1b[2J\x1b[H\x1b[0m`
+  const concealCursor = options.concealCursor ? "\x1b[?25l" : ""
+  return `${concealCursor}\x1b[48;2;${red};${green};${blue}m\x1b[2J\x1b[H\x1b[0m`
 }
 
 /**

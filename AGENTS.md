@@ -126,9 +126,11 @@
   that interaction from painting one last frame at the previous owner's size.
   The clear is what leaves genuinely blank unused space on a larger observing
   Client when a smaller Client becomes sizing owner; do not replace it with a
-  rectangle sized to the owner. Once the startup palette choice has
-  settled, OpenTUI's renderer background must remain the Ramp's opaque
-  host-background step: a transparent renderer lets the unused clear show
+  rectangle sized to the owner. Conceal the cursor in that clear before it is
+  homed; OpenTUI's next frame restores the cursor only after the new layout is
+  drawn, so the corner cannot flash between them. Once the startup palette
+  choice has settled, OpenTUI's renderer background must remain the Ramp's
+  opaque host-background step: a transparent renderer lets the unused clear show
   through around the empty-state text and retains cells from a tray or terminal
   that just disappeared. The one exception is a first frame whose palette query
   is still pending: `index.ts` paints exactly the owner rectangle with the

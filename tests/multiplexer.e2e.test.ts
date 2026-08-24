@@ -268,7 +268,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
       // Passive mouse motion returns ownership to the remembered 100x24 size.
       // OpenTUI asks for all-motion SGR tracking, so merely moving over an
       // observing Client behaves like tmux: the 70x18 Client receives the same
-      // larger frame and crops its unreachable right and bottom.
+      // larger frame and crops its unreachable right and bottom. The clear
+      // homes the cursor, so it must conceal it until the resized frame has
+      // restored the cursor at its real UI position.
+      const mouseTakeoverOffset = firstOutput.output.length
       first.terminal?.write(new TextEncoder().encode("\x1b[<35;10;5M"))
       await waitUntil(
         async () => {
@@ -277,6 +280,11 @@ test.skipIf(!PTY_TEST_ENABLED)(
         },
         5_000,
         () => firstOutput.output,
+      )
+      await waitUntil(
+        () => firstOutput.output.slice(mouseTakeoverOffset).includes(`\x1b[?25l${unusedClear}`),
+        5_000,
+        () => firstOutput.output.slice(mouseTakeoverOffset),
       )
 
       // Put the second Client back in ownership so focus gain can prove it
