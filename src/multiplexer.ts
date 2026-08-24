@@ -183,6 +183,9 @@ type MultiplexerOptions = {
   controlSocketPath?: string
   /** How long each lifecycle Toast remains; overridden only by renderer tests. */
   toastDurationMs?: number
+  /** The first host palette query is still pending; index.ts has painted the
+   * sizing-owner frame with the terminal's native default background. */
+  initialPalettePending?: boolean
 }
 
 /** Default states `agent wait` waits for: any that needs someone. */
@@ -588,8 +591,12 @@ export class Multiplexer {
     // owner-sized frame. A transparent renderer would leave that clear visible
     // anywhere no child draws — around the splash text on first paint and in
     // stale tray cells after the last Agent disappears. The renderer's opaque
-    // base is the shared frame itself.
-    this.renderer.setBackgroundColor(RAMP_FALLBACK.background)
+    // base is therefore the shared frame itself once the palette choice has
+    // settled. While an initial query is pending, index.ts paints the exact
+    // owner rectangle with SGR 49 instead of exposing this guessed RGB.
+    if (!options.initialPalettePending) {
+      this.renderer.setBackgroundColor(RAMP_FALLBACK.background)
+    }
     this.keybindings = options.keybindings
     this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
     this.trayHidden = options.initialTrayHidden ?? false

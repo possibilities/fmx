@@ -34,7 +34,7 @@ import {
   waitForRuntimeBootstrap,
 } from "./runtime-session.ts"
 import { runTerminalClient } from "./terminal-client.ts"
-import { clearToUnusedSpace } from "./unused-space.ts"
+import { clearToUnusedSpace, paintSizingOwnerDefaultBackground } from "./unused-space.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PIN,
@@ -236,6 +236,7 @@ async function main(): Promise<void> {
       initialTrayHidden: persistedState.trayHidden,
       initialActiveAgentId: persistedState.activeAgentId,
       initialProjectLaunches: persistedState.projectLaunches,
+      initialPalettePending: firstPalette.kind === "pending",
       onProjectLaunch: (launches) => {
         persistedState.projectLaunches = launches
         persistState()
@@ -278,6 +279,12 @@ async function main(): Promise<void> {
       },
     })
     app.lockStartupChrome(firstPalette.kind === "settled" ? firstPalette.colors : null)
+    if (firstPalette.kind === "pending") {
+      // Do not put a guessed opaque RGB on screen while the terminal is still
+      // answering. SGR 49 paints its exact native background, and row-bounded
+      // ECH keeps a larger observing Client's unused right and bottom margins.
+      process.stdout.write(paintSizingOwnerDefaultBackground(renderer.width, renderer.height))
+    }
 
     for (const [signal, exitCode] of [
       ["SIGHUP", 129],
@@ -310,7 +317,11 @@ async function main(): Promise<void> {
     const hostPalette = await Promise.race([paletteDetection, app.waitUntilDone().then(() => null)])
     if (hostPalette) {
       runtimePalette = hostPalette
-      process.stdout.write(clearToUnusedSpace(hostPalette))
+      // The pending frame already has the terminal's native background. Make
+      // that same detected color OpenTUI's opaque base without first clearing
+      // the owner to the lighter unused-field step, which would visibly flash
+      // until the renderer's next frame. Future resizes use runtimePalette;
+      // genuine later theme changes still repaint every physical margin.
       app.setHostPalette(hostPalette)
     }
     app.unlockStartupChrome()

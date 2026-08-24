@@ -19,3 +19,23 @@ export function clearToUnusedSpace(colors: TerminalColors | null): string {
   const blue = parseInt(background.slice(5, 7), 16)
   return `\x1b[48;2;${red};${green};${blue}m\x1b[2J\x1b[H\x1b[0m`
 }
+
+/**
+ * Paint only the sizing owner's frame with the terminal's native default
+ * background while its RGB value is still being queried. ECH is deliberate:
+ * unlike a line erase, it stops at the owner's right edge on a larger Client.
+ */
+export function paintSizingOwnerDefaultBackground(cols: number, rows: number): string {
+  const width = terminalDimension(cols)
+  const height = terminalDimension(rows)
+  const eraseRows = Array.from(
+    { length: height },
+    (_, row) => `\x1b[${row + 1};1H\x1b[${width}X`,
+  ).join("")
+  return `\x1b[49m${eraseRows}\x1b[H\x1b[0m`
+}
+
+function terminalDimension(value: number): number {
+  if (!Number.isFinite(value)) return 1
+  return Math.max(1, Math.min(0xffff, Math.trunc(value)))
+}

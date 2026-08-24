@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test"
 import type { TerminalColors } from "@opentui/core"
 import { hostRamp } from "../src/host-palette.ts"
-import { clearToUnusedSpace, unusedSpaceBackground } from "../src/unused-space.ts"
+import {
+  clearToUnusedSpace,
+  paintSizingOwnerDefaultBackground,
+  unusedSpaceBackground,
+} from "../src/unused-space.ts"
 
 test("unused space lifts pure and near-black canvases below every raised surface", () => {
   const black = hostPalette("#000000", "#ffffff")
@@ -38,6 +42,13 @@ test("the clear paints a flat field, homes the cursor, and resets the drawing co
   expect(clearToUnusedSpace(hostPalette("#202830"))).toBe(
     "\x1b[48;2;44;52;59m\x1b[2J\x1b[H\x1b[0m",
   )
+})
+
+test("the pending-palette paint covers only the sizing-owner rectangle with the terminal default", () => {
+  const paint = paintSizingOwnerDefaultBackground(3, 2)
+  expect(paint).toBe("\x1b[49m\x1b[1;1H\x1b[3X\x1b[2;1H\x1b[3X\x1b[H\x1b[0m")
+  expect(paint).not.toContain("\x1b[K")
+  expect(paint).not.toContain("\x1b[2J")
 })
 
 function hostPalette(background: string, foreground: string | null = null): TerminalColors {

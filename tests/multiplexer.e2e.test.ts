@@ -13,6 +13,7 @@ import { ControlSocket } from "../src/control-socket.ts"
 import { loadManifest } from "../src/agent-manifest.ts"
 import { TRAY_DEFAULT_WIDTH } from "../src/multiplexer.ts"
 import { LineAssembler } from "../src/socket-frames.ts"
+import { paintSizingOwnerDefaultBackground } from "../src/unused-space.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
 
@@ -892,8 +893,22 @@ test.skipIf(!PTY_TEST_ENABLED)(
     let sendHostReply: (reply: string) => void = (reply) => {
       pendingReplies.push(reply)
     }
+    let delayedFirstReply = true
+    let outputBeforePaletteReply = ""
+    const firstPaletteReply = Promise.withResolvers<void>()
     const respondToPaletteQueries = createHostPaletteResponder(
-      (reply) => sendHostReply(reply),
+      (reply) => {
+        if (!delayedFirstReply) {
+          sendHostReply(reply)
+          return
+        }
+        delayedFirstReply = false
+        setTimeout(() => {
+          outputBeforePaletteReply = output
+          sendHostReply(reply)
+          firstPaletteReply.resolve()
+        }, 80)
+      },
       () => hostBackground,
     )
     const child = Bun.spawn(FMX_COMMAND, {
@@ -926,6 +941,12 @@ test.skipIf(!PTY_TEST_ENABLED)(
     for (const reply of pendingReplies) sendHostReply(reply)
 
     try {
+      await withTimeout(firstPaletteReply.promise, 2_000, "fmx did not query the host palette")
+      expect(outputBeforePaletteReply).toContain("prefix+c")
+      expect(outputBeforePaletteReply).toContain(paintSizingOwnerDefaultBackground(100, 24))
+      expect(hasRgbSgr(outputBeforePaletteReply, "background", [28, 28, 28])).toBe(false)
+      const paletteTransitionOffset = outputBeforePaletteReply.length
+
       await waitUntil(() => output.includes("prefix+c"), 8_000, () => output)
       const initialEmptyStateCount = countOccurrences(output, "prefix+c")
       child.terminal?.write(Uint8Array.of(control("b"), "c".charCodeAt(0)))
@@ -936,6 +957,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       )
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(lifecycle).toContain("rgb:1212/3434/5656")
+      expect(output.slice(paletteTransitionOffset)).not.toContain("\x1b[2J")
 
       hostBackground = "#eeeeee"
       child.terminal?.write(encoder.encode("\u001b[?997;2n"))
