@@ -34,7 +34,11 @@ import {
   waitForRuntimeBootstrap,
 } from "./runtime-session.ts"
 import { runTerminalClient } from "./terminal-client.ts"
-import { clearToUnusedSpace, paintSizingOwnerDefaultBackground } from "./unused-space.ts"
+import {
+  beginSynchronizedResizeClear,
+  clearToUnusedSpace,
+  paintSizingOwnerDefaultBackground,
+} from "./unused-space.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PIN,
@@ -214,10 +218,9 @@ async function main(): Promise<void> {
         Math.max(1, process.stdout.columns || createdRenderer.width),
         Math.max(1, process.stdout.rows || createdRenderer.height),
       )
-      // The clear homes the physical cursor before OpenTUI's resized frame is
-      // ready. Keep that intermediate position invisible; the frame starts by
-      // concealing the cursor itself and restores its own final cursor state.
-      process.stdout.write(clearToUnusedSpace(runtimePalette, { concealCursor: true }))
+      // Keep the clear and the resized frame in one synchronized terminal
+      // update. OpenTUI's frame closes the mode after restoring its cursor.
+      process.stdout.write(beginSynchronizedResizeClear(runtimePalette))
     }
     process.stdout.on("resize", runtimeResizeHandler)
     // A live host-theme change updates the shared frame through Multiplexer;

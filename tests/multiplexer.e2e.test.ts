@@ -193,6 +193,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       )
     const clear = "\u001b[2J\u001b[H"
     const unusedClear = `\u001b[48;2;41;41;41m${clear}\u001b[0m`
+    const atomicResizeStart = `\u001b[?2026h\u001b[?25l${unusedClear}\u001b[?2026h`
 
     const firstOutput = { output: "" }
     const first = spawnClient(firstOutput, 100, 24)
@@ -282,7 +283,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => firstOutput.output,
       )
       await waitUntil(
-        () => firstOutput.output.slice(mouseTakeoverOffset).includes(`\x1b[?25l${unusedClear}`),
+        () => firstOutput.output.slice(mouseTakeoverOffset).includes(atomicResizeStart),
         5_000,
         () => firstOutput.output.slice(mouseTakeoverOffset),
       )

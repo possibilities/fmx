@@ -25,6 +25,15 @@ export function clearToUnusedSpace(
 }
 
 /**
+ * Start one synchronized terminal update with the physical clear. OpenTUI's
+ * immediately requested frame starts the same mode again, then its ordinary
+ * synchronized-output end marker publishes the clear and resized UI together.
+ */
+export function beginSynchronizedResizeClear(colors: TerminalColors | null): string {
+  return `\x1b[?2026h${clearToUnusedSpace(colors, { concealCursor: true })}`
+}
+
+/**
  * Paint only the sizing owner's frame with the terminal's native default
  * background while its RGB value is still being queried. ECH is deliberate:
  * unlike a line erase, it stops at the owner's right edge on a larger Client.

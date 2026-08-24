@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import type { TerminalColors } from "@opentui/core"
 import { hostRamp } from "../src/host-palette.ts"
 import {
+  beginSynchronizedResizeClear,
   clearToUnusedSpace,
   paintSizingOwnerDefaultBackground,
   unusedSpaceBackground,
@@ -47,6 +48,12 @@ test("the clear paints a flat field, homes the cursor, and resets the drawing co
 test("a resize clear conceals the cursor before homing it", () => {
   expect(clearToUnusedSpace(hostPalette("#202830"), { concealCursor: true })).toBe(
     "\x1b[?25l\x1b[48;2;44;52;59m\x1b[2J\x1b[H\x1b[0m",
+  )
+})
+
+test("a resize clear joins the synchronized update the next OpenTUI frame closes", () => {
+  expect(beginSynchronizedResizeClear(hostPalette("#202830"))).toBe(
+    "\x1b[?2026h\x1b[?25l\x1b[48;2;44;52;59m\x1b[2J\x1b[H\x1b[0m",
   )
 })
 
