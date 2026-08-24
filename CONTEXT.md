@@ -245,9 +245,10 @@ unacknowledged — which is the only difference between the `✓` and `○` icon
 _Avoid_: read, acknowledged, unread.
 
 **Session name** — the native display name fx persists for a session and
-changes through `/rename`. Fx may infer it from the first admitted prompt and
-reports committed changes over ADE as `SessionMetadataChanged`; fmx only reads
-that authority, shows the name, and uses exact matches as control targets.
+changes through `/rename`. Fx may infer it from the first admitted prompt, in
+which case the name is a lowercase hyphenated slug, and reports committed
+changes over ADE as `SessionMetadataChanged`; fmx only reads that authority,
+shows the name, and uses exact matches as control targets.
 Duplicate names remain ambiguous. The Fx storage and event schema call the
 field `title`.
 _Avoid_: fmx name, label.
