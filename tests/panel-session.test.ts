@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { PanelDefinition } from "../src/config.ts"
+import type { PanelDefinition } from "../src/panels.ts"
 import {
   CompanionPanelSessions,
   panelDefinitionFingerprint,
@@ -42,7 +42,73 @@ test("persistent Tool panel identity follows Home, Agent, id, and argv but not p
   expect(panelDefinitionFingerprint(definition({ label: "Changes" }))).toBe(identity.fingerprint)
   expect(panelDefinitionFingerprint(definition({ command: ["hunk", "diff"] }))).not.toBe(identity.fingerprint)
   expect(panelDefinitionFingerprint(definition({ id: "tests" }))).not.toBe(identity.fingerprint)
+  // The theme is why the effective argv differs from `command`, so a tool fmx
+  // themes is a different tool from the same tool unthemed.
+  expect(panelDefinitionFingerprint(definition({ theme: "fmx" }))).not.toBe(identity.fingerprint)
   expect(parsePanelSessionName("fmxp-not-ours")).toBeNull()
+})
+
+test("an fmx-themed tool is created with the theme flags and the Ramp, and neither reaches its identity", async () => {
+  const panel = definition({ theme: "fmx" })
+  const identity = panelSessionIdentity(HOME, AGENT, panel)
+  const sessions = new Map<string, SessionEntry>()
+  let created: { command: string[]; env: Record<string, string | undefined> } | null = null
+  const base = fakeSpawner(sessions, [])
+  const spawner: Spawner = async (args, options) => {
+    if (args[0] !== "create") return base(args, options)
+    created = { command: args.slice(args.indexOf("--") + 1), env: options?.env ?? {} }
+    sessions.set(identity.name, live(identity.name, identity.labels, created.command))
+    return result({ ok: true, name: identity.name, socketPath: "/tmp/fmx-panel-themed.sock" })
+  }
+  const companion = new CompanionCommand("/tmp/fmx-panel-themed", {}, spawner)
+  const controller = new CompanionPanelSessions(companion, HOME, null, [panel], {
+    parentEnvironment: {},
+    theme: { extensionPath: "/tmp/fmx-1/hunk-theme.js", ramp: () => '{"background":"#0d1117"}' },
+  })
+
+  await controller.open(panel, { agentId: AGENT, displayId: 3, cwd: "/work" }, { cols: 80, rows: 24 }).catch(() => {})
+  expect(created).not.toBeNull()
+  expect(created!.command).toEqual([
+    "hunk",
+    "diff",
+    "--watch",
+    "--extension",
+    "/tmp/fmx-1/hunk-theme.js",
+    "--theme",
+    "fmx",
+    "--transparent-bg",
+  ])
+  expect(created!.env.FMX_RAMP).toBe('{"background":"#0d1117"}')
+  // The session's name carries the theme's name and nothing volatile: neither
+  // the extension's path nor the host's colors may move a tool's identity.
+  expect(identity.name).not.toContain("hunk-theme")
+  expect(panelSessionIdentity(HOME, AGENT, panel).fingerprint).toBe(identity.fingerprint)
+  controller.close()
+})
+
+test("a tool with no theme is launched exactly as defined, with no Ramp in its environment", async () => {
+  const panel = definition()
+  const identity = panelSessionIdentity(HOME, AGENT, panel)
+  const sessions = new Map<string, SessionEntry>()
+  let created: { command: string[]; env: Record<string, string | undefined> } | null = null
+  const base = fakeSpawner(sessions, [])
+  const spawner: Spawner = async (args, options) => {
+    if (args[0] !== "create") return base(args, options)
+    created = { command: args.slice(args.indexOf("--") + 1), env: options?.env ?? {} }
+    sessions.set(identity.name, live(identity.name, identity.labels, created.command))
+    return result({ ok: true, name: identity.name, socketPath: "/tmp/fmx-panel-plain.sock" })
+  }
+  const companion = new CompanionCommand("/tmp/fmx-panel-plain", {}, spawner)
+  const controller = new CompanionPanelSessions(companion, HOME, null, [panel], {
+    parentEnvironment: { FMX_RAMP: "an older fmx's colors" },
+    theme: { extensionPath: "/tmp/fmx-1/hunk-theme.js", ramp: () => '{"background":"#0d1117"}' },
+  })
+
+  await controller.open(panel, { agentId: AGENT, displayId: 3, cwd: "/work" }, { cols: 80, rows: 24 }).catch(() => {})
+  expect(created).not.toBeNull()
+  expect(created!.command).toEqual(["hunk", "diff", "--watch"])
+  expect(created!.env.FMX_RAMP).toBeUndefined()
+  controller.close()
 })
 
 test("reconciliation keeps exact sessions, removes stale owned ones, and leaves label impostors alone", async () => {

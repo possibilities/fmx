@@ -106,13 +106,31 @@ identical every time, and say nothing about fx.
 _Avoid_: message, packet, event.
 
 **Tools panel** — the resizable terminal dock to the right of the active
-Agent. Its configured terminal tools run in that Agent's directory and
-identity, switch context with it, and appear as a rule tab when more than one
-is available. The dock starts hidden, remembers its visibility,
-width, and selected tool, and does not exist when no configured tool is
-available. Persistent tools are owned by the Companion across Runtime
-lifetimes; non-persistent tools are recreated naturally with the Runtime.
-_Avoid_: tool panel, right-hand panel, utility pane, inspector, global panel.
+Agent. Its terminal tools run in that Agent's directory and identity, switch
+context with it, and appear as a rule tab when more than one is available. The
+dock starts hidden, remembers its visibility, width, and selected tool, and
+does not exist when no tool is available. Persistent tools are owned by the
+Companion across Runtime lifetimes; non-persistent tools are recreated
+naturally with the Runtime. The tools are fmx's, not the human's: there is no
+`[[panels]]` table, because a tool fmx ships is one it can theme, flag, and
+version with itself.
+_Avoid_: tool panel, right-hand panel, utility pane, inspector, global panel,
+configured tool.
+
+**Diff panel** — the Tools panel's one tool today: hunk over the Agent's
+working tree, offered only where hunk resolves. fmx owns everything about how
+it looks — it is launched with an fmx-shipped Hunk theme extension and the
+flags that select it — and nothing about how the human's own hunk behaves:
+`~/.config/hunk/` is neither read nor written.
+_Avoid_: changes panel, hunk panel, review pane.
+
+**Hunk theme extension** — the JavaScript fmx writes to its own private
+directory on every start and hands hunk with `--extension`. Inside hunk it
+reads the Ramp out of `FMX_RAMP` and registers one theme, `fmx`. It is a
+file rather than configuration because fmx is a single binary and hunk imports
+an extension by path; it is rewritten every start so fmx stays the sole author
+of its content.
+_Avoid_: hunk plugin, theme file, hunk config.
 
 **Rule tab** — the Tools panel's two-row switcher: tool labels over a hairline,
 the selected label bold in the foreground with the hairline drawn heavy beneath
@@ -131,7 +149,9 @@ A host that answers no color query gets fx's dark grays and those two derived
 fills exactly. Two hues survive it, each with one job: focus, the host's
 blue, on the border of a surface that takes keys and on the caret and
 cursor; error, the host's red, on the border of a surface that reports a
-failure. A state is a glyph and a weight, never a hue.
+failure. A state is a glyph and a weight, never a hue. Inside the Diff
+panel two more hues exist under the same law, added and removed, each
+meaning exactly one thing.
 _Avoid_: theme, palette (that is the host's answer), modal colors.
 
 **Toast** — a transient, bottom-center notice drawn over the active surface:

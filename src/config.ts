@@ -11,24 +11,10 @@ type LoadedConfig = {
   projectRoots: string[]
   /** Where a launch's new worktree is checked out. */
   worktreeRoot: string
-  /** Ordered terminal tools available in the active agent's tools panel. */
-  panels: PanelDefinition[]
   diagnostics: string[]
 }
 
-/** One configured terminal tool. Its id is stable state and Companion identity;
- * the label is presentation alone. */
-export type PanelDefinition = {
-  id: string
-  label: string
-  /** argv, the executable first. Commands are never evaluated by a shell. */
-  command: string[]
-  /** Whether the Companion keeps the tool when it is not attached to fmx. */
-  persistent: boolean
-}
-
-const KNOWN_SECTIONS = new Set(["keys", "project_roots", "worktree_root", "panels"])
-const PANEL_ID = /^[a-z0-9][a-z0-9-]{0,31}$/u
+const KNOWN_SECTIONS = new Set(["keys", "project_roots", "worktree_root"])
 
 /** Unlike the project roots, this one has a usable default: it names fmx's
  * own directory rather than guessing where anybody keeps their work. */
@@ -75,64 +61,8 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
     keybindings: resolved.keybindings,
     projectRoots: resolveProjectRoots(document.project_roots, diagnostics),
     worktreeRoot: resolveWorktreeRoot(document.worktree_root, diagnostics),
-    panels: resolvePanels(document.panels, diagnostics),
     diagnostics,
   }
-}
-
-export function isPanelId(value: unknown): value is string {
-  return typeof value === "string" && PANEL_ID.test(value)
-}
-
-function resolvePanels(raw: unknown, diagnostics: string[]): PanelDefinition[] {
-  if (raw === undefined) return []
-  if (!Array.isArray(raw)) {
-    diagnostics.push("invalid [[panels]]: must be an array of tables; ignoring it")
-    return []
-  }
-
-  const panels: PanelDefinition[] = []
-  const ids = new Set<string>()
-  for (const [index, entry] of raw.entries()) {
-    const name = `panels[${index}]`
-    if (!isRecord(entry)) {
-      diagnostics.push(`invalid ${name}: must be a table; ignoring entry`)
-      continue
-    }
-    if (!isPanelId(entry.id)) {
-      diagnostics.push(`invalid ${name}.id: use 1-32 lowercase letters, digits, or hyphens; ignoring entry`)
-      continue
-    }
-    if (ids.has(entry.id)) {
-      diagnostics.push(`duplicate panel id ${JSON.stringify(entry.id)}; ignoring later entry`)
-      continue
-    }
-    if (
-      !Array.isArray(entry.command) ||
-      entry.command.length === 0 ||
-      !entry.command.every((part) => typeof part === "string") ||
-      entry.command[0]?.trim() === ""
-    ) {
-      diagnostics.push(`invalid ${name}.command: must be a non-empty argv array; ignoring entry`)
-      continue
-    }
-    const label = entry.label === undefined ? entry.id : entry.label
-    if (typeof label !== "string" || label.trim() === "") {
-      diagnostics.push(`invalid ${name}.label: must be a non-empty string; ignoring entry`)
-      continue
-    }
-    if (entry.persistent !== undefined && typeof entry.persistent !== "boolean") {
-      diagnostics.push(`invalid ${name}.persistent: must be true or false; using true`)
-    }
-    ids.add(entry.id)
-    panels.push({
-      id: entry.id,
-      label: label.trim(),
-      command: [...entry.command],
-      persistent: typeof entry.persistent === "boolean" ? entry.persistent : true,
-    })
-  }
-  return panels
 }
 
 /**
@@ -171,7 +101,6 @@ function defaultConfig(...diagnostics: string[]): LoadedConfig {
     keybindings: resolveKeybindings().keybindings,
     projectRoots: [],
     worktreeRoot: DEFAULT_WORKTREE_ROOT,
-    panels: [],
     diagnostics,
   }
 }

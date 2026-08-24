@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import { unlink } from "node:fs/promises"
 import { connectCompanionTerminal, COMPANION_SCROLLBACK_LINES } from "./companion-transport.ts"
-import { isPanelId, type PanelDefinition } from "./config.ts"
+import { HUNK_THEME_ID } from "./hunk-theme.ts"
+import { isPanelId, type PanelDefinition } from "./panels.ts"
 import { createPanelEnvironment } from "./fx-environment.ts"
 import { OWNER_LABEL } from "./agent-reconcile.ts"
 import {
@@ -55,6 +56,18 @@ type PanelSessionOptions = {
   parentEnvironment?: NodeJS.ProcessEnv
   scrollbackLines?: number
   client?: string
+  /**
+   * What an fmx-themed tool is launched with: where the theme extension was
+   * materialized, and the Ramp to paint it from, read at the moment the tool
+   * starts. Both are volatile — the Ramp especially — which is why neither
+   * reaches the fingerprint and only the theme's name does.
+   */
+  theme?: PanelTheme | null
+}
+
+export type PanelTheme = {
+  extensionPath: string
+  ramp: () => string
 }
 
 type Retirement = {
@@ -88,6 +101,8 @@ export class CompanionPanelSessions implements PanelSessionController {
 
   async open(definition: PanelDefinition, context: PanelContext, size: TerminalSize): Promise<TerminalTransport> {
     this.assertActive(context.agentId)
+    const themed = this.themed(definition)
+    const command = themed?.command ?? definition.command
     const environment = stringEnvironment(
       createPanelEnvironment(
         this.options.parentEnvironment ?? process.env,
@@ -95,10 +110,11 @@ export class CompanionPanelSessions implements PanelSessionController {
         context.cwd,
         this.controlSocketPath,
         definition.id,
+        themed?.ramp ?? null,
       ),
     )
     if (!definition.persistent) {
-      return new LocalPanelTransport(definition.command, context.cwd, environment, size)
+      return new LocalPanelTransport(command, context.cwd, environment, size)
     }
 
     const identity = panelSessionIdentity(this.homeId, context.agentId, definition)
@@ -119,7 +135,7 @@ export class CompanionPanelSessions implements PanelSessionController {
     try {
       const created = await this.companion.create({
         name: identity.name,
-        command: definition.command,
+        command,
         cwd: context.cwd,
         env: environment,
         labels: identity.labels,
@@ -310,15 +326,51 @@ export class CompanionPanelSessions implements PanelSessionController {
     }
   }
 
+  /**
+   * The argv and Ramp an fmx-themed tool launches with. The flags are appended
+   * rather than configured: the tool is fmx's, and this is what fmx theming it
+   * means. Without a materialized extension the tool still starts — an unknown
+   * `--theme` id would resolve to hunk's own default anyway — so a theme that
+   * cannot be written is a plain tool, never a missing one.
+   */
+  private themed(definition: PanelDefinition): { command: string[]; ramp: string } | null {
+    const theme = this.options.theme
+    if (definition.theme !== HUNK_THEME_ID || !theme) return null
+    return {
+      command: [
+        ...definition.command,
+        "--extension",
+        theme.extensionPath,
+        "--theme",
+        HUNK_THEME_ID,
+        // Neutral surfaces become the terminal's own background, which fmx
+        // keeps pointed at the host's: they follow a live theme change even
+        // though a running hunk cannot be restyled.
+        "--transparent-bg",
+      ],
+      ramp: theme.ramp(),
+    }
+  }
+
   private assertActive(agentId: string): void {
     if (this.closed) throw new Error("fmx is shutting down")
     if (this.stoppedAgents.has(agentId)) throw new Error("the tools panel's agent has ended")
   }
 }
 
-export function panelDefinitionFingerprint(definition: Pick<PanelDefinition, "id" | "command">): string {
+/**
+ * A persistent tool's identity is what it was launched as. The theme is in it
+ * because it is why the effective argv differs from `command`: changing what
+ * fmx themes a tool with must create the new tool rather than attach to a
+ * session still painted the old way. The extension path and the Ramp are left
+ * out on purpose — one moves with the machine, the other with the host's
+ * colors, and neither is a different tool.
+ */
+export function panelDefinitionFingerprint(
+  definition: Pick<PanelDefinition, "id" | "command" | "theme">,
+): string {
   return createHash("sha256")
-    .update(JSON.stringify([definition.id, definition.command]))
+    .update(JSON.stringify([definition.id, definition.command, definition.theme ?? null]))
     .digest("hex")
     .slice(0, PANEL_FINGERPRINT_LENGTH)
 }

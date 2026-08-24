@@ -9,7 +9,7 @@ import {
   TextRenderable,
   type ThemeMode,
 } from "@opentui/core"
-import type { PanelDefinition } from "./config.ts"
+import type { PanelDefinition } from "./panels.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { FmxTerminalRenderable } from "./fx-terminal.ts"
 import {

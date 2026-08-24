@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
-import { access, constants, mkdir, realpath, stat } from "node:fs/promises"
+import { access, constants, realpath, stat } from "node:fs/promises"
 import { userInfo } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import companionPin from "../companion.json" with { type: "json" }
+import { ensurePrivateDirectories } from "./private-directory.ts"
 import { fmxDirectory } from "./state.ts"
 
 /** The development override for where the Companion binary is. */
@@ -106,17 +107,7 @@ export function companionEnvironment(
  * private and checked every start; nothing is created into one that fails.
  */
 export async function ensureCompanionDirectories(directories: readonly string[], uid: number = userInfo().uid): Promise<void> {
-  for (const path of directories) {
-    await mkdir(path, { recursive: true, mode: 0o700 })
-    const info = await stat(path)
-    if (!info.isDirectory()) throw new Error(`Companion directory ${path} is not a directory`)
-    if (info.uid !== uid) throw new Error(`Companion directory ${path} is owned by uid ${info.uid}, not ${uid}; refusing to use it`)
-    if ((info.mode & 0o077) !== 0) {
-      throw new Error(
-        `Companion directory ${path} is readable or writable by others (mode ${(info.mode & 0o777).toString(8)}); refusing to use it (chmod 700 ${path})`,
-      )
-    }
-  }
+  await ensurePrivateDirectories(directories, "Companion", uid)
 }
 
 /**

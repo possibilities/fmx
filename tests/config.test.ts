@@ -98,69 +98,14 @@ test("loads a worktree root and falls back on one it cannot use", async () => {
   }
 })
 
-test("loads ordered tools panel commands and defaults them to persistent", async () => {
+test("diagnoses a [[panels]] table, which fmx no longer configures", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-config-panels-"))
   const path = join(directory, "panels.toml")
-  await writeFile(
-    path,
-    [
-      "[[panels]]",
-      'id = "diff"',
-      'label = "Changes"',
-      'command = ["hunk", "diff", "--watch"]',
-      "",
-      "[[panels]]",
-      'id = "tests"',
-      'command = ["bun", "test", "--watch"]',
-      "persistent = false",
-      "",
-    ].join("\n"),
-  )
+  await writeFile(path, ["[[panels]]", 'id = "diff"', 'command = ["hunk", "diff"]', ""].join("\n"))
 
   try {
     const loaded = await loadConfig(path)
-    expect(loaded.diagnostics).toEqual([])
-    expect(loaded.panels).toEqual([
-      { id: "diff", label: "Changes", command: ["hunk", "diff", "--watch"], persistent: true },
-      { id: "tests", label: "tests", command: ["bun", "test", "--watch"], persistent: false },
-    ])
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test("drops malformed and duplicate tools panel definitions independently", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-panels-"))
-  const path = join(directory, "panels.toml")
-  await writeFile(
-    path,
-    [
-      "[[panels]]",
-      'id = "Diff"',
-      'command = ["one"]',
-      "[[panels]]",
-      'id = "ok"',
-      'command = ["two"]',
-      'persistent = "sometimes"',
-      "[[panels]]",
-      'id = "ok"',
-      'command = ["three"]',
-      "[[panels]]",
-      'id = "empty"',
-      "command = []",
-      "",
-    ].join("\n"),
-  )
-
-  try {
-    const loaded = await loadConfig(path)
-    expect(loaded.panels).toEqual([{ id: "ok", label: "ok", command: ["two"], persistent: true }])
-    expect(loaded.diagnostics).toEqual([
-      "invalid panels[0].id: use 1-32 lowercase letters, digits, or hyphens; ignoring entry",
-      "invalid panels[1].persistent: must be true or false; using true",
-      'duplicate panel id "ok"; ignoring later entry',
-      "invalid panels[3].command: must be a non-empty argv array; ignoring entry",
-    ])
+    expect(loaded.diagnostics).toEqual(["unknown config section [panels]; ignoring section"])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

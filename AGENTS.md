@@ -149,6 +149,38 @@
   job. A new surface takes its colors from the Ramp; a state gets a glyph
   and a weight, never a hue; a surface fx never draws is recorded as a
   carve-out in fxnk's `style/STYLE.md` before it ships.
+- The Tools panel's tools are fmx's own (`src/panels.ts`), not the human's:
+  there is no `[[panels]]` table, and a `[[panels]]` a stale config still
+  carries takes the ordinary unknown-section diagnostic. A tool fmx ships is
+  one it can theme, flag, and version with itself; a configured one could only
+  ever be a bare command fmx renders and hopes about. hunk resolves the way fx
+  does — `FMX_HUNK_PATH`, else `hunk` on PATH, no flag (`src/executable.ts`) —
+  and only whether it resolves decides whether the Diff panel is offered. Its
+  argv keeps the name as asked for, never the realpath: a resolved path goes
+  through the installed version's own directory and would orphan the panel's
+  Companion session on every hunk upgrade.
+- fmx owns hunk's theme end to end and touches nothing of the human's hunk.
+  `src/hunk-theme.ts` carries the extension as source and writes it to
+  `/tmp/fmx-<uid>/hunk-theme.js` on every start — a real file, because fmx is
+  one binary and hunk imports an extension by path, and rewritten every start
+  so fmx stays its sole author. `panel-session.ts` appends `--extension <path>
+  --theme fmx --transparent-bg` and sets `FMX_RAMP`; the extension reads that
+  Ramp inside hunk and registers the theme. `--extension` is discovered with
+  origin `flag`, which hunk's repository-trust gate does not cover, so nothing
+  asks the human anything. A Ramp that is missing or has one slot hunk would
+  reject registers no theme at all, and hunk falls back to its own — an
+  unknown `--theme` id resolves to hunk's default rather than failing.
+- `panelDefinitionFingerprint` hashes `[id, command, theme]`. The theme is in
+  it because it is why the effective argv differs from `command`; the
+  extension path and the Ramp are deliberately out, because one moves with the
+  machine and the other with the host's colors, and neither is a different
+  tool. A persistent panel's argv and environment freeze when the Companion
+  creates its session, so a running hunk keeps the Ramp it launched with until
+  it is ended and re-opened. What does follow a live theme change are hunk's
+  neutral surfaces: `--transparent-bg` paints them as the terminal's default
+  background, and fmx re-forwards the host palette into the panel's terminal.
+  A panel opened before the host answers gets the fallback tier, like every
+  other startup surface in that window; do not add special handling.
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
   non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.

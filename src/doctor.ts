@@ -1,6 +1,10 @@
-import { access, constants, realpath } from "node:fs/promises"
-import { isAbsolute, resolve } from "node:path"
 import { VERSION } from "./cli.ts"
+import {
+  FX_PATH_ENV_VAR,
+  HUNK_PATH_ENV_VAR,
+  resolveFx,
+  resolveHunk,
+} from "./executable.ts"
 import { fmxDirectory } from "./state.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
@@ -86,9 +90,17 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Doct
   rows.push(["home", `${homeIdFor(home)} (${home})`])
 
   try {
-    rows.push(["fx", await resolveFx(env.FMX_FX_PATH ?? "fx", env)])
+    rows.push(["fx", await resolveFx(env[FX_PATH_ENV_VAR] ?? "fx", env)])
   } catch (error) {
     rows.push(["fx", `${errorMessage(error)}; install it from https://fx.sh/`])
+  }
+
+  // hunk is reported the way fx is, and judged no more: without it the Tools
+  // panel is simply not offered, which stops no start.
+  try {
+    rows.push(["hunk", await resolveHunk(env[HUNK_PATH_ENV_VAR] ?? "hunk", env)])
+  } catch (error) {
+    rows.push(["hunk", `${errorMessage(error)}; the Diff panel is not offered without it`])
   }
 
   const width = Math.max(...rows.map(([label]) => label.length))
@@ -106,24 +118,6 @@ function describeOrigin(companion: ResolvedCompanion): string {
   }
 }
 
-/**
- * fx: `FMX_FX_PATH`, else `fx` on PATH. A path is taken as given; a bare
- * name is looked up. There is deliberately no flag.
- */
-export async function resolveFx(requested: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
-  const candidate = requested.includes("/")
-    ? isAbsolute(requested)
-      ? requested
-      : resolve(process.cwd(), requested)
-    : Bun.which(requested, { PATH: env.PATH ?? "" })
-  if (!candidate) throw new Error(`fx executable not found: ${requested} (set FMX_FX_PATH)`)
-  try {
-    await access(candidate, constants.X_OK)
-  } catch {
-    throw new Error(`fx executable is not executable: ${candidate}`)
-  }
-  return realpath(candidate)
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)

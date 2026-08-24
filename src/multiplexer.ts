@@ -22,7 +22,8 @@ import type { AgentSocket } from "./agent-socket.ts"
 import type { AdeRecord, AdeSocket } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
 import { CODEX_MODELS, codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
-import { DEFAULT_WORKTREE_ROOT, type PanelDefinition } from "./config.ts"
+import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
+import type { PanelDefinition } from "./panels.ts"
 import {
   ControlFailure,
   type ControlMethod,
@@ -665,7 +666,7 @@ export class Multiplexer {
     this.tray.add(this.sessionList.root)
     const panelDefinitions = options.panels ?? []
     if (panelDefinitions.length > 0 && !options.panelSessions) {
-      throw new Error("configured tools panels need a session controller")
+      throw new Error("a tools panel needs a session controller")
     }
     if (panelDefinitions.length > 0) {
       this.panelDivider = new BoxRenderable(renderer, {

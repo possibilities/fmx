@@ -156,6 +156,15 @@ export function hostRamp(colors: TerminalColors | null): Ramp {
   }
 }
 
+/**
+ * Which column of fx's grays a Ramp came from, judged the same way `hostRamp`
+ * judges a canvas. A tool fmx themes inherits a light or dark base by this, so
+ * the base always matches the background its colors were blended from.
+ */
+export function rampMode(ramp: Ramp): ThemeMode {
+  return isLight(ramp.background) ? "light" : "dark"
+}
+
 /** Weighted channel brightness is enough to tell a light canvas from a dark one. */
 function isLight(color: string): boolean {
   const red = parseInt(color.slice(1, 3), 16)

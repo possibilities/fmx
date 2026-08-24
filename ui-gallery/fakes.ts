@@ -1,4 +1,4 @@
-import type { PanelDefinition } from "../src/config.ts"
+import type { PanelDefinition } from "../src/panels.ts"
 import {
   HandlerRelay,
   type AgentLaunch,

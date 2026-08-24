@@ -15,7 +15,9 @@ curl -fsSL https://c1g42cnmuvvspilo.public.blob.vercel-storage.com/setup.sh | ba
 This installs `fmx` and its companion `fmx-zmx` to `~/.local/bin`. The two are
 a pair — fmx refuses to start against any other build — so reinstall both
 together. `fx` must be on `PATH` as well; install it from [fx.sh](https://fx.sh/).
-`fmx doctor` reports what an installation has.
+[hunk](https://github.com/modem-dev/hunk) is optional: it is what the tools
+panel shows, and without it there is no panel. `fmx doctor` reports what an
+installation has.
 
 ## Usage
 
@@ -34,12 +36,13 @@ required; everything else has a default:
 ```toml
 project_roots = ["~/code", "~/src"]
 worktree_root = "~/.fmx/worktrees"
-
-[[panels]]
-id = "diff"
-label = "Diff"
-command = ["hunk", "diff", "--watch"]
 ```
+
+The tools panel is fmx's own: it shows your working diff in hunk, themed from
+the same terminal colors every other fmx surface is drawn from. There is
+nothing to configure — a tool fmx ships is one it can theme, flag, and version
+with itself. Your `~/.config/hunk/` is never read or written for it, and a
+`hunk` you run yourself is untouched.
 
 Run `fmx` again for the same configuration to attach another terminal to the
 same UI. The last one to interact sets the layout size.

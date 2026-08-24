@@ -15,7 +15,11 @@ import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
-import { doctor, resolveFx } from "./doctor.ts"
+import { doctor } from "./doctor.ts"
+import { resolveFx, resolveHunk } from "./executable.ts"
+import { hostRamp } from "./host-palette.ts"
+import { hunkRampValue, materializeHunkThemeExtension } from "./hunk-theme.ts"
+import { builtinPanels } from "./panels.ts"
 import { AgentManifest, type ManifestEntry, manifestPath } from "./agent-manifest.ts"
 import { reconcileAgents, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { stringEnvironment } from "./agent-transport.ts"
@@ -112,7 +116,16 @@ async function main(): Promise<void> {
     throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${configPath()}`)
   }
   const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
-  const fxPath = await resolveFx(process.env.FMX_FX_PATH ?? "fx")
+  const fxPath = await resolveFx()
+  // Only whether hunk resolves decides whether the Diff panel is offered; the
+  // panel's own argv keeps the name as asked for, so its identity survives a
+  // hunk upgrade. A machine without hunk gets no Tools panel rather than a tab
+  // that cannot start.
+  const hunkAvailable = await resolveHunk().then(
+    () => true,
+    () => false,
+  )
+  const panels = builtinPanels({ hunk: hunkAvailable })
   const companionPath = await resolveCompanion()
   const persistedState = await loadState()
   let stateSave: Promise<void> = Promise.resolve()
@@ -159,12 +172,23 @@ async function main(): Promise<void> {
     const survivors = await reconcileAtStartup(manifest, companion)
     transport = new CompanionTransportFactory(companion, home)
     const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
-    panelSessions = new CompanionPanelSessions(
-      companion,
-      home,
-      controlSocketPath,
-      loadedConfig.panels,
-    )
+    // The extension has to be a real file for hunk to import it, and fmx is one
+    // binary: it is written out here, before anything can open a panel, and
+    // rewritten on every start so fmx stays the sole author of its content. A
+    // directory that refuses to be ours has already stopped the start above.
+    const hunkThemePath = panels.some((panel) => panel.theme) ? await materializeHunkThemeExtension() : null
+    panelSessions = new CompanionPanelSessions(companion, home, controlSocketPath, panels, {
+      theme: hunkThemePath
+        ? {
+            extensionPath: hunkThemePath,
+            // Read when the tool starts, not now: the host may not have
+            // answered yet, and a late answer must reach a panel opened after
+            // it. A panel opened before it gets the fallback tier, which is
+            // what every other startup surface gets in the same window.
+            ramp: () => hunkRampValue(hostRamp(runtimePalette)),
+          }
+        : null,
+    })
     try {
       const outcome = await panelSessions.reconcile(manifest.entries.map((entry) => entry.agentId))
       if (outcome.unresolved.length > 0) {
@@ -241,7 +265,7 @@ async function main(): Promise<void> {
       survivors,
       agentSocket,
       adeSocket,
-      panels: loadedConfig.panels,
+      panels,
       panelSessions,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
