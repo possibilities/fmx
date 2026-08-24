@@ -1043,7 +1043,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "persistent Tool panels reattach while non-persistent tools restart naturally",
+  "the built-in Diff panel reattaches to its Companion session across a Runtime",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-panel-restore-e2e-"))
@@ -1051,25 +1051,20 @@ test.skipIf(!PTY_TEST_ENABLED)(
     const panelLog = join(tempDirectory, "panels.log")
     const configFile = join(tempDirectory, "config.toml")
     const stateFile = join(tempDirectory, "state.json")
+    await writeFile(configFile, `project_roots = [${JSON.stringify(ROOT)}]\n`)
+    // The tools are fmx's own, so the way to put a stub under one is the seam
+    // that says where its executable is. The Diff panel's argv is fmx's; this
+    // shim ignores it and answers as a tool that stays up.
+    const stubHunk = join(tempDirectory, "hunk")
     await writeFile(
-      configFile,
-      [
-        `project_roots = [${JSON.stringify(ROOT)}]`,
-        "[[panels]]",
-        'id = "persistent"',
-        'label = "Persistent"',
-        `command = [${[process.execPath, FAKE_PANEL, panelLog, "persistent"].map((value) => JSON.stringify(value)).join(", ")}]`,
-        "[[panels]]",
-        'id = "transient"',
-        'label = "Transient"',
-        `command = [${[process.execPath, FAKE_PANEL, panelLog, "transient"].map((value) => JSON.stringify(value)).join(", ")}]`,
-        "persistent = false",
-        "",
-      ].join("\n"),
+      stubHunk,
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_PANEL)} ${JSON.stringify(panelLog)} diff\n`,
     )
+    await chmod(stubHunk, 0o755)
     const env = {
       ...process.env,
       FMX_FX_PATH: FAKE_FX,
+      FMX_HUNK_PATH: stubHunk,
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
       FMX_CONFIG_PATH: configFile,
@@ -1102,42 +1097,32 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
       await panelCommand(tempDirectory, env, { hidden: false })
       await waitUntil(
-        async () => countOccurrences(await readLifecycle(panelLog), "start persistent ") === 1,
+        async () => countOccurrences(await readLifecycle(panelLog), "start diff ") === 1,
         8_000,
         () => firstOutput.output,
       )
-      await panelCommand(tempDirectory, env, { select: "transient" })
       await waitUntil(
-        async () => countOccurrences(await readLifecycle(panelLog), "start transient ") === 1,
-        8_000,
-        () => firstOutput.output,
-      )
-      await panelCommand(tempDirectory, env, { select: "persistent" })
-      await waitUntil(
-        async () => (await orientation(tempDirectory, env))?.panel.selected === "persistent",
+        async () => (await orientation(tempDirectory, env))?.panel.selected === "diff",
         5_000,
         () => firstOutput.output,
       )
 
       first.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
-      expect(await withTimeout(first.exited, 6_000, "first fmx did not detach with Tool panels")).toBe(0)
+      expect(await withTimeout(first.exited, 6_000, "first fmx did not detach with a Tool panel")).toBe(0)
       first.terminal?.close()
 
+      // The Companion holds the tool while no fmx is attached to it.
       await Bun.sleep(200)
-      const settled = await readLifecycle(panelLog)
-      const persistentAlive = countOccurrences(settled, "alive persistent ")
-      const transientAlive = countOccurrences(settled, "alive transient ")
+      const settled = countOccurrences(await readLifecycle(panelLog), "alive diff ")
       await Bun.sleep(200)
-      const detached = await readLifecycle(panelLog)
-      expect(countOccurrences(detached, "alive persistent ")).toBeGreaterThan(persistentAlive)
-      expect(countOccurrences(detached, "alive transient ")).toBe(transientAlive)
+      expect(countOccurrences(await readLifecycle(panelLog), "alive diff ")).toBeGreaterThan(settled)
 
       const secondOutput = { output: "" }
       replacement = spawnFmx(secondOutput)
       await waitUntil(
         async () => {
           const snapshot = await orientation(tempDirectory, env)
-          return snapshot?.agents.length === 1 && snapshot.panel.visible && snapshot.panel.selected === "persistent"
+          return snapshot?.agents.length === 1 && snapshot.panel.visible && snapshot.panel.selected === "diff"
         },
         10_000,
         () => secondOutput.output,
@@ -1146,19 +1131,13 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(
         async () =>
           (await companion.list()).some(
-            (session) => session.labels.kind === "panel" && session.labels.panel === "persistent" && (session.clients ?? 0) > 0,
+            (session) => session.labels.kind === "panel" && session.labels.panel === "diff" && (session.clients ?? 0) > 0,
           ),
         8_000,
         () => secondOutput.output,
       )
-      expect(countOccurrences(await readLifecycle(panelLog), "start persistent ")).toBe(1)
-
-      await panelCommand(tempDirectory, env, { select: "transient" })
-      await waitUntil(
-        async () => countOccurrences(await readLifecycle(panelLog), "start transient ") === 2,
-        8_000,
-        () => secondOutput.output,
-      )
+      // Reattached, not restarted: the tool was never started a second time.
+      expect(countOccurrences(await readLifecycle(panelLog), "start diff ")).toBe(1)
 
       replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
       expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
