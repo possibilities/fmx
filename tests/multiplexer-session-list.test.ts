@@ -190,6 +190,25 @@ test("draws session names in the terminal's gray until the host answers, then in
   }
 })
 
+test("paints the selected row's name in the fill's own primary step", async () => {
+  const { setup, list } = await createList(30, 10)
+  const nameColor = () => {
+    const text = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
+    return text.chunks.find((chunk) => chunk.text === SESSION_ID)?.fg
+  }
+
+  try {
+    list.render(buildTree([entry({ active: true })]), 26)
+    expect(nameColor()?.toInts().slice(0, 3)).toEqual([238, 238, 238])
+
+    list.render(buildTree([entry({ active: false })]), 26)
+    expect(nameColor()?.intent).toBe("indexed")
+  } finally {
+    list.root.destroy()
+    setup.renderer.destroy()
+  }
+})
+
 async function createList(width: number, height: number) {
   const setup = await createTestRenderer({ width, height })
   const selected: number[] = []

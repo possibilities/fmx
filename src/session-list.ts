@@ -92,7 +92,8 @@ export function rowText(row: TreeRow, width: number): string {
 /**
  * The tray's tree of fx agents: project, branch, and one row per agent.
  * Project and branch labels are the foreground, bold along the path to the
- * active agent; agent names are dim; the active row alone is filled.
+ * active agent; agent names are dim, except on the filled active row, where
+ * the name takes the primary step; the active row alone is filled.
  */
 export class SessionList {
   readonly root: BoxRenderable
@@ -193,7 +194,10 @@ export class SessionList {
     if (isAgentRow(row)) {
       const glyph = fg(ramp[stateRole(row.state)])(`${stateIcon(row.state, row.attention)} `)
       chunks.push(row.state === "blocked" ? bold(glyph) : glyph)
-      chunks.push(fg(this.sessionColor)(rowText(row, width)))
+      // The selected row's name steps up to the ramp's primary: dim text on
+      // the raised fill is the one place the tray asks a name to be read
+      // against something other than the background it was measured from.
+      chunks.push(fg(row.active ? ramp.foreground : this.sessionColor)(rowText(row, width)))
       return new StyledText(chunks)
     }
     // An ancestor of the active agent is marked by weight: the path reads
