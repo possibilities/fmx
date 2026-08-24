@@ -104,7 +104,9 @@ export const TRAY_DEFAULT_WIDTH = 26
 // The tray carries a project → branch → agent tree whose rows are names, and a
 // name is the thing worth reading: half the stage is the useful ceiling, and
 // the floor rises with it so a drag cannot leave a column too narrow to read a
-// branch in. Both scale together — the range moved, not just its top.
+// branch in. Both scale together — the range moved, not just its top. Like the
+// tools panel's third, the half is of the whole stage: the two columns are
+// bounded independently, and the terminal keeps what they leave.
 const TRAY_MIN_WIDTH = 24
 const TRAY_MAX_SCREEN_FRACTION = 1 / 2
 const TOOL_PANEL_MIN_WIDTH = 16
@@ -1507,20 +1509,15 @@ export class Multiplexer {
   }
 
   private applyTrayWidth(requested = this.trayWidth): void {
-    // The tray's third is measured against the space the tools panel leaves
-    // behind, so the embedded terminal keeps the middle rather than being
-    // squeezed between two fixed columns.
-    const available = this.renderer.width - this.reservedPanelWidth()
-    const max = Math.max(1, Math.floor(available * TRAY_MAX_SCREEN_FRACTION))
+    // Half the screen, measured the way the tools panel measures its third:
+    // against the whole stage, not against what the other column left behind.
+    // A ceiling that shrank when the panel opened made the same drag reach a
+    // different width depending on what else was on screen.
+    const max = Math.max(1, Math.floor(this.renderer.width * TRAY_MAX_SCREEN_FRACTION))
     const min = Math.min(TRAY_MIN_WIDTH, max)
     this.trayWidth = Math.max(min, Math.min(max, requested))
     this.tray.width = this.trayWidth
     this.refreshSessionList()
-  }
-
-  private reservedPanelWidth(): number {
-    if (!this.toolPanel || !this.panelVisible || this.agents.length === 0) return 0
-    return this.panelWidth + 1
   }
 
   private onPalette(colors: TerminalColors): void {

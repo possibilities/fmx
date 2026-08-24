@@ -154,6 +154,7 @@ test("a tool is attached at the dock's size, never at a guess it would reflow aw
     // resized to 80x24 and back is the reflow a re-attach used to show.
     const transport = h.sessions.opens[0]!.transport
     expect(transport.sizes.every((size) => size.cols === 30 && size.rows === 22)).toBe(true)
+
   } finally {
     await h.close()
   }
