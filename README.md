@@ -2,6 +2,12 @@
 
 **fmx** /fʌks/ — An orchestration surface for [fx](https://fx.sh/).
 
+It is built the way Derek Sivers is [building his house](https://sive.rs/fit):
+defer the decision, live with what is there, and add only what proves
+necessary. Nothing here is predicted — no default project roots, no keys for
+things a hand already does, no surface that exists before something needs it.
+Paths get paved where the grass is worn.
+
 ## Install
 
 Install the native binary from the public Vercel Blob store:
