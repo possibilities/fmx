@@ -13,7 +13,7 @@ test("themes the empty state and keyboard-opened help", async () => {
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
   })
-  multiplexer.setHostPalette(hostPalette("#102030", "#f1f2f3", "#00aabb", "#778899"))
+  multiplexer.setHostPalette(hostPalette("#102030", "#f1f2f3", "#00aabb"))
 
   const stage = setup.renderer.root.findDescendantById("fmx-stage")
   const modalBackdrop = setup.renderer.root.findDescendantById("fmx-modal-backdrop")
@@ -72,7 +72,7 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect((keyChunk?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
     expect(rgb(labelChunk?.fg)).toEqual([16, 32, 48])
 
-    multiplexer.setHostPalette(hostPalette("#e8e9ea", "#111213", "#33ccdd", "#8899aa"))
+    multiplexer.setHostPalette(hostPalette("#e8e9ea", "#111213", "#33ccdd"))
 
     expect(rgba(modalBackdrop.backgroundColor)).toEqual([0, 0, 0, 51])
     expect(rgb(modal.backgroundColor)).toEqual([17, 18, 19])
@@ -96,10 +96,9 @@ test("themes the empty state and keyboard-opened help", async () => {
   }
 })
 
-function hostPalette(foreground: string, background: string, accent: string, key: string): TerminalColors {
+function hostPalette(foreground: string, background: string, focus: string): TerminalColors {
   const palette: Array<string | null> = Array(16).fill(null)
-  palette[4] = accent
-  palette[7] = key
+  palette[4] = focus
   return {
     palette,
     defaultForeground: foreground,

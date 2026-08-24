@@ -78,8 +78,6 @@ test("truncates within a narrow viewport and hides when the Toast cannot fit", a
 function hostPalette(): TerminalColors {
   const palette: Array<string | null> = Array(16).fill(null)
   palette[1] = "#cc3344"
-  palette[2] = "#22bb44"
-  palette[8] = "#667788"
   return {
     palette,
     defaultForeground: "#f0f1f2",

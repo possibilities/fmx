@@ -149,9 +149,10 @@ Depth is carried by indentation alone, with no connecting glyphs.
 Clicking an agent row switches to that agent; project and branch rows are
 not selectable. The switch happens on mouse-down and tray text itself is
 not selectable, so pointer navigation never waits for release. Project and
-branch labels are the Ramp's foreground and agent names its dim step; the
-status icon carries its state by shape and weight, never hue — blocked bold
-in the foreground, done in the accent step, the rest dim. Before the host
+branch labels are the Ramp's foreground (a virtual branch its secondary
+step, italic) and agent names its dim step; the status icon carries its
+state by shape and weight, never hue — blocked bold in the foreground, done
+in the accent step, the rest dim. Before the host
 palette answers, names are the terminal's own ANSI gray, and — like the
 selected-row fill and the divider — what was drawn at first paint stays
 through a late initial answer. The selected agent's stable Agent identity is
