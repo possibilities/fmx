@@ -145,8 +145,8 @@ test("selects the saved survivor before restoring any terminal", async () => {
       [2, true],
     ])
     expect(snapshot.tray.rows.filter((row) => row.kind === "agent").map((row) => [row.agent, row.active])).toEqual([
-      [1, false],
       [2, true],
+      [1, false],
     ])
     expect((setup.renderer.root.findDescendantById("fx-1") as BoxRenderable).visible).toBe(false)
     expect((setup.renderer.root.findDescendantById("fx-2") as BoxRenderable).visible).toBe(true)

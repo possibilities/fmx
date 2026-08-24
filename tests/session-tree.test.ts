@@ -29,18 +29,18 @@ test("nests agents under their branch and project", () => {
     ]),
   ).toEqual([
     "fmx",
-    "  main",
-    "    909bc46b64721838",
-    "    5a75126ce54edb04",
     "  feat/list",
     "    84af73d3e9e42cb1",
+    "  main",
+    "    5a75126ce54edb04",
+    "    909bc46b64721838",
   ])
 })
 
 test("keeps several projects apart", () => {
   expect(
     shape([entry({ agentId: 1 }), entry({ agentId: 2, project: "fx", branch: "integration" })]),
-  ).toEqual(["fmx", "  main", "    909bc46b64721838", "fx", "  integration", "    909bc46b64721838"])
+  ).toEqual(["fx", "  integration", "    909bc46b64721838", "fmx", "  main", "    909bc46b64721838"])
 })
 
 test("nests agents outside a repository under an untracked branch", () => {
@@ -54,10 +54,10 @@ test("marks the active agent and every ancestor of it", () => {
   ])
   expect(rows.map((row) => [row.kind, row.onPath])).toEqual([
     ["project", true],
-    ["branch", false],
-    ["agent", false],
     ["branch", true],
     ["agent", true],
+    ["branch", false],
+    ["agent", false],
   ])
 })
 
@@ -86,12 +86,22 @@ test("only selectable agent rows carry an agent", () => {
   expect(rows.map((row) => row.agentId)).toEqual([null, null, 7, null])
 })
 
-test("preserves the order agents were created in", () => {
+test("shows agents newest first, whatever their state", () => {
   const rows = buildTree([
-    entry({ agentId: 3, sessionId: "aaa" }),
-    entry({ agentId: 1, sessionId: "bbb" }),
+    entry({ agentId: 3, sessionId: "aaa", state: "working" }),
+    entry({ agentId: 1, sessionId: "bbb", state: "done" }),
   ])
-  expect(rows.filter((row) => row.kind === "agent").map((row) => row.label)).toEqual(["aaa", "bbb"])
+  expect(rows.filter((row) => row.kind === "agent").map((row) => row.label)).toEqual(["bbb", "aaa"])
+})
+
+test("sorts a project and branch by its newest agent", () => {
+  expect(
+    shape([
+      entry({ agentId: 1, project: "fx", branch: "integration", sessionId: "aaa" }),
+      entry({ agentId: 2, sessionId: "bbb" }),
+      entry({ agentId: 3, project: "fx", branch: "integration", sessionId: "ccc" }),
+    ]),
+  ).toEqual(["fx", "  integration", "    ccc", "    aaa", "fmx", "  main", "    bbb"])
 })
 
 test("indents two columns per level, with nothing that can render wide", () => {
@@ -106,7 +116,7 @@ test("a named session shows its native name in place of its id", () => {
       entry({ agentId: 1, name: "Name every agent" }),
       entry({ agentId: 2, sessionId: "5a75126ce54edb04" }),
     ]),
-  ).toEqual(["fmx", "  main", "    Name every agent", "    5a75126ce54edb04"])
+  ).toEqual(["fmx", "  main", "    5a75126ce54edb04", "    Name every agent"])
 })
 
 test("nests subagents recursively beneath their parent agent", () => {

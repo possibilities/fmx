@@ -190,12 +190,12 @@ test("launches in the background once something is on screen, and says where the
     ])
     expect(snapshot.tray.visible).toBe(true)
     expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
-      ["project", 0, "alpha", null],
-      ["branch", 1, "(untracked)", null],
-      ["agent", 2, "· —", 1],
       ["project", 0, "beta", null],
       ["branch", 1, "(untracked)", null],
       ["agent", 2, "· —", 2],
+      ["project", 0, "alpha", null],
+      ["branch", 1, "(untracked)", null],
+      ["agent", 2, "· —", 1],
     ])
 
     const focused = await h.launch({ focus: true })

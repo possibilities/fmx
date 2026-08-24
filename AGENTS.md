@@ -92,9 +92,10 @@
   display number. Startup prepares every survivor synchronously in display-id
   order, selects that saved Agent before its first await, then attaches the
   selected transport first. Do not restore by adding the selected Agent out
-  of order: tray order is creation order. State writes are serialized and
-  awaited during Runtime cleanup so a selection immediately followed by the
-  final Client's Detach lands.
+  of order: the tray draws creation order reversed, newest agent first, and
+  only `buildTree` reverses it — every list behind it stays creation order.
+  State writes are serialized and awaited during Runtime cleanup so a
+  selection immediately followed by the final Client's Detach lands.
 - Palette detection can take seconds in a terminal that never answers, and a
   renderer destroyed under it never settles the query; `index.ts` races it
   against shutdown so a signal in that window still reaches the socket

@@ -40,15 +40,19 @@ export type TreeRow = {
 }
 
 /**
- * Group entries into rows, preserving the order agents were created in.
- * Agents outside a repository keep the same project → branch → agent shape
- * through a virtual `(untracked)` branch.
+ * Group entries into rows, newest agent first. Creation order is reversed
+ * before grouping, so a project or branch sorts by its newest agent and the
+ * newest agent stands at the top of its branch. Nothing else — state,
+ * attention, activity — moves a row. Agents outside a repository keep the
+ * same project → branch → agent shape through a virtual `(untracked)`
+ * branch.
  */
 export function buildTree(entries: SessionEntry[]): TreeRow[] {
   const rows: TreeRow[] = []
   const active = entries.find((entry) => entry.active) ?? null
+  const newestFirst = [...entries].reverse()
 
-  for (const [project, projectEntries] of groupBy(entries, (entry) => entry.project)) {
+  for (const [project, projectEntries] of groupBy(newestFirst, (entry) => entry.project)) {
     rows.push({
       kind: "project",
       depth: 0,

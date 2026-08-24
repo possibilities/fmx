@@ -213,11 +213,11 @@ test("draws the tree and reports clicks on agent rows", async () => {
 
     const frame = setup.captureCharFrame().split("\n")
     expect(frame[0]).toStartWith(" fmx")
-    expect(frame[1]).toStartWith("   main")
-    expect(frame[2]).toStartWith(`     ? ${SESSION_ID}`)
-    expect(frame[3]).toStartWith("     ◐ 5a75126ce54edb04")
-    expect(frame[4]).toStartWith("   feat/list")
-    expect(frame[5]).toStartWith("     ✓ 84af73d3e9e42cb1")
+    expect(frame[1]).toStartWith("   feat/list")
+    expect(frame[2]).toStartWith("     ✓ 84af73d3e9e42cb1")
+    expect(frame[3]).toStartWith("   main")
+    expect(frame[4]).toStartWith("     ◐ 5a75126ce54edb04")
+    expect(frame[5]).toStartWith(`     ? ${SESSION_ID}`)
 
     const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-3") as BoxRenderable
     await setup.mockMouse.click(row.x + 6, row.y)
