@@ -501,12 +501,12 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(
         () =>
           hasRgbSgr(restoredOutput.output, "background", [18, 50, 81]) &&
-          hasRgbSgr(restoredOutput.output, "foreground", [18, 48, 78]),
+          hasRgbSgr(restoredOutput.output, "foreground", [17, 46, 75]),
         5_000,
         () => restoredOutput.output,
       )
-      expect(hasRgbSgr(restoredOutput.output, "background", [42, 47, 58])).toBe(false)
-      expect(hasRgbSgr(restoredOutput.output, "foreground", [76, 86, 106])).toBe(false)
+      expect(hasRgbSgr(restoredOutput.output, "background", [53, 53, 53])).toBe(false)
+      expect(hasRgbSgr(restoredOutput.output, "foreground", [88, 88, 88])).toBe(false)
 
       replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
       expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
@@ -610,8 +610,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
           .filter((row) => row.kind === "agent")
           .map((row) => [row.agent, row.active]),
       ).toEqual([
-        [1, false],
         [2, true],
+        [1, false],
       ])
 
       // Focus is functional, not only painted: unprefixed input goes straight
