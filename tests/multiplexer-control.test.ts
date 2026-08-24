@@ -636,8 +636,8 @@ test("lists the keys with their command equivalents, and resizes the tray", asyn
     await h.launch()
     expect(await h.control("tray", { width: 30 })).toEqual({ visible: false, hidden: true, width: 30 })
     expect(await h.control("tray", { toggle: true })).toEqual({ visible: true, hidden: false, width: 30 })
-    expect(await h.control("tray", { width: 400 })).toEqual({ visible: true, hidden: false, width: 33 })
-    expect(await h.control("tray", { hidden: false })).toEqual({ visible: true, hidden: false, width: 33 })
+    expect(await h.control("tray", { width: 400 })).toEqual({ visible: true, hidden: false, width: 50 })
+    expect(await h.control("tray", { hidden: false })).toEqual({ visible: true, hidden: false, width: 50 })
     expect(((await h.control("orient")) as Snapshot).tray).toMatchObject({ visible: true, hidden: false })
   } finally {
     await h.close()

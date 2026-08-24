@@ -101,8 +101,12 @@ import { ToolPanel } from "./tool-panel.ts"
 /** The tray the embedded terminal sits beside; exported so tests can
  * address the terminal by its real screen column rather than a guess. */
 export const TRAY_DEFAULT_WIDTH = 26
-const TRAY_MIN_WIDTH = 16
-const TRAY_MAX_SCREEN_FRACTION = 1 / 3
+// The tray carries a project → branch → agent tree whose rows are names, and a
+// name is the thing worth reading: half the stage is the useful ceiling, and
+// the floor rises with it so a drag cannot leave a column too narrow to read a
+// branch in. Both scale together — the range moved, not just its top.
+const TRAY_MIN_WIDTH = 24
+const TRAY_MAX_SCREEN_FRACTION = 1 / 2
 const TOOL_PANEL_MIN_WIDTH = 16
 const TOOL_PANEL_MAX_SCREEN_FRACTION = 1 / 3
 // Dividers stay invisible until the host palette is known (or fx starts and it

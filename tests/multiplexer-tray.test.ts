@@ -284,27 +284,27 @@ test("restores a persisted hidden tray and reports each toggle", async () => {
   }
 })
 
-test("resizes the tray by dragging the divider, clamped to 16..width/3", async () => {
+test("resizes the tray by dragging the divider, clamped to 24..width/2", async () => {
   const { setup, multiplexer, tray, divider, content } = await createMultiplexer(90, 24)
   try {
     await setup.renderOnce()
 
-    await setup.mockMouse.drag(26, 10, 20, 10)
+    await setup.mockMouse.drag(26, 10, 34, 10)
     await setup.renderOnce()
-    expect(tray.width).toBe(20)
-    expect(divider.x).toBe(20)
-    expect(content.x).toBe(21)
-    expect(content.width).toBe(69)
+    expect(tray.width).toBe(34)
+    expect(divider.x).toBe(34)
+    expect(content.x).toBe(35)
+    expect(content.width).toBe(55)
 
-    // Far past the maximum: clamps to a third of the screen.
-    await setup.mockMouse.drag(20, 10, 80, 10)
+    // Far past the maximum: clamps to half the screen, the tools panel hidden.
+    await setup.mockMouse.drag(34, 10, 80, 10)
     await setup.renderOnce()
-    expect(tray.width).toBe(30)
+    expect(tray.width).toBe(45)
 
-    // Far past the minimum: clamps to 16.
-    await setup.mockMouse.drag(30, 10, 2, 10)
+    // Far past the minimum: clamps to 24, wide enough to still read a name.
+    await setup.mockMouse.drag(45, 10, 2, 10)
     await setup.renderOnce()
-    expect(tray.width).toBe(16)
+    expect(tray.width).toBe(24)
   } finally {
     await multiplexer.shutdown()
   }
@@ -316,7 +316,7 @@ test("re-clamps the tray when the terminal shrinks", async () => {
     await setup.renderOnce()
     expect(tray.width).toBe(26)
 
-    setup.resize(60, 24)
+    setup.resize(40, 24)
     await setup.renderOnce()
     expect(tray.width).toBe(20)
   } finally {
@@ -396,7 +396,7 @@ test("restores a persisted width and reports changes on drag end", async () => {
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    initialTrayWidth: 22,
+    initialTrayWidth: 26,
     onTrayWidthChange: (width) => widthChanges.push(width),
   })
   multiplexer.start()
@@ -405,9 +405,9 @@ test("restores a persisted width and reports changes on drag end", async () => {
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
-    expect(tray.width).toBe(22)
+    expect(tray.width).toBe(26)
 
-    await setup.mockMouse.drag(22, 10, 28, 10)
+    await setup.mockMouse.drag(26, 10, 28, 10)
     await setup.renderOnce()
     expect(tray.width).toBe(28)
     expect(widthChanges).toEqual([28])
@@ -435,7 +435,7 @@ test("clamps a stale persisted width to the current screen", async () => {
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
-    expect(tray.width).toBe(30)
+    expect(tray.width).toBe(45)
   } finally {
     await multiplexer.shutdown()
   }
