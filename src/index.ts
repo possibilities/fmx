@@ -203,11 +203,19 @@ async function main(): Promise<void> {
     ])
     runtimePalette = firstPalette.kind === "settled" ? firstPalette.colors : null
     await renderer.setupTerminal()
-    // One Runtime frame is broadcast to every Client. Clearing on a Runtime
-    // resize paints every physical terminal with a host-relative unused field;
+    // One Runtime frame is broadcast to every Client. Apply the new owner size
+    // synchronously before clearing every physical terminal; input can follow
+    // the resize before OpenTUI's debounced SIGWINCH handler runs, and that
+    // interaction must not paint one last frame at the previous owner's size.
     // OpenTUI then repaints only the sizing owner's shared frame. Larger
     // observers retain the field at the right and bottom.
-    runtimeResizeHandler = () => process.stdout.write(clearToUnusedSpace(runtimePalette))
+    runtimeResizeHandler = () => {
+      createdRenderer.resize(
+        Math.max(1, process.stdout.columns || createdRenderer.width),
+        Math.max(1, process.stdout.rows || createdRenderer.height),
+      )
+      process.stdout.write(clearToUnusedSpace(runtimePalette))
+    }
     process.stdout.on("resize", runtimeResizeHandler)
     // A live host-theme change updates the shared frame through Multiplexer;
     // repaint the physical field too so larger observers do not retain the

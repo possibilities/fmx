@@ -222,12 +222,20 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(firstOutput.output).toContain(unusedClear)
       expect((await runtimeSession())?.clients).toBe(2)
 
-      // Passive mouse motion returns ownership to the remembered 100x24 size.
-      // OpenTUI asks for all-motion SGR tracking, so merely moving over an
-      // observing Client behaves like tmux: the 60x16 Client receives the same
-      // larger frame and crops its unreachable right and bottom.
+      // A key from the larger observer takes sizing before it reaches fmx. The
+      // confirmation must therefore render at 100x24 immediately: an old-size
+      // frame after the clear would flash as a small dark island in the unused
+      // field before OpenTUI's debounced resize catches up.
+      const smallFrameOffset = firstOutput.output.lastIndexOf(unusedClear)
+      await waitUntil(
+        () => hasRgbSgr(firstOutput.output.slice(smallFrameOffset), "background", [28, 28, 28]),
+        5_000,
+        () => firstOutput.output.slice(smallFrameOffset),
+      )
+      await Bun.sleep(50)
       const secondClears = countOccurrences(secondOutput.output, clear)
-      first.terminal?.write(new TextEncoder().encode("\x1b[<35;10;5M"))
+      const takeoverOffset = firstOutput.output.length
+      first.terminal?.write(new TextEncoder().encode("\x1b[99;5u"))
       await waitUntil(
         async () => {
           const snapshot = await orientation(tempDirectory, env)
@@ -237,9 +245,43 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => secondOutput.output,
       )
       await waitUntil(() => countOccurrences(secondOutput.output, clear) > secondClears, 5_000, () => secondOutput.output)
+      await waitUntil(
+        () => firstOutput.output.slice(takeoverOffset).includes("press ctrl+c again to exit"),
+        5_000,
+        () => firstOutput.output.slice(takeoverOffset),
+      )
+      const takeoverOutput = firstOutput.output.slice(takeoverOffset)
+      expect(takeoverOutput).toContain("\x1b[12;38H")
+      expect(takeoverOutput).not.toContain("\x1b[8;18H")
 
       // Resizing a non-owner is interaction and immediately takes ownership.
       second.terminal?.resize(70, 18)
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.fmx.cols === 70 && snapshot.fmx.rows === 18
+        },
+        5_000,
+        () => secondOutput.output,
+      )
+
+      // Passive mouse motion returns ownership to the remembered 100x24 size.
+      // OpenTUI asks for all-motion SGR tracking, so merely moving over an
+      // observing Client behaves like tmux: the 70x18 Client receives the same
+      // larger frame and crops its unreachable right and bottom.
+      first.terminal?.write(new TextEncoder().encode("\x1b[<35;10;5M"))
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.fmx.cols === 100 && snapshot.fmx.rows === 24
+        },
+        5_000,
+        () => firstOutput.output,
+      )
+
+      // Put the second Client back in ownership so focus gain can prove it
+      // takes sizing too, and so it remains the failover size after Detach.
+      second.terminal?.write(new TextEncoder().encode("\x1b[<35;10;5M"))
       await waitUntil(
         async () => {
           const snapshot = await orientation(tempDirectory, env)

@@ -113,10 +113,13 @@
   first drawn. The fill is kept together with the ramp it came from, and the
   active row's glyph is painted from that ramp: a fallback-dark fill under a
   late light answer must not carry the light host's near-black foreground.
-- A Runtime resize clears the whole physical screen before OpenTUI's next
-  frame. That clear is what leaves genuinely blank unused space on a larger
-  observing Client when a smaller Client becomes sizing owner; do not replace
-  it with a rectangle sized to the owner. Once the startup palette choice has
+- A Runtime resize applies the new physical size to OpenTUI synchronously,
+  then clears the whole physical screen before its next frame. Input can arrive
+  before OpenTUI's debounced SIGWINCH handler; applying size first prevents
+  that interaction from painting one last frame at the previous owner's size.
+  The clear is what leaves genuinely blank unused space on a larger observing
+  Client when a smaller Client becomes sizing owner; do not replace it with a
+  rectangle sized to the owner. Once the startup palette choice has
   settled, OpenTUI's renderer background must remain the Ramp's opaque
   host-background step: a transparent renderer lets the unused clear show
   through around the empty-state text and retains cells from a tray or terminal
