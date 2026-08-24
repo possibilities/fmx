@@ -99,12 +99,14 @@ export async function createWorktree(
 /** The commit a worktree branches from: whatever `cwd` currently has checked
  * out, by sha, so a later checkout in the source cannot move it. */
 export async function readHeadCommit(cwd: string): Promise<string> {
-  const head = await runGit(cwd, ["rev-parse", "HEAD"])
+  // `--verify --quiet` is what separates the two ways this fails: an unborn
+  // HEAD exits non-zero saying nothing, while anything else — most often a
+  // directory that only looked like a repository — still gets git's own
+  // words. The Worktree row shows whichever comes back, so it must not
+  // answer "no commit to branch from" for a checkout full of them.
+  const head = await runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])
   const sha = head.stdout.trim()
-  // Every project is a repository, so the one thing left that fails here is
-  // an unborn HEAD. Git's own words for that name a revision the human never
-  // asked about; the sentence the Worktree row uses says it plainly.
-  if (!head.ok || !sha) throw new Error("the project has no commit to branch from")
+  if (!head.ok || !sha) throw new Error(head.stderr.trim() || "the project has no commit to branch from")
   return sha
 }
 

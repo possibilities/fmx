@@ -474,7 +474,8 @@ Exit status: 0 ok · 1 refused · 2 usage · 3 no fmx reachable · 4 timed out
 
 const LAUNCH_USAGE = `Usage: fmx control launch [prompt] [flags]
 
-  --project DIR        directory to start in (default: your own)
+  --project DIR        repository to start in (default: your own, else the
+                       first project on offer)
   --worktree           cut a fresh worktree of the project first
   --model ID           Codex model for this agent
   --effort LEVEL       reasoning effort for this agent

@@ -87,9 +87,21 @@ describe("readWorktreeContext", () => {
     expect(planWorktree(second, root).name).toBe("fmx-2")
   })
 
-  test("refuses a repository with no commit to branch from", async () => {
+  test("refuses a repository with no commit to branch from, in those words", async () => {
     const directory = await mkdtemp(join(tmpdir(), "fmx-empty-"))
     await Bun.spawn(["git", "-C", directory, "init", "--quiet"], { stdout: "ignore" }).exited
-    expect(readHeadCommit(directory)).rejects.toThrow()
+    // The Worktree row shows this sentence, so an unborn HEAD has to reach it
+    // rather than git's words about a revision nobody asked for.
+    expect(readHeadCommit(directory)).rejects.toThrow("no commit to branch from")
+  })
+
+  test("says what git says when the directory is not a repository at all", async () => {
+    // A linked worktree whose main checkout was deleted keeps a `.git` file,
+    // so the scan still offers it. It has commits; it just has no repository
+    // — and the Worktree row must not answer "no commit to branch from".
+    const directory = await mkdtemp(join(tmpdir(), "fmx-dangling-"))
+    await Bun.write(join(directory, ".git"), "gitdir: /nowhere/.git/worktrees/cut\n")
+    expect(readHeadCommit(directory)).rejects.toThrow(/not a git repository|nowhere/u)
+    expect(readHeadCommit(directory)).rejects.not.toThrow("no commit to branch from")
   })
 })

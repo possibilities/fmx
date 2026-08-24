@@ -25,7 +25,14 @@
   or a command — with `readGitContext`, while the scan and the control
   socket's parameter checks use the synchronous `isRepositoryDirectory` walk
   because neither can wait for git. A repository with nothing committed yet is
-  a project; it just cannot offer a Worktree.
+  a project; it just cannot offer a Worktree, and `readHeadCommit` is what
+  answers that — it keeps git's own words for every other failure, because
+  `isRepositoryDirectory` can over-offer a directory that only looks like a
+  checkout.
+  That first root is commonly a directory of repositories rather than one
+  itself, so a launch naming no project and coming from no agent falls back
+  to the first project on offer, exactly as the dialog's project row does; a
+  Home whose roots hold no repository has nowhere to send it and is refused.
   TUI startup refuses an empty resolved list with exit 1 and the exact config
   line to add; control commands, `--help`, `--version`, and `doctor` do not
   need project roots because they never open the TUI.

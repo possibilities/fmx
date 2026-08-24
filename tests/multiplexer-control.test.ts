@@ -277,6 +277,56 @@ test("refuses a launch it cannot honour without drawing anything", async () => {
   }
 })
 
+test("launches into the first project when the workspace is not itself a repository", async () => {
+  // What index.ts passes as `cwd` is the first configured root, and a root
+  // like `~/code` — the line startup tells a human to add — holds
+  // repositories without being one. A launch that names no project and comes
+  // from no agent still has somewhere to go: the choice the dialog's project
+  // row would have opened on.
+  const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-roots-")))
+  const code = join(home, "code")
+  await initRepository(join(code, "alpha"), "trunk")
+  const setup = await createTestRenderer({ width: 100, height: 30 })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...agentOptions(),
+    fxPath: FAKE_FX,
+    cwd: code,
+    keybindings: resolveKeybindings().keybindings,
+    projectRoots: ["~/code"],
+    home,
+  })
+  try {
+    await multiplexer.start()
+    const launched = (await multiplexer.control.handle("launch", {}, NEVER)) as { agent: { cwd: string; branch: string } }
+    expect(launched.agent.cwd).toBe(join(code, "alpha"))
+    expect(launched.agent.branch).toBe("trunk")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("refuses a launch when no configured root holds a repository", async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-no-roots-")))
+  await mkdir(join(home, "code", "notes"), { recursive: true })
+  const setup = await createTestRenderer({ width: 100, height: 30 })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...agentOptions(),
+    fxPath: FAKE_FX,
+    cwd: join(home, "code"),
+    keybindings: resolveKeybindings().keybindings,
+    projectRoots: ["~/code"],
+    home,
+  })
+  try {
+    await multiplexer.start()
+    const error = await failure(multiplexer.control.handle("launch", {}, NEVER) as Promise<unknown>)
+    expect(error.code).toBe("invalid_params")
+    expect(error.message).toContain("not a git repository")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("focuses by position, id, and name, and refuses while something is open", async () => {
   const h = await harness("focus")
   try {

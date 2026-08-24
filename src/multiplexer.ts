@@ -1297,12 +1297,16 @@ export class Multiplexer {
    * fx never reports where it is working, so fmx reads it from the directory
    * it spawned the agent in. The list renders without a branch rung until
    * the answer arrives, which is why this refreshes rather than blocking.
+   *
+   * Only an answer is remembered. A read that fails — git slow enough to trip
+   * its timeout while a start joins several at once, say — leaves nothing
+   * behind, so the next call asks again instead of pinning that directory to
+   * "no branch" for the life of the Runtime.
    */
   private loadGitContext(cwd: string): Promise<GitContext | null> {
     const pending = this.gitContextLoads.get(cwd)
     if (pending) return pending
     if (this.gitContexts.has(cwd)) return Promise.resolve(this.gitContexts.get(cwd) ?? null)
-    this.gitContexts.set(cwd, null)
     const load = readGitContext(cwd).then((context) => {
       if (!this.shuttingDown && context) {
         this.gitContexts.set(cwd, context)
@@ -2144,6 +2148,24 @@ export class Multiplexer {
     }
   }
 
+  /**
+   * Where a launch that names no project and comes from no agent starts: fmx's
+   * own workspace when it is a repository, and otherwise the first project on
+   * offer — the same fallback the dialog's project row makes when the
+   * workspace is not among its choices. A command and a key land in the same
+   * place, which is the whole point of routing both through `performLaunch`.
+   * The first configured root is commonly a directory of repositories rather
+   * than one itself, and `~/code` is the very line startup tells a human to
+   * add, so this is the ordinary case and not an edge.
+   */
+  private defaultLaunchDirectory(): string {
+    const workspace = this.options.cwd
+    if (isRepositoryDirectory(workspace)) return workspace
+    const [first] = this.projectChoices()
+    if (!first) throw new NotARepositoryError(workspace)
+    return first.directory
+  }
+
   private agentById(id: number): FxAgent {
     const agent = this.agents.find((candidate) => candidate.id === id)
     if (!agent) throw new ControlFailure("not_found", `no agent ${id}`)
@@ -2154,7 +2176,7 @@ export class Multiplexer {
     const prefill = this.prefillFrom(params)
     const callerAgent = caller === null ? null : (this.agents.find((agent) => agent.id === caller) ?? null)
     return {
-      directory: prefill.directory ?? callerAgent?.cwd ?? this.options.cwd,
+      directory: prefill.directory ?? callerAgent?.cwd ?? this.defaultLaunchDirectory(),
       prompt: prefill.prompt ?? "",
       worktree: prefill.worktree ?? false,
       model: prefill.model ?? DEFAULT_CODEX_MODEL.id,

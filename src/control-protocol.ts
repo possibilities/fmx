@@ -83,8 +83,9 @@ export type AgentInfo = {
   pane_id: string
   cwd: string
   project: string
-  /** null when git has no answer for the directory: an agent is launched
-   * into a repository, so this is a checkout that went away under it. */
+  /** null while git has not answered for the directory, and again whenever it
+   * cannot: an agent is launched into a repository, so this is never a report
+   * that the directory was untracked. */
   branch: string | null
   /** Whether the directory is a linked worktree rather than the main checkout. */
   worktree: boolean | null

@@ -100,9 +100,9 @@ export function projectNameFor(context: GitContext | null, cwd: string): string 
 /**
  * The tree this agent is actually working in: a linked Worktree's own
  * directory name, or the checked-out branch for the repository's main tree.
- * null when git has no answer: an agent's directory is a repository at
- * launch, so the only way here is a checkout that went away under a running
- * one, and nothing invents a name for that.
+ * null whenever git has no answer — it has not replied yet, or the checkout
+ * went away under a running agent. A launch requires a repository, so this
+ * never means the directory was untracked, and nothing invents a name for it.
  */
 export function treeNameFor(context: GitContext | null): string | null {
   if (!context) return null

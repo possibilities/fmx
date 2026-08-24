@@ -10,8 +10,9 @@ import type { SubagentEntry } from "./subagents.ts"
 export type SessionEntry = {
   agentId: number
   project: string
-  /** null only when git has no answer for the agent's directory: a launch
-   * requires a repository, so this is a checkout that went away under it. */
+  /** null while git has not answered for the agent's directory, and again
+   * whenever it cannot. A launch requires a repository, so this is never a
+   * report that the directory was untracked. */
   branch: string | null
   sessionId: string | null
   /** Fx's native session name, once it has one. The row falls back to the
