@@ -571,11 +571,22 @@ class ToolRuntime {
    */
   private currentSize(): TerminalSize {
     const dock = this.dockSize()
-    return {
-      cols: Math.max(1, this.terminal.width || this.size.cols || dock.cols),
-      rows: Math.max(1, this.terminal.height || this.size.rows || dock.rows),
-    }
+    // OpenTUI reports a renderable it has not laid out yet as one cell, and a
+    // runtime is created and started in one synchronous pass — so on every
+    // attach this runs while the terminal still measures 1x1. One cell is
+    // never a dock, so it means "not measured yet" and the dock's own
+    // measurements answer instead. Treating it as a size is what handed the
+    // Companion a 1x1 PTY and left the tool reflowed into a single column.
+    const cols = measured(this.terminal.width) ?? measured(this.size.cols) ?? dock.cols
+    const rows = measured(this.terminal.height) ?? measured(this.size.rows) ?? dock.rows
+    return { cols: Math.max(1, cols), rows: Math.max(1, rows) }
   }
+}
+
+/** A measurement OpenTUI has actually made: never zero, and never the single
+ * cell it reports for a renderable that has not been laid out. */
+function measured(value: number): number | null {
+  return value > 1 ? value : null
 }
 
 function runtimeKey(panelId: string, agentId: string): string {

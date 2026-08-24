@@ -37,6 +37,18 @@ export const FX_KEYBOARD_PROTOCOL = {
 export class FmxTerminalRenderable extends EmbeddedTerminalRenderable {
   private selectionGesture: Selection | null = null
   private selectionActivated = false
+  /**
+   * Writes made before OpenTUI has laid this terminal out.
+   *
+   * A transport delivers its restore the instant it is bound, and binding
+   * happens in the same synchronous pass that creates the renderable — so on
+   * every attach a replayed screen arrives before there is anywhere to put it.
+   * OpenTUI reports one cell for a renderable it has not measured, and a
+   * screen written into a single row scrolls away entirely. Hold those bytes
+   * until the grid is real, then write them at the shape they will keep.
+   */
+  private unsizedWrites: Uint8Array[] = []
+  private gridded = false
 
   constructor(renderer: CliRenderer, options: FmxTerminalOptions) {
     const onMouseDown = options.onMouseDown
@@ -52,6 +64,36 @@ export class FmxTerminalRenderable extends EmbeddedTerminalRenderable {
 
   public setHostSelectionEnabled(enabled: boolean): void {
     this.selectable = enabled
+  }
+
+  public override write(data: string | Uint8Array): void {
+    if (!this.hasGrid()) {
+      this.unsizedWrites.push(typeof data === "string" ? new TextEncoder().encode(data) : data.slice())
+      return
+    }
+    this.flushUnsized()
+    super.write(data)
+  }
+
+  protected override onResize(width: number, height: number): void {
+    super.onResize(width, height)
+    if (this.unsizedWrites.length > 0 && this.hasGrid()) this.flushUnsized()
+  }
+
+  /** One cell is what OpenTUI reports before it has laid a renderable out, so
+   * a grid only counts once it is bigger than that. */
+  private hasGrid(): boolean {
+    if (this.gridded) return true
+    const screen = this.screen()
+    this.gridded = screen.columns > 1 && screen.rows > 1
+    return this.gridded
+  }
+
+  private flushUnsized(): void {
+    if (this.unsizedWrites.length === 0) return
+    const held = this.unsizedWrites
+    this.unsizedWrites = []
+    for (const bytes of held) super.write(bytes)
   }
 
   public override onSelectionChanged(selection: Selection | null): boolean {

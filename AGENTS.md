@@ -200,6 +200,28 @@
   background, and fmx re-forwards the host palette into the panel's terminal.
   A panel opened before the host answers gets the fallback tier, like every
   other startup surface in that window; do not add special handling.
+- OpenTUI reports **one cell** for a renderable it has not laid out, not zero.
+  A `ToolRuntime` is built and started in one synchronous pass, so on every
+  attach `currentSize()` runs while the terminal still measures 1x1 — and `1`
+  is truthy, which is how a `||` chain fed the Companion a 1x1 PTY and left the
+  tool reflowed into a single column. Treat one cell as unmeasured (`measured`
+  in `src/tool-panel.ts`) and fall through to the dock. For the same reason
+  `FmxTerminalRenderable` holds writes until its grid is bigger than one cell:
+  a transport delivers its restore the instant it is bound, and a replayed
+  screen written into a single row scrolls away entirely.
+  Neither is reachable from the test renderer, which lays terminals out before
+  anything writes to them — a unit test that looks like it covers this passes
+  with the fix removed. The verification of record is the live harness in
+  `~/handoffs/2026-08-24-fmx-panel-cycle.sh`: run an isolated Home through
+  detach/attach cycles and count the panel's surviving content lines. Before
+  the fix that read 19 / 7 / 0 / 0 across three cycles; after it, 19 / 19 / 18
+  / 18 with every file still on screen.
+- The Companion replays a session's screen as a **linear, newline-separated**
+  dump, not as absolute cursor moves: a first attach carries ~174 CUP
+  sequences, a re-attach's replay carries one. It is therefore a line or two
+  taller than the grid it lands in, and that much scrolls off the top no
+  matter what fmx does with it. Closing that last gap means changing what the
+  Companion sends, which moves the protocol; do not chase it from fmx.
 - A tool is attached at the dock's size, never at a guess. A `ToolRuntime` is
   built and started in one synchronous pass, so `currentSize()` always runs
   before OpenTUI has laid its terminal out; the fallback is the dock's own

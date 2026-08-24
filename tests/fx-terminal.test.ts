@@ -325,3 +325,4 @@ test("fx mouse reporting cancels OpenTUI's provisional selection", async () => {
     setup.renderer.destroy()
   }
 })
+

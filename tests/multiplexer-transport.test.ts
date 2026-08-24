@@ -213,6 +213,10 @@ test("reapplies the host palette after RestoreBegin", async () => {
 
   try {
     await multiplexer.start()
+    // One frame first: OpenTUI reports one cell for a terminal it has not laid
+    // out, and a terminal with no real grid holds its writes rather than
+    // scrolling them away.
+    await setup.renderOnce()
     multiplexer.setHostPalette(palette)
 
     transport.clearWrites()
