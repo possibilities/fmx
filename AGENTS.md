@@ -1,5 +1,12 @@
 # fmx agent notes
 
+- fmx targets our Fx fork in `~/src/fx`, maintained and installed through the
+  `~/code/fxnk` workshop; do not assume an upstream Fx checkout describes the
+  behavior available here. Read `~/code/fxnk/MAINTAIN.md` section "Features"
+  for the fork's authoritative feature inventory. fxnk also owns fmx's style
+  guide at `~/code/fxnk/style/STYLE.md`, with machine-readable ground truth in
+  `style/tokens.json`: fmx treats Fx itself as the living style guide, and the
+  fxnk artifacts translate that source into rules and values fmx can borrow.
 - The `[keys]` table in `~/.config/fmx/config.toml` intentionally shares
   Herdr's binding grammar: binding strings, string arrays, `prefix+` trigger
   syntax, and direct modified chords work in both programs. Common action
