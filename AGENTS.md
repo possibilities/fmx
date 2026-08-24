@@ -116,7 +116,10 @@
 - A Runtime resize clears the whole physical screen before OpenTUI's next
   frame. That clear is what leaves genuinely blank unused space on a larger
   observing Client when a smaller Client becomes sizing owner; do not replace
-  it with a rectangle sized to the owner.
+  it with a rectangle sized to the owner. OpenTUI's renderer background must
+  remain the Ramp's opaque host-background step: a transparent renderer lets
+  the unused clear show through around the empty-state text and retains cells
+  from a tray or terminal that just disappeared.
 - Every color fmx paints on a surface of its own comes from `hostRamp`
   (`src/host-palette.ts`): fx's five gray steps as blends of the host's
   background toward its foreground, fx's dark column as the fallback tier.

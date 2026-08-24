@@ -584,6 +584,12 @@ export class Multiplexer {
     this.donePromise = new Promise((resolveDone) => {
       this.resolveDone = resolveDone
     })
+    // The physical Client is cleared to the unused-field color before each
+    // owner-sized frame. A transparent renderer would leave that clear visible
+    // anywhere no child draws — around the splash text on first paint and in
+    // stale tray cells after the last Agent disappears. The renderer's opaque
+    // base is the shared frame itself.
+    this.renderer.setBackgroundColor(RAMP_FALLBACK.background)
     this.keybindings = options.keybindings
     this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
     this.trayHidden = options.initialTrayHidden ?? false
@@ -1506,6 +1512,7 @@ export class Multiplexer {
 
   private onPalette(colors: TerminalColors): void {
     this.hostPalette = colors
+    this.renderer.setBackgroundColor(hostRamp(colors).background)
     this.applyModalPalette(colors)
     this.applyDividerPalette(colors)
     this.toast.applyPalette(colors)

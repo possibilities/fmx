@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type RGBA, type TerminalColors, TextRenderable } from "@opentui/core"
+import {
+  BoxRenderable,
+  type CapturedFrame,
+  type RGBA,
+  type TerminalColors,
+  TextRenderable,
+} from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
+import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
@@ -64,6 +71,48 @@ test("starts without an fx, hiding the tray and centering dimmed prefix actions"
     expect(tray.visible).toBe(true)
     expect(divider.visible).toBe(true)
     expect(emptyState.visible).toBe(false)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("paints the full owner frame when empty before and after the last Agent", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...agentOptions(),
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+  })
+  const expectOwnerBackground = (expected: number[]) => {
+    const frame = setup.captureSpans()
+    for (const [x, y] of [[0, 0], [25, 0], [27, 0], [79, 0], [0, 23], [79, 23]]) {
+      expect(backgroundAt(frame, x, y)).toEqual(expected)
+    }
+  }
+
+  try {
+    await multiplexer.start()
+    await setup.renderOnce()
+    expectOwnerBackground([28, 28, 28, 255])
+
+    multiplexer.setHostPalette(
+      hostPalette({}, { foreground: "#ffffff", background: "#000000" }),
+    )
+    await setup.renderOnce()
+    expectOwnerBackground([0, 0, 0, 255])
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("c")
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined)
+    await waitForText(setup, "fake fx ready")
+    const terminal = setup.renderer.root.findDescendantById("fx-1")
+    expect(terminal).toBeInstanceOf(FxTerminalRenderable)
+    if (!(terminal instanceof FxTerminalRenderable)) return
+    terminal.onData?.(Uint8Array.of(3, 3), "input")
+    await waitFor(() => setup.renderer.root.findDescendantById("fx-1") === undefined)
+    await setup.renderOnce()
+    expectOwnerBackground([0, 0, 0, 255])
   } finally {
     await multiplexer.shutdown()
   }
@@ -414,4 +463,37 @@ function hostPalette(
 
 function rgb(color: RGBA | undefined): number[] | undefined {
   return color?.toInts().slice(0, 3)
+}
+
+function backgroundAt(frame: CapturedFrame, x: number, y: number): number[] {
+  const line = frame.lines[y]
+  if (!line) throw new Error(`frame has no row ${y}`)
+  let column = 0
+  for (const span of line.spans) {
+    if (x < column + span.width) return span.bg.toInts()
+    column += span.width
+  }
+  throw new Error(`frame row ${y} has no column ${x}`)
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error("condition timed out")
+    await Bun.sleep(10)
+  }
+}
+
+async function waitForText(
+  setup: Awaited<ReturnType<typeof createTestRenderer>>,
+  expected: string,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await setup.renderOnce()
+    if (setup.captureCharFrame().includes(expected)) return
+    await Bun.sleep(10)
+  }
+  throw new Error(`did not render ${JSON.stringify(expected)}`)
 }
