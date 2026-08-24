@@ -360,12 +360,23 @@ export class ToolPanel {
       () => {
         if (this.wantsFocus && this.currentRuntime() === runtime) this.options.onFocusLost?.()
       },
+      () => this.dockSize(),
     )
     runtime.applyPalette(this.colors, this.themeMode, this.chromeRamp)
     this.runtimes.set(key, runtime)
     this.body.add(runtime.root)
     runtime.start()
     return runtime
+  }
+
+  /** The body's measurements, or what they will be: the dock's configured
+   * width, and the stage's height less the rule tab when it is shown. */
+  private dockSize(): TerminalSize {
+    const railRows = this.rail.visible ? 2 : 0
+    return {
+      cols: Math.max(1, this.body.width || this.width),
+      rows: Math.max(1, this.body.height || this.renderer.height - railRows),
+    }
   }
 
   private currentRuntime(): ToolRuntime | null {
@@ -385,7 +396,8 @@ class ToolRuntime {
   private readonly status: TextRenderable
   private transport: TerminalTransport | null = null
   private state: RuntimeState = "loading"
-  private size: TerminalSize = { cols: 80, rows: 24 }
+  /** Zero until OpenTUI reports one: an unmeasured tool asks the dock. */
+  private size: TerminalSize = { cols: 0, rows: 0 }
   private cursorReportAdapter = new CursorReportAdapter()
   private colors: TerminalColors | null = null
   private visible = false
@@ -400,6 +412,10 @@ class ToolRuntime {
     private readonly onReady: () => void,
     onFocusRequest: () => void,
     private readonly onUnavailable: () => void,
+    /** The dock's own measurements, for the window before OpenTUI lays this
+     * terminal out — which is every attach, since the runtime is built and
+     * started in one synchronous pass before any frame. */
+    private readonly dockSize: () => TerminalSize,
   ) {
     this.root = new BoxRenderable(renderer, {
       id: `fmx-tool-runtime-${definition.id}-${context.displayId}`,
@@ -542,10 +558,22 @@ class ToolRuntime {
     this.transport?.resize(this.size)
   }
 
+  /**
+   * What the tool is attached and resized at.
+   *
+   * The laid-out terminal when there is one, and the dock's own measurements
+   * before then. Never a fixed guess: a tool is attached in the same
+   * synchronous pass that creates it, so on every attach this runs before
+   * OpenTUI has sized anything, and the Companion applies whatever size it is
+   * given to the live PTY. Handing it 80x24 makes the tool reflow to a shape
+   * the dock never had and then back again, with the restore replaying across
+   * both — which is what a re-attach used to look like.
+   */
   private currentSize(): TerminalSize {
+    const dock = this.dockSize()
     return {
-      cols: Math.max(1, this.terminal.width || this.size.cols),
-      rows: Math.max(1, this.terminal.height || this.size.rows),
+      cols: Math.max(1, this.terminal.width || this.size.cols || dock.cols),
+      rows: Math.max(1, this.terminal.height || this.size.rows || dock.rows),
     }
   }
 }

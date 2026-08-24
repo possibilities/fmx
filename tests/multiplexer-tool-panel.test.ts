@@ -133,6 +133,32 @@ async function launchWithKeys(h: Awaited<ReturnType<typeof harness>>): Promise<v
   await h.setup.renderOnce()
 }
 
+test("a tool is attached at the dock's size, never at a guess it would reflow away from", async () => {
+  const h = await harness()
+  try {
+    await launchWithKeys(h)
+    h.setup.mockInput.pressKey("b", { ctrl: true })
+    h.setup.mockInput.pressKey("r")
+    await Bun.sleep(10)
+    await h.setup.renderOnce()
+
+    // A runtime is built and started in one synchronous pass, before OpenTUI
+    // has laid its terminal out — so the size it opens with can only come from
+    // the dock. 30 columns wide, the stage's 24 rows less the rule tab's two.
+    const panel = h.find("fmx-tool-panel")!
+    expect(panel.width).toBe(30)
+    expect(h.sessions.opens).toHaveLength(1)
+    expect(h.sessions.opens[0]!.size).toEqual({ cols: 30, rows: 22 })
+
+    // And the tool is never told a different shape afterwards: a live PTY
+    // resized to 80x24 and back is the reflow a re-attach used to show.
+    const transport = h.sessions.opens[0]!.transport
+    expect(transport.sizes.every((size) => size.cols === 30 && size.rows === 22)).toBe(true)
+  } finally {
+    await h.close()
+  }
+})
+
 test("configured Tool panels exist but start hidden and remember a resized width", async () => {
   const h = await harness()
   try {

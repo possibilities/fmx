@@ -181,6 +181,15 @@
   background, and fmx re-forwards the host palette into the panel's terminal.
   A panel opened before the host answers gets the fallback tier, like every
   other startup surface in that window; do not add special handling.
+- A tool is attached at the dock's size, never at a guess. A `ToolRuntime` is
+  built and started in one synchronous pass, so `currentSize()` always runs
+  before OpenTUI has laid its terminal out; the fallback is the dock's own
+  measurements (`ToolPanel.dockSize`), not 80x24. The Companion applies
+  whatever size an attach carries to the live PTY, so a guess makes the tool
+  reflow to a shape the dock never had and then back again, with the restore
+  replaying across both — which is what a re-attach used to look like. Keep
+  `size` starting at zero so an unmeasured tool asks the dock rather than
+  answering with a number nothing chose.
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
   non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.
