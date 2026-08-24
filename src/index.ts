@@ -207,14 +207,14 @@ async function main(): Promise<void> {
     // resize paints every physical terminal with a host-relative unused field;
     // OpenTUI then repaints only the sizing owner's shared frame. Larger
     // observers retain the field at the right and bottom.
-    runtimeResizeHandler = () => process.stdout.write(clearToUnusedSpace(runtimePalette, createdRenderer.themeMode))
+    runtimeResizeHandler = () => process.stdout.write(clearToUnusedSpace(runtimePalette))
     process.stdout.on("resize", runtimeResizeHandler)
     // A live host-theme change updates the shared frame through Multiplexer;
     // repaint the physical field too so larger observers do not retain the
     // previous theme's unused margins until another resize.
     runtimePaletteHandler = (colors) => {
       runtimePalette = colors
-      process.stdout.write(clearToUnusedSpace(colors, createdRenderer.themeMode))
+      process.stdout.write(clearToUnusedSpace(colors))
     }
     createdRenderer.on(CliRenderEvents.PALETTE, runtimePaletteHandler)
 
@@ -310,7 +310,7 @@ async function main(): Promise<void> {
     const hostPalette = await Promise.race([paletteDetection, app.waitUntilDone().then(() => null)])
     if (hostPalette) {
       runtimePalette = hostPalette
-      process.stdout.write(clearToUnusedSpace(hostPalette, createdRenderer.themeMode))
+      process.stdout.write(clearToUnusedSpace(hostPalette))
       app.setHostPalette(hostPalette)
     }
     app.unlockStartupChrome()

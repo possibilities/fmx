@@ -48,9 +48,9 @@ test(
       const observer = built.stories[palette].find((story) => story.id === "multiplexer-larger-observer")
       expect(observer).toBeDefined()
       const expectedUnused = {
-        dark: [17, 21, 26],
-        light: [242, 245, 245],
-        fallback: [21, 21, 21],
+        dark: [35, 40, 47],
+        light: [225, 229, 228],
+        fallback: [41, 41, 41],
       }[palette]
       expect(backgroundAt(observer!.frame, 85, 0)).toEqual(expectedUnused)
       expect(backgroundAt(observer!.frame, 0, 23)).toEqual(expectedUnused)

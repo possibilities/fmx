@@ -479,7 +479,7 @@ type MultiplexerStoryOptions = {
 function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiStoryContext) => Promise<void> {
   return async (context) => {
     if (options.sizingOwnerFrame) {
-      context.canvas.backgroundColor = unusedSpaceBackground(context.palette, context.themeMode)
+      context.canvas.backgroundColor = unusedSpaceBackground(context.palette)
       context.canvas.add(new BoxRenderable(context.setup.renderer, {
         id: "ui-gallery-sizing-owner-frame",
         position: "absolute",

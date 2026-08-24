@@ -123,10 +123,12 @@ _Avoid_: link rail, tab bar, underlined tab, accent tab.
 
 **Ramp** — the gray steps every surface fmx draws itself is painted in:
 foreground, accent, secondary, dim, and divider, plus a surface fill below
-the divider, each a fixed fraction of the way from the host terminal's
-background to its foreground in fx's own ratios (`hostRamp` in
-`src/host-palette.ts`). A host that answers no color query gets fx's dark
-grays exactly. Two hues survive it, each with one job: focus, the host's
+the divider and an unused-field fill below every surface, each a fixed
+fraction of the way from the host terminal's background to its foreground
+(`hostRamp` in `src/host-palette.ts`). The unused field is the 6% step and the
+surface fill the 12% step, so both remain visible even on a pure-black canvas.
+A host that answers no color query gets fx's dark grays and those two derived
+fills exactly. Two hues survive it, each with one job: focus, the host's
 blue, on the border of a surface that takes keys and on the caret and
 cursor; error, the host's red, on the border of a surface that reports a
 failure. A state is a glyph and a weight, never a hue.

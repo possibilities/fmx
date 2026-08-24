@@ -82,16 +82,17 @@ export function detectedTerminalColor(color: string | null | undefined): string 
 /**
  * The ramp: every color fmx paints on a surface of its own — the tray, the
  * Tools panel and its rule tab, the help and error modals, the launch dialog,
- * the toast.
+ * the toast, and the unused field around a smaller sizing owner.
  *
  * fx draws with five fixed grays. fmx reproduces the relationships between
  * them as blends between the host terminal's own background and foreground,
  * so fmx never paints a theme the terminal did not choose. The ratios are
  * fx's (fxnk `style/tokens.json`: 255/252/250/245/240 on a dark canvas,
  * 235/238/241/247/250 on a light one); the fallback tier, for a host that
- * answers no color query, is fx's dark column exactly. Two hues survive —
- * focus, the host's blue, and error, the host's red. Nothing else takes a
- * hue: state is carried by glyph and weight.
+ * answers no color query, keeps fx's dark column exactly and derives fmx's
+ * two fill steps from its endpoints. Two hues survive — focus, the host's
+ * blue, and error, the host's red. Nothing else takes a hue: state is carried
+ * by glyph and weight.
  */
 const RAMP_BLEND = {
   /** fx 252 — one step below primary: semantic-state text, a done marker. */
@@ -104,10 +105,13 @@ const RAMP_BLEND = {
   divider: 0.3,
   /** Below the divider: a raised fill — the active tray row, the toast body. */
   surface: 0.12,
+  /** Below every surface: the flat field outside a smaller sizing owner. */
+  unused: 0.06,
 } as const
 
 export const RAMP_FALLBACK = {
   background: "#1c1c1c",
+  unused: "#292929",
   surface: "#353535",
   divider: "#585858",
   dim: "#8a8a8a",
@@ -139,6 +143,7 @@ export function hostRamp(colors: TerminalColors | null): Ramp {
   const step = (amount: number) => mixHexColors(background, foreground, amount)
   return {
     background,
+    unused: step(RAMP_BLEND.unused),
     surface: step(RAMP_BLEND.surface),
     divider: step(RAMP_BLEND.divider),
     dim: step(RAMP_BLEND.dim),

@@ -191,7 +191,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         (session) => session.labels.kind === "runtime" && session.labels.home === homeOf(tempDirectory),
       )
     const clear = "\u001b[2J\u001b[H"
-    const unusedClear = `\u001b[48;2;21;21;21m${clear}\u001b[0m`
+    const unusedClear = `\u001b[48;2;41;41;41m${clear}\u001b[0m`
 
     const firstOutput = { output: "" }
     const first = spawnClient(firstOutput, 100, 24)

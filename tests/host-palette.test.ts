@@ -25,7 +25,7 @@ function host(
   }
 }
 
-test("a host that answers nothing gets fx's dark column verbatim", () => {
+test("a host that answers nothing gets the fallback Ramp verbatim", () => {
   expect(hostRamp(null)).toEqual(RAMP_FALLBACK)
   expect(hostRamp(host(null, null))).toEqual(RAMP_FALLBACK)
   expect(hasDetectedDefaults(null)).toBe(false)
@@ -49,6 +49,7 @@ test("blends every step from the host background toward its foreground in fx's r
   expect(hasDetectedDefaults(host("#f0f0f0", "#101010"))).toBe(true)
   expect(ramp.background).toBe("#101010")
   expect(ramp.foreground).toBe("#f0f0f0")
+  expect(ramp.unused).toBe(mixHexColors("#101010", "#f0f0f0", 0.06))
   expect(ramp.surface).toBe(mixHexColors("#101010", "#f0f0f0", 0.12))
   expect(ramp.divider).toBe(mixHexColors("#101010", "#f0f0f0", 0.3))
   expect(ramp.dim).toBe(mixHexColors("#101010", "#f0f0f0", 0.5))
