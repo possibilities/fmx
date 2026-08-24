@@ -6,7 +6,8 @@ import { AgentSocket } from "../src/agent-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
-import { rowText, SessionList, stateIcon, truncate } from "../src/session-list.ts"
+import { RAMP_FALLBACK } from "../src/host-palette.ts"
+import { rowText, SessionList, stateIcon, stateRole, truncate } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 
 const SESSION_ID = "909bc46b64721838"
@@ -32,6 +33,95 @@ test("gives each state its own icon", () => {
   expect(stateIcon("done", null)).toBe("✓")
   expect(stateIcon("idle", null)).toBe("○")
   expect(stateIcon("unknown", null)).toBe("·")
+})
+
+test("draws state as a step of the ramp, never a hue", () => {
+  expect(stateRole("blocked")).toBe("foreground")
+  expect(stateRole("done")).toBe("accent")
+  expect(stateRole("working")).toBe("dim")
+  expect(stateRole("idle")).toBe("dim")
+  expect(stateRole("unknown")).toBe("dim")
+})
+
+test("sets the blocked glyph bold in the foreground and the done glyph in the accent step", async () => {
+  const { setup, list } = await createList(30, 10)
+  try {
+    list.render(
+      buildTree([
+        entry({ agentId: 1, state: "blocked", attention: "permission" }),
+        entry({ agentId: 2, sessionId: "5a75126ce54edb04", state: "done" }),
+      ]),
+      26,
+    )
+    await setup.renderOnce()
+    const glyph = (id: number) => {
+      const text = setup.renderer.root.findDescendantById(`fmx-session-row-text-agent-${id}`) as TextRenderable
+      return text.chunks[1]!
+    }
+    expect(glyph(1).text).toBe("× ")
+    expect(glyph(1).attributes! & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
+    expect(glyph(1).fg?.toInts().slice(0, 3)).toEqual([238, 238, 238])
+    expect(glyph(2).text).toBe("✓ ")
+    expect((glyph(2).attributes ?? 0) & TextAttributes.BOLD).toBe(0)
+    expect(glyph(2).fg?.toInts().slice(0, 3)).toEqual([208, 208, 208])
+  } finally {
+    list.root.destroy()
+    setup.renderer.destroy()
+  }
+})
+
+test("keeps the active row legible when a light host answers under the startup lock", async () => {
+  const { setup, list } = await createList(30, 10)
+  const light: TerminalColors = {
+    palette: Array(16).fill(null),
+    defaultForeground: "#1c1c1c",
+    defaultBackground: "#ffffff",
+    cursorColor: null,
+    mouseForeground: null,
+    mouseBackground: null,
+    tekForeground: null,
+    tekBackground: null,
+    highlightBackground: null,
+    highlightForeground: null,
+  }
+  const rows = () => {
+    const active = setup.renderer.root.findDescendantById("fmx-session-row-agent-1") as BoxRenderable
+    const activeText = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
+    const otherText = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-2") as TextRenderable
+    return {
+      fill: active.backgroundColor.toInts().slice(0, 3),
+      activeGlyph: activeText.chunks[1]!.fg?.toInts().slice(0, 3),
+      otherGlyph: otherText.chunks[1]!.fg?.toInts().slice(0, 3),
+    }
+  }
+  const tree = buildTree([
+    entry({ agentId: 1, state: "blocked", attention: "permission", active: true }),
+    entry({ agentId: 2, sessionId: "5a75126ce54edb04", state: "blocked", attention: "permission" }),
+  ])
+  try {
+    // Nothing answered before first paint: the fallback tier, then locked.
+    list.applyPalette(null)
+    list.render(tree, 26)
+    await setup.renderOnce()
+    expect(rows()).toEqual({ fill: [53, 53, 53], activeGlyph: [238, 238, 238], otherGlyph: [238, 238, 238] })
+
+    // The late answer restyles the other rows but not the fill, and what
+    // sits on the fill stays painted from the fill's own ramp.
+    list.applyPalette(light, true)
+    list.render(tree, 26)
+    await setup.renderOnce()
+    expect(rows()).toEqual({ fill: [53, 53, 53], activeGlyph: [238, 238, 238], otherGlyph: [28, 28, 28] })
+
+    // Unlocked, a real theme change moves everything together.
+    list.applyPalette(light)
+    list.render(tree, 26)
+    await setup.renderOnce()
+    expect(rows()).toEqual({ fill: [228, 228, 228], activeGlyph: [28, 28, 28], otherGlyph: [28, 28, 28] })
+    expect(RAMP_FALLBACK.surface).toBe("#353535")
+  } finally {
+    list.root.destroy()
+    setup.renderer.destroy()
+  }
 })
 
 test("varies the blocked icon by what fx is waiting for", () => {

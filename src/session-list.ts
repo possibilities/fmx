@@ -97,6 +97,10 @@ export function rowText(row: TreeRow, width: number): string {
 export class SessionList {
   readonly root: BoxRenderable
   private ramp: Ramp = RAMP_FALLBACK
+  /** The ramp the active row's fill was chosen from. Under the startup lock
+   * it lags `ramp`, and everything drawn on that fill is drawn from it, so a
+   * fallback-dark fill never carries a light host's dark glyph. */
+  private fillRamp: Ramp = RAMP_FALLBACK
   private sessionColor: RGBA | string = SESSION_COLOR
   private rows: BoxRenderable[] = []
 
@@ -122,15 +126,19 @@ export class SessionList {
   /**
    * The selected-row fill and the agent names are on screen from the first
    * frame; while the startup chrome is locked, a late initial palette answer
-   * themes everything else and leaves those two as they were drawn.
+   * themes everything else and leaves those two as they were drawn — the
+   * fill together with the ramp it came from, which is what the active row's
+   * glyph is painted in. Names take the dim step only once both host
+   * defaults have answered; until then they are the terminal's own gray.
    */
   applyPalette(colors: TerminalColors | null, preserveStartupChrome = false): void {
-    const surface = this.ramp.surface
+    const fillRamp = this.fillRamp
     const sessionColor = this.sessionColor
     this.ramp = hostRamp(colors)
+    this.fillRamp = this.ramp
     this.sessionColor = hasDetectedDefaults(colors) ? this.ramp.dim : SESSION_COLOR
     if (preserveStartupChrome) {
-      this.ramp = { ...this.ramp, surface }
+      this.fillRamp = fillRamp
       this.sessionColor = sessionColor
     }
   }
@@ -153,7 +161,7 @@ export class SessionList {
       paddingLeft: ROW_PADDING_LEFT,
       // Only the active row is filled. Its ancestors are marked by weight, so
       // two faint backgrounds never have to be told apart.
-      backgroundColor: row.active ? this.ramp.surface : undefined,
+      backgroundColor: row.active ? this.fillRamp.surface : undefined,
       onMouseDown: (event) => {
         // Navigation is a press action, like a keybinding: waiting for release
         // makes a fast switch feel delayed by the human's click duration.
@@ -179,9 +187,11 @@ export class SessionList {
   }
 
   private styleRow(row: TreeRow, width: number): StyledText {
-    const chunks: TextChunk[] = [fg(this.ramp.foreground)(indentFor(row.depth))]
+    // What sits on the active row's fill is painted from the fill's own ramp.
+    const ramp = row.active ? this.fillRamp : this.ramp
+    const chunks: TextChunk[] = [fg(ramp.foreground)(indentFor(row.depth))]
     if (isAgentRow(row)) {
-      const glyph = fg(this.ramp[stateRole(row.state)])(`${stateIcon(row.state, row.attention)} `)
+      const glyph = fg(ramp[stateRole(row.state)])(`${stateIcon(row.state, row.attention)} `)
       chunks.push(row.state === "blocked" ? bold(glyph) : glyph)
       chunks.push(fg(this.sessionColor)(rowText(row, width)))
       return new StyledText(chunks)

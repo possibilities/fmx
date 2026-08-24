@@ -12,7 +12,7 @@ import {
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
-import { RAMP_FALLBACK } from "../src/host-palette.ts"
+import { hostRamp, RAMP_FALLBACK } from "../src/host-palette.ts"
 import {
   UI_GALLERY_COMPONENTS,
   UI_GALLERY_PALETTE_NAMES,
@@ -855,26 +855,17 @@ function frameText(
   return new StyledText(chunks)
 }
 
+/** The gallery's own chrome is on the same ramp as what it showcases: gray
+ * steps from the theme's host palette, focus for the one live signal. */
 function galleryTheme(name: UiGalleryPaletteName): GalleryTheme {
-  const palette = UI_GALLERY_PALETTES[name]
-  if (!palette) {
-    // Nothing detected: the gallery's own chrome takes the same tier fmx does.
-    return {
-      background: RGBA.fromHex(RAMP_FALLBACK.background),
-      foreground: RGBA.fromHex(RAMP_FALLBACK.foreground),
-      dim: RGBA.fromHex(RAMP_FALLBACK.dim),
-      accent: RGBA.fromHex(RAMP_FALLBACK.accent),
-      signal: RGBA.fromHex(RAMP_FALLBACK.focus),
-      selectedBackground: RGBA.fromHex(RAMP_FALLBACK.surface),
-    }
-  }
+  const ramp = hostRamp(UI_GALLERY_PALETTES[name])
   return {
-    background: RGBA.fromHex(palette.defaultBackground ?? "#171c23"),
-    foreground: RGBA.fromHex(palette.defaultForeground ?? "#dbe3eb"),
-    dim: RGBA.fromHex(palette.palette[8] ?? "#687384"),
-    accent: RGBA.fromHex(palette.palette[6] ?? "#67c7c2"),
-    signal: RGBA.fromHex(palette.palette[3] ?? "#e5c07b"),
-    selectedBackground: RGBA.fromHex(name === "dark" ? "#2a3640" : "#d5dfde"),
+    background: RGBA.fromHex(ramp.background),
+    foreground: RGBA.fromHex(ramp.foreground),
+    dim: RGBA.fromHex(ramp.dim),
+    accent: RGBA.fromHex(ramp.accent),
+    signal: RGBA.fromHex(ramp.focus),
+    selectedBackground: RGBA.fromHex(ramp.surface),
   }
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
+import { BoxRenderable, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { mkdir, mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -223,6 +223,61 @@ test("cycles the project by letter and filters it in the picker", async () => {
     await setup.renderOnce()
     expect(picker.visible).toBe(false)
     expect(setup.captureCharFrame()).toContain("project   ~/code/zulu")
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("paints the picker as fx's completion menu: the highlighted row bold in the foreground", async () => {
+  const { home, code } = await workspace()
+  const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
+  const multiplexer = launcher(setup, home, code)
+  const palette: Array<string | null> = Array(16).fill(null)
+  palette[4] = "#3366cc"
+  const host: TerminalColors = {
+    palette,
+    defaultForeground: "#f0f0f0",
+    defaultBackground: "#101010",
+    cursorColor: null,
+    mouseForeground: null,
+    mouseBackground: null,
+    tekForeground: null,
+    tekBackground: null,
+    highlightBackground: null,
+    highlightForeground: null,
+  }
+
+  try {
+    multiplexer.setHostPalette(host)
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("l")
+    setup.mockInput.pressTab()
+    setup.mockInput.pressKey(" ")
+    await setup.renderOnce()
+
+    // The picker opens on the row's current project — fmx, second of three
+    // alphabetically — so find the highlighted row by its caret.
+    const rows = [0, 1, 2]
+      .map((index) => setup.renderer.root.findDescendantById(`fmx-launch-picker-text-${index}`))
+      .filter((row): row is TextRenderable => row instanceof TextRenderable)
+    expect(rows).toHaveLength(3)
+    const highlighted = rows.find((row) => row.chunks[0]?.text === "▎ ")
+    const other = rows.find((row) => row.chunks[0]?.text !== "▎ ")
+    expect(highlighted).toBeDefined()
+    expect(other).toBeDefined()
+    if (!highlighted || !other) return
+
+    const [caret, chosen] = highlighted.chunks
+    expect(caret?.text).toBe("▎ ")
+    expect(caret?.fg?.toInts().slice(0, 3)).toEqual([51, 102, 204])
+    expect((caret?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
+    expect((chosen?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
+    expect(chosen?.fg?.toInts().slice(0, 3)).toEqual([240, 240, 240])
+
+    const [, unchosen] = other.chunks
+    expect((unchosen?.attributes ?? 0) & TextAttributes.BOLD).toBe(0)
+    // secondary: three quarters of the way from the background to the foreground.
+    expect(unchosen?.fg?.toInts().slice(0, 3)).toEqual([184, 184, 184])
   } finally {
     await multiplexer.shutdown()
   }

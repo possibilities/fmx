@@ -106,9 +106,12 @@
   divider until that initial query settles; a late answer may theme everything
   else but must not repaint those two startup surfaces. Unlock afterward so a
   real later theme change still applies.
-  Session names are indexed ANSI gray (slot 8, dim on any theme) until the
-  host answers and the Ramp's dim step after; under that lock a late answer
-  leaves them, like the fill and the divider, as they were first drawn.
+  Session names are indexed ANSI gray (slot 8, dim on any theme) until both
+  host defaults have answered and the Ramp's dim step after; under that lock
+  a late answer leaves them, like the fill and the divider, as they were
+  first drawn. The fill is kept together with the ramp it came from, and the
+  active row's glyph is painted from that ramp: a fallback-dark fill under a
+  late light answer must not carry the light host's near-black foreground.
 - A Runtime resize clears the whole physical screen before OpenTUI's next
   frame. That clear is what leaves genuinely blank unused space on a larger
   observing Client when a smaller Client becomes sizing owner; do not replace
