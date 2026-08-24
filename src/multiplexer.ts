@@ -144,7 +144,6 @@ const PROMPT_SUBMIT_MS = 120
 /** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
-const EMPTY_STATE_CONTENT = "prefix+l to launch agent"
 export const EXIT_CONFIRMATION_TIMEOUT_MS = 2_000
 const MAX_SCROLLBACK_BYTES = 10_000_000
 
@@ -657,7 +656,7 @@ export class Multiplexer {
     })
     this.emptyState = new TextRenderable(renderer, {
       id: "fmx-empty-state",
-      content: EMPTY_STATE_CONTENT,
+      content: emptyStateContent(this.keybindings),
       fg: RAMP_FALLBACK.dim,
       selectable: false,
     })
@@ -1245,7 +1244,7 @@ export class Multiplexer {
     const palette = hostRamp(this.hostPalette)
     this.emptyState.content = confirmingExit
       ? `press ${this.exitConfirmationKey ?? "ctrl+c"} again to exit`
-      : EMPTY_STATE_CONTENT
+      : emptyStateContent(this.keybindings)
     this.emptyState.fg = confirmingExit ? palette.foreground : palette.dim
   }
 
@@ -2505,6 +2504,19 @@ function styledSpawnErrorContent(heading: string, lines: string[], ramp: Ramp): 
 
 function helpKeyColumn(entries: HelpEntry[]): number {
   return Math.max(...entries.map(([key]) => key.length)) + 2
+}
+
+/**
+ * The one thing an empty Home offers. The key is named from the binding, not
+ * from a literal, because the launch dialog is the only way a key starts an
+ * agent: a rebound `keys.launch` that still read `prefix+l` here would name a
+ * key that does nothing. `prefix` stays the word it is — the help modal spells
+ * the prefix out on its own row, and this line is not the place to repeat it.
+ * A binding the config disabled says so rather than naming nothing.
+ */
+function emptyStateContent(keybindings: Keybindings): string {
+  if (keybindings.launch.length === 0) return "set keys.launch in the config to launch an agent"
+  return `${bindingLabel(keybindings.launch)} to launch agent`
 }
 
 function bindingLabel(bindings: ResolvedBinding[]): string {

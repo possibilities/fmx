@@ -80,6 +80,39 @@ test("starts without an fx, hiding the tray and centering dimmed prefix actions"
   }
 })
 
+test("names the launch key from its binding, and says so when there is none", async () => {
+  const label = async (keys: Record<string, unknown>) => {
+    const setup = await createTestRenderer({ width: 80, height: 24 })
+    const multiplexer = new Multiplexer(setup.renderer, {
+      ...agentOptions(),
+      fxPath: FAKE_FX,
+      cwd: process.cwd(),
+      keybindings: resolveKeybindings(keys).keybindings,
+    })
+    try {
+      await multiplexer.start()
+      await setup.renderOnce()
+      return setup.captureCharFrame()
+    } finally {
+      await multiplexer.shutdown()
+    }
+  }
+
+  expect(await label({})).toContain("prefix+l to launch agent")
+  // The launch dialog is the only way a key starts an agent, so a rebound
+  // key has to be the one the empty state names.
+  const rebound = await label({ launch: "prefix+g" })
+  expect(rebound).toContain("prefix+g to launch agent")
+  expect(rebound).not.toContain("prefix+l to launch agent")
+  // A direct chord is its own whole label, with no "prefix+" in front of it.
+  expect(await label({ launch: "alt+n" })).toContain("alt+n to launch agent")
+  // The prefix stays the word it is: the help modal spells it out on its own
+  // row, and this line does not repeat it.
+  expect(await label({ prefix: "ctrl+space" })).not.toContain("ctrl+space+l")
+  // Nothing is bound, so nothing is named.
+  expect(await label({ launch: [] })).toContain("set keys.launch in the config")
+})
+
 test("paints the full owner frame when empty before and after the last Agent", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
   const multiplexer = new Multiplexer(setup.renderer, {

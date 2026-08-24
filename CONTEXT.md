@@ -238,10 +238,12 @@ thing the launch dialog's Worktree row has left to ask.
 _Avoid_: branch, checkout, clone.
 
 **Project** — a directory an agent can be started in, which is to say a
-directory inside a git repository. A Project root and its children qualify or
-they are not offered, a named directory that does not is refused, and a
-repository with nothing committed yet is a Project that cannot offer a
-Worktree.
+directory inside a git repository whose branch can be named. A Project root
+and its children qualify or they are not offered, a named directory that does
+not is refused, and a repository with nothing committed yet is a Project — its
+unborn HEAD still names the branch the Session list draws — that simply cannot
+offer a Worktree. A HEAD naming neither a ref nor a commit names no branch,
+so it is not a Project at all.
 _Avoid_: workspace, folder, tracked directory.
 
 **Project picker** — the filterable list the launch dialog opens on space.

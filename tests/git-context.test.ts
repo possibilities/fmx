@@ -53,12 +53,36 @@ test("answers for a repository with nothing committed yet", async () => {
       stdout: "ignore",
       stderr: "ignore",
     }).exited
+    // The branch is what the tray draws for it, so an unborn repository is a
+    // project exactly because this comes back with a name.
     const context = await readGitContext(directory)
     expect(context?.root).toBe(directory)
     expect(context?.mainRoot).toBe(directory)
     expect(context?.branch).toBe("trunk")
+    expect(treeNameFor(context)).toBe("trunk")
   } finally {
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("answers null for a repository whose HEAD names no branch", async () => {
+  // A project has to be able to show a branch, so a HEAD that names neither a
+  // ref nor a commit is not one — the unborn fallback answers only when
+  // `symbolic-ref` gives it a name to draw.
+  const scratch = await realpath(await mkdtemp(join(tmpdir(), "fmx-git-nameless-")))
+  try {
+    for (const [name, head] of [["empty", ""], ["garbage", "not a ref\n"], ["dangling", "ref: refs/heads/\n"]]) {
+      const directory = join(scratch, name!)
+      await mkdir(directory, { recursive: true })
+      await Bun.spawn(["git", "-C", directory, "init", "--quiet"], {
+        stdout: "ignore",
+        stderr: "ignore",
+      }).exited
+      await Bun.write(join(directory, ".git", "HEAD"), head!)
+      expect(await readGitContext(directory)).toBeNull()
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
   }
 })
 

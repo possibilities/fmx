@@ -25,10 +25,16 @@
   or a command — with `readGitContext`, while the scan and the control
   socket's parameter checks use the synchronous `isRepositoryDirectory` walk
   because neither can wait for git. A repository with nothing committed yet is
-  a project; it just cannot offer a Worktree, and `readHeadCommit` is what
-  answers that — it keeps git's own words for every other failure, because
-  `isRepositoryDirectory` can over-offer a directory that only looks like a
-  checkout.
+  a project — its unborn HEAD still names the branch the tray draws, which is
+  the whole reason it qualifies — it just cannot offer a Worktree, and
+  `readHeadCommit` is what answers that: it keeps git's own words for every
+  other failure, because `isRepositoryDirectory` can over-offer a directory
+  that only looks like a checkout. A HEAD that names neither a ref nor a
+  commit names no branch, so `readGitContext` answers null and it is no
+  project.
+  The empty state names the launch key from `keys.launch` rather than a
+  literal: the launch dialog is the only way a key starts an agent, so a
+  rebound key that still read `prefix+l` would name a dead one.
   That first root is commonly a directory of repositories rather than one
   itself, so a launch naming no project and coming from no agent falls back
   to the first project on offer, exactly as the dialog's project row does; a

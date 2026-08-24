@@ -23,6 +23,8 @@ type Setup = Awaited<ReturnType<typeof createTestRenderer>>
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-control-")))
   const code = join(home, "code")
+  // Unborn repositories: nothing is committed, which is what proves an
+  // unborn HEAD still draws its branch in the tray rows asserted below.
   for (const name of ["alpha", "beta"]) await initRepository(join(code, name), "trunk")
   return { home, code }
 }
