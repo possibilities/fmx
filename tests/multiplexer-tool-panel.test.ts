@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, TextAttributes, TextRenderable } from "@opentui/core"
+import { BoxRenderable, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { mkdir, mkdtemp, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -49,9 +49,25 @@ class FakeToolTransport implements TerminalTransport {
   detached = false
 
   constructor(output: string) {
-    const bytes = new TextEncoder().encode(output)
-    this.relay.emit((handlers) => handlers.output(bytes))
+    this.output(output)
     this.relay.emit((handlers) => handlers.ready())
+  }
+
+  output(text: string): void {
+    const bytes = new TextEncoder().encode(text)
+    this.relay.emit((handlers) => handlers.output(bytes))
+  }
+
+  restoreBegin(): void {
+    this.relay.emit((handlers) => handlers.restoreBegin())
+  }
+
+  clearWrites(): void {
+    this.writes.length = 0
+  }
+
+  writtenText(): string {
+    return this.writes.map((bytes) => new TextDecoder().decode(bytes)).join("")
   }
 
   bind(handlers: TransportHandlers): void {
@@ -171,6 +187,74 @@ test("configured Tool panels exist but start hidden and remember a resized width
     expect(panel.width).toBe(21)
     expect(h.visibility).toEqual([true, false])
     if (toolTerminal instanceof FmxTerminalRenderable) expect(toolTerminal.selectable).toBe(false)
+  } finally {
+    await h.close()
+  }
+})
+
+test("keeps visible Tools-panel chrome on its first-frame Ramp through a late initial palette", async () => {
+  const h = await harness({ initialPanelVisible: true })
+  try {
+    h.multiplexer.lockStartupChrome(null)
+    await launchWithKeys(h)
+
+    const panel = h.find("fmx-tool-panel")!
+    expect(panel.visible).toBe(true)
+    const rule = h.setup.renderer.root.findDescendantById("fmx-tool-panel-rule") as TextRenderable
+    const activeLink = h.setup.renderer.root.findDescendantById(
+      "fmx-tool-panel-tab-label-diff",
+    ) as TextRenderable
+    const inactiveLink = h.setup.renderer.root.findDescendantById(
+      "fmx-tool-panel-tab-label-tests",
+    ) as TextRenderable
+    const contextStatus = h.setup.renderer.root.findDescendantById("fmx-tool-panel-status") as TextRenderable
+    const runtimeStatus = h.setup.renderer.root.findDescendantById("fmx-tool-status-diff-1") as TextRenderable
+    const chrome = () => ({
+      rule: rule.chunks.map((chunk) => chunk.fg?.toInts().slice(0, 3)),
+      active: activeLink.chunks[0]?.fg?.toInts().slice(0, 3),
+      inactive: inactiveLink.chunks[0]?.fg?.toInts().slice(0, 3),
+      contextStatus: contextStatus.fg.toInts().slice(0, 3),
+      runtimeStatus: runtimeStatus.fg.toInts().slice(0, 3),
+    })
+    const firstFrame = chrome()
+    const lateLight = hostPalette("#101010", "#f0f0f0")
+
+    h.multiplexer.setHostPalette(lateLight)
+    expect(chrome()).toEqual(firstFrame)
+    const toolTransport = h.sessions.opens[0]!.transport
+    toolTransport.output("\x1b]11;?\x1b\\")
+    expect(toolTransport.writtenText()).toContain("\x1b]11;rgb:f0f0/f0f0/f0f0\x1b\\")
+
+    toolTransport.clearWrites()
+    toolTransport.restoreBegin()
+    toolTransport.output("\x1b]11;?\x1b\\")
+    expect(toolTransport.writtenText()).toContain("\x1b]11;rgb:f0f0/f0f0/f0f0\x1b\\")
+
+    h.multiplexer.unlockStartupChrome()
+    h.multiplexer.setHostPalette(lateLight)
+    expect(chrome()).not.toEqual(firstFrame)
+  } finally {
+    await h.close()
+  }
+})
+
+test("gives a new Tool runtime live colors without repainting locked status chrome", async () => {
+  const h = await harness({ initialPanelVisible: true })
+  const lateLight = hostPalette("#101010", "#f0f0f0")
+  try {
+    h.multiplexer.lockStartupChrome(null)
+    h.multiplexer.setHostPalette(lateLight)
+    await launchWithKeys(h)
+
+    const runtimeStatus = h.setup.renderer.root.findDescendantById("fmx-tool-status-diff-1") as TextRenderable
+    expect(runtimeStatus.fg.toInts().slice(0, 3)).toEqual([138, 138, 138])
+    const toolTransport = h.sessions.opens[0]!.transport
+    toolTransport.output("\x1b]11;?\x1b\\")
+    expect(toolTransport.writtenText()).toContain("\x1b]11;rgb:f0f0/f0f0/f0f0\x1b\\")
+
+    h.multiplexer.unlockStartupChrome()
+    h.multiplexer.setHostPalette(lateLight)
+    expect(runtimeStatus.fg.toInts().slice(0, 3)).not.toEqual([138, 138, 138])
   } finally {
     await h.close()
   }
@@ -365,3 +449,18 @@ test("panel controls report unavailability when no tool is configured", async ()
     await h.close()
   }
 })
+
+function hostPalette(foreground: string, background: string): TerminalColors {
+  return {
+    palette: Array(16).fill(null),
+    defaultForeground: foreground,
+    defaultBackground: background,
+    cursorColor: null,
+    mouseForeground: null,
+    mouseBackground: null,
+    tekForeground: null,
+    tekBackground: null,
+    highlightBackground: null,
+    highlightForeground: null,
+  }
+}

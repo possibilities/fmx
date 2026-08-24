@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
+import { BoxRenderable, type TerminalColors } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
+import type { TerminalSize, TerminalTransport, TransportHandlers } from "../src/agent-transport.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
@@ -72,6 +73,38 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   while (!(await condition())) {
     if (Date.now() >= deadline) throw new Error("condition timed out")
     await Bun.sleep(10)
+  }
+}
+
+class PaletteProbeTransport implements TerminalTransport {
+  readonly writes: Uint8Array[] = []
+  private handlers: TransportHandlers | null = null
+
+  bind(handlers: TransportHandlers): void {
+    this.handlers = handlers
+  }
+
+  write(bytes: Uint8Array): void {
+    this.writes.push(bytes.slice())
+  }
+
+  resize(_size: TerminalSize): void {}
+
+  detach(): void {}
+
+  restoreAndQueryBackground(): void {
+    if (!this.handlers) throw new Error("transport is not bound")
+    this.handlers.restoreBegin()
+    this.handlers.output(new TextEncoder().encode("\x1b]11;?\x1b\\"))
+    this.handlers.ready()
+  }
+
+  clearWrites(): void {
+    this.writes.length = 0
+  }
+
+  writtenText(): string {
+    return this.writes.map((bytes) => new TextDecoder().decode(bytes)).join("")
   }
 }
 
@@ -152,6 +185,39 @@ test("selects the saved survivor before restoring any terminal", async () => {
     expect((setup.renderer.root.findDescendantById("fx-2") as BoxRenderable).visible).toBe(true)
     expect(attached[0]).toBe(second.agentId)
     expect(selections).toEqual([second.agentId])
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("reapplies the host palette after RestoreBegin", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+  const options = agentOptions()
+  const claim = options.manifest.claim({
+    cwd: process.cwd(),
+    fxPath: FAKE_FX,
+    fxArgs: [],
+    createdAt: 1,
+  }).result
+  const survivor = await options.manifest.markRunning(claim.agentId)
+  const transport = new PaletteProbeTransport()
+  options.transport.attachBehavior = () => transport
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...options,
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    survivors: [survivor],
+  })
+  const palette = hostPalette("#101010", "#f0f0f0")
+
+  try {
+    await multiplexer.start()
+    multiplexer.setHostPalette(palette)
+
+    transport.clearWrites()
+    transport.restoreAndQueryBackground()
+    expect(transport.writtenText()).toContain("\x1b]11;rgb:f0f0/f0f0/f0f0\x1b\\")
   } finally {
     await multiplexer.shutdown()
   }
@@ -251,3 +317,18 @@ test("a lost transport that can be reached again is adopted and the Agent stays"
     await h.close()
   }
 })
+
+function hostPalette(foreground: string, background: string): TerminalColors {
+  return {
+    palette: Array(16).fill(null),
+    defaultForeground: foreground,
+    defaultBackground: background,
+    cursorColor: null,
+    mouseForeground: null,
+    mouseBackground: null,
+    tekForeground: null,
+    tekBackground: null,
+    highlightBackground: null,
+    highlightForeground: null,
+  }
+}

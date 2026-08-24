@@ -512,8 +512,9 @@ export class Multiplexer {
   private spawnErrorLines: string[] = []
   private spawnErrorHeading = "fx did not start"
   private hostPalette: TerminalColors | null = null
-  /** The first frame owns one coherent selected-row and divider palette. A
-   * late answer may theme everything else, but cannot repaint those two. */
+  /** The first frame owns one coherent Ramp across the selected row,
+   * structural dividers, and Tools-panel chrome. A late answer may theme the
+   * embedded terminals and other surfaces, but cannot mix new grays into it. */
   private startupChromeLocked = false
   private shuttingDown = false
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
@@ -801,7 +802,7 @@ export class Multiplexer {
     this.onPalette(colors)
   }
 
-  /** Choose the selected-row and divider colors before OpenTUI may draw them. */
+  /** Choose the startup chrome Ramp before OpenTUI may draw it. */
   lockStartupChrome(colors: TerminalColors | null): void {
     if (this.shuttingDown) return
     if (colors) this.onPalette(colors)
@@ -1538,7 +1539,7 @@ export class Multiplexer {
         this.panelDivider.focusedBorderColor = color
       }
     }
-    this.toolPanel?.applyPalette(colors, this.renderer.themeMode)
+    this.toolPanel?.applyPalette(colors, this.renderer.themeMode, this.startupChromeLocked)
     this.launchDialog.applyPalette(colors)
     this.sessionList.applyPalette(colors, this.startupChromeLocked)
     this.refreshSessionList()

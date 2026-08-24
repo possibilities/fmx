@@ -12,7 +12,13 @@ import {
 import type { PanelDefinition } from "./config.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import { FmxTerminalRenderable } from "./fx-terminal.ts"
-import { hasDetectedBackground, hostRamp, themeModeReport } from "./host-palette.ts"
+import {
+  hasDetectedBackground,
+  hostRamp,
+  RAMP_FALLBACK,
+  type Ramp,
+  themeModeReport,
+} from "./host-palette.ts"
 import type { TerminalSize, TerminalTransport } from "./agent-transport.ts"
 import type { PanelContext, PanelSessionController } from "./panel-session.ts"
 import { sanitizeTitle } from "./title-parser.ts"
@@ -71,6 +77,10 @@ export class ToolPanel {
   private destroyed = false
   private colors: TerminalColors | null = null
   private themeMode: ThemeMode | null = null
+  /** The Ramp fmx-owned panel chrome was first drawn from. A late initial
+   * palette may update the embedded terminal without mixing a new rule/status
+   * gray with the startup dividers already on screen. */
+  private chromeRamp: Ramp = RAMP_FALLBACK
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -227,11 +237,16 @@ export class ToolPanel {
     for (const runtime of this.runtimes.values()) runtime.blur()
   }
 
-  applyPalette(colors: TerminalColors | null, themeMode: ThemeMode | null): void {
+  applyPalette(
+    colors: TerminalColors | null,
+    themeMode: ThemeMode | null,
+    preserveStartupChrome = false,
+  ): void {
     this.colors = colors
     this.themeMode = themeMode
-    this.contextStatus.fg = hostRamp(colors).dim
-    for (const runtime of this.runtimes.values()) runtime.applyPalette(colors, themeMode)
+    if (!preserveStartupChrome) this.chromeRamp = hostRamp(colors)
+    this.contextStatus.fg = this.chromeRamp.dim
+    for (const runtime of this.runtimes.values()) runtime.applyPalette(colors, themeMode, this.chromeRamp)
     this.refreshLinks()
   }
 
@@ -285,7 +300,7 @@ export class ToolPanel {
   /** Repaint the rule tab: the selected label bold in the foreground, the
    * others dim, and the hairline beneath drawn heavy under the selection. */
   private refreshLinks(): void {
-    const colors = hostRamp(this.colors)
+    const colors = this.chromeRamp
     const rule: StyledText["chunks"] = []
     let drawn = 0
     for (const entry of this.entries) {
@@ -346,7 +361,7 @@ export class ToolPanel {
         if (this.wantsFocus && this.currentRuntime() === runtime) this.options.onFocusLost?.()
       },
     )
-    runtime.applyPalette(this.colors, this.themeMode)
+    runtime.applyPalette(this.colors, this.themeMode, this.chromeRamp)
     this.runtimes.set(key, runtime)
     this.body.add(runtime.root)
     runtime.start()
@@ -445,9 +460,9 @@ class ToolRuntime {
     this.terminal.blur()
   }
 
-  applyPalette(colors: TerminalColors | null, themeMode: ThemeMode | null): void {
+  applyPalette(colors: TerminalColors | null, themeMode: ThemeMode | null, chromeRamp: Ramp): void {
     this.colors = colors
-    this.status.fg = hostRamp(colors).dim
+    this.status.fg = chromeRamp.dim
     if (!colors || !this.terminal.applyHostPalette(colors)) return
     if (this.transport && themeMode && hasDetectedBackground(colors)) {
       this.writeInput(themeModeReport(themeMode), "response")

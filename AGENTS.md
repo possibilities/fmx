@@ -110,10 +110,12 @@
   `index.ts` deliberately constructs `CliRenderer` before calling
   `setupTerminal`: its input parser can collect palette replies while no
   alternate-screen frame exists. Before first paint it gives a responsive host
-  one 60 Hz frame to answer, then locks the chosen selected-row background and
-  divider until that initial query settles; a late answer may theme everything
-  else but must not repaint those two startup surfaces. Unlock afterward so a
-  real later theme change still applies.
+  one 60 Hz frame to answer, then locks the chosen selected-row background,
+  structural dividers, rule-tab chrome, and fmx-owned Tools-panel status text
+  until that initial query settles; a late answer may theme everything else —
+  including the embedded terminals — but must not mix new grays into those
+  startup surfaces. Unlock afterward so a real later theme change still
+  applies.
   Session names are indexed ANSI gray (slot 8, dim on any theme) until both
   host defaults have answered and the Ramp's dim step after; under that lock
   a late answer leaves them, like the fill and the divider, as they were
