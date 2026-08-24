@@ -2,12 +2,6 @@
 
 **fmx** /fʌks/ — An orchestration surface for [fx](https://fx.sh/).
 
-It is built the way Derek Sivers is [building his house](https://sive.rs/fit):
-defer the decision, live with what is there, and add only what proves
-necessary. Nothing here is predicted — no default project roots, no keys for
-things a hand already does, no surface that exists before something needs it.
-Paths get paved where the grass is worn.
-
 ## Install
 
 Install the native binary from the public Vercel Blob store:
@@ -295,3 +289,9 @@ change on `integration` and push it, put the new commit and build string in
 `companion.json` (zmax's `scripts/pin-companion.sh` does this, proven), re-check
 the companion's notices in `THIRD_PARTY_NOTICES.md` against the fork's
 dependencies, and release both together.
+
+## Design
+
+Built the way Derek Sivers is [building his house](https://sive.rs/fit):
+defer the decision, add only what proves necessary, pave where the grass
+is worn.
