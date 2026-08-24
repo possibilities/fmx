@@ -71,6 +71,24 @@ test("ordinary input and bracketed paste retain their terminal bytes", () => {
   }
 })
 
+test("mouse motion and focus reports retain their terminal bytes", () => {
+  const forwarded: Uint8Array[] = []
+  const filter = new ClientInputFilter(
+    resolveKeybindings().keybindings,
+    (bytes) => forwarded.push(bytes),
+    () => {
+      throw new Error("unexpected detach")
+    },
+  )
+  const input = new TextEncoder().encode("\x1b[<35;10;5M\x1b[I\x1b[O")
+  try {
+    filter.push(input)
+    expect(new TextDecoder().decode(joinBytes(forwarded))).toBe("\x1b[<35;10;5M\x1b[I\x1b[O")
+  } finally {
+    filter.destroy()
+  }
+})
+
 function joinBytes(parts: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(parts.reduce((length, part) => length + part.byteLength, 0))
   let offset = 0

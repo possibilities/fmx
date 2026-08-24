@@ -1,11 +1,12 @@
 import { strict as assert } from "node:assert"
 import { basename, resolve } from "node:path"
-import type { KeyEvent } from "@opentui/core"
+import { BoxRenderable, type KeyEvent } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentSocket, FrameListener } from "../src/agent-socket.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
 import type { AdeEventListener, AdeRecord, AdeSocket } from "../src/ade-events.ts"
 import type { PanelDefinition } from "../src/config.ts"
+import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { LaunchDialog } from "../src/launch-dialog.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
@@ -15,6 +16,7 @@ import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 import { decodeFrame } from "../src/socket-frames.ts"
 import { Toast, type ToastTone } from "../src/toast.ts"
 import { ToolPanel } from "../src/tool-panel.ts"
+import { unusedSpaceBackground } from "../src/unused-space.ts"
 import {
   GalleryAgentTransportFactory,
   GalleryPanelSessions,
@@ -88,6 +90,19 @@ export const UI_STORIES: readonly UiStory[] = [
     arrange: mountMultiplexer({
       screen: AGENT_SCREEN,
       panelScreen: PANEL_SCREEN,
+      afterMount: launchGalleryAgent,
+    }),
+  },
+  {
+    id: "multiplexer-larger-observer",
+    component: "Multiplexer",
+    title: "Larger observing Client",
+    description: "The shared sizing-owner frame stays at top left while one flat host-relative field marks the observer's unused right and bottom space.",
+    viewport: { cols: 86, rows: 24 },
+    expectedText: ["Review UI", "Working on the UI gallery", "Review the gallery in a terminal"],
+    arrange: mountMultiplexer({
+      screen: AGENT_SCREEN,
+      sizingOwnerFrame: { cols: 68, rows: 18 },
       afterMount: launchGalleryAgent,
     }),
   },
@@ -452,6 +467,7 @@ function mountToast(context: UiStoryContext, text: string, tone: ToastTone, ital
 type MultiplexerStoryOptions = {
   screen?: string
   panelScreen?: string
+  sizingOwnerFrame?: { cols: number; rows: number }
   afterMount?: (
     multiplexer: Multiplexer,
     context: UiStoryContext,
@@ -462,6 +478,18 @@ type MultiplexerStoryOptions = {
 
 function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiStoryContext) => Promise<void> {
   return async (context) => {
+    if (options.sizingOwnerFrame) {
+      context.canvas.backgroundColor = unusedSpaceBackground(context.palette, context.themeMode)
+      context.canvas.add(new BoxRenderable(context.setup.renderer, {
+        id: "ui-gallery-sizing-owner-frame",
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: options.sizingOwnerFrame.cols,
+        height: options.sizingOwnerFrame.rows,
+        backgroundColor: context.palette?.defaultBackground ?? RAMP_FALLBACK.background,
+      }))
+    }
     const agentSocket = new GalleryAgentSocket()
     const adeSocket = new GalleryAdeSocket()
     const panelSessions = options.panelScreen === undefined
@@ -505,6 +533,14 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       home: ROOT,
       toastDurationMs: 60_000,
     })
+    if (options.sizingOwnerFrame) {
+      const stage = context.setup.renderer.root.findDescendantById("fmx-stage")
+      assert(stage instanceof BoxRenderable)
+      stage.position = "absolute"
+      stage.setPosition({ top: 0, left: 0 })
+      stage.width = options.sizingOwnerFrame.cols
+      stage.height = options.sizingOwnerFrame.rows
+    }
     // The path index.ts takes: the first answer, or none, is what the startup
     // chrome is drawn from.
     multiplexer.lockStartupChrome(context.palette)

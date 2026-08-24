@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import {
+  CliRenderEvents,
   CliRenderer,
   createTerminalPalette,
   type TerminalColors,
@@ -33,6 +34,7 @@ import {
   waitForRuntimeBootstrap,
 } from "./runtime-session.ts"
 import { runTerminalClient } from "./terminal-client.ts"
+import { clearToUnusedSpace } from "./unused-space.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PIN,
@@ -128,6 +130,8 @@ async function main(): Promise<void> {
   let panelSessions: CompanionPanelSessions | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
+  let runtimePaletteHandler: ((colors: TerminalColors) => void) | null = null
+  let runtimePalette: TerminalColors | null = null
 
   try {
     // The socket is the Home's singleton; only its holder may touch the
@@ -197,12 +201,22 @@ async function main(): Promise<void> {
       paletteDetection.then((colors) => ({ kind: "settled" as const, colors })),
       Bun.sleep(FIRST_FRAME_PALETTE_BUDGET_MS).then(() => ({ kind: "pending" as const })),
     ])
+    runtimePalette = firstPalette.kind === "settled" ? firstPalette.colors : null
     await renderer.setupTerminal()
     // One Runtime frame is broadcast to every Client. Clearing on a Runtime
-    // resize makes the area outside a newly smaller sizing owner blank on
-    // larger observers before OpenTUI paints the new frame.
-    runtimeResizeHandler = () => process.stdout.write("\x1b[2J\x1b[H")
+    // resize paints every physical terminal with a host-relative unused field;
+    // OpenTUI then repaints only the sizing owner's shared frame. Larger
+    // observers retain the field at the right and bottom.
+    runtimeResizeHandler = () => process.stdout.write(clearToUnusedSpace(runtimePalette, createdRenderer.themeMode))
     process.stdout.on("resize", runtimeResizeHandler)
+    // A live host-theme change updates the shared frame through Multiplexer;
+    // repaint the physical field too so larger observers do not retain the
+    // previous theme's unused margins until another resize.
+    runtimePaletteHandler = (colors) => {
+      runtimePalette = colors
+      process.stdout.write(clearToUnusedSpace(colors, createdRenderer.themeMode))
+    }
+    createdRenderer.on(CliRenderEvents.PALETTE, runtimePaletteHandler)
 
     app = new Multiplexer(renderer, {
       fxPath,
@@ -294,7 +308,11 @@ async function main(): Promise<void> {
     // renderer destroyed under it never settles the query: a shutdown in
     // that window must still reach the cleanup below.
     const hostPalette = await Promise.race([paletteDetection, app.waitUntilDone().then(() => null)])
-    if (hostPalette) app.setHostPalette(hostPalette)
+    if (hostPalette) {
+      runtimePalette = hostPalette
+      process.stdout.write(clearToUnusedSpace(hostPalette, createdRenderer.themeMode))
+      app.setHostPalette(hostPalette)
+    }
     app.unlockStartupChrome()
     await app.waitUntilDone()
   } catch (error) {
@@ -313,6 +331,7 @@ async function main(): Promise<void> {
     adeSocket?.close()
     startupPaletteDetector?.cleanup()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)
+    if (runtimePaletteHandler) renderer?.off(CliRenderEvents.PALETTE, runtimePaletteHandler)
     // Only the fmx that bound the socket may unlink it; the one refused at
     // start never had it.
     agentSocket.close()

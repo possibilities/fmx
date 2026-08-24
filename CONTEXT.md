@@ -18,9 +18,10 @@ owns Detach; several Clients may watch and interact with the same shared UI.
 _Avoid_: viewer, frontend, session, fmx instance.
 
 **Sizing owner** — the Client that most recently connected or interacted by
-keyboard, mouse, paste, or resize. The Runtime renders once at its dimensions;
-larger Clients have blank unused space and smaller Clients crop the right and
-bottom until they interact and take ownership.
+focus, keyboard, mouse, paste, or resize. The Runtime renders once at its
+dimensions; larger Clients have flat, host-theme-relative unused space and
+smaller Clients crop the right and bottom until they interact and take
+ownership.
 _Avoid_: leader, primary, active Client, controller.
 
 **Detach** — disconnecting one Client from the Runtime without ending an

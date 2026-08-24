@@ -191,6 +191,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         (session) => session.labels.kind === "runtime" && session.labels.home === homeOf(tempDirectory),
       )
     const clear = "\u001b[2J\u001b[H"
+    const unusedClear = `\u001b[48;2;21;21;21m${clear}\u001b[0m`
 
     const firstOutput = { output: "" }
     const first = spawnClient(firstOutput, 100, 24)
@@ -203,8 +204,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(async () => (await runtimeSession())?.clients === 1, 5_000, () => firstOutput.output)
 
       // Attach is ownership. The 60x16 Client makes the shared Runtime 60x16;
-      // the 100x24 observer gets a full clear followed by only that smaller
-      // frame, which leaves its right and bottom margins blank.
+      // the 100x24 observer gets a tinted full clear followed by only that
+      // smaller frame, which leaves its right and bottom margins visibly unused.
       const firstClears = countOccurrences(firstOutput.output, clear)
       const secondOutput = { output: "" }
       second = spawnClient(secondOutput, 60, 16)
@@ -217,13 +218,15 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => `${firstOutput.output}\n--- second ---\n${secondOutput.output}`,
       )
       await waitUntil(() => countOccurrences(firstOutput.output, clear) > firstClears, 5_000, () => firstOutput.output)
+      expect(firstOutput.output).toContain(unusedClear)
       expect((await runtimeSession())?.clients).toBe(2)
 
-      // Ordinary input returns ownership to the remembered 100x24 size. The
-      // 60x16 Client receives the same larger frame and its terminal crops the
-      // unreachable right and bottom instead of adding a viewport.
+      // Passive mouse motion returns ownership to the remembered 100x24 size.
+      // OpenTUI asks for all-motion SGR tracking, so merely moving over an
+      // observing Client behaves like tmux: the 60x16 Client receives the same
+      // larger frame and crops its unreachable right and bottom.
       const secondClears = countOccurrences(secondOutput.output, clear)
-      first.terminal?.write(Uint8Array.of("x".charCodeAt(0)))
+      first.terminal?.write(new TextEncoder().encode("\x1b[<35;10;5M"))
       await waitUntil(
         async () => {
           const snapshot = await orientation(tempDirectory, env)
@@ -245,9 +248,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => secondOutput.output,
       )
 
-      // Make the first Client owner once more, then detach it locally. The
-      // surviving Client remains connected and its remembered size takes over.
-      first.terminal?.write(Uint8Array.of("y".charCodeAt(0)))
+      // Focus gain also takes ownership; focus loss deliberately does not.
+      // Detaching that owner locally leaves the surviving Client connected and
+      // immediately restores its remembered dimensions.
+      first.terminal?.write(new TextEncoder().encode("\x1b[I"))
       await waitUntil(
         async () => {
           const snapshot = await orientation(tempDirectory, env)
