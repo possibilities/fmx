@@ -43,6 +43,8 @@ export type CreateRequest = {
   labels?: Record<string, string>
   timeoutMs?: number
   scrollbackLines?: number
+  /** End this session once its final attached terminal disconnects. */
+  exitOnLastClient?: boolean
 }
 
 export type Created = {
@@ -143,6 +145,7 @@ export class CompanionCommand {
       args.push("--labels", formatLabels(request.labels))
     }
     if (request.timeoutMs !== undefined) args.push("--timeout-ms", String(request.timeoutMs))
+    if (request.exitOnLastClient) args.push("--exit-on-last-client")
     if (request.scrollbackLines !== undefined) {
       args.push("--scrollback-lines", String(request.scrollbackLines))
     }

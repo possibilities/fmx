@@ -45,7 +45,7 @@ test("uses the configured prefix and renders configured bindings", async () => {
 "┌─ keys ──────────────────────┐",
       "│  ctrl+space  prefix mode    │",
       "│  prefix+?    keybinds       │",
-      "│  prefix+d    detach fmx     │",
+      "│  prefix+d    detach client  │",
       "│  prefix+c    new agent      │",
       "│  prefix+l    launch agent   │",
       "│  prefix+p    prev agent     │",
@@ -84,7 +84,9 @@ test("uses the configured prefix and renders configured bindings", async () => {
 
     setup.mockInput.pressKey(" ", { ctrl: true })
     setup.mockInput.pressKey("d")
-    await multiplexer.waitUntilDone()
+    expect(await multiplexer.control.handle("orient", {}, new AbortController().signal)).toMatchObject({
+      active: null,
+    })
   } finally {
     await multiplexer.shutdown()
   }

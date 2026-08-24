@@ -27,6 +27,11 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   ...INHERITED_AGENT_SOCKET_VARIABLES,
   "FX_ADE_SOCKET_PATH",
   "FX_ADE_INSTANCE_ID",
+  // These identify fmx's own Companion-held Runtime process. An agent or
+  // Tool may launch fmx itself and must become an ordinary Client, not inherit
+  // the hidden Runtime role or its one-use bootstrap marker.
+  "FMX_RUNTIME_PROCESS",
+  "FMX_RUNTIME_BOOTSTRAP_PATH",
   // The Companion's own names: an fmx started inside a human's zmx must not
   // hand that session on to fx, and the Companion sets its own when it
   // starts the child.

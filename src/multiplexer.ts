@@ -45,7 +45,7 @@ import {
   type Surface,
   type Target,
 } from "./control-protocol.ts"
-import { afterControlReply, type ControlSurface } from "./control-socket.ts"
+import type { ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import {
   createFxEnvironment,
@@ -1648,7 +1648,9 @@ export class Multiplexer {
   private executeAction(action: KeyAction): void {
     switch (action.name) {
       case "detach":
-        this.detach()
+        // A thin Client consumes this binding before its bytes reach the
+        // Runtime. Treat a leaked or stale binding as inert: terminal input
+        // must never turn one Client's Detach into a shared shutdown.
         return
       case "new_tab":
         void this.createAgent().catch((error) => {
@@ -1693,11 +1695,6 @@ export class Multiplexer {
         this.toolPanel?.step(1)
         return
     }
-  }
-
-  /** Leave every Agent with the Companion and close fmx itself. */
-  private detach(): void {
-    void this.shutdown()
   }
 
   private cancelPrefix(): void {
@@ -1923,9 +1920,6 @@ export class Multiplexer {
     switch (method) {
       case "orient":
         return this.snapshot(caller)
-      case "detach":
-        this.refuseIfBusy()
-        return afterControlReply({ detached: true }, () => this.detach())
       case "agent.list":
         return { agents: this.agents.map((agent) => this.agentInfo(agent)) }
       case "agent.wait":
@@ -2368,9 +2362,9 @@ export class Multiplexer {
   }
 
   private keysInfo(): KeysInfo {
-    const commands: Record<string, string> = {
+    const commands: Record<string, string | null> = {
       help: "fmx control keys --show",
-      detach: "fmx control detach",
+      detach: null,
       new_tab: "fmx control launch",
       launch: "fmx control launch --editable",
       previous_tab: "fmx control focus previous",
@@ -2397,7 +2391,7 @@ export class Multiplexer {
     ] as const) {
       bindings[action] = {
         keys: this.keybindings[action].map((binding) => binding.label),
-        command: commands[action]!,
+        command: commands[action] ?? null,
       }
     }
     return { prefix: this.keybindings.prefixLabel, bindings }
@@ -2417,7 +2411,7 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
   return [
     [keybindings.prefixLabel, "prefix mode"],
     [bindingLabel(keybindings.help), "keybinds"],
-    [bindingLabel(keybindings.detach), "detach fmx"],
+    [bindingLabel(keybindings.detach), "detach client"],
     [bindingLabel(keybindings.new_tab), "new agent"],
     [bindingLabel(keybindings.launch), "launch agent"],
     [bindingLabel(keybindings.previous_tab), "prev agent"],

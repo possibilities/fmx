@@ -101,8 +101,6 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
   switch (command.name) {
     case "orient":
       return [{ method: "orient", params: withCaller({}), timeoutMs: REPLY_TIMEOUT_MS }]
-    case "detach":
-      return [{ method: "detach", params: {}, timeoutMs: REPLY_TIMEOUT_MS }]
     case "agent":
       switch (command.verb) {
         case "list":
@@ -275,7 +273,7 @@ export async function resolveSocketPath(explicit: string | null, environment: Cl
     throw new UnreachableError(`not running inside fmx (${CONTROL_SOCKET_ENV_VAR} is unset and no fmx is running)`)
   }
   throw new UnreachableError(
-    `not running inside fmx, and more than one is running; pass --socket with one of: ${candidates.join(", ")}`,
+    `not running inside fmx, and more than one Runtime is running; pass --socket with one of: ${candidates.join(", ")}`,
   )
 }
 

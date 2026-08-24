@@ -13,7 +13,7 @@ type SocketListener = ReturnType<typeof Bun.listen>
 type SocketConnection = { write: (data: string) => unknown; end: () => unknown }
 
 /**
- * What the socket drives: the running fmx, behind one method. `signal` aborts
+ * What the socket drives: the running Runtime, behind one method. `signal` aborts
  * when the client hangs up, so a waiting method can stop waiting.
  */
 export type ControlSurface = {

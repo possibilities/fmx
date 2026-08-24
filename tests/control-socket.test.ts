@@ -38,13 +38,13 @@ test("answers one request per connection and closes it", async () => {
 test("runs an after-reply action only once the successful reply is delivered", async () => {
   let deliveries = 0
   const socket = new ControlSocket(
-    surface(async () => afterControlReply({ detached: true }, () => deliveries += 1)),
+    surface(async () => afterControlReply({ delivered: true }, () => deliveries += 1)),
     socketPath("after-reply"),
   )
   socket.start()
   try {
-    const reply = await exchange(socket.path, "detach", {}, 1000)
-    expect(reply).toEqual({ id: expect.any(String), ok: true, result: { detached: true } })
+    const reply = await exchange(socket.path, "orient", {}, 1000)
+    expect(reply).toEqual({ id: expect.any(String), ok: true, result: { delivered: true } })
     const deadline = Date.now() + 1_000
     while (deliveries === 0 && Date.now() < deadline) await Bun.sleep(1)
     expect(deliveries).toBe(1)

@@ -16,7 +16,6 @@ export type LaunchFieldArgs = {
 
 export type Command =
   | { name: "orient" }
-  | { name: "detach" }
   | { name: "agent"; verb: "list" }
   | { name: "agent"; verb: "wait"; target: string; states?: string[]; timeoutMs?: number }
   | { name: "agent"; verb: "send"; target: string; text: TextSource }
@@ -63,7 +62,7 @@ export type CliOptions = {
 const CONTROL_GROUP = "control"
 /** The one other top-level command: a report on the installation, never a running fmx. */
 const DOCTOR_COMMAND = "doctor"
-const COMMAND_NAMES = ["orient", "detach", "agent", "launch", "draft", "focus", "tray", "panel", "keys", "catalog"] as const
+const COMMAND_NAMES = ["orient", "agent", "launch", "draft", "focus", "tray", "panel", "keys", "catalog"] as const
 const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
 const AGENT_VERBS = ["list", "wait", "send"] as const
 
@@ -139,9 +138,6 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
     case "orient":
       rejectExtra(args, "orient")
       return { name: "orient" }
-    case "detach":
-      rejectExtra(args, "detach")
-      return { name: "detach" }
     case "agent":
       return parseAgent(args)
     case "launch":
@@ -422,20 +418,18 @@ export function usage(topic: string | null = null): string {
       return AGENT_USAGE
     case "focus":
       return "Usage: fmx control focus <target>\n\n  target: agent id, exact session name, session-id prefix, next, previous, current\n"
-    case "detach":
-      return "Usage: fmx control detach\n\nDetach fmx and leave every agent running.\n"
     case "tray":
       return "Usage: fmx control tray [--width N] [--show | --hide | --toggle]\n"
     case "panel":
       return "Usage: fmx control panel [--width N] [--show | --hide | --toggle] [--select ID | --next | --previous] [--focus panel|agent|toggle]\n"
     case "keys":
-      return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running fmx as well\n"
+      return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running Runtime as well\n"
   }
   return `fmx ${VERSION} — run multiple fx sessions in one terminal
 
 Usage:
   fmx [options]
-  fmx control <command> [args]           drive a running fmx from inside it
+  fmx control <command> [args]           drive a running fmx Runtime from inside it
   fmx doctor                             report the installation
 
 Options:
@@ -443,7 +437,7 @@ Options:
   -v, --version  show the version
 
 Commands:
-  control        every key and click as a command, for agents; see fmx control
+  control        shared UI actions for agents; see fmx control
   doctor         versions, the companion and whether it is the one this fmx
                  was released with, its directory, and fx; exits 1 when the
                  companion is missing, not that build, or its directory is
@@ -460,7 +454,6 @@ const CONTROL_USAGE = `Usage: fmx control <command> [args]
 Each command prints one JSON object.
 
   orient                       where you are and what the interface shows
-  detach                       close fmx; every agent keeps running
   launch [prompt] [flags]      start an agent; --editable opens the dialog instead
   draft show|set|submit|cancel|wait [id]
                                an open dialog an agent can finish or hand over

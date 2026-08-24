@@ -92,7 +92,7 @@ async function endSurvivors(tempDirectory: string): Promise<void> {
 }
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "prefix+d detaches fmx and leaves its fx running",
+  "prefix+d detaches the Client and leaves its fx running",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-detach-e2e-"))
@@ -153,6 +153,144 @@ test.skipIf(!PTY_TEST_ENABLED)(
     }
   },
   15_000,
+)
+
+test.skipIf(!PTY_TEST_ENABLED)(
+  "multiple Clients share one Runtime and hand off sizing ownership",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-multi-client-e2e-"))
+    const configFile = join(tempDirectory, "config.toml")
+    await writeFile(configFile, configWithRoot())
+    const env = {
+      ...process.env,
+      FMX_FX_PATH: FAKE_FX,
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      FMX_CONFIG_PATH: configFile,
+      FMX_STATE_PATH: join(tempDirectory, "state.json"),
+      ...privateHome(tempDirectory),
+    }
+    const spawnClient = (sink: { output: string }, cols: number, rows: number) => {
+      const decoder = new TextDecoder()
+      return Bun.spawn(FMX_COMMAND, {
+        cwd: ROOT,
+        env,
+        terminal: {
+          cols,
+          rows,
+          data: (_terminal, bytes) => {
+            sink.output += decoder.decode(bytes, { stream: true })
+          },
+        },
+      })
+    }
+    const companion = new CompanionCommand(companionDirectoryFor(tempDirectory), process.env, COMPANION!)
+    const runtimeSession = async () =>
+      (await companion.list()).find(
+        (session) => session.labels.kind === "runtime" && session.labels.home === homeOf(tempDirectory),
+      )
+    const clear = "\u001b[2J\u001b[H"
+
+    const firstOutput = { output: "" }
+    const first = spawnClient(firstOutput, 100, 24)
+    let second: ReturnType<typeof spawnClient> | null = null
+    try {
+      await waitUntil(() => firstOutput.output.includes("prefix+c"), 8_000, () => firstOutput.output)
+      const initial = await orientation(tempDirectory, env)
+      expect(initial?.fmx).toMatchObject({ cols: 100, rows: 24 })
+      const runtimePid = initial!.fmx.pid
+      await waitUntil(async () => (await runtimeSession())?.clients === 1, 5_000, () => firstOutput.output)
+
+      // Attach is ownership. The 60x16 Client makes the shared Runtime 60x16;
+      // the 100x24 observer gets a full clear followed by only that smaller
+      // frame, which leaves its right and bottom margins blank.
+      const firstClears = countOccurrences(firstOutput.output, clear)
+      const secondOutput = { output: "" }
+      second = spawnClient(secondOutput, 60, 16)
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.fmx.pid === runtimePid && snapshot.fmx.cols === 60 && snapshot.fmx.rows === 16
+        },
+        8_000,
+        () => `${firstOutput.output}\n--- second ---\n${secondOutput.output}`,
+      )
+      await waitUntil(() => countOccurrences(firstOutput.output, clear) > firstClears, 5_000, () => firstOutput.output)
+      expect((await runtimeSession())?.clients).toBe(2)
+
+      // Ordinary input returns ownership to the remembered 100x24 size. The
+      // 60x16 Client receives the same larger frame and its terminal crops the
+      // unreachable right and bottom instead of adding a viewport.
+      const secondClears = countOccurrences(secondOutput.output, clear)
+      first.terminal?.write(Uint8Array.of("x".charCodeAt(0)))
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.fmx.cols === 100 && snapshot.fmx.rows === 24
+        },
+        5_000,
+        () => secondOutput.output,
+      )
+      await waitUntil(() => countOccurrences(secondOutput.output, clear) > secondClears, 5_000, () => secondOutput.output)
+
+      // Resizing a non-owner is interaction and immediately takes ownership.
+      second.terminal?.resize(70, 18)
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.fmx.cols === 70 && snapshot.fmx.rows === 18
+        },
+        5_000,
+        () => secondOutput.output,
+      )
+
+      // Make the first Client owner once more, then detach it locally. The
+      // surviving Client remains connected and its remembered size takes over.
+      first.terminal?.write(Uint8Array.of("y".charCodeAt(0)))
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.fmx.cols === 100 && snapshot.fmx.rows === 24
+        },
+        5_000,
+        () => firstOutput.output,
+      )
+      first.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(first.exited, 6_000, "first Client did not detach")).toBe(0)
+      first.terminal?.close()
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(tempDirectory, env)
+          return snapshot?.fmx.pid === runtimePid && snapshot.fmx.cols === 70 && snapshot.fmx.rows === 18
+        },
+        5_000,
+        () => secondOutput.output,
+      )
+      expect(second.exitCode).toBeNull()
+      expect((await runtimeSession())?.clients).toBe(1)
+
+      // The final local Detach ends only the Runtime. Its Client exits cleanly
+      // and the opted-in Companion session stops once no terminal remains.
+      second.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(second.exited, 6_000, "final Client did not detach")).toBe(0)
+      second.terminal?.close()
+      await waitUntil(
+        async () => (await runtimeSession())?.state !== "live",
+        8_000,
+        () => secondOutput.output,
+      )
+      expect(await orientation(tempDirectory, env)).toBeNull()
+    } finally {
+      if (first.exitCode === null) first.kill("SIGKILL")
+      first.terminal?.close()
+      if (second && second.exitCode === null) second.kill("SIGKILL")
+      second?.terminal?.close()
+      await endSurvivors(tempDirectory)
+      await rm(tempDirectory, { recursive: true, force: true })
+    }
+  },
+  30_000,
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(

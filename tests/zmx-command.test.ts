@@ -71,10 +71,11 @@ test("create passes identity, labels, the command after `--`, and the Companion'
     env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/theirs", ZMX_SESSION: "theirs" },
     labels: { owner: "fmx" },
     timeoutMs: 500,
+    exitOnLastClient: true,
   })
   expect(created).toEqual({ name: "fmx-1", socketPath: "/d/fmx-1", pid: 5, createdAt: 10 })
   expect(calls[0]).toEqual({
-    args: ["create", "--json", "--labels", "owner=fmx", "--timeout-ms", "500", "fmx-1", "--", "/fx", "--x"],
+    args: ["create", "--json", "--labels", "owner=fmx", "--timeout-ms", "500", "--exit-on-last-client", "fmx-1", "--", "/fx", "--x"],
     cwd: "/work",
     env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/tmp/fmx-cmd-test-dir" },
   })

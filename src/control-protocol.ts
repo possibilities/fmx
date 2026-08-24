@@ -43,7 +43,6 @@ export type ControlReply =
 
 export const CONTROL_METHODS = [
   "orient",
-  "detach",
   "agent.list",
   "agent.wait",
   "agent.send",
@@ -192,7 +191,8 @@ export type CatalogInfo = {
 
 export type KeysInfo = {
   prefix: string
-  bindings: Record<string, { keys: string[]; command: string }>
+  /** Client-local actions deliberately have no agent-callable command. */
+  bindings: Record<string, { keys: string[]; command: string | null }>
 }
 
 /* ---------------------------------------------------------------- targets */

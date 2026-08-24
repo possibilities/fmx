@@ -17,6 +17,7 @@ import { ControlSocket } from "./control-socket.ts"
 import { doctor, resolveFx } from "./doctor.ts"
 import { AgentManifest, type ManifestEntry, manifestPath } from "./agent-manifest.ts"
 import { reconcileAgents, type ReconcileOutcome } from "./agent-reconcile.ts"
+import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
 import { expandTilde } from "./projects.ts"
@@ -24,6 +25,14 @@ import { loadState, saveState, type PersistedState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
 import { CompanionPanelSessions } from "./panel-session.ts"
 import { CompanionCommand } from "./zmx-command.ts"
+import {
+  currentRuntimeCommand,
+  ensureRuntimeSession,
+  isRuntimeProcess,
+  RUNTIME_BOOTSTRAP_ENV_VAR,
+  waitForRuntimeBootstrap,
+} from "./runtime-session.ts"
+import { runTerminalClient } from "./terminal-client.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PIN,
@@ -83,6 +92,14 @@ async function main(): Promise<void> {
     throw new Error("fmx requires Bun 1.4 or newer")
   }
 
+  if (!isRuntimeProcess()) {
+    await startTerminalClient()
+    return
+  }
+  const bootstrapPath = process.env[RUNTIME_BOOTSTRAP_ENV_VAR]
+  if (!bootstrapPath) throw new Error("fmx Runtime has no Client bootstrap path")
+  await waitForRuntimeBootstrap(bootstrapPath)
+
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
   if (loadedConfig.projectRoots.length === 0) {
@@ -110,6 +127,7 @@ async function main(): Promise<void> {
   let transport: CompanionTransportFactory | null = null
   let panelSessions: CompanionPanelSessions | null = null
   let manifest: AgentManifest | null = null
+  let runtimeResizeHandler: (() => void) | null = null
 
   try {
     // The socket is the Home's singleton; only its holder may touch the
@@ -180,6 +198,11 @@ async function main(): Promise<void> {
       Bun.sleep(FIRST_FRAME_PALETTE_BUDGET_MS).then(() => ({ kind: "pending" as const })),
     ])
     await renderer.setupTerminal()
+    // One Runtime frame is broadcast to every Client. Clearing on a Runtime
+    // resize makes the area outside a newly smaller sizing owner blank on
+    // larger observers before OpenTUI paints the new frame.
+    runtimeResizeHandler = () => process.stdout.write("\x1b[2J\x1b[H")
+    process.stdout.on("resize", runtimeResizeHandler)
 
     app = new Multiplexer(renderer, {
       fxPath,
@@ -253,17 +276,19 @@ async function main(): Promise<void> {
       process.once(signal, handler)
     }
 
-    // Beside the agent socket and under the same singleton: an fx that
-    // outlives this fmx still reaches the next one for this Home by the path
-    // it was given.
-    controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(agentSocket.path))
-    controlSocket.start()
-
     // Choose the truthful first surface before anything may render. The chrome
     // was fixed above, before the renderer could expose an empty or partially
     // restored application.
     const startup = app.start()
     renderer.start()
+    await startup
+
+    // Beside the agent socket and under the same singleton: an fx that
+    // outlives this fmx still reaches the next one for this Home by the path
+    // it was given. Do not accept control requests until restored Agents are
+    // attached and the selected terminal is ready to receive input.
+    controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(agentSocket.path))
+    controlSocket.start()
 
     // Detection takes seconds in a terminal that never answers, and a
     // renderer destroyed under it never settles the query: a shutdown in
@@ -271,7 +296,6 @@ async function main(): Promise<void> {
     const hostPalette = await Promise.race([paletteDetection, app.waitUntilDone().then(() => null)])
     if (hostPalette) app.setHostPalette(hostPalette)
     app.unlockStartupChrome()
-    await startup
     await app.waitUntilDone()
   } catch (error) {
     if (app) await app.shutdown(1)
@@ -288,10 +312,40 @@ async function main(): Promise<void> {
     controlSocket?.close()
     adeSocket?.close()
     startupPaletteDetector?.cleanup()
+    if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)
     // Only the fmx that bound the socket may unlink it; the one refused at
     // start never had it.
     agentSocket.close()
   }
+}
+
+async function startTerminalClient(): Promise<void> {
+  const loadedConfig = await loadConfig()
+  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
+  if (loadedConfig.projectRoots.length === 0) {
+    throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${configPath()}`)
+  }
+  const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
+  const companionPath = await resolveCompanion()
+  await ensureCompanionDirectories(companionDirectories())
+  const build = await companionBuild(companionPath.path)
+  if (build !== COMPANION_PIN.build) {
+    const message = companionMismatch(companionPath, build, PROTOCOL_VERSION)
+    if (companionPath.origin !== "override") throw new Error(message)
+    process.stderr.write(`fmx: ${message}\n`)
+  }
+  const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
+  const runtime = await ensureRuntimeSession(companion, {
+    homeId: homeId(),
+    cwd: workspace,
+    command: currentRuntimeCommand(),
+    env: stringEnvironment(process.env),
+  })
+  process.exitCode = await runTerminalClient({
+    socketPath: runtime.socketPath,
+    bootstrapPath: runtime.bootstrapPath,
+    keybindings: loadedConfig.keybindings,
+  })
 }
 
 /**

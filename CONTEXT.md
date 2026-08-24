@@ -6,13 +6,32 @@ and disappear when their fx exits — never when fmx does: the Companion holds
 the fx, and the next fmx for the Home attaches to it.
 _Avoid_: pane, tab, window, session, instance.
 
-**Detach** — closing fmx while leaving every Agent and its fx running with
-the Companion. `keys.detach` and `fmx control detach` request it explicitly;
-a signal, crash, or lost host terminal has the same Agent-lifecycle result.
-_Avoid_: exit or close for an Agent, quit.
+**Runtime** — the one Companion-held fmx process and PTY for a Home. It owns
+the renderer, Multiplexer, sockets, Manifest reconciliation, and shared UI;
+it ends when its final Client leaves, while every Agent remains held by the
+Companion.
+_Avoid_: server, daemon, host, backend.
 
-**Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns an
-fx process and its PTY so both survive fmx closing. fmx drives one over a
+**Client** — one thin interactive `fmx` invocation and its physical terminal,
+attached to the Home's Runtime. It relays terminal bytes and size, and alone
+owns Detach; several Clients may watch and interact with the same shared UI.
+_Avoid_: viewer, frontend, session, fmx instance.
+
+**Sizing owner** — the Client that most recently connected or interacted by
+keyboard, mouse, paste, or resize. The Runtime renders once at its dimensions;
+larger Clients have blank unused space and smaller Clients crop the right and
+bottom until they interact and take ownership.
+_Avoid_: leader, primary, active Client, controller.
+
+**Detach** — disconnecting one Client from the Runtime without ending an
+Agent. `keys.detach` is Client-local; closing its terminal has the same result.
+The final Detach ends the Runtime and its non-persistent Tools, while the
+Companion continues to hold every Agent and persistent Tool.
+_Avoid_: exit or close for an Agent, control command, quit.
+
+**Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns a
+terminal process and its PTY — an fx Agent, a persistent Tool, or the Runtime.
+fmx drives one over a
 versioned Unix socket instead of owning the PTY itself, and never through the
 `zmx` a human may have installed — a Companion keeps its own sessions in its
 own directory.
@@ -30,9 +49,8 @@ _Avoid_: lock file, version file, dependency.
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates
-and keys its agent socket. One Home runs one fmx at a time, and owns the
-Agents its Companion holds between runs. A new fmx briefly waits for a
-closing predecessor to release the Home, but never displaces a live one.
+and keys its agent socket. One Home has at most one Runtime, may have several
+Clients, and owns the Agents its Companion holds between Runtime lifetimes.
 _Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
 is fx's own settings), installation, workspace.
 
@@ -91,8 +109,8 @@ Agent. Its configured terminal tools run in that Agent's directory and
 identity, switch context with it, and appear as a rule tab when more than one
 is available. The dock starts hidden, remembers its visibility,
 width, and selected tool, and does not exist when no configured tool is
-available. Persistent tools are owned by the Companion across Detach;
-non-persistent tools are recreated naturally with fmx.
+available. Persistent tools are owned by the Companion across Runtime
+lifetimes; non-persistent tools are recreated naturally with the Runtime.
 _Avoid_: tool panel, right-hand panel, utility pane, inspector, global panel.
 
 **Rule tab** — the Tools panel's two-row switcher: tool labels over a hairline,
@@ -215,7 +233,7 @@ Duplicate names remain ambiguous. The Fx storage and event schema call the
 field `title`.
 _Avoid_: fmx name, label.
 
-**Control socket** — the Unix socket `fmx control <command>` drives a running fmx
+**Control socket** — the Unix socket `fmx control <command>` drives a running Runtime
 through, bound beside the agent socket as `/tmp/fmx-<uid>-<home id>.ctl` — as
 stable as it, so an fx that outlives one fmx still reaches the next — and
 handed to every agent as `FMX_SOCKET_PATH`. Its own wire, not the agent socket's: that

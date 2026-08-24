@@ -7,9 +7,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
 import { AdeSocket } from "../src/ade-events.ts"
-import { exchange as exchangeControl } from "../src/control-client.ts"
 import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
-import { ControlSocket } from "../src/control-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
@@ -622,7 +620,7 @@ test("lists the keys with their command equivalents, and resizes the tray", asyn
       prefix: "ctrl+b",
       bindings: {
         help: { keys: ["prefix+?"], command: "fmx control keys --show" },
-        detach: { keys: ["prefix+d"], command: "fmx control detach" },
+        detach: { keys: ["prefix+d"], command: null },
         new_tab: { keys: ["prefix+c"], command: "fmx control launch" },
         launch: { keys: ["prefix+l"], command: "fmx control launch --editable" },
         previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
@@ -642,25 +640,6 @@ test("lists the keys with their command equivalents, and resizes the tray", asyn
     expect(await h.control("tray", { hidden: false })).toEqual({ visible: true, hidden: false, width: 33 })
     expect(((await h.control("orient")) as Snapshot).tray).toMatchObject({ visible: true, hidden: false })
   } finally {
-    await h.close()
-  }
-})
-
-test("answers a detach command before shutting fmx down", async () => {
-  const h = await harness("detach")
-  const socket = new ControlSocket(h.multiplexer.control, `/tmp/fmx-control-detach-${process.pid}.ctl`)
-  socket.start()
-  let done = false
-  void h.multiplexer.waitUntilDone().then(() => {
-    done = true
-  })
-  try {
-    const reply = await exchangeControl(socket.path, "detach", {}, 1_000)
-    expect(reply).toEqual({ id: expect.any(String), ok: true, result: { detached: true } })
-    await h.multiplexer.waitUntilDone()
-    expect(done).toBe(true)
-  } finally {
-    socket.close()
     await h.close()
   }
 })

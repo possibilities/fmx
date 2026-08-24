@@ -85,17 +85,6 @@ test("sends the caller's agent with commands that have one", async () => {
   }
 })
 
-test("asks a running fmx to detach", async () => {
-  const { socket, calls } = await server(async () => ({ detached: true }), "detach")
-  try {
-    const outcome = await runCommand({ name: "detach" }, socket.path, environment())
-    expect(outcome).toEqual({ exitCode: EXIT_OK, result: { detached: true } })
-    expect(calls).toEqual([{ method: "detach", params: {} }])
-  } finally {
-    socket.close()
-  }
-})
-
 test("sends tools panel visibility, selection, and focus in one request", async () => {
   const { socket, calls } = await server(async () => ({ selected: "diff" }), "panel")
   try {

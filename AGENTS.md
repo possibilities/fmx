@@ -30,13 +30,26 @@
   open, so a key let through can reach nothing else.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag.
-- `keys.detach` (default `prefix+d`) closes fmx, never an Agent: fx exits
-  govern the Agent lifecycle. An Agent disappears when its fx exits;
-  the last exit leaves the empty state, where ctrl-c twice also closes fmx.
-  An explicit detach, a signal, a crash, or the terminal going away sends
-  nothing to fx: the Companion keeps it, and the next fmx for the Home
-  attaches to it. Do not bring back the Ctrl-C/TERM/KILL escalation `stop()`
-  used to do; ending an fx is the human's act, from inside it, or
+- One Home has one Companion-held Runtime (`fmxr-<home id>`) and any number
+  of thin terminal Clients. The Runtime alone owns OpenTUI, `Multiplexer`,
+  the Home sockets, and the Manifest. A Client relays bytes and dimensions;
+  its Init, keyboard, mouse, paste, or resize makes it sizing owner. The
+  Runtime renders once at that size, so larger Clients have blank margins and
+  smaller ones crop right/bottom. When the owner leaves, the Companion
+  immediately restores the most recently active remaining Client's size.
+- A new Runtime waits on its one-use bootstrap marker before constructing
+  `CliRenderer`; the creating Client writes it after its attach reaches Ready,
+  so palette queries have a real host terminal to answer. The wait is bounded
+  so a failed initial attach does not orphan a headless Runtime.
+- `keys.detach` (default `prefix+d`) is intercepted by the thin Client and
+  disconnects only that Client, never an Agent. There is deliberately no
+  `fmx control detach`: agents do not own physical Client connections. The
+  Runtime treats a Detach binding that somehow reaches it as inert, so stale
+  Client configuration cannot turn local Detach into shared shutdown. The
+  Companion ends the Runtime after its final terminal Client leaves; a signal,
+  crash, or terminal loss has the same Agent-lifecycle result. Every fx stays
+  held for the next Runtime. Do not bring back the Ctrl-C/TERM/KILL escalation
+  `stop()` used to do; ending an fx is the human's act, from inside it, or
   `fmx-zmx kill` by hand.
 - `FxAgent` renders; it never owns a process. Everything that carries fx
   goes through `AgentTransport` (`src/agent-transport.ts`), and the
@@ -80,7 +93,8 @@
   order, selects that saved Agent before its first await, then attaches the
   selected transport first. Do not restore by adding the selected Agent out
   of order: tray order is creation order. State writes are serialized and
-  awaited during cleanup so a selection immediately followed by detach lands.
+  awaited during Runtime cleanup so a selection immediately followed by the
+  final Client's Detach lands.
 - Palette detection can take seconds in a terminal that never answers, and a
   renderer destroyed under it never settles the query; `index.ts` races it
   against shutdown so a signal in that window still reaches the socket
@@ -94,6 +108,10 @@
   real later theme change still applies.
   Session names use indexed ANSI gray rather than a guessed RGB fallback, so
   they must not be restyled when that late palette answer arrives.
+- A Runtime resize clears the whole physical screen before OpenTUI's next
+  frame. That clear is what leaves genuinely blank unused space on a larger
+  observing Client when a smaller Client becomes sizing owner; do not replace
+  it with a rectangle sized to the owner.
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
   non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.
@@ -144,7 +162,9 @@
 - Every `fmx control <command>` goes through `Multiplexer.handleControl`, and every
   write there takes the path the keys take (`showLaunchDialog`, `switchTo`,
   `applyTrayWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
-  command that does something a hand cannot; add the key first.
+  command that does something a hand cannot; add the key first. Detach is the
+  intentional exception in the other direction: it is Client-local and must
+  never acquire a control method.
 - A launch from the CLI is background by default: `createAgent` only
   switches when asked or when nothing is on screen. `switchTo` never focuses a
   terminal while the launch dialog or a modal is up — those hand focus back

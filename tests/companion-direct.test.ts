@@ -291,6 +291,83 @@ test.skipIf(!ENABLED)("a negotiated client sees no live output before its attach
   leader.detach()
 })
 
+test.skipIf(!ENABLED)("the last connected or interacting terminal owns size, with failover on disconnect", async () => {
+  const socket = await startSession("s7")
+  const first = await CompanionConnection.connect(socket, { client: "first" })
+  const firstOutput = new Capture(first)
+  first.attach({ rows: 30, cols: 100 })
+  expect(await waitFor(() => firstOutput.events.includes("ready"))).toBe(true)
+
+  let mark = firstOutput.length
+  first.write("size\r")
+  await firstOutput.until("30 100", mark)
+
+  const second = await CompanionConnection.connect(socket, { client: "second" })
+  const secondOutput = new Capture(second)
+  second.attach({ rows: 20, cols: 60 })
+  expect(await waitFor(() => secondOutput.events.includes("ready"))).toBe(true)
+  mark = firstOutput.length
+  second.write("size\r")
+  await firstOutput.until("20 60", mark)
+
+  // Interaction returns ownership to the first terminal and applies its
+  // remembered dimensions before the command reaches the child.
+  mark = firstOutput.length
+  first.write("size\r")
+  await firstOutput.until("30 100", mark)
+
+  // A resize is interaction too, even from a non-owner.
+  second.resize({ rows: 18, cols: 50 })
+  mark = firstOutput.length
+  second.write("size\r")
+  await firstOutput.until("18 50", mark)
+
+  // Disconnecting the owner restores the most recently active survivor's
+  // dimensions. `zmx send` does not claim ownership, so this observes the
+  // failover rather than causing it.
+  second.detach()
+  mark = firstOutput.length
+  expect((await zmx("send", "s7", "size\r")).code).toBe(0)
+  await firstOutput.until("30 100", mark)
+  first.detach()
+})
+
+test.skipIf(!ENABLED)("exit-on-last-client arms on Init and ignores non-terminal probes", async () => {
+  const name = "s8"
+  sessions.push(name)
+  const { code, stdout, stderr } = await zmx(
+    "create",
+    "--json",
+    "--exit-on-last-client",
+    name,
+    "--",
+    "sh",
+    "-c",
+    CHILD_SCRIPT,
+  )
+  expect(code).toBe(0)
+  expect(stderr).toBe("")
+  const report = JSON.parse(stdout) as Record<string, unknown>
+  const pid = report.pid as number
+  await sleep(200)
+  expect(alive(pid)).toBe(true)
+
+  const terminal = await CompanionConnection.connect(join(dir, name), { client: "terminal" })
+  const output = new Capture(terminal)
+  terminal.attach({ rows: 24, cols: 80 })
+  expect(await waitFor(() => output.events.includes("ready"))).toBe(true)
+  const probe = await CompanionConnection.connect(join(dir, name), { client: "probe" })
+  const probeClosed = new Promise<void>((resolve) => probe.onClose(() => resolve()))
+
+  terminal.detach()
+  expect(await waitFor(async () => (await inspect(name)).state === "exited", 10_000)).toBe(true)
+  await probeClosed
+  expect(alive(pid)).toBe(false)
+  expect(await inspect(name)).toMatchObject({ state: "exited", exit: { reason: "requested" } })
+  await zmx("forget", name)
+  sessions = sessions.filter((session) => session !== name)
+})
+
 test.skipIf(!ENABLED)("a client the daemon cannot serve is told the daemon's range and closed", async () => {
   const socket = await startSession("s3")
 

@@ -51,6 +51,8 @@ test("an inherited agent socket never reaches fx", () => {
       HERDR_BIN_PATH: "/usr/local/bin/other",
       FX_ADE_SOCKET_PATH: "/tmp/outer.ade.sock",
       FX_ADE_INSTANCE_ID: "outer-agent",
+      FMX_RUNTIME_PROCESS: "1",
+      FMX_RUNTIME_BOOTSTRAP_PATH: "/tmp/runtime-ready",
     },
     3,
     "/work",
@@ -65,6 +67,8 @@ test("an inherited agent socket never reaches fx", () => {
   expect(env.HERDR_BIN_PATH).toBeUndefined()
   expect(env.FX_ADE_SOCKET_PATH).toBeUndefined()
   expect(env.FX_ADE_INSTANCE_ID).toBeUndefined()
+  expect(env.FMX_RUNTIME_PROCESS).toBeUndefined()
+  expect(env.FMX_RUNTIME_BOOTSTRAP_PATH).toBeUndefined()
 })
 
 test("fmx's own agent socket replaces whatever was inherited", () => {

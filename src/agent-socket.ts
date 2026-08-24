@@ -33,7 +33,7 @@ export type AgentSocketOptions = {
  */
 export class AgentSocketActiveError extends Error {
   constructor(readonly path: string) {
-    super(`another fmx is already running for this Home (listening on ${path})`)
+    super(`another fmx Runtime is already running for this Home (listening on ${path})`)
   }
 }
 

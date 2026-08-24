@@ -27,7 +27,7 @@ companion keep running through an update; start a new fmx afterwards.
 ## Usage
 
 `ctrl-b` is the prefix key; `ctrl-b ?` lists the bindings and `ctrl-b d`
-detaches fmx, leaving every agent running. Rebind them in
+detaches this terminal Client, leaving every agent running. Rebind them in
 `~/.config/fmx/config.toml` in the `[keys]` table.
 
 fmx opens without an agent. `ctrl-b c` starts one in the first configured
@@ -66,6 +66,22 @@ With no roots configured fmx exits 1 and names this setting and the config
 file that needs it. The first root is fmx's default working directory, including
 for agents started with `ctrl-b c`.
 
+### Multiple Clients
+
+Running `fmx` again for the same configuration Home attaches another terminal
+to the same shared UI. The last Client to connect, type, click, paste, or
+resize is the **sizing owner**, and fmx lays out naturally at that terminal's
+dimensions. A larger observing terminal shows blank unused space to the right
+and below that area; a smaller one sees the right or bottom cropped until it
+interacts and becomes the sizing owner. There is no separate scroll or viewport for the
+cropped area.
+
+The renderer and Multiplexer live once in a Companion-held Runtime, so every
+Client sees the same active Agent, dialogs, Tools, and input. `ctrl-b d` is
+local to the Client that pressed it, as is closing that terminal. The Runtime
+ends after its final Client leaves; Agents and persistent Tools remain in the
+Companion for the next Runtime.
+
 ### tools panel
 
 The tools panel is a resizable dock on the right for terminal tools that belong
@@ -94,29 +110,29 @@ persistent = false
 The panel exists only when at least one tool is configured. Its visibility,
 width, and selected link are kept in `state.json`, just like the Session list's
 visibility and width.
-Persistent tools run in Companion-owned terminals: Detach leaves them running,
-and the next fmx attaches to the same terminal. A non-persistent tool belongs
-to the current fmx process; Detach ends it, and reattaching starts it naturally
-when its link is shown again. Hiding the dock or switching links does not end a
-tool during the current fmx run.
+Persistent tools run in Companion-owned terminals: the final Detach leaves
+them running, and the next Runtime attaches to the same terminal. A
+non-persistent tool belongs to the current Runtime; its final Client leaving
+ends it, and the next Runtime starts it naturally when its link is shown
+again. Hiding the dock or switching links does not end a tool during the
+current Runtime.
 
 ### Agents outlive fmx
 
-An agent is not fmx's process. fmx hands each one to a bundled companion
-daemon that owns the agent and its terminal, so closing fmx — or losing it
-to a crash, a signal, or a dropped connection — leaves every agent running
-exactly where it was. The next fmx started from the same configuration
+An agent is not the Runtime's process. fmx hands each one to a bundled
+companion daemon that owns the agent and its terminal, so the final Client
+closing — or the Runtime being lost to a crash or signal — leaves every agent
+running exactly where it was. The next Runtime for the same configuration
 directory finds them, numbered as they were, with their screens restored,
 their last reported status intact, and the last focused agent still selected.
 It picks up where the last one left off.
 Subagent status is re-read from fx's own records. An agent disappears only
 when it exits; with the last one gone fmx shows its empty state, and `ctrl-c`
-twice there closes it. `ctrl-b d` detaches fmx at any time. There is no key
+twice there closes the Runtime. `ctrl-b d` detaches one Client at any time. There is no key
 to close an agent: end it from inside, the way you would at a terminal.
 
-One fmx runs per configuration directory at a time. A replacement started
-while the previous fmx is finishing terminal teardown waits briefly for the
-handoff; a genuinely concurrent second fmx says so and exits.
+One Runtime runs per configuration directory at a time; any number of fmx
+Clients may attach to it.
 
 #### Recovering agents by hand
 
@@ -125,14 +141,15 @@ line reaches the agents directly when fmx cannot — to look at one from a
 plain terminal, or to end one fmx no longer shows:
 
 ```sh
-fmx-zmx list                     # every Agent or persistent tool, live or ended
+fmx-zmx list                     # every Runtime, Agent, or persistent tool
 fmx-zmx attach fmx-<id>          # the agent's terminal, as it stands (ctrl-\ detaches)
 fmx-zmx kill fmx-<id>            # end an agent
 ```
 
 Names are `fmx-` followed by the agent's id, as `fmx-zmx list` shows them.
 Persistent tools panel terminals have opaque `fmxp-...` names in the same list;
-use the exact name shown to attach to or end one by hand.
+the Runtime has an `fmxr-...` name. Use the exact name shown to attach to or
+end one by hand.
 The companion keeps its sessions in its own directory, `/tmp/fmx-<uid>/zmx`,
 private to the user and separate from any zmx of your own, so these commands
 need no configuration and never touch your own sessions. A `zmx` you have
@@ -157,16 +174,16 @@ two matching session-id prefixes do.
 
 ## Agents
 
-Every key and click has a command, so an agent running inside fmx can do what
-a hand can — and read what a hand can see. `fmx control <command>` talks to
+Shared UI actions have commands, so an agent running inside fmx can drive the
+Runtime and read what a hand can see. Detach is deliberately Client-local and
+has no control command. `fmx control <command>` talks to
 the fmx it is running in (over `FMX_SOCKET_PATH`, which every agent is started with)
 and prints one JSON object; from outside, `--socket PATH` names one, or the
-only fmx running is used. Exit status: `0` ok, `1` refused, `2` usage, `3` no
+only Runtime running is used. Exit status: `0` ok, `1` refused, `2` usage, `3` no
 fmx reachable, `4` timed out.
 
 ```sh
 fmx control orient                      # where you are and what the interface shows
-fmx control detach                      # close fmx; every agent keeps running
 fmx control launch "write the tests"    # start an agent here, in the background
 fmx control launch --project ~/code/x --worktree --model gpt-5.6-luna --effort max --focus
 fmx control launch --editable --project ~/code/x --worktree   # open the dialog, prefilled
