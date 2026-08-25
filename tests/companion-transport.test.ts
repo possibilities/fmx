@@ -164,6 +164,31 @@ test("a stale reconciled endpoint falls back to inspection and its current endpo
   expect(inspections).toBe(1)
 })
 
+test("a stale endpoint never falls through to a foreign session under the Agent's name", async () => {
+  const entry = restoredEntry("f".repeat(32))
+  const hint = liveSession(entry, "/tmp/stale-agent")
+  const foreign = {
+    ...liveSession(entry, "/tmp/foreign-agent"),
+    labels: ownershipLabels("stranger", entry.agentId),
+  }
+  const paths: string[] = []
+  const hintedFactory = new CompanionTransportFactory(
+    { settle: async () => foreign } as unknown as CompanionCommand,
+    HOME,
+    {
+      attachHints: new Map([[entry.agentId, hint]]),
+      connect: async (path) => {
+        paths.push(path)
+        throw new Error("stale endpoint")
+      },
+    },
+  )
+
+  const error = await hintedFactory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
+  expect(error).toBeInstanceOf(AgentEndedError)
+  expect(paths).toEqual([hint.socketPath!])
+})
+
 const claim = async (): Promise<ManifestEntry> =>
   manifest.beginCreate({ cwd: dir, fxPath: "/bin/sh", fxArgs: ["-c", CHILD_SCRIPT], createdAt: Date.now() })
 
@@ -218,6 +243,29 @@ test.skipIf(!ENABLED)("start creates a labelled session, attaches with a restore
   transport.detach()
   await waitFor(async () => (await companion.inspect(entry.zmxName)).clients === 0)
   expect((await companion.inspect(entry.zmxName)).state).toBe("live")
+})
+
+test.skipIf(!ENABLED)("a hinted socket revalidates its live daemon's ownership before attach", async () => {
+  const entry = restoredEntry("c".repeat(32))
+  const created = await companion.create({
+    name: entry.zmxName,
+    command: ["/bin/sh", "-c", CHILD_SCRIPT],
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm" },
+    labels: ownershipLabels("stranger", entry.agentId),
+    scrollbackLines: 200,
+  })
+  const hintedFactory = new CompanionTransportFactory(companion, HOME, {
+    attachHints: new Map([[entry.agentId, liveSession(entry, created.socketPath)]]),
+  })
+
+  const error = await hintedFactory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
+  expect(error).toBeInstanceOf(AgentEndedError)
+  expect(await companion.inspect(entry.zmxName)).toMatchObject({
+    state: "live",
+    labels: ownershipLabels("stranger", entry.agentId),
+    clients: 0,
+  })
 })
 
 test.skipIf(!ENABLED)("attach replays the screen onto a reset, and the child survives every detach", async () => {

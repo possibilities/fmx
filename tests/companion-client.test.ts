@@ -93,6 +93,27 @@ test("connect resolves on an accepting Welcome and names the client", async () =
   connection.close()
 })
 
+test("labels reads and validates the identity on the negotiated connection", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const labels = connection.labels()
+  await settle()
+  expect(stub.received.at(-1)?.tag).toBe(Tag.LabelGet)
+  stub.push(encodeFrame(Tag.LabelData, new TextEncoder().encode("agent=abc home=012 owner=fmx pane=p_abc")))
+  expect(await labels).toEqual({ agent: "abc", home: "012", owner: "fmx", pane: "p_abc" })
+  connection.close()
+})
+
+test("labels rejects malformed identity data", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const labels = connection.labels()
+  await settle()
+  stub.push(encodeFrame(Tag.LabelData, new TextEncoder().encode("owner=fmx owner=other")))
+  await expect(labels).rejects.toThrow("malformed LabelData")
+  connection.close()
+})
+
 test("a refused Welcome rejects with both version ranges", async () => {
   const stub = await startStub(() => refuse)
   await expect(CompanionConnection.connect(stub.path, { versions: { min: 42, max: 43 } })).rejects.toThrow(

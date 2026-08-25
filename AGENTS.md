@@ -66,7 +66,11 @@
 - A new Runtime waits on its one-use bootstrap marker before constructing
   `CliRenderer`; the creating Client writes it after its attach reaches Ready,
   so palette queries have a real host terminal to answer. The wait is bounded
-  so a failed initial attach does not orphan a headless Runtime.
+  so a failed initial attach does not orphan a headless Runtime. A directory
+  notification wakes the normal path immediately, with checks on both sides
+  of watcher installation closing the race and a slow probe covering a lost
+  or unavailable notification; do not put the normal path back behind a
+  polling interval.
 - `keys.detach` (default `prefix+d`) is intercepted by the thin Client and
   disconnects only that Client, never an Agent. There is deliberately no
   `fmx control detach`: agents do not own physical Client connections. The
@@ -103,6 +107,11 @@
   restored Session list unpublished until every Agent has attached and Git,
   display metadata, and subagent records have been queried, then paint the
   whole tree once; do not add a second Session-list snapshot.
+- Startup reconciliation hands each surviving Agent's fresh Companion endpoint
+  to its first attach, rather than inspecting the same name again. Consume the
+  hint once, and query ownership labels in-band on that exact connection before
+  sending Init: a failed endpoint may fall back to `settle`, but a label
+  mismatch means the old Agent is gone and the foreign session is left alone.
 - A lost transport is not an exit. `recoverAgent` asks the Companion: a
   live session is re-attached (and replays onto the reset), an ended one is
   removed exactly as an Exit would remove it, and one that cannot be reached
@@ -120,9 +129,11 @@
 - `state.json` remembers the selected agent by its stable `agentId`, not its
   display number. Startup prepares every survivor synchronously in display-id
   order, selects that saved Agent before its first await, then attaches the
-  selected transport first. Do not restore by adding the selected Agent out
-  of order: the tray draws creation order reversed, newest agent first, and
-  only `buildTree` reverses it — every list behind it stays creation order.
+  selected transport first. Once it is attached, inactive transports attach
+  with bounded concurrency; their completion order never changes the Agent
+  list. Do not restore by adding the selected Agent out of order: the tray
+  draws creation order reversed, newest agent first, and only `buildTree`
+  reverses it — every list behind it stays creation order.
   State writes are serialized and awaited during Runtime cleanup so a
   selection immediately followed by the final Client's Detach lands.
 - Palette detection can take seconds in a terminal that never answers, and a
@@ -131,9 +142,12 @@
   cleanup. Do not await anything renderer-bound in `main` without that race.
   `index.ts` deliberately constructs `CliRenderer` before calling
   `setupTerminal`: its input parser can collect palette replies while no
-  alternate-screen frame exists. Before first paint it gives a responsive host
-  one 60 Hz frame to answer, then locks the chosen selected-row background and
-  structural dividers until that initial query settles; a late answer may
+  alternate-screen frame exists. Start that query once the Agent-socket
+  singleton is held, so its one-frame budget overlaps the Companion join; the
+  deadline remains measured from the query, not extended by other startup
+  work. Before first paint it gives a responsive host one 60 Hz frame to
+  answer, then locks the chosen selected-row background and structural
+  dividers until that initial query settles; a late answer may
   theme everything else — including the embedded terminals — but must not mix
   new grays into those startup surfaces. Unlock afterward so a real later
   theme change still applies.

@@ -131,6 +131,43 @@ export class CompanionConnection {
     this.send(Tag.Init, encodeResize(size))
   }
 
+  /** Read the labels from this exact daemon connection, before trusting what owns it. */
+  labels(timeoutMs = 1000): Promise<Record<string, string>> {
+    return new Promise((resolve, reject) => {
+      let finished = false
+      let removeFrame = () => {}
+      let removeClose = () => {}
+      const timer = setTimeout(() => finish(() => reject(new ProtocolError(`no LabelData from daemon within ${timeoutMs}ms`))), timeoutMs)
+      const finish = (settle: () => void) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        removeFrame()
+        removeClose()
+        settle()
+      }
+      const frameSubscription = this.onFrame((frame) => {
+        if (frame.tag !== Tag.LabelData) return
+        try {
+          const labels = decodeLabels(frame.payload)
+          finish(() => resolve(labels))
+        } catch (error) {
+          finish(() => reject(error))
+        }
+      })
+      removeFrame = frameSubscription
+      if (finished) frameSubscription()
+      const closeSubscription = this.onClose((reason) =>
+        finish(() =>
+          reject(reason.kind === "error" ? reason.error : new ProtocolError("daemon closed the connection before LabelData")),
+        ),
+      )
+      removeClose = closeSubscription
+      if (finished) closeSubscription()
+      if (!finished) this.send(Tag.LabelGet)
+    })
+  }
+
   write(input: Uint8Array | string): void {
     this.send(Tag.Input, typeof input === "string" ? new TextEncoder().encode(input) : input)
   }
@@ -331,6 +368,28 @@ export class CompanionConnection {
     this.closed = reason
     for (const listener of this.closeListeners) safely(() => listener(reason))
   }
+}
+
+/** LabelData is the Companion's sorted, space-separated `key=value` form. */
+function decodeLabels(payload: Uint8Array): Record<string, string> {
+  const text = new TextDecoder().decode(payload)
+  if (text === "") return {}
+  const labels: Record<string, string> = Object.create(null)
+  for (const pair of text.split(" ")) {
+    const equals = pair.indexOf("=")
+    const key = pair.slice(0, equals)
+    const value = pair.slice(equals + 1)
+    if (
+      equals <= 0 ||
+      !/^[A-Za-z0-9_.-]+$/.test(key) ||
+      !/^[A-Za-z0-9_.-]*$/.test(value) ||
+      Object.hasOwn(labels, key)
+    ) {
+      throw new ProtocolError("daemon sent malformed LabelData")
+    }
+    labels[key] = value
+  }
+  return labels
 }
 
 /**

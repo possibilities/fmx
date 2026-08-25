@@ -98,8 +98,9 @@ export class CompanionTransportFactory implements AgentTransportFactory {
       ownedAgentId(hint, this.homeId) === entry.agentId
     ) {
       try {
-        return await this.connect(entry, hint.socketPath, size)
-      } catch {
+        return await this.connectOwned(entry, hint.socketPath, size)
+      } catch (error) {
+        if (error instanceof AgentEndedError) throw error
         // The session may have ended since reconciliation. Inspecting now
         // recovers the exact ended/unreachable classification instead of
         // treating a stale endpoint as truth.
@@ -123,14 +124,31 @@ export class CompanionTransportFactory implements AgentTransportFactory {
     if (session.state !== "live" || !session.socketPath) {
       throw new Error(`Companion session ${entry.zmxName} is ${session.state}${session.detail ? ` (${session.detail})` : ""}`)
     }
-    return this.connect(entry, session.socketPath, size)
+    if (ownedAgentId(session, this.homeId) !== entry.agentId) throw new AgentEndedError(entry, null)
+    return this.connectOwned(entry, session.socketPath, size)
   }
 
-  private async connect(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<AgentTransport> {
+  private async connect(
+    entry: ManifestEntry,
+    socketPath: string,
+    size: TerminalSize,
+    ownership?: Record<string, string>,
+  ): Promise<AgentTransport> {
     return (this.options.connect ?? connectCompanionAgent)(socketPath, size, {
       client: this.options.client ?? "fmx",
       onExited: () => this.reap(entry),
+      ownership,
     })
+  }
+
+  /** Connect, then prove that exact daemon still owns the Manifest Agent before attaching. */
+  private async connectOwned(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<AgentTransport> {
+    try {
+      return await this.connect(entry, socketPath, size, ownershipLabels(this.homeId, entry.agentId))
+    } catch (error) {
+      if (error instanceof CompanionOwnershipError) throw new AgentEndedError(entry, null)
+      throw error
+    }
   }
 
   /**
@@ -153,7 +171,11 @@ export class CompanionTransportFactory implements AgentTransportFactory {
 type CompanionAgentOptions = {
   client?: string
   onExited?: () => Promise<void>
+  /** Required labels on this exact connection, checked before Init exposes its terminal. */
+  ownership?: Record<string, string>
 }
+
+class CompanionOwnershipError extends Error {}
 
 /** Attach an Agent transport to its live Companion session. */
 async function connectCompanionAgent(
@@ -162,6 +184,19 @@ async function connectCompanionAgent(
   options: CompanionAgentOptions = {},
 ): Promise<AgentTransport> {
   const connection = await CompanionConnection.connect(socketPath, { client: options.client ?? "fmx" })
+  if (options.ownership) {
+    let labels: Record<string, string>
+    try {
+      labels = await connection.labels()
+    } catch (error) {
+      connection.close()
+      throw error
+    }
+    if (!Object.entries(options.ownership).every(([key, value]) => labels[key] === value)) {
+      connection.close()
+      throw new CompanionOwnershipError("Companion session ownership changed before attach")
+    }
+  }
   // Listeners first, then the attach: the restore the daemon answers with must
   // have somewhere to go before it is asked for.
   const transport = new CompanionTransport(connection, options.onExited ?? (async () => {}))
