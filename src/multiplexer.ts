@@ -136,6 +136,8 @@ const PROMPT_SUBMIT_MS = 120
 /** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
+/** Restore the selected Agent alone, then bound inactive replay pressure. */
+const RESTORE_CONCURRENCY = 4
 export const EXIT_CONFIRMATION_TIMEOUT_MS = 2_000
 const MAX_SCROLLBACK_BYTES = 10_000_000
 
@@ -734,11 +736,15 @@ export class Multiplexer {
     // Reach the selected terminal first, while keeping the tray itself in
     // display-id order. It is the surface the renderer is about to expose.
     const active = this.activeAgent()!
-    const attachOrder = [active, ...restoring.filter((agent) => agent !== active)]
-    for (const agent of attachOrder) {
-      if (this.shuttingDown) return
-      await this.attachRestoredAgent(agent)
-    }
+    await this.attachRestoredAgent(active)
+    if (this.shuttingDown) return
+    await forEachConcurrent(
+      restoring.filter((agent) => agent !== active),
+      RESTORE_CONCURRENCY,
+      async (agent) => {
+        if (!this.shuttingDown) await this.attachRestoredAgent(agent)
+      },
+    )
     // Git, fx's display metadata, and subagent control records are durable
     // authorities, not copies in fmx. An older Manifest may not carry every
     // session identity, so query after attach has had a chance to supply it.
@@ -2294,6 +2300,23 @@ function wrapText(value: string, width: number): string[] {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+async function forEachConcurrent<T>(
+  items: readonly T[],
+  limit: number,
+  visit: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next
+      next += 1
+      if (index >= items.length) return
+      await visit(items[index]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(items.length, limit) }, () => worker()))
 }
 
 function subagentInfos(entries: SubagentEntry[]): SubagentInfo[] {

@@ -190,6 +190,58 @@ test("selects the saved survivor before restoring any terminal", async () => {
   }
 })
 
+test("restores the selected Agent first, then at most four others concurrently", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+  const options = agentOptions()
+  const claims = Array.from({ length: 7 }, (_, index) =>
+    options.manifest.claim({
+      cwd: process.cwd(),
+      fxPath: FAKE_FX,
+      fxArgs: [],
+      createdAt: index + 1,
+    }).result,
+  )
+  const survivors = await Promise.all(claims.map((claim) => options.manifest.markRunning(claim.agentId)))
+  const selected = survivors[3]!
+  const started: string[] = []
+  const pending = new Map<string, () => void>()
+  options.transport.attachBehavior = (entry) =>
+    new Promise((resolve) => {
+      started.push(entry.agentId)
+      pending.set(entry.agentId, () => {
+        pending.delete(entry.agentId)
+        resolve({ bind() {}, write() {}, resize() {}, detach() {} })
+      })
+    })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...options,
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    survivors,
+    initialActiveAgentId: selected.agentId,
+  })
+
+  try {
+    const startup = multiplexer.start()
+    await waitFor(() => started.length === 1)
+    expect(started).toEqual([selected.agentId])
+
+    pending.get(selected.agentId)!()
+    await waitFor(() => started.length === 5)
+    expect(pending.size).toBe(4)
+
+    pending.get(started[1]!)!()
+    await waitFor(() => started.length === 6)
+    pending.get(started[2]!)!()
+    await waitFor(() => started.length === 7)
+    for (const release of [...pending.values()]) release()
+    await startup
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("publishes restored Session-list metadata only after attaching transports", async () => {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const options = agentOptions()

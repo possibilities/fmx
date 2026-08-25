@@ -26,7 +26,7 @@ export class PtyTransportFactory implements AgentTransportFactory {
    * fail some other way, and one of the recovered path hands back the PTY
    * it lost.
    */
-  attachBehavior: "ended" | "unreachable" | ((entry: ManifestEntry) => AgentTransport) = "ended"
+  attachBehavior: "ended" | "unreachable" | ((entry: ManifestEntry) => AgentTransport | Promise<AgentTransport>) = "ended"
   /** Holds every `start` until released; for tests of what happens before `adopt`. */
   gate: Promise<void> | null = null
 
