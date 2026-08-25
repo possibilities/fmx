@@ -1,9 +1,7 @@
 import { VERSION } from "./cli.ts"
 import {
   FX_PATH_ENV_VAR,
-  HUNK_PATH_ENV_VAR,
   resolveFx,
-  resolveHunk,
 } from "./executable.ts"
 import { fmxDirectory } from "./state.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
@@ -93,14 +91,6 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Doct
     rows.push(["fx", await resolveFx(env[FX_PATH_ENV_VAR] ?? "fx", env)])
   } catch (error) {
     rows.push(["fx", `${errorMessage(error)}; install it from https://fx.sh/`])
-  }
-
-  // hunk is reported the way fx is, and judged no more: without it the Tools
-  // panel is simply not offered, which stops no start.
-  try {
-    rows.push(["hunk", await resolveHunk(env[HUNK_PATH_ENV_VAR] ?? "hunk", env)])
-  } catch (error) {
-    rows.push(["hunk", `${errorMessage(error)}; the Diff panel is not offered without it`])
   }
 
   const width = Math.max(...rows.map(([label]) => label.length))

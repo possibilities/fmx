@@ -6,7 +6,6 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { defaultSocketPath } from "../src/agent-socket.ts"
-import type { Command } from "../src/cli.ts"
 import { runCommand } from "../src/control-client.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { ControlSocket } from "../src/control-socket.ts"
@@ -20,7 +19,6 @@ import { initRepository } from "./fixtures/git-workspace.ts"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FAKE_FX = resolve(ROOT, "tests/fixtures/fake-fx.ts")
-const FAKE_PANEL = resolve(ROOT, "tests/fixtures/fake-panel.ts")
 const FMX_COMMAND = process.env.FMX_BINARY_PATH
   ? [resolve(ROOT, process.env.FMX_BINARY_PATH)]
   : [process.execPath, resolve(ROOT, "src/index.ts")]
@@ -1081,118 +1079,6 @@ test.skipIf(!PTY_TEST_ENABLED)(
   15_000,
 )
 
-test.skipIf(!PTY_TEST_ENABLED)(
-  "the built-in Diff panel reattaches to its Companion session across a Runtime",
-  async () => {
-    await chmod(FAKE_FX, 0o755)
-    const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-panel-restore-e2e-"))
-    const lifecycleLog = join(tempDirectory, "lifecycle.log")
-    const panelLog = join(tempDirectory, "panels.log")
-    const configFile = join(tempDirectory, "config.toml")
-    const stateFile = join(tempDirectory, "state.json")
-    await writeFile(configFile, `project_roots = [${JSON.stringify(ROOT)}]\n`)
-    // The tools are fmx's own, so the way to put a stub under one is the seam
-    // that says where its executable is. The Diff panel's argv is fmx's; this
-    // shim ignores it and answers as a tool that stays up.
-    const stubHunk = join(tempDirectory, "hunk")
-    await writeFile(
-      stubHunk,
-      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_PANEL)} ${JSON.stringify(panelLog)} diff\n`,
-    )
-    await chmod(stubHunk, 0o755)
-    const env = {
-      ...process.env,
-      FMX_FX_PATH: FAKE_FX,
-      FMX_HUNK_PATH: stubHunk,
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
-      FMX_CONFIG_PATH: configFile,
-      FMX_STATE_PATH: stateFile,
-      ...privateHome(tempDirectory),
-      FMX_TEST_LOG: lifecycleLog,
-    }
-    const spawnFmx = (sink: { output: string }) => {
-      const decoder = new TextDecoder()
-      return Bun.spawn(FMX_COMMAND, {
-        cwd: ROOT,
-        env,
-        terminal: {
-          cols: 100,
-          rows: 24,
-          data: (_terminal, bytes) => {
-            sink.output += decoder.decode(bytes, { stream: true })
-          },
-        },
-      })
-    }
-
-    const firstOutput = { output: "" }
-    const first = spawnFmx(firstOutput)
-    let replacement: ReturnType<typeof spawnFmx> | null = null
-    try {
-      await waitUntil(() => firstOutput.output.includes("prefix+l"), 8_000, () => firstOutput.output)
-      await launchAgent(first, () => firstOutput.output)
-      await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
-
-      await panelCommand(tempDirectory, env, { hidden: false })
-      await waitUntil(
-        async () => countOccurrences(await readLifecycle(panelLog), "start diff ") === 1,
-        8_000,
-        () => firstOutput.output,
-      )
-      await waitUntil(
-        async () => (await orientation(tempDirectory, env))?.panel.selected === "diff",
-        5_000,
-        () => firstOutput.output,
-      )
-
-      first.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
-      expect(await withTimeout(first.exited, 6_000, "first fmx did not detach with a Tool panel")).toBe(0)
-      first.terminal?.close()
-
-      // The Companion holds the tool while no fmx is attached to it.
-      await Bun.sleep(200)
-      const settled = countOccurrences(await readLifecycle(panelLog), "alive diff ")
-      await Bun.sleep(200)
-      expect(countOccurrences(await readLifecycle(panelLog), "alive diff ")).toBeGreaterThan(settled)
-
-      const secondOutput = { output: "" }
-      replacement = spawnFmx(secondOutput)
-      await waitUntil(
-        async () => {
-          const snapshot = await orientation(tempDirectory, env)
-          return snapshot?.agents.length === 1 && snapshot.panel.visible && snapshot.panel.selected === "diff"
-        },
-        10_000,
-        () => secondOutput.output,
-      )
-      const companion = new CompanionCommand(companionDirectoryFor(tempDirectory), process.env, COMPANION!)
-      await waitUntil(
-        async () =>
-          (await companion.list()).some(
-            (session) => session.labels.kind === "panel" && session.labels.panel === "diff" && (session.clients ?? 0) > 0,
-          ),
-        8_000,
-        () => secondOutput.output,
-      )
-      // Reattached, not restarted: the tool was never started a second time.
-      expect(countOccurrences(await readLifecycle(panelLog), "start diff ")).toBe(1)
-
-      replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
-      expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
-      replacement.terminal?.close()
-    } finally {
-      if (first.exitCode === null) first.kill("SIGKILL")
-      first.terminal?.close()
-      if (replacement && replacement.exitCode === null) replacement.kill("SIGKILL")
-      replacement?.terminal?.close()
-      await endSurvivors(tempDirectory)
-      await rm(tempDirectory, { recursive: true, force: true })
-    }
-  },
-  30_000,
-)
-
 for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
   test.skipIf(!PTY_TEST_ENABLED)(
     `${signal} leaves every fx running, and the next fmx restores them`,
@@ -1332,20 +1218,6 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
     },
     40_000,
   )
-}
-
-async function panelCommand(
-  tempDirectory: string,
-  env: NodeJS.ProcessEnv,
-  fields: Omit<Extract<Command, { name: "panel" }>, "name">,
-): Promise<void> {
-  const socket = ControlSocket.pathFor(defaultSocketPath(homeOf(tempDirectory)))
-  const outcome = await runCommand({ name: "panel", ...fields }, socket, {
-    env,
-    cwd: ROOT,
-    readStdin: async () => "",
-  })
-  if (outcome.exitCode !== 0) throw new Error(outcome.error?.message ?? "Tool panel control failed")
 }
 
 function createHostPaletteResponder(

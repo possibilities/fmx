@@ -159,7 +159,7 @@ describe("commands", () => {
     expect(parseArgs(["control", "focus", "next", "--socket=/tmp/x.ctl"]).socket).toBe("/tmp/x.ctl")
   })
 
-  test("keys, focus, tray, and Tool panel", () => {
+  test("keys, focus, and tray", () => {
     expect(parseArgs(["control", "keys", "--show"]).command).toEqual({ name: "keys", show: true })
     expect(parseArgs(["control", "catalog"]).command).toEqual({ name: "catalog" })
     expect(parseArgs(["control", "focus", "next"]).command).toEqual({ name: "focus", target: "next" })
@@ -168,17 +168,6 @@ describe("commands", () => {
     expect(parseArgs(["control", "tray", "--toggle"]).command).toEqual({ name: "tray", toggle: true })
     expect(() => parseArgs(["control", "tray", "--show", "--hide"])).toThrow("contradict")
     expect(() => parseArgs(["control", "tray", "--width", "wide"])).toThrow("whole number")
-    expect(
-      parseArgs(["control", "panel", "--width", "38", "--show", "--select", "diff", "--focus", "panel"]).command,
-    ).toEqual({ name: "panel", width: 38, hidden: false, select: "diff", focus: "panel" })
-    expect(parseArgs(["control", "panel", "--previous"]).command).toEqual({
-      name: "panel",
-      step: "previous",
-    })
-    expect(parseArgs(["control", "panel", "--next"]).command).toEqual({ name: "panel", step: "next" })
-    expect(() => parseArgs(["control", "panel", "--show", "--toggle"])).toThrow("contradict")
-    expect(() => parseArgs(["control", "panel", "--select", "diff", "--next"])).toThrow("contradict")
-    expect(() => parseArgs(["control", "panel", "--focus", "somewhere"])).toThrow("panel, agent, or toggle")
   })
 
   test("a usage error names its topic", () => {

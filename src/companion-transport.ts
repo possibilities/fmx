@@ -9,7 +9,6 @@ import {
   type AgentLaunch,
   type AgentTransport,
   type AgentTransportFactory,
-  type TerminalTransport,
   type TerminalSize,
   type TransportHandlers,
 } from "./agent-transport.ts"
@@ -103,7 +102,7 @@ export class CompanionTransportFactory implements AgentTransportFactory {
   }
 
   private async connect(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<AgentTransport> {
-    return connectCompanionTerminal(socketPath, size, {
+    return connectCompanionAgent(socketPath, size, {
       client: this.options.client ?? "fmx",
       onExited: () => this.reap(entry),
     })
@@ -126,17 +125,17 @@ export class CompanionTransportFactory implements AgentTransportFactory {
   }
 }
 
-export type CompanionTerminalOptions = {
+type CompanionAgentOptions = {
   client?: string
   onExited?: () => Promise<void>
 }
 
-/** Attach the shared terminal transport to any live Companion session. */
-export async function connectCompanionTerminal(
+/** Attach an Agent transport to its live Companion session. */
+async function connectCompanionAgent(
   socketPath: string,
   size: TerminalSize,
-  options: CompanionTerminalOptions = {},
-): Promise<TerminalTransport> {
+  options: CompanionAgentOptions = {},
+): Promise<AgentTransport> {
   const connection = await CompanionConnection.connect(socketPath, { client: options.client ?? "fmx" })
   // Listeners first, then the attach: the restore the daemon answers with must
   // have somewhere to go before it is asked for.
@@ -145,7 +144,7 @@ export async function connectCompanionTerminal(
   return transport
 }
 
-class CompanionTransport implements TerminalTransport {
+class CompanionTransport implements AgentTransport {
   private readonly relay = new HandlerRelay()
   private exited = false
   private detached = false

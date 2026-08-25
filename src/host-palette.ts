@@ -81,8 +81,8 @@ export function detectedTerminalColor(color: string | null | undefined): string 
 
 /**
  * The ramp: every color fmx paints on a surface of its own — the tray, the
- * Tools panel and its rule tab, the help and error modals, the launch dialog,
- * the toast, and the unused field around a smaller sizing owner.
+ * help and error modals, the launch dialog, the toast, and the unused field
+ * around a smaller sizing owner.
  *
  * fx draws with five fixed grays. fmx reproduces the relationships between
  * them as blends between the host terminal's own background and foreground,
@@ -154,15 +154,6 @@ export function hostRamp(colors: TerminalColors | null): Ramp {
     error,
     backdrop: RAMP_FALLBACK.backdrop,
   }
-}
-
-/**
- * Which column of fx's grays a Ramp came from, judged the same way `hostRamp`
- * judges a canvas. A tool fmx themes inherits a light or dark base by this, so
- * the base always matches the background its colors were blended from.
- */
-export function rampMode(ramp: Ramp): ThemeMode {
-  return isLight(ramp.background) ? "light" : "dark"
 }
 
 /** Weighted channel brightness is enough to tell a light canvas from a dark one. */

@@ -1,5 +1,4 @@
 import { CONTROL_SOCKET_ENV_VAR } from "./control-protocol.ts"
-import { HUNK_RAMP_ENV_VAR } from "./hunk-theme.ts"
 import { INHERITED_COMPANION_VARIABLES } from "./zmx-environment.ts"
 
 /**
@@ -28,9 +27,9 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   ...INHERITED_AGENT_SOCKET_VARIABLES,
   "FX_ADE_SOCKET_PATH",
   "FX_ADE_INSTANCE_ID",
-  // These identify fmx's own Companion-held Runtime process. An agent or
-  // Tool may launch fmx itself and must become an ordinary Client, not inherit
-  // the hidden Runtime role or its one-use bootstrap marker.
+  // These identify fmx's own Companion-held Runtime process. An Agent may
+  // launch fmx itself and must become an ordinary Client, not inherit the
+  // hidden Runtime role or its one-use bootstrap marker.
   "FMX_RUNTIME_PROCESS",
   "FMX_RUNTIME_BOOTSTRAP_PATH",
   // The Companion's own names: an fmx started inside a human's zmx must not
@@ -79,7 +78,17 @@ export function createFxEnvironment(
   launchLevel: FxLaunchLevel | null = null,
   ade: FxAdeBinding | null = null,
 ): NodeJS.ProcessEnv {
-  const env = createEmbeddedEnvironment(parent, cwd)
+  const env: NodeJS.ProcessEnv = {
+    ...parent,
+    PWD: cwd,
+    TERM: "xterm-256color",
+    COLORTERM: "truecolor",
+    TERM_PROGRAM: "fmx",
+  }
+  const inheritedScreenSession = env.STY !== undefined
+  for (const variable of OUTER_MULTIPLEXER_VARIABLES) delete env[variable]
+  if (inheritedScreenSession) delete env.WINDOW
+  delete env.TERM_PROGRAM_VERSION
   env.FMX_AGENT_ID = String(agentId)
 
   if (agentSocket) {
@@ -98,50 +107,5 @@ export function createFxEnvironment(
     env.FX_MODEL = launchLevel.model
     env.FX_EFFORT = launchLevel.effort
   }
-  return env
-}
-
-/**
- * A terminal tool runs in the active Agent's context but is not itself an fx
- * and must never report on the Agent socket.
- *
- * A themed tool is also handed the Ramp, which its fmx-shipped extension reads
- * out of this environment and paints its theme from. Like the tool's argv it
- * is fixed when the tool starts: a persistent one keeps the Ramp it launched
- * with until it is ended and re-opened.
- */
-export function createPanelEnvironment(
-  parent: NodeJS.ProcessEnv,
-  agentId: number,
-  cwd: string,
-  controlSocketPath: string | null,
-  panelId: string,
-  ramp: string | null = null,
-): NodeJS.ProcessEnv {
-  const env = createEmbeddedEnvironment(parent, cwd)
-  env.FMX_AGENT_ID = String(agentId)
-  env.FMX_PANEL_ID = panelId
-  if (ramp) env[HUNK_RAMP_ENV_VAR] = ramp
-  if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
-  else delete env[CONTROL_SOCKET_ENV_VAR]
-  return env
-}
-
-function createEmbeddedEnvironment(parent: NodeJS.ProcessEnv, cwd: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...parent,
-    PWD: cwd,
-    TERM: "xterm-256color",
-    COLORTERM: "truecolor",
-    TERM_PROGRAM: "fmx",
-  }
-  const inheritedScreenSession = env.STY !== undefined
-  for (const variable of OUTER_MULTIPLEXER_VARIABLES) delete env[variable]
-  if (inheritedScreenSession) delete env.WINDOW
-  delete env.TERM_PROGRAM_VERSION
-  delete env.FMX_PANEL_ID
-  // An inherited Ramp is some other fmx's colors, and an fx is not a themed
-  // tool at all: only the tool fmx themes is given one, and it is set fresh.
-  delete env[HUNK_RAMP_ENV_VAR]
   return env
 }

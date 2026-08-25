@@ -330,7 +330,7 @@ test("resizes the tray by dragging the divider, clamped to 24..width/2", async (
     expect(content.x).toBe(35)
     expect(content.width).toBe(55)
 
-    // Far past the maximum: clamps to half the screen, the tools panel hidden.
+    // Far past the maximum: clamps to half the screen.
     await setup.mockMouse.drag(34, 10, 80, 10)
     await setup.renderOnce()
     expect(tray.width).toBe(45)

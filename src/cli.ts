@@ -34,15 +34,6 @@ export type Command =
   | { name: "draft"; verb: "wait"; draft?: string; timeoutMs?: number }
   | { name: "focus"; target: string }
   | { name: "tray"; width?: number; hidden?: boolean; toggle?: boolean }
-  | {
-      name: "panel"
-      width?: number
-      hidden?: boolean
-      toggle?: boolean
-      select?: string
-      step?: "next" | "previous"
-      focus?: "panel" | "agent" | "toggle"
-    }
   | { name: "keys"; show: boolean }
   | { name: "catalog" }
 
@@ -62,7 +53,7 @@ export type CliOptions = {
 const CONTROL_GROUP = "control"
 /** The one other top-level command: a report on the installation, never a running fmx. */
 const DOCTOR_COMMAND = "doctor"
-const COMMAND_NAMES = ["orient", "agent", "launch", "draft", "focus", "tray", "panel", "keys", "catalog"] as const
+const COMMAND_NAMES = ["orient", "agent", "launch", "draft", "focus", "tray", "keys", "catalog"] as const
 const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
 const AGENT_VERBS = ["list", "wait", "send"] as const
 
@@ -161,43 +152,6 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
       if (flags.switches.has("show")) command.hidden = false
       if (flags.switches.has("hide")) command.hidden = true
       if (flags.switches.has("toggle")) command.toggle = true
-      return command
-    }
-    case "panel": {
-      const flags = parseFlags(
-        args,
-        {
-          width: "value",
-          show: "switch",
-          hide: "switch",
-          toggle: "switch",
-          select: "value",
-          next: "switch",
-          previous: "switch",
-          focus: "value",
-        },
-        "panel",
-      )
-      rejectExtra(flags.positional, "panel")
-      const visibility = ["show", "hide", "toggle"].filter((flag) => flags.switches.has(flag))
-      if (visibility.length > 1) throw new UsageError("--show, --hide, and --toggle contradict", "panel")
-      const movement = [flags.values.select !== undefined, flags.switches.has("next"), flags.switches.has("previous")]
-        .filter(Boolean).length
-      if (movement > 1) throw new UsageError("--select, --next, and --previous contradict", "panel")
-      const command: Command = { name: "panel" }
-      if (flags.values.width !== undefined) command.width = integerFlag("--width", flags.values.width)
-      if (flags.switches.has("show")) command.hidden = false
-      if (flags.switches.has("hide")) command.hidden = true
-      if (flags.switches.has("toggle")) command.toggle = true
-      if (flags.values.select !== undefined) command.select = flags.values.select
-      if (flags.switches.has("next")) command.step = "next"
-      if (flags.switches.has("previous")) command.step = "previous"
-      if (flags.values.focus !== undefined) {
-        if (flags.values.focus !== "panel" && flags.values.focus !== "agent" && flags.values.focus !== "toggle") {
-          throw new UsageError("--focus must be panel, agent, or toggle", "panel")
-        }
-        command.focus = flags.values.focus
-      }
       return command
     }
     case "keys": {
@@ -420,8 +374,6 @@ export function usage(topic: string | null = null): string {
       return "Usage: fmx control focus <target>\n\n  target: agent id, exact session name, session-id prefix, next, previous, current\n"
     case "tray":
       return "Usage: fmx control tray [--width N] [--show | --hide | --toggle]\n"
-    case "panel":
-      return "Usage: fmx control panel [--width N] [--show | --hide | --toggle] [--select ID | --next | --previous] [--focus panel|agent|toggle]\n"
     case "keys":
       return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running Runtime as well\n"
   }
@@ -461,8 +413,6 @@ Each command prints one JSON object.
   agent list|wait|send      read, wait on, or type into agents
   tray [--width N] [--show|--hide|--toggle]
                                the session list's width and visibility
-  panel [--width N] [--show|--hide|--toggle] [--select ID|--next|--previous] [--focus OWNER]
-                               the active agent's configured terminal tools
   keys [--show]                the keybindings and their command equivalents
   catalog                      the models and efforts the launch dialog offers
 

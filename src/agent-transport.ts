@@ -1,13 +1,17 @@
 import type { ManifestEntry } from "./agent-manifest.ts"
 
 /**
- * The terminal seam shared by an Agent and a tools panel runtime: bytes in
- * and out, size, and the distinction between the child ending and only its
- * connection ending. How the child is held belongs to the lifecycle above
- * this seam. Agents still ship exactly one factory — the Companion's —
- * while a non-persistent configured tool may deliberately own a local PTY.
+ * The terminal seam: what an Agent's renderer needs from whatever holds the
+ * fx process and its PTY, and nothing about how it is held. Bytes go in and
+ * out, the size follows the terminal, and the two ways it ends are told apart
+ * — fx ending, with a status, against the transport itself ending, which says
+ * nothing about fx at all.
+ *
+ * One implementation ships: the Companion's, in `companion-transport.ts`.
+ * Tests keep a Bun PTY behind the same seam so the renderer can be exercised
+ * without a Companion on the machine.
  */
-export interface TerminalTransport {
+export interface AgentTransport {
   /**
    * Wire the consumer. Whatever arrived before this call is delivered now,
    * in order, so a transport that was attached before its Agent was
@@ -16,13 +20,9 @@ export interface TerminalTransport {
   bind(handlers: TransportHandlers): void
   write(bytes: Uint8Array): void
   resize(size: TerminalSize): void
-  /** Stop watching. A persistent owner keeps the child running; a local owner may end it. */
+  /** Stop watching. fx keeps running; nothing is sent to it. */
   detach(): void
 }
-
-/** The terminal transport used specifically for an Agent. Its production
- * factory remains CompanionTransportFactory. */
-export type AgentTransport = TerminalTransport
 
 export type TransportHandlers = {
   /** Terminal bytes from fx, restored or live. */

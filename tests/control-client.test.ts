@@ -85,34 +85,6 @@ test("sends the caller's agent with commands that have one", async () => {
   }
 })
 
-test("sends tools panel visibility, selection, and focus in one request", async () => {
-  const { socket, calls } = await server(async () => ({ selected: "diff" }), "panel")
-  try {
-    const command = parseArgs([
-      "control",
-      "panel",
-      "--width",
-      "42",
-      "--show",
-      "--select",
-      "diff",
-      "--focus",
-      "panel",
-    ]).command!
-    expect(await runCommand(command, socket.path, environment())).toEqual({
-      exitCode: EXIT_OK,
-      result: { selected: "diff" },
-    })
-    expect(calls).toEqual([
-      {
-        method: "panel",
-        params: { width: 42, hidden: false, select: "diff", focus: "panel" },
-      },
-    ])
-  } finally {
-    socket.close()
-  }
-})
 
 test("resolves prompt text from a file or stdin before sending", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-prompt-"))

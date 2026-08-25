@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createFxEnvironment, createPanelEnvironment } from "../src/fx-environment.ts"
+import { createFxEnvironment } from "../src/fx-environment.ts"
 
 test("fx child environment describes the embedded terminal, not the outer multiplexer", () => {
   const env = createFxEnvironment(
@@ -122,29 +122,4 @@ test("an inherited Companion session is not handed on to fx", () => {
   expect(env.ZMX_DIR).toBeUndefined()
   expect(env.ZMX_SESSION).toBeUndefined()
   expect(env.ZMX_SESSION_PREFIX).toBeUndefined()
-})
-
-test("a tools panel inherits the active Agent context but never its Agent socket", () => {
-  const env = createPanelEnvironment(
-    {
-      HERDR_SOCKET_PATH: "/tmp/outer.sock",
-      HERDR_PANE_ID: "outer",
-      FMX_SOCKET_PATH: "/tmp/old.ctl",
-      FMX_PANEL_ID: "old",
-      ZMX_SESSION: "outer",
-    },
-    7,
-    "/work/tree",
-    "/tmp/current.ctl",
-    "diff",
-  )
-  expect(env).toMatchObject({
-    PWD: "/work/tree",
-    FMX_AGENT_ID: "7",
-    FMX_PANEL_ID: "diff",
-    FMX_SOCKET_PATH: "/tmp/current.ctl",
-  })
-  expect(env.HERDR_SOCKET_PATH).toBeUndefined()
-  expect(env.HERDR_PANE_ID).toBeUndefined()
-  expect(env.ZMX_SESSION).toBeUndefined()
 })

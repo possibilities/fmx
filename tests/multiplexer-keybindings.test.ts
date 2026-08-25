@@ -50,10 +50,6 @@ test("uses the configured prefix and renders configured bindings", async () => {
       "│  prefix+p    prev agent     │",
       "│  prefix+n    next agent     │",
       "│  prefix+b    toggle tray    │",
-      "│  prefix+r    toggle tools   │",
-      "│  prefix+o    focus tools    │",
-      "│  prefix+[    previous tool  │",
-      "│  prefix+]    next tool      │",
       "└─────────────────────────────┘",
     ]) {
       expect(frame).toContain(line)

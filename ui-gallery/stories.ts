@@ -5,7 +5,6 @@ import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentSocket, FrameListener } from "../src/agent-socket.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
 import type { AdeEventListener, AdeRecord, AdeSocket } from "../src/ade-events.ts"
-import type { PanelDefinition } from "../src/panels.ts"
 import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { LaunchDialog } from "../src/launch-dialog.ts"
@@ -15,12 +14,8 @@ import { SessionList } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 import { decodeFrame } from "../src/socket-frames.ts"
 import { Toast, type ToastTone } from "../src/toast.ts"
-import { ToolPanel } from "../src/tool-panel.ts"
 import { unusedSpaceBackground } from "../src/unused-space.ts"
-import {
-  GalleryAgentTransportFactory,
-  GalleryPanelSessions,
-} from "./fakes.ts"
+import { GalleryAgentTransportFactory } from "./fakes.ts"
 import type { UiStory, UiStoryContext } from "./story.ts"
 
 const ROOT = resolve(import.meta.dir, "..")
@@ -36,11 +31,6 @@ const AGENT_SCREEN =
   "  ✓ Exercise meaningful states\r\n" +
   "  ◐ Review the gallery in a terminal\r\n\r\n" +
   "\x1b[90mDeterministic state.\x1b[0m\r\n"
-const PANEL_SCREEN =
-  "\x1b[2J\x1b[H\x1b[1;34mbun test\x1b[0m\r\n\r\n" +
-  "  363 pass\r\n" +
-  "  0 fail\r\n\r\n" +
-  "\x1b[90mWatching for changes…\x1b[0m\r\n"
 
 const PROJECTS: ProjectChoice[] = [
   { directory: "/Users/demo/code/fmx", display: "~/code/fmx", launches: 8 },
@@ -48,11 +38,6 @@ const PROJECTS: ProjectChoice[] = [
   { directory: "/Users/demo/code/agentbrain", display: "~/code/agentbrain", launches: 1 },
   { directory: "/Users/demo/code/fx", display: "~/code/fx", launches: 0 },
   { directory: "/Users/demo/code/zmax", display: "~/code/zmax", launches: 0 },
-]
-
-const PANELS: PanelDefinition[] = [
-  { id: "diff", label: "Diff", command: ["hunk", "diff", "--watch"], persistent: true },
-  { id: "tests", label: "Tests", command: ["bun", "test", "--watch"], persistent: false },
 ]
 
 export const UI_STORIES: readonly UiStory[] = [
@@ -76,20 +61,6 @@ export const UI_STORIES: readonly UiStory[] = [
     interaction: "Use ctrl+b b to toggle the Tray and ctrl+b ? to inspect the active key map.",
     arrange: mountMultiplexer({
       screen: AGENT_SCREEN,
-      afterMount: launchGalleryAgent,
-    }),
-  },
-  {
-    id: "multiplexer-tools",
-    component: "Multiplexer",
-    title: "Tools beside an Agent",
-    description: "The complete workspace keeps the Session list, Agent, and selected tool legible as one block.",
-    viewport: { cols: 86, rows: 24 },
-    expectedText: ["Review UI", "Working on the UI gallery", "Diff", "Tests", "363 pass", "Watching for changes"],
-    interaction: "Use ctrl+b r to hide the Tools panel and ctrl+b o to move focus into it.",
-    arrange: mountMultiplexer({
-      screen: AGENT_SCREEN,
-      panelScreen: PANEL_SCREEN,
       afterMount: launchGalleryAgent,
     }),
   },
@@ -259,100 +230,6 @@ export const UI_STORIES: readonly UiStory[] = [
       context.setup.mockInput.pressKey(" ")
     },
   },
-  {
-    id: "tools-panel-no-agent",
-    component: "Tools panel",
-    title: "No active Agent",
-    description: "Configured tools are visible, but the panel waits for an active Agent context.",
-    viewport: { cols: 54, rows: 16 },
-    expectedText: ["Diff", "Tests", "no active agent"],
-    async arrange(context) {
-      await mountToolPanel(context, new GalleryPanelSessions("ready"), false)
-    },
-  },
-  {
-    id: "tools-panel-loading",
-    component: "Tools panel",
-    title: "Tool loading",
-    description: "The selected tool owns the body while its terminal transport is opening.",
-    viewport: { cols: 54, rows: 16 },
-    expectedText: ["Diff", "Tests", "loading Diff…"],
-    async arrange(context) {
-      await mountToolPanel(context, new GalleryPanelSessions("loading"))
-    },
-  },
-  {
-    id: "tools-panel-ready",
-    component: "Tools panel",
-    title: "Running test tool",
-    description: "A live tool terminal beneath the rule tab: the selected label bold, the hairline heavy under it.",
-    viewport: { cols: 66, rows: 18 },
-    expectedText: ["Diff", "Tests", "bun test v1.4.0", "214 pass", "Watching for changes"],
-    async arrange(context) {
-      await mountToolPanel(
-        context,
-        new GalleryPanelSessions(
-          "ready",
-          "\x1b[2J\x1b[H\x1b[1;34mbun test v1.4.0\x1b[0m\r\n\r\n  214 pass\r\n  0 fail\r\n\r\n\x1b[90mWatching for changes…\x1b[0m\r\n",
-        ),
-        true,
-        "tests",
-      )
-    },
-  },
-  {
-    id: "tools-panel-rule-tab",
-    component: "Tools panel",
-    title: "Rule tab",
-    description:
-      "Three tools on the rule tab: selection by weight and the heavy rule span, no hue, no underline. fx has no tab surface, so this is fmx's own, built from fx's principles.",
-    viewport: { cols: 60, rows: 12 },
-    expectedText: ["Diff", "Tests", "Logs", "━━━━━"],
-    interaction: "Click a label to select it.",
-    async arrange(context) {
-      await mountToolPanel(context, new GalleryPanelSessions("ready", "logs output\r\n"), true, "tests", [
-        ...PANELS,
-        { id: "logs", label: "Logs", command: ["tail", "-f", "dev.log"], persistent: false },
-      ])
-    },
-  },
-  {
-    id: "tools-panel-exited",
-    component: "Tools panel",
-    title: "Tool exited",
-    description: "An ended tool explains its status and the exact action that restarts it.",
-    viewport: { cols: 72, rows: 14 },
-    expectedText: ["Diff exited (code 7); select its link to restart"],
-    async arrange(context) {
-      const sessions = new GalleryPanelSessions("ready", "diff output\r\n")
-      await mountToolPanel(context, sessions)
-      sessions.transports[0]?.exit(7)
-    },
-  },
-  {
-    id: "tools-panel-disconnected",
-    component: "Tools panel",
-    title: "Tool disconnected",
-    description: "A lost transport is distinguished from a tool process ending and offers a retry.",
-    viewport: { cols: 78, rows: 14 },
-    expectedText: ["Diff disconnected: socket closed during restore; select its link to retry"],
-    async arrange(context) {
-      const sessions = new GalleryPanelSessions("ready", "diff output\r\n")
-      await mountToolPanel(context, sessions)
-      sessions.transports[0]?.lose("socket closed during restore")
-    },
-  },
-  {
-    id: "tools-panel-failed",
-    component: "Tools panel",
-    title: "Tool start failure",
-    description: "A command failure remains inside the panel with a direct retry affordance.",
-    viewport: { cols: 72, rows: 14 },
-    expectedText: ["could not start Diff: command not found"],
-    async arrange(context) {
-      await mountToolPanel(context, new GalleryPanelSessions("failed"))
-    },
-  },
   ...(["neutral", "error"] as const).map((tone): UiStory => toastStory(tone)),
 ]
 
@@ -407,32 +284,6 @@ function mountLaunchDialog(
   return dialog
 }
 
-async function mountToolPanel(
-  context: UiStoryContext,
-  sessions: GalleryPanelSessions,
-  withContext = true,
-  selected = "diff",
-  definitions: PanelDefinition[] = PANELS,
-): Promise<ToolPanel> {
-  const panel = new ToolPanel(context.setup.renderer, {
-    definitions,
-    sessions,
-    initialSelectedId: selected,
-  })
-  panel.setWidth(context.setup.renderer.width)
-  context.canvas.add(panel.root)
-  panel.applyPalette(context.palette, context.themeMode)
-  if (withContext) panel.setContext({ agentId: "gallery-agent", displayId: 1, cwd: "/Users/demo/code/fmx" })
-  panel.setVisible(true)
-  await settlePromises()
-  context.defer(() => {
-    panel.destroy()
-    sessions.close()
-    panel.root.destroyRecursively()
-  })
-  return panel
-}
-
 function toastStory(tone: ToastTone): UiStory {
   const content = {
     neutral: "fmx / main / steady-moon started",
@@ -466,7 +317,6 @@ function mountToast(context: UiStoryContext, text: string, tone: ToastTone, ital
 
 type MultiplexerStoryOptions = {
   screen?: string
-  panelScreen?: string
   sizingOwnerFrame?: { cols: number; rows: number }
   afterMount?: (
     multiplexer: Multiplexer,
@@ -492,9 +342,6 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
     }
     const agentSocket = new GalleryAgentSocket()
     const adeSocket = new GalleryAdeSocket()
-    const panelSessions = options.panelScreen === undefined
-      ? null
-      : new GalleryPanelSessions("ready", options.panelScreen)
     const multiplexer = new Multiplexer(context.setup.renderer, {
       fxPath: "fx",
       cwd: GALLERY_CWD,
@@ -525,10 +372,6 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       }),
       agentSocket: agentSocket as unknown as AgentSocket,
       adeSocket: adeSocket as unknown as AdeSocket,
-      panels: panelSessions ? PANELS : [],
-      panelSessions,
-      initialPanelVisible: panelSessions !== null,
-      initialPanelId: panelSessions ? "tests" : undefined,
       projectRoots: [],
       home: ROOT,
       toastDurationMs: 60_000,
@@ -547,7 +390,6 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
     multiplexer.unlockStartupChrome()
     context.defer(async () => {
       await multiplexer.shutdown()
-      panelSessions?.close()
     })
     await options.afterMount?.(multiplexer, context, agentSocket)
   }

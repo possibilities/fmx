@@ -23,15 +23,6 @@ describe("loadState", () => {
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ trayWidth: 31, activeAgentId })
   })
 
-  test("round-trips Tool panel width, visibility, and selected tool", async () => {
-    const path = join(await mkdtemp(join(tmpdir(), "fmx-state-")), "state.json")
-    await saveState({ panelWidth: 37, panelVisible: false, activePanelId: "diff" }, path)
-    expect(await loadState(path)).toEqual({ panelWidth: 37, panelVisible: false, activePanelId: "diff" })
-
-    await saveState({ panelVisible: true, activePanelId: "$debug" }, path)
-    expect(await loadState(path)).toEqual({ panelVisible: true, activePanelId: "$debug" })
-  })
-
   test("returns empty state for a missing file", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "fmx-state-")), "state.json")
     expect(await loadState(path)).toEqual({})
@@ -59,8 +50,6 @@ describe("loadState", () => {
     await writeFile(path, JSON.stringify({ activeAgentId: "not-an-agent" }), "utf8")
     expect(await loadState(path)).toEqual({})
 
-    await writeFile(path, JSON.stringify({ panelWidth: 0, panelVisible: "yes", activePanelId: "Bad id" }), "utf8")
-    expect(await loadState(path)).toEqual({})
   })
 
   test("round-trips launch counts and drops the ones it cannot use", async () => {

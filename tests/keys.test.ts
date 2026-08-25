@@ -32,13 +32,8 @@ describe("keybindings", () => {
     expect(keybindings.detach.map((binding) => binding.label)).toEqual(["prefix+d"])
     expect(keybindings.launch.map((binding) => binding.label)).toEqual(["prefix+l"])
     expect(keybindings.toggle_tray.map((binding) => binding.label)).toEqual(["prefix+b"])
-    expect(keybindings.toggle_panel.map((binding) => binding.label)).toEqual(["prefix+r"])
-    expect(keybindings.focus_panel.map((binding) => binding.label)).toEqual(["prefix+o"])
-    expect(keybindings.previous_panel.map((binding) => binding.label)).toEqual(["prefix+["])
-    expect(keybindings.next_panel.map((binding) => binding.label)).toEqual(["prefix+]"])
     expect(actionForKey(keybindings, key({ name: "d" }), "prefix")).toEqual({ name: "detach" })
     expect(actionForKey(keybindings, key({ name: "b" }), "prefix")).toEqual({ name: "toggle_tray" })
-    expect(actionForKey(keybindings, key({ name: "r" }), "prefix")).toEqual({ name: "toggle_panel" })
   })
 
   test("resolves the launch action from its own binding", () => {

@@ -55,7 +55,6 @@ export const CONTROL_METHODS = [
   "draft.cancel",
   "draft.wait",
   "tray",
-  "panel",
   "keys",
   "catalog",
 ] as const
@@ -171,18 +170,7 @@ export type Snapshot = {
   active: number | null
   agents: AgentInfo[]
   tray: { visible: boolean; hidden: boolean; width: number; rows: TrayRow[] }
-  panel: PanelInfo
   surface: Surface
-}
-
-export type PanelInfo = {
-  available: boolean
-  visible: boolean
-  hidden: boolean
-  width: number
-  selected: string | null
-  focused: "agent" | "panel"
-  tabs: { id: string; label: string; persistent: boolean }[]
 }
 
 /** The model catalog the launch dialog offers, in picker order. */

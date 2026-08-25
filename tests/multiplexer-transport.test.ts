@@ -3,7 +3,7 @@ import { BoxRenderable, type TerminalColors } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { AgentSocket } from "../src/agent-socket.ts"
-import type { TerminalSize, TerminalTransport, TransportHandlers } from "../src/agent-transport.ts"
+import type { AgentTransport, TerminalSize, TransportHandlers } from "../src/agent-transport.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
@@ -77,7 +77,7 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
   }
 }
 
-class PaletteProbeTransport implements TerminalTransport {
+class PaletteProbeTransport implements AgentTransport {
   readonly writes: Uint8Array[] = []
   private handlers: TransportHandlers | null = null
 
@@ -213,10 +213,6 @@ test("reapplies the host palette after RestoreBegin", async () => {
 
   try {
     await multiplexer.start()
-    // One frame first: OpenTUI reports one cell for a terminal it has not laid
-    // out, and a terminal with no real grid holds its writes rather than
-    // scrolling them away.
-    await setup.renderOnce()
     multiplexer.setHostPalette(palette)
 
     transport.clearWrites()

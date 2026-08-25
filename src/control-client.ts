@@ -205,21 +205,6 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
           timeoutMs: REPLY_TIMEOUT_MS,
         },
       ]
-    case "panel":
-      return [
-        {
-          method: "panel",
-          params: {
-            ...(command.width === undefined ? {} : { width: command.width }),
-            ...(command.hidden === undefined ? {} : { hidden: command.hidden }),
-            ...(command.toggle ? { toggle: true } : {}),
-            ...(command.select === undefined ? {} : { select: command.select }),
-            ...(command.step === undefined ? {} : { step: command.step }),
-            ...(command.focus === undefined ? {} : { focus: command.focus }),
-          },
-          timeoutMs: REPLY_TIMEOUT_MS,
-        },
-      ]
     case "keys":
       return [{ method: "keys", params: { show: command.show }, timeoutMs: REPLY_TIMEOUT_MS }]
     case "catalog":

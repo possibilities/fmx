@@ -6,7 +6,6 @@ export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
   "Session list",
   "Launch dialog",
-  "Tools panel",
   "Toast",
 ] as const
 

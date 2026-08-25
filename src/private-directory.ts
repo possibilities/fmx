@@ -6,9 +6,8 @@ import { userInfo } from "node:os"
  *
  * Every path fmx owns under `/tmp` is predictable and anyone could have made
  * it first: a directory another user owns, or one others can write to, could
- * hold sockets that answer as our sessions, or code fmx hands to a tool to
- * run. Each level is created private and checked every start; nothing is
- * created into one that fails.
+ * hold sockets that answer as our sessions. Each level is created private and
+ * checked every start; nothing is created into one that fails.
  */
 export async function ensurePrivateDirectories(
   directories: readonly string[],

@@ -98,19 +98,6 @@ test("loads a worktree root and falls back on one it cannot use", async () => {
   }
 })
 
-test("diagnoses a [[panels]] table, which fmx no longer configures", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-panels-"))
-  const path = join(directory, "panels.toml")
-  await writeFile(path, ["[[panels]]", 'id = "diff"', 'command = ["hunk", "diff"]', ""].join("\n"))
-
-  try {
-    const loaded = await loadConfig(path)
-    expect(loaded.diagnostics).toEqual(["unknown config section [panels]; ignoring section"])
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
 test("falls back on malformed TOML and diagnoses unknown keys", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-config-errors-"))
   const malformed = join(directory, "malformed.toml")

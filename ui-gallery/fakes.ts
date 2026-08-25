@@ -1,19 +1,16 @@
-import type { PanelDefinition } from "../src/panels.ts"
 import {
   HandlerRelay,
   type AgentLaunch,
   type AgentTransport,
   type AgentTransportFactory,
   type TerminalSize,
-  type TerminalTransport,
   type TransportHandlers,
 } from "../src/agent-transport.ts"
 import type { ManifestEntry } from "../src/agent-manifest.ts"
-import type { PanelContext, PanelSessionController } from "../src/panel-session.ts"
 
 const encoder = new TextEncoder()
 
-export class GalleryTransport implements TerminalTransport {
+export class GalleryTransport implements AgentTransport {
   private readonly relay = new HandlerRelay()
   readonly writes: Uint8Array[] = []
   readonly sizes: TerminalSize[] = []
@@ -91,35 +88,5 @@ export class RejectingAgentTransportFactory implements AgentTransportFactory {
 
   attach(_entry: ManifestEntry, _size: TerminalSize): Promise<AgentTransport> {
     return Promise.reject(new Error("the Agent cannot be reached"))
-  }
-}
-
-export type GalleryPanelMode = "loading" | "ready" | "failed"
-
-export class GalleryPanelSessions implements PanelSessionController {
-  readonly transports: GalleryTransport[] = []
-  closed = false
-
-  constructor(
-    private readonly mode: GalleryPanelMode,
-    private readonly screen = "",
-  ) {}
-
-  open(_definition: PanelDefinition, _context: PanelContext, _size: TerminalSize): Promise<TerminalTransport> {
-    if (this.mode === "loading") return new Promise(() => {})
-    if (this.mode === "failed") return Promise.reject(new Error("command not found"))
-    const transport = new GalleryTransport()
-    transport.restoreBegin()
-    transport.output(this.screen)
-    transport.ready()
-    this.transports.push(transport)
-    return Promise.resolve(transport)
-  }
-
-  async stopAgent(_agentId: string): Promise<void> {}
-
-  close(): void {
-    this.closed = true
-    for (const transport of this.transports) transport.detach()
   }
 }

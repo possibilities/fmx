@@ -14,7 +14,6 @@ test(
       "Multiplexer",
       "Session list",
       "Launch dialog",
-      "Tools panel",
       "Toast",
     ])
     const toastStates = UI_STORIES.filter((story) => story.component === "Toast")
@@ -40,8 +39,6 @@ test(
       expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("prefix+l to launch agent")
       expect(multiplexer.get("multiplexer-working")?.[0]).toContain("Working on the UI gallery")
       expect(multiplexer.get("multiplexer-working")?.[23]).toContain("│")
-      expect(multiplexer.get("multiplexer-tools")?.[0]).toContain("Diff  Tests")
-      expect(multiplexer.get("multiplexer-tools")?.[23]).toContain("│")
       expect(multiplexer.get("multiplexer-larger-observer")?.[0]).toContain("Working on the UI gallery")
 
       const observer = built.stories[palette].find((story) => story.id === "multiplexer-larger-observer")
@@ -60,7 +57,7 @@ test(
     try {
       await setup.renderOnce()
       expect(setup.captureCharFrame()).toContain("UI GALLERY")
-      expect(setup.captureCharFrame()).toContain("5 components · 21 states")
+      expect(setup.captureCharFrame()).toContain("4 components · 13 states")
       expect(app.activeComponent).toBe("Multiplexer")
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
 
@@ -68,17 +65,15 @@ test(
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Multiplexer")
       expect(app.activeStoryId).toBe(built.stories.dark[1]!.id)
-      expect(setup.captureCharFrame()).toContain("state 2/4")
+      expect(setup.captureCharFrame()).toContain("state 2/3")
 
-      setup.mockInput.pressArrow("right")
       setup.mockInput.pressArrow("right")
       setup.mockInput.pressArrow("right")
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Session list")
-      expect(app.activeStoryId).toBe(built.stories.dark[4]!.id)
+      expect(app.activeStoryId).toBe(built.stories.dark[3]!.id)
       expect(setup.captureCharFrame()).toContain("state 1/3")
 
-      setup.mockInput.pressArrow("left")
       setup.mockInput.pressArrow("left")
       setup.mockInput.pressArrow("left")
       await setup.renderOnce()
@@ -94,7 +89,7 @@ test(
       setup.mockInput.pressArrow("down")
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Session list")
-      expect(app.activeStoryId).toBe(built.stories.light[4]!.id)
+      expect(app.activeStoryId).toBe(built.stories.light[3]!.id)
       expect(setup.captureCharFrame()).toContain("state 1/3")
 
       setup.mockInput.pressArrow("down")
@@ -139,13 +134,13 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("slide 1/21 · playing")
+      expect(setup.captureCharFrame()).toContain("slide 1/13 · playing")
 
       setup.mockInput.pressArrow("left")
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Toast")
       expect(app.activeStoryId).toBe(built.stories.dark.at(-1)!.id)
-      expect(setup.captureCharFrame()).toContain("slide 21/21")
+      expect(setup.captureCharFrame()).toContain("slide 13/13")
 
       setup.mockInput.pressArrow("right")
       setup.mockInput.pressKey("t")
@@ -168,12 +163,12 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.light[1]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/21")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/13")
 
       setup.mockInput.pressEscape()
       await setup.renderOnce()
       expect(app.isSlideshow).toBe(false)
-      expect(setup.captureCharFrame()).toContain("5 components · 21 states")
+      expect(setup.captureCharFrame()).toContain("4 components · 13 states")
       const stoppedStory = app.activeStoryId
       await new Promise((resolve) => setTimeout(resolve, 70))
       expect(app.activeStoryId).toBe(stoppedStory)

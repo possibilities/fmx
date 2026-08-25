@@ -10,12 +10,6 @@ export type PersistedState = {
   /** Hidden by the toggle key; absent when shown, so an untouched state.json
    * stays as it was. */
   trayHidden?: boolean
-  /** Absolute tools panel width, kept while the panel is hidden. */
-  panelWidth?: number
-  /** Explicit visibility. Absence uses the feature's default. */
-  panelVisible?: boolean
-  /** Stable configured panel id selected most recently. */
-  activePanelId?: string
   /** Agents started per directory, which orders the project picker. */
   projectLaunches?: Record<string, number>
   /** Stable Manifest identity of the agent that most recently owned focus. */
@@ -65,20 +59,6 @@ export async function loadState(path = statePath()): Promise<PersistedState> {
     state.trayWidth = document.trayWidth
   }
   if (document.trayHidden === true) state.trayHidden = true
-  if (
-    typeof document.panelWidth === "number" &&
-    Number.isInteger(document.panelWidth) &&
-    document.panelWidth > 0
-  ) {
-    state.panelWidth = document.panelWidth
-  }
-  if (typeof document.panelVisible === "boolean") state.panelVisible = document.panelVisible
-  if (
-    typeof document.activePanelId === "string" &&
-    (/^[a-z0-9][a-z0-9-]{0,31}$/u.test(document.activePanelId) || document.activePanelId === "$debug")
-  ) {
-    state.activePanelId = document.activePanelId
-  }
   const launches = readLaunches(document.projectLaunches)
   if (launches) state.projectLaunches = launches
   if (typeof document.activeAgentId === "string" && /^[0-9a-f]{32}$/u.test(document.activeAgentId)) {

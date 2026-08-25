@@ -16,10 +16,7 @@ import { configPath, loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
 import { doctor } from "./doctor.ts"
-import { resolveFx, resolveHunk } from "./executable.ts"
-import { hostRamp } from "./host-palette.ts"
-import { hunkRampValue, materializeHunkThemeExtension } from "./hunk-theme.ts"
-import { builtinPanels } from "./panels.ts"
+import { resolveFx } from "./executable.ts"
 import { AgentManifest, type ManifestEntry, manifestPath } from "./agent-manifest.ts"
 import { reconcileAgents, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { stringEnvironment } from "./agent-transport.ts"
@@ -28,7 +25,6 @@ import { Multiplexer } from "./multiplexer.ts"
 import { expandTilde } from "./projects.ts"
 import { loadState, saveState, type PersistedState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
-import { CompanionPanelSessions } from "./panel-session.ts"
 import { CompanionCommand } from "./zmx-command.ts"
 import {
   currentRuntimeCommand,
@@ -117,15 +113,6 @@ async function main(): Promise<void> {
   }
   const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
   const fxPath = await resolveFx()
-  // Only whether hunk resolves decides whether the Diff panel is offered; the
-  // panel's own argv keeps the name as asked for, so its identity survives a
-  // hunk upgrade. A machine without hunk gets no Tools panel rather than a tab
-  // that cannot start.
-  const hunkAvailable = await resolveHunk().then(
-    () => true,
-    () => false,
-  )
-  const panels = builtinPanels({ hunk: hunkAvailable })
   const companionPath = await resolveCompanion()
   const persistedState = await loadState()
   let stateSave: Promise<void> = Promise.resolve()
@@ -144,7 +131,6 @@ async function main(): Promise<void> {
   let adeSocket: AdeSocket | null = null
   let controlSocket: ControlSocket | null = null
   let transport: CompanionTransportFactory | null = null
-  let panelSessions: CompanionPanelSessions | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
   let runtimePaletteHandler: ((colors: TerminalColors) => void) | null = null
@@ -172,31 +158,6 @@ async function main(): Promise<void> {
     const survivors = await reconcileAtStartup(manifest, companion)
     transport = new CompanionTransportFactory(companion, home)
     const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
-    // The extension has to be a real file for hunk to import it, and fmx is one
-    // binary: it is written out here, before anything can open a panel, and
-    // rewritten on every start so fmx stays the sole author of its content. A
-    // directory that refuses to be ours has already stopped the start above.
-    const hunkThemePath = panels.some((panel) => panel.theme) ? await materializeHunkThemeExtension() : null
-    panelSessions = new CompanionPanelSessions(companion, home, controlSocketPath, panels, {
-      theme: hunkThemePath
-        ? {
-            extensionPath: hunkThemePath,
-            // Read when the tool starts, not now: the host may not have
-            // answered yet, and a late answer must reach a panel opened after
-            // it. A panel opened before it gets the fallback tier, which is
-            // what every other startup surface gets in the same window.
-            ramp: () => hunkRampValue(hostRamp(runtimePalette)),
-          }
-        : null,
-    })
-    try {
-      const outcome = await panelSessions.reconcile(manifest.entries.map((entry) => entry.agentId))
-      if (outcome.unresolved.length > 0) {
-        process.stderr.write(`fmx: ${outcome.unresolved.length} tools panel session(s) unreachable; left for the next start\n`)
-      }
-    } catch (error) {
-      process.stderr.write(`fmx: could not reconcile tools panel sessions: ${errorMessage(error)}\n`)
-    }
     // Constructing the renderer starts its input parser but does not expose the
     // alternate screen. That gives a responsive host one frame to answer the
     // palette query before any fmx surface can be painted.
@@ -265,8 +226,6 @@ async function main(): Promise<void> {
       survivors,
       agentSocket,
       adeSocket,
-      panels,
-      panelSessions,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
       controlSocketPath,
@@ -288,21 +247,6 @@ async function main(): Promise<void> {
       onTrayHiddenChange: (hidden) => {
         if (hidden) persistedState.trayHidden = true
         else delete persistedState.trayHidden
-        persistState()
-      },
-      initialPanelWidth: persistedState.panelWidth,
-      onPanelWidthChange: (width) => {
-        persistedState.panelWidth = width
-        persistState()
-      },
-      initialPanelVisible: persistedState.panelVisible,
-      onPanelVisibleChange: (visible) => {
-        persistedState.panelVisible = visible
-        persistState()
-      },
-      initialPanelId: persistedState.activePanelId,
-      onPanelIdChange: (id) => {
-        persistedState.activePanelId = id
         persistState()
       },
       onActiveAgentChange: (agentId) => {
@@ -373,7 +317,6 @@ async function main(): Promise<void> {
     // Nothing the Companion is still being asked about is waited for; what
     // is not consumed is the next start's. The Manifest's last write is.
     transport?.close()
-    panelSessions?.close()
     await manifest?.settled()
     await stateSave
     controlSocket?.close()
