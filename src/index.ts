@@ -142,28 +142,12 @@ async function main(): Promise<void> {
     await agentSocket.start()
     adeSocket = new AdeSocket({ path: adeSocketPathFor(agentSocket.path) })
     adeSocket.start()
-    await ensureCompanionDirectories(companionDirectories())
-    // The pair is checked once the directory is ours: `version` creates the
-    // directory if it must, and a stock-built fork would create one fmx
-    // refuses. An installed Companion that is not the pinned build never
-    // runs; one named by the override runs with a word about it.
-    const build = await companionBuild(companionPath.path)
-    if (build !== COMPANION_PIN.build) {
-      const message = companionMismatch(companionPath, build, PROTOCOL_VERSION)
-      if (companionPath.origin !== "override") throw new Error(message)
-      process.stderr.write(`fmx: ${message}\n`)
-    }
-    const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
-    manifest = await AgentManifest.open(manifestPath(), home)
-    const restored = await reconcileAtStartup(manifest, companion)
-    transport = new CompanionTransportFactory(companion, home, {
-      attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
-    })
-    const survivors = restored.map(({ entry }) => entry)
-    const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
+
+    // Start the host query as soon as this Runtime owns the Home, while the
+    // Companion join still runs. The one-frame choice remains fixed 16 ms
+    // after the query; only its wait is removed from the later critical path.
     // Constructing the renderer starts its input parser but does not expose the
-    // alternate screen. That gives a responsive host one frame to answer the
-    // palette query before any fmx surface can be painted.
+    // alternate screen, so replies can arrive while nothing has been painted.
     const createdRenderer = new CliRenderer(
       process.stdin,
       process.stdout,
@@ -189,10 +173,31 @@ async function main(): Promise<void> {
       },
     })
     const paletteDetection = detectHostPalette(startupPaletteDetector)
-    const firstPalette = await Promise.race([
+    const firstPaletteChoice = Promise.race([
       paletteDetection.then((colors) => ({ kind: "settled" as const, colors })),
       Bun.sleep(FIRST_FRAME_PALETTE_BUDGET_MS).then(() => ({ kind: "pending" as const })),
     ])
+
+    await ensureCompanionDirectories(companionDirectories())
+    // The pair is checked once the directory is ours: `version` creates the
+    // directory if it must, and a stock-built fork would create one fmx
+    // refuses. An installed Companion that is not the pinned build never
+    // runs; one named by the override runs with a word about it.
+    const build = await companionBuild(companionPath.path)
+    if (build !== COMPANION_PIN.build) {
+      const message = companionMismatch(companionPath, build, PROTOCOL_VERSION)
+      if (companionPath.origin !== "override") throw new Error(message)
+      process.stderr.write(`fmx: ${message}\n`)
+    }
+    const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
+    manifest = await AgentManifest.open(manifestPath(), home)
+    const restored = await reconcileAtStartup(manifest, companion)
+    transport = new CompanionTransportFactory(companion, home, {
+      attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
+    })
+    const survivors = restored.map(({ entry }) => entry)
+    const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
+    const firstPalette = await firstPaletteChoice
     runtimePalette = firstPalette.kind === "settled" ? firstPalette.colors : null
     await renderer.setupTerminal()
     // One Runtime frame is broadcast to every Client. Apply the new owner size
