@@ -17,8 +17,8 @@ import { EXIT_USAGE, runCommand } from "./control-client.ts"
 import { ControlSocket } from "./control-socket.ts"
 import { doctor } from "./doctor.ts"
 import { resolveFx } from "./executable.ts"
-import { AgentManifest, type ManifestEntry, manifestPath } from "./agent-manifest.ts"
-import { reconcileAgents, type ReconcileOutcome } from "./agent-reconcile.ts"
+import { AgentManifest, manifestPath } from "./agent-manifest.ts"
+import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
@@ -155,8 +155,11 @@ async function main(): Promise<void> {
     }
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
     manifest = await AgentManifest.open(manifestPath(), home)
-    const survivors = await reconcileAtStartup(manifest, companion)
-    transport = new CompanionTransportFactory(companion, home)
+    const restored = await reconcileAtStartup(manifest, companion)
+    transport = new CompanionTransportFactory(companion, home, {
+      attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
+    })
+    const survivors = restored.map(({ entry }) => entry)
     const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
     // Constructing the renderer starts its input parser but does not expose the
     // alternate screen. That gives a responsive host one frame to answer the
@@ -368,7 +371,7 @@ async function startTerminalClient(): Promise<void> {
  * empty Companion — and fmx starts with nothing attached, the Agents
  * left where they are for the next start.
  */
-async function reconcileAtStartup(manifest: AgentManifest, companion: CompanionCommand): Promise<ManifestEntry[]> {
+async function reconcileAtStartup(manifest: AgentManifest, companion: CompanionCommand): Promise<ReconciledAgent[]> {
   let outcome: ReconcileOutcome
   try {
     outcome = await reconcileAgents(manifest, companion)

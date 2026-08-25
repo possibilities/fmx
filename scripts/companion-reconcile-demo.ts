@@ -113,7 +113,7 @@ try {
 
   await step("apply it: adopt, remove, consume the exit record")
   const outcome = await reconcileAgents(manifest, companion)
-  say(`attached ${outcome.attached.length}, adopted ${outcome.adopted.map((e) => `#${e.displayId}`).join(" ")}, removed ${outcome.removed.length}`)
+  say(`attached ${outcome.attached.length}, adopted ${outcome.adopted.map(({ entry }) => `#${entry.displayId}`).join(" ")}, removed ${outcome.removed.length}`)
   await showManifest()
   await showSessions()
   say(`exit record for #${ended.displayId} consumed: inspect says ${(await companion.inspect(ended.zmxName)).state}`)

@@ -130,11 +130,12 @@ test("reconcileAgents applies the join: adopts, removes, consumes exit records, 
     const { companion, forgotten } = fakeCompanion([[session(ID_A), session(ID_B, "exited"), session(ID_C, "live", { cwd: "/adopted" })]])
 
     const outcome = await reconcileAgents(manifest, companion)
-    expect(outcome.attached.map((item) => item.agentId)).toEqual([ID_A])
-    expect(outcome.attached[0]?.phase).toBe("running")
+    expect(outcome.attached.map((item) => item.entry.agentId)).toEqual([ID_A])
+    expect(outcome.attached[0]?.entry.phase).toBe("running")
+    expect(outcome.attached[0]?.session.name).toBe(identityFor(ID_A).zmxName)
     expect(manifest.get(ID_A)?.phase).toBe("running")
     // The Companion's cmd is a truncated display string: the executable is trusted, the arguments are not.
-    expect(outcome.adopted.map((item) => [item.agentId, item.cwd, item.fxPath, item.fxArgs, item.displayId])).toEqual([
+    expect(outcome.adopted.map((item) => [item.entry.agentId, item.entry.cwd, item.entry.fxPath, item.entry.fxArgs, item.entry.displayId])).toEqual([
       [ID_C, "/adopted", "/fx", null, 3],
     ])
     expect(outcome.removed.map((item) => item.entry.agentId)).toEqual([ID_B])

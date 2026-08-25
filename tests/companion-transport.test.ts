@@ -2,9 +2,10 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { CompanionTransportFactory } from "../src/companion-transport.ts"
-import { AgentManifest, type ManifestEntry } from "../src/agent-manifest.ts"
+import { AgentManifest, identityFor, type ManifestEntry } from "../src/agent-manifest.ts"
 import { AgentEndedError, type AgentTransport, type TransportHandlers } from "../src/agent-transport.ts"
-import { CompanionCommand } from "../src/zmx-command.ts"
+import { ownershipLabels } from "../src/agent-reconcile.ts"
+import { CompanionCommand, type SessionEntry } from "../src/zmx-command.ts"
 
 /**
  * The Companion behind the Agent transport seam, against the real
@@ -73,6 +74,95 @@ const watch = (transport: AgentTransport): Watcher => {
   transport.bind(handlers)
   return watcher
 }
+
+const inertTransport: AgentTransport = {
+  bind() {},
+  write() {},
+  resize() {},
+  detach() {},
+}
+
+const restoredEntry = (agentId = "d".repeat(32)): ManifestEntry => ({
+  ...identityFor(agentId),
+  displayId: 1,
+  cwd: "/work",
+  fxPath: "/fx",
+  fxArgs: [],
+  createdAt: 1,
+  fxSessionId: null,
+  agentStatus: null,
+  phase: "running",
+})
+
+const liveSession = (entry: ManifestEntry, socketPath: string): SessionEntry => ({
+  name: entry.zmxName,
+  state: "live",
+  socketPath,
+  pid: 1,
+  clients: 0,
+  createdAt: 1,
+  command: [entry.fxPath],
+  cwd: entry.cwd,
+  labels: ownershipLabels(HOME, entry.agentId),
+  exit: null,
+  detail: null,
+})
+
+test("a reconciled live endpoint attaches without another Companion inspection", async () => {
+  const entry = restoredEntry()
+  const hint = liveSession(entry, "/tmp/reconciled-agent")
+  let inspections = 0
+  const paths: string[] = []
+  const hintedFactory = new CompanionTransportFactory(
+    {
+      settle: async () => {
+        inspections += 1
+        return hint
+      },
+    } as unknown as CompanionCommand,
+    HOME,
+    {
+      attachHints: new Map([[entry.agentId, hint]]),
+      connect: async (path) => {
+        paths.push(path)
+        return inertTransport
+      },
+    },
+  )
+
+  expect(await hintedFactory.attach(entry, { cols: 80, rows: 24 })).toBe(inertTransport)
+  expect(paths).toEqual([hint.socketPath!])
+  expect(inspections).toBe(0)
+})
+
+test("a stale reconciled endpoint falls back to inspection and its current endpoint", async () => {
+  const entry = restoredEntry("e".repeat(32))
+  const hint = liveSession(entry, "/tmp/stale-agent")
+  const current = liveSession(entry, "/tmp/current-agent")
+  let inspections = 0
+  const paths: string[] = []
+  const hintedFactory = new CompanionTransportFactory(
+    {
+      settle: async () => {
+        inspections += 1
+        return current
+      },
+    } as unknown as CompanionCommand,
+    HOME,
+    {
+      attachHints: new Map([[entry.agentId, hint]]),
+      connect: async (path) => {
+        paths.push(path)
+        if (path === hint.socketPath) throw new Error("stale endpoint")
+        return inertTransport
+      },
+    },
+  )
+
+  expect(await hintedFactory.attach(entry, { cols: 80, rows: 24 })).toBe(inertTransport)
+  expect(paths).toEqual([hint.socketPath!, current.socketPath!])
+  expect(inspections).toBe(1)
+})
 
 const claim = async (): Promise<ManifestEntry> =>
   manifest.beginCreate({ cwd: dir, fxPath: "/bin/sh", fxArgs: ["-c", CHILD_SCRIPT], createdAt: Date.now() })

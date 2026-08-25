@@ -33,12 +33,21 @@ const EXIT_RECORD_WAIT_MS = 5000
  */
 export class CompanionTransportFactory implements AgentTransportFactory {
   private closed = false
+  /** Fresh live endpoints read by startup reconciliation, consumed once. */
+  private readonly attachHints: Map<string, SessionEntry>
 
   constructor(
     private readonly companion: CompanionCommand,
     private readonly homeId: string,
-    private readonly options: { scrollbackLines?: number; client?: string } = {},
-  ) {}
+    private readonly options: {
+      scrollbackLines?: number
+      client?: string
+      attachHints?: ReadonlyMap<string, SessionEntry>
+      connect?: typeof connectCompanionAgent
+    } = {},
+  ) {
+    this.attachHints = new Map(options.attachHints)
+  }
 
   /** fmx is leaving: stop waiting on anything. What is not consumed is the next start's. */
   close(): void {
@@ -81,6 +90,22 @@ export class CompanionTransportFactory implements AgentTransportFactory {
   }
 
   async attach(entry: ManifestEntry, size: TerminalSize): Promise<AgentTransport> {
+    const hint = this.attachHints.get(entry.agentId)
+    this.attachHints.delete(entry.agentId)
+    if (
+      hint?.state === "live" &&
+      hint.socketPath &&
+      ownedAgentId(hint, this.homeId) === entry.agentId
+    ) {
+      try {
+        return await this.connect(entry, hint.socketPath, size)
+      } catch {
+        // The session may have ended since reconciliation. Inspecting now
+        // recovers the exact ended/unreachable classification instead of
+        // treating a stale endpoint as truth.
+      }
+    }
+
     const session = await this.companion.settle(entry.zmxName, undefined, undefined, () => this.closed)
     if (this.closed) throw new Error("fmx is shutting down")
     if (session.state === "exited") {
@@ -102,7 +127,7 @@ export class CompanionTransportFactory implements AgentTransportFactory {
   }
 
   private async connect(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<AgentTransport> {
-    return connectCompanionAgent(socketPath, size, {
+    return (this.options.connect ?? connectCompanionAgent)(socketPath, size, {
       client: this.options.client ?? "fmx",
       onExited: () => this.reap(entry),
     })

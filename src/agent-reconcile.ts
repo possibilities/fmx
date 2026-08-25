@@ -88,14 +88,21 @@ export function reconcile(entries: readonly ManifestEntry[], sessions: readonly 
 }
 
 export type ReconcileOutcome = {
-  attached: ManifestEntry[]
-  adopted: ManifestEntry[]
+  attached: ReconciledAgent[]
+  adopted: ReconciledAgent[]
   removed: { entry: ManifestEntry; session: SessionEntry | null }[]
   /** Stale sockets cleared after the settle window: nothing held them, so nothing can come back. */
   cleared: SessionEntry[]
   /** Still unreachable after the settle window; left for the next start. */
   unresolved: SessionEntry[]
   ignored: SessionEntry[]
+}
+
+/** A durable Manifest identity paired with the live transport endpoint that
+ * the same reconciliation read proved belonged to it. */
+export type ReconciledAgent = {
+  entry: ManifestEntry
+  session: SessionEntry
 }
 
 export type ReconcileOptions = {
@@ -127,23 +134,27 @@ export async function reconcileAgents(
     plan = reconcile(manifest.entries, sessions, manifest.homeId)
   }
 
-  for (const { entry } of plan.attach) {
+  for (const { entry, session } of plan.attach) {
     // A live session is the acknowledgement a crash kept fmx from recording.
-    outcome.attached.push(entry.phase === "creating" ? await manifest.markRunning(entry.agentId) : entry)
+    outcome.attached.push({
+      entry: entry.phase === "creating" ? await manifest.markRunning(entry.agentId) : entry,
+      session,
+    })
   }
   for (const { agentId, session } of plan.adopt) {
     // The Companion's `cmd` is a display string, truncated past 256 bytes;
     // the executable is its first word, the arguments are not to be trusted.
     const [fxPath = ""] = session.command ?? []
-    outcome.adopted.push(
-      await manifest.adopt({
+    outcome.adopted.push({
+      entry: await manifest.adopt({
         identity: identityFor(agentId),
         cwd: session.cwd ?? "/",
         fxPath: fxPath || "fx",
         fxArgs: null,
         createdAt: (session.createdAt ?? Math.floor(now() / 1000)) * 1000,
       }),
-    )
+      session,
+    })
   }
   for (const { entry, session } of plan.remove) {
     await manifest.remove(entry.agentId)
