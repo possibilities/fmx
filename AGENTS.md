@@ -99,7 +99,10 @@
   whether that exact state was seen. Seed it synchronously as the restored row
   is added; the first visible Agent becomes seen, inactive `done` remains
   done, and a newer fx frame supersedes it. Subagent state is not duplicated:
-  refresh it from fx's control records and session locks on restore.
+  refresh it from fx's control records and session locks on restore. Hold the
+  restored Session list unpublished until every Agent has attached and Git,
+  display metadata, and subagent records have been queried, then paint the
+  whole tree once; do not add a second Session-list snapshot.
 - A lost transport is not an exit. `recoverAgent` asks the Companion: a
   live session is re-attached (and replays onto the reset), an ended one is
   removed exactly as an Exit would remove it, and one that cannot be reached

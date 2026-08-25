@@ -570,6 +570,21 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(restored!.agents[1]!.subagents).toMatchObject([
         { session_id: RESTORED_CHILD, state: "blocked", attention: "permission" },
       ])
+      await waitUntil(
+        () =>
+          synchronizedFrames(restoredOutput.output).some((frame) =>
+            frame.includes(RESTORED_SESSION_A.split("-").at(-1)!),
+          ),
+        5_000,
+        () => restoredOutput.output,
+      )
+      const firstSessionListFrame = synchronizedFrames(restoredOutput.output).find((frame) =>
+        frame.includes(RESTORED_SESSION_A.split("-").at(-1)!),
+      )
+      expect(firstSessionListFrame).toBeDefined()
+      expect(firstSessionListFrame).toContain(RESTORED_SESSION_B.split("-").at(-1)!)
+      expect(firstSessionListFrame).toContain("restored-worker")
+      expect(firstSessionListFrame).toContain("main")
       // Both status checkpoints are seeded in the same synchronous turn that
       // adds their rows, before OpenTUI can expose an unknown-state frame.
       expect(restoredOutput.output).not.toContain(`· ${RESTORED_SESSION_A.split("-").at(-1)}`)
@@ -1395,6 +1410,23 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 function countOccurrences(value: string, needle: string): number {
   return value.split(needle).length - 1
+}
+
+/** Frames OpenTUI keeps hidden until each synchronized-output end marker. */
+function synchronizedFrames(output: string): string[] {
+  const start = "\u001b[?2026h"
+  const end = "\u001b[?2026l"
+  const frames: string[] = []
+  let offset = 0
+  for (;;) {
+    const frameStart = output.indexOf(start, offset)
+    if (frameStart === -1) return frames
+    const frameEnd = output.indexOf(end, frameStart + start.length)
+    if (frameEnd === -1) return frames
+    const nextOffset = frameEnd + end.length
+    frames.push(output.slice(frameStart, nextOffset))
+    offset = nextOffset
+  }
 }
 
 function hasRgbSgr(

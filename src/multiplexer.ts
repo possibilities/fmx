@@ -460,6 +460,8 @@ export class Multiplexer {
   private readonly adeSessionIds = new Map<string, string | null>()
   private readonly adeSequences = new Map<string, number>()
   private readonly sessionList: SessionList
+  /** Hold restored Session-list mutations in the model until one final publish. */
+  private sessionListPublicationHeld: boolean
   private readonly subagents: SubagentObserver
   private readonly seenSeq = new Map<number, number>()
   /** Per-directory git context, read once and reused by every agent there. */
@@ -638,6 +640,8 @@ export class Multiplexer {
     this.agentSocket = options.agentSocket ?? null
     this.adeSocket = options.adeSocket ?? null
     this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
+    this.sessionListPublicationHeld = (options.survivors?.length ?? 0) > 0
+    this.sessionList.root.visible = !this.sessionListPublicationHeld
     this.tray.add(this.sessionList.root)
 
     this.modalBackdrop = new BoxRenderable(renderer, {
@@ -735,6 +739,16 @@ export class Multiplexer {
       if (this.shuttingDown) return
       await this.attachRestoredAgent(agent)
     }
+    // Git, fx's display metadata, and subagent control records are durable
+    // authorities, not copies in fmx. An older Manifest may not carry every
+    // session identity, so query after attach has had a chance to supply it.
+    await Promise.all(restoring.map((agent) => this.loadGitContext(agent.cwd)))
+    if (this.shuttingDown) return
+    await this.subagents.refresh()
+    if (this.shuttingDown) return
+    this.sessionListPublicationHeld = false
+    this.sessionList.root.visible = true
+    this.refreshSessionList()
   }
 
   setHostPalette(colors: TerminalColors): void {
@@ -1093,6 +1107,7 @@ export class Multiplexer {
         return sessionId ? [sessionId] : []
       }),
     )
+    if (this.sessionListPublicationHeld) return
     this.sessionList.render(buildTree(this.sessionEntries()), this.trayWidth)
   }
 
@@ -1173,8 +1188,10 @@ export class Multiplexer {
 
   /**
    * fx never reports where it is working, so fmx reads it from the directory
-   * it spawned the agent in. The list renders without a branch rung until
-   * the answer arrives, which is why this refreshes rather than blocking.
+   * it spawned the agent in. A live launch renders without a branch rung
+   * until the answer arrives, which is why this refreshes rather than
+   * blocking. Restored Agents await these reads behind the first-paint
+   * preparation barrier.
    *
    * Only an answer is remembered. A read that fails — git slow enough to trip
    * its timeout while a start joins several at once, say — leaves nothing

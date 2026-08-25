@@ -190,6 +190,43 @@ test("selects the saved survivor before restoring any terminal", async () => {
   }
 })
 
+test("publishes restored Session-list metadata only after attaching transports", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+  const options = agentOptions()
+  const claim = options.manifest.claim({
+    cwd: process.cwd(),
+    fxPath: FAKE_FX,
+    fxArgs: [],
+    createdAt: 1,
+  }).result
+  const survivor = await options.manifest.markRunning(claim.agentId)
+  const attached: string[] = []
+  options.transport.attachBehavior = (entry) => {
+    attached.push(entry.agentId)
+    return { bind() {}, write() {}, resize() {}, detach() {} }
+  }
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...options,
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    survivors: [survivor],
+  })
+
+  try {
+    const list = setup.renderer.root.findDescendantById("fmx-session-list") as BoxRenderable
+    expect(list.visible).toBe(false)
+
+    await multiplexer.start()
+    expect(attached).toEqual([survivor.agentId])
+    expect(list.visible).toBe(true)
+    const snapshot = (await multiplexer.control.handle("orient", {}, NEVER)) as Snapshot
+    expect(snapshot.tray.rows.some((row) => row.kind === "branch")).toBe(true)
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
 test("reapplies the host palette after RestoreBegin", async () => {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const options = agentOptions()

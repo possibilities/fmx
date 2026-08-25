@@ -281,7 +281,8 @@ async function main(): Promise<void> {
 
     // Choose the truthful first surface before anything may render. The chrome
     // was fixed above, before the renderer could expose an empty or partially
-    // restored application.
+    // restored application. Multiplexer holds the restored Session list until
+    // every durable source and transport-discovered identity has been read.
     const startup = app.start()
     renderer.start()
     await startup
