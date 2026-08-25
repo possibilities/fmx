@@ -68,8 +68,7 @@ describe("SubagentObserver", () => {
     await writeControl(home, GRANDCHILD, CHILD_A, { name: "nested-worker", state: "completed", createdAt: 30 })
 
     const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
-    observer.setParents([PARENT])
-    await observer.refresh()
+    await observer.setParents([PARENT])
     try {
       expect(observer.childrenOf(PARENT)).toEqual([
         {
@@ -109,8 +108,7 @@ describe("SubagentObserver", () => {
     await writeFile(join(badDirectory, "control.json"), '{"child_id":"wrong","state":"idle"}')
 
     const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
-    observer.setParents([PARENT])
-    await observer.refresh()
+    await observer.setParents([PARENT])
     try {
       expect(observer.childrenOf(PARENT).map((child) => child.label)).toEqual(["3e38dc7a8d7c16c2"])
     } finally {
@@ -128,8 +126,7 @@ describe("SubagentObserver", () => {
       watch: false,
       lockProbe: () => held,
     })
-    observer.setParents([PARENT])
-    await observer.refresh()
+    await observer.setParents([PARENT])
     try {
       expect(observer.childrenOf(PARENT)[0]?.state).toBe("working")
 
@@ -159,8 +156,7 @@ describe("SubagentObserver", () => {
         return true
       },
     })
-    observer.setParents([PARENT])
-    await observer.refresh()
+    await observer.setParents([PARENT])
     try {
       expect(paths.length).toBeGreaterThan(0)
       expect(paths.every((path) => path.includes(CHILD_A))).toBe(true)
@@ -174,14 +170,36 @@ describe("SubagentObserver", () => {
     await mkdir(join(home, ".fx", "sessions"), { recursive: true })
     const observer = new SubagentObserver({ home, onChange: () => {}, pollIntervalMs: 20 })
     observer.start()
-    observer.setParents([PARENT])
-    await observer.refresh()
+    await observer.setParents([PARENT])
     try {
       await writeControl(home, CHILD_A, PARENT, { state: "idle", generation: 1 })
       await waitFor(() => observer.childrenOf(PARENT)[0]?.state === "idle")
 
       await writeControl(home, CHILD_A, PARENT, { state: "completed", generation: 2 })
       await waitFor(() => observer.childrenOf(PARENT)[0]?.state === "done")
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("joining an unchanged parent set awaits one discovery without queuing another", async () => {
+    const home = await homeDirectory()
+    await writeControl(home, CHILD_A, PARENT)
+    class CountingObserver extends SubagentObserver {
+      refreshCalls = 0
+
+      override refresh(): Promise<void> {
+        this.refreshCalls += 1
+        return super.refresh()
+      }
+    }
+    const observer = new CountingObserver({ home, onChange: () => {}, watch: false })
+    try {
+      const discovery = observer.setParents([PARENT])
+      const joined = observer.setParents([PARENT])
+      await Promise.all([discovery, joined])
+      expect(observer.refreshCalls).toBe(1)
+      expect(observer.childrenOf(PARENT)).toHaveLength(1)
     } finally {
       observer.stop()
     }

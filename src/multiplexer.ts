@@ -747,10 +747,12 @@ export class Multiplexer {
     )
     // Git, fx's display metadata, and subagent control records are durable
     // authorities, not copies in fmx. An older Manifest may not carry every
-    // session identity, so query after attach has had a chance to supply it.
-    await Promise.all(restoring.map((agent) => this.loadGitContext(agent.cwd)))
-    if (this.shuttingDown) return
-    await this.subagents.refresh()
+    // session identity, so install the final parent set after attach has had a
+    // chance to supply it, then query both filesystem authorities together.
+    await Promise.all([
+      Promise.all(restoring.map((agent) => this.loadGitContext(agent.cwd))),
+      this.syncSubagentParents(),
+    ])
     if (this.shuttingDown) return
     this.sessionListPublicationHeld = false
     this.sessionList.root.visible = true
@@ -1107,14 +1109,18 @@ export class Multiplexer {
   }
 
   private refreshSessionList(): void {
-    this.subagents.setParents(
+    if (this.sessionListPublicationHeld) return
+    void this.syncSubagentParents()
+    this.sessionList.render(buildTree(this.sessionEntries()), this.trayWidth)
+  }
+
+  private syncSubagentParents(): Promise<void> {
+    return this.subagents.setParents(
       this.agents.flatMap((agent) => {
         const sessionId = this.sessionIdOf(agent)
         return sessionId ? [sessionId] : []
       }),
     )
-    if (this.sessionListPublicationHeld) return
-    this.sessionList.render(buildTree(this.sessionEntries()), this.trayWidth)
   }
 
   private setTrayHidden(hidden: boolean): void {

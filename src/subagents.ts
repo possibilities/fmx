@@ -106,18 +106,21 @@ export class SubagentObserver {
   }
 
   /** The live parent sessions whose descendants are worth probing. */
-  setParents(sessionIds: Iterable<string>): void {
+  setParents(sessionIds: Iterable<string>): Promise<void> {
     const next = new Set([...sessionIds].filter(isSessionId))
-    if (sameSet(this.parents, next)) return
+    // A caller joining startup preparation should await the discovery already
+    // in flight, not request another full store scan behind it.
+    if (sameSet(this.parents, next)) return this.refreshPromise ?? Promise.resolve()
     this.parents.clear()
     for (const sessionId of next) this.parents.add(sessionId)
     this.ensureRootWatcher()
     this.syncChildWatchers()
-    if (this.parents.size > 0) void this.refresh()
-    else if (this.stableStates.size > 0) {
+    if (this.parents.size > 0) return this.refresh()
+    if (this.stableStates.size > 0) {
       this.stableStates.clear()
       this.notify()
     }
+    return Promise.resolve()
   }
 
   childrenOf(parentId: string): SubagentEntry[] {
