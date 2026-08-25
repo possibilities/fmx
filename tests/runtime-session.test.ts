@@ -75,7 +75,9 @@ test("Runtime bootstrap waits for a first Client marker and consumes it", async 
   const marker = join(directory, "ready")
   try {
     setTimeout(() => void writeFile(marker, ""), 20)
-    await waitForRuntimeBootstrap(marker, 1_000, 5)
+    // The safety probe cannot fire within this deadline: success comes from
+    // the directory notification (or the post-watch race check) alone.
+    await waitForRuntimeBootstrap(marker, 1_000, 10_000)
     await expect(Bun.file(marker).exists()).resolves.toBe(false)
   } finally {
     await rm(directory, { recursive: true, force: true })

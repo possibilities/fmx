@@ -1,5 +1,6 @@
+import { watch, type FSWatcher } from "node:fs"
 import { stat, unlink } from "node:fs/promises"
-import { join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { OWNER_LABEL } from "./agent-reconcile.ts"
 import { CompanionCreateError, type CompanionCommand, type SessionEntry } from "./zmx-command.ts"
 
@@ -9,7 +10,8 @@ export const RUNTIME_BOOTSTRAP_ENV_VAR = "FMX_RUNTIME_BOOTSTRAP_PATH"
 const RUNTIME_SESSION_PREFIX = "fmxr"
 const RUNTIME_SESSION_KIND = "runtime"
 const BOOTSTRAP_TIMEOUT_MS = 10_000
-const BOOTSTRAP_POLL_MS = 20
+/** A lost or unavailable filesystem notification still gets a bounded retry. */
+const BOOTSTRAP_FALLBACK_POLL_MS = 250
 
 export type RuntimeSessionIdentity = {
   name: string
@@ -113,21 +115,76 @@ function assertOwnedRuntime(identity: RuntimeSessionIdentity, session: SessionEn
 export async function waitForRuntimeBootstrap(
   path: string,
   timeoutMs = BOOTSTRAP_TIMEOUT_MS,
-  pollMs = BOOTSTRAP_POLL_MS,
+  fallbackPollMs = BOOTSTRAP_FALLBACK_POLL_MS,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      if ((await stat(path)).isFile()) {
-        await unlink(path).catch(() => {})
+  if (await consumeBootstrapMarker(path)) return
+
+  await new Promise<void>((resolve, reject) => {
+    let watcher: FSWatcher | null = null
+    let probing = false
+    let probeAgain = false
+    let finished = false
+
+    const finish = (error: Error | null): void => {
+      if (finished) return
+      finished = true
+      watcher?.close()
+      clearInterval(fallback)
+      clearTimeout(timeout)
+      if (error) reject(error)
+      else resolve()
+    }
+    const probe = async (): Promise<void> => {
+      if (finished) return
+      if (probing) {
+        probeAgain = true
         return
       }
-    } catch {
-      // The first Client has not completed its attach yet.
+      probing = true
+      do {
+        probeAgain = false
+        if (await consumeBootstrapMarker(path)) {
+          finish(null)
+          return
+        }
+      } while (probeAgain && !finished)
+      probing = false
     }
-    await Bun.sleep(pollMs)
+
+    const fallback = setInterval(() => void probe(), Math.max(1, fallbackPollMs))
+    const timeout = setTimeout(() => {
+      // A marker arriving on the timeout boundary wins over the diagnostic.
+      void consumeBootstrapMarker(path).then((ready) => {
+        finish(ready ? null : new Error("the first terminal Client did not attach to the fmx Runtime"))
+      })
+    }, timeoutMs)
+
+    try {
+      const markerName = basename(path)
+      watcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
+        if (filename === null || filename.toString() === markerName) void probe()
+      })
+      watcher.on("error", () => {
+        watcher?.close()
+        watcher = null
+      })
+    } catch {
+      // Some filesystems cannot be watched. The slow safety probe remains.
+    }
+
+    // Close the race between the first check and installing the watcher.
+    void probe()
+  })
+}
+
+async function consumeBootstrapMarker(path: string): Promise<boolean> {
+  try {
+    if (!(await stat(path)).isFile()) return false
+    await unlink(path).catch(() => {})
+    return true
+  } catch {
+    return false
   }
-  throw new Error("the first terminal Client did not attach to the fmx Runtime")
 }
 
 /** argv for this same fmx, whether it is a Bun source checkout or one binary. */
