@@ -63,3 +63,49 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   }
   return result
 }
+
+/**
+ * Chunk boundaries are where a scanner that skips runs goes wrong, and fx's
+ * output arrives split at arbitrary bytes. Feeding a stream whole and feeding
+ * it in pieces must produce exactly the same bytes.
+ */
+test("translates the same bytes however the stream is split", () => {
+  const PRIVATE = [0x1b, 0x5b, 0x3f, 0x36, 0x6e]
+  const DECOYS = [
+    [0x1b, 0x5b, 0x36, 0x6e],
+    [0x1b, 0x5b, 0x3f, 0x32, 0x35, 0x68],
+    [0x1b, 0x5d, 0x30, 0x3b, 0x61, 0x07],
+    [0x1b],
+    [0x1b, 0x1b, 0x5b, 0x3f, 0x36, 0x6e],
+  ]
+  let seed = 20260826
+  const random = (bound: number) => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff
+    return seed % bound
+  }
+
+  for (let trial = 0; trial < 200; trial += 1) {
+    const stream: number[] = []
+    for (let piece = 0; piece < 12; piece += 1) {
+      const kind = random(4)
+      if (kind === 0) stream.push(...PRIVATE)
+      else if (kind === 1) stream.push(...DECOYS[random(DECOYS.length)]!)
+      else for (let index = 0, length = random(40); index < length; index += 1) stream.push(random(2) ? 0x61 : random(256))
+    }
+    const bytes = Uint8Array.from(stream)
+
+    const whole = new CursorReportAdapter()
+    const expected = [...whole.toTerminal(bytes), ...whole.flushTerminalBytes()]
+
+    const split = new CursorReportAdapter()
+    const actual: number[] = []
+    let offset = 0
+    while (offset < bytes.length) {
+      const size = 1 + random(7)
+      actual.push(...split.toTerminal(bytes.subarray(offset, offset + size)))
+      offset += size
+    }
+    actual.push(...split.flushTerminalBytes())
+    expect(actual).toEqual(expected)
+  }
+})

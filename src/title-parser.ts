@@ -20,7 +20,18 @@ export class OscTitleParser {
   constructor(private readonly options: OscTitleParserOptions) {}
 
   push(bytes: Uint8Array): void {
-    for (const byte of bytes) this.pushByte(byte)
+    let offset = 0
+    while (offset < bytes.byteLength) {
+      // Outside a sequence nothing but an escape can matter, and this sees
+      // every byte fx writes: jump to the next one rather than walking there.
+      if (this.state === "ground") {
+        const escape = bytes.indexOf(ESC, offset)
+        if (escape === -1) return
+        offset = escape
+      }
+      this.pushByte(bytes[offset]!)
+      offset += 1
+    }
   }
 
   private reset(): void {

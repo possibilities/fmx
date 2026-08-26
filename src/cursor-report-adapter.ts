@@ -19,10 +19,35 @@ export class CursorReportAdapter {
   private requestPrefix: number[] = []
   private privateResponsesPending = 0
 
+  /**
+   * Every byte fx writes passes through here, including the whole scrollback
+   * a restore replays, so the common case — a chunk with no escape in it and
+   * no partial request carried in — hands back the same bytes untouched, and
+   * the rest copies escape-free runs whole rather than a byte at a time.
+   */
   toTerminal(bytes: Uint8Array): Uint8Array {
-    const output: number[] = []
-    for (const byte of bytes) this.consumeRequestByte(byte, output)
-    return Uint8Array.from(output)
+    if (this.requestPrefix.length === 0 && !bytes.includes(ESC)) return bytes
+
+    // A request carried in from the last chunk can be flushed ahead of these
+    // bytes; a match only ever shortens, so this is the widest it can be.
+    const output = new Uint8Array(bytes.byteLength + PRIVATE_CURSOR_REPORT_REQUEST.length)
+    let written = 0
+    let offset = 0
+    while (offset < bytes.byteLength) {
+      if (this.requestPrefix.length === 0) {
+        const escape = bytes.indexOf(ESC, offset)
+        const end = escape === -1 ? bytes.byteLength : escape
+        if (end > offset) {
+          output.set(bytes.subarray(offset, end), written)
+          written += end - offset
+          offset = end
+          continue
+        }
+      }
+      written = this.consumeRequestByte(bytes[offset]!, output, written)
+      offset += 1
+    }
+    return output.subarray(0, written)
   }
 
   toPty(bytes: Uint8Array): Uint8Array {
@@ -54,27 +79,30 @@ export class CursorReportAdapter {
     return bytes
   }
 
-  private consumeRequestByte(byte: number, output: number[]): void {
+  /** Returns the new write position in `output`. */
+  private consumeRequestByte(byte: number, output: Uint8Array, written: number): number {
     if (this.requestPrefix.length === 0) {
       if (byte === ESC) this.requestPrefix.push(byte)
-      else output.push(byte)
-      return
+      else output[written++] = byte
+      return written
     }
 
     if (byte === PRIVATE_CURSOR_REPORT_REQUEST[this.requestPrefix.length]) {
       this.requestPrefix.push(byte)
       if (this.requestPrefix.length === PRIVATE_CURSOR_REPORT_REQUEST.length) {
-        output.push(...STANDARD_CURSOR_REPORT_REQUEST)
+        output.set(STANDARD_CURSOR_REPORT_REQUEST, written)
+        written += STANDARD_CURSOR_REPORT_REQUEST.length
         this.requestPrefix = []
         this.privateResponsesPending += 1
       }
-      return
+      return written
     }
 
-    output.push(...this.requestPrefix)
+    for (const held of this.requestPrefix) output[written++] = held
     this.requestPrefix = []
     if (byte === ESC) this.requestPrefix.push(byte)
-    else output.push(byte)
+    else output[written++] = byte
+    return written
   }
 }
 
