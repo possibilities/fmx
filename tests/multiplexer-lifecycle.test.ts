@@ -10,11 +10,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSocket } from "../src/agent-socket.ts"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { projectNameFor, readGitContext, treeNameFor } from "../src/git-context.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { launchAgent, pressLaunch } from "./fixtures/launch-keys.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
@@ -128,8 +128,7 @@ test("toasts project and Worktree on start, then uses the native session name on
     exitOnCtrlC: false,
   })
   const home = await mkdtemp(join(tmpdir(), "fmx-lifecycle-home-"))
-  const agentSocket = new AgentSocket({ path: `/tmp/fmx-lifecycle-${process.pid}.sock` })
-  await agentSocket.start()
+  const adeSocket = new TestAdeSocket(`/tmp/fmx-lifecycle-${process.pid}.ade.sock`)
   const sessionDirectory = join(home, ".fx", "sessions", SESSION_ID)
   await mkdir(sessionDirectory, { recursive: true })
   await writeFile(
@@ -142,7 +141,7 @@ test("toasts project and Worktree on start, then uses the native session name on
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    agentSocket,
+    adeSocket,
     home,
     toastDurationMs: 100,
   })
@@ -153,12 +152,9 @@ test("toasts project and Worktree on start, then uses the native session name on
     await launchAgent(setup)
     await waitForText(setup, `${location} / agent 1 started`, 2_000)
 
-    // The pane id is the Agent's identity, minted with its Manifest entry.
+    // The retained pane id carries the same stable token as the ADE instance.
     const paneId = options.manifest.entries[0]!.paneId
-    await sendFrame(
-      agentSocket,
-      `{"id":"1","method":"pane.report_agent_session","params":{"pane_id":"${paneId}","agent_session_id":"${SESSION_ID}"}}`,
-    )
+    adeSocket.main(paneId, "FxStarted", { sessionId: SESSION_ID, state: "idle" })
 
     await Bun.sleep(110)
     const terminal = setup.renderer.root.findDescendantById("fx-1")
@@ -169,7 +165,6 @@ test("toasts project and Worktree on start, then uses the native session name on
     await waitForText(setup, `${location} / Clear cloud exited`, 2_000)
   } finally {
     await multiplexer.shutdown()
-    agentSocket.close()
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -272,20 +267,6 @@ async function lifecycleLocation(cwd: string): Promise<string> {
   const project = projectNameFor(context, cwd)
   const tree = treeNameFor(context)
   return tree === null ? project : `${project} / ${tree}`
-}
-
-async function sendFrame(agentSocket: AgentSocket, payload: string): Promise<void> {
-  const connection = await Bun.connect({
-    unix: agentSocket.path,
-    socket: {
-      open: (socket) => {
-        socket.write(`${payload}\n`)
-      },
-      data: () => {},
-    },
-  })
-  await Bun.sleep(20)
-  connection.end()
 }
 
 async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

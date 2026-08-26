@@ -7,7 +7,7 @@ import {
   failureFrom,
   successReply,
 } from "./control-protocol.ts"
-import { LineAssembler } from "./socket-frames.ts"
+import { LineAssembler } from "./line-assembler.ts"
 
 type SocketListener = ReturnType<typeof Bun.listen>
 type SocketConnection = { write: (data: string) => unknown; end: () => unknown }
@@ -39,9 +39,8 @@ type Connection = {
 }
 
 /**
- * The Unix socket `fmx control <command>` talks to. Separate from the agent socket on
- * purpose: that one speaks fx's protocol and answers before it acts, which
- * is right for a reporter and wrong for a command that needs a result.
+ * The Unix socket `fmx control <command>` talks to. It is separate from the
+ * one-way ADE feed because a command needs its result and may wait.
  *
  * One request per connection, answered and then closed from this side. The
  * file is mode 0600 — anything that can open it can drive the screen.
@@ -59,13 +58,12 @@ export class ControlSocket {
   }
 
   /**
-   * Beside the agent socket, with an extension that says which is which —
-   * and as stable as it, so an fx that outlives one fmx still reaches the
-   * next by the path it was given. Binding is safe under the agent
-   * socket's singleton: whatever is at the path is a previous fmx's residue.
+   * Beside the ADE feed and as stable as it, so an fx that outlives one fmx
+   * still reaches the next by the path it was given. Binding is safe under
+   * the feed's Home singleton.
    */
-  static pathFor(agentSocketPath: string): string {
-    return `${agentSocketPath.replace(/\.sock$/, "")}.ctl`
+  static pathFor(adeSocketPath: string): string {
+    return `${adeSocketPath.replace(/(?:\.ade)?\.sock$/, "")}.ctl`
   }
 
   start(): void {

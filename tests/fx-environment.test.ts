@@ -39,7 +39,7 @@ test("unrelated WINDOW variables survive outside GNU screen", () => {
   expect(createFxEnvironment({ WINDOW: "editor" }, 1, "/work").WINDOW).toBe("editor")
 })
 
-test("an inherited agent socket never reaches fx", () => {
+test("an inherited Herdr integration never reaches fx", () => {
   const env = createFxEnvironment(
     {
       HERDR_ENV: "1",
@@ -71,21 +71,24 @@ test("an inherited agent socket never reaches fx", () => {
   expect(env.FMX_RUNTIME_BOOTSTRAP_PATH).toBeUndefined()
 })
 
-test("fmx's own agent socket replaces whatever was inherited", () => {
+test("fmx never enables Herdr while installing its ADE feed", () => {
   const env = createFxEnvironment(
     { HERDR_SOCKET_PATH: "/tmp/someone-else.sock", HERDR_PANE_ID: "w1:p9" },
     3,
     "/work",
-    { socketPath: "/tmp/fmx-42.sock", paneId: "p_3" },
+    null,
+    null,
+    { socketPath: "/tmp/fmx-home.ade.sock", instanceId: "0123456789abcdef0123456789abcdef" },
   )
 
-  expect(env.HERDR_SOCKET_PATH).toBe("/tmp/fmx-42.sock")
-  expect(env.HERDR_PANE_ID).toBe("p_3")
+  expect(env.HERDR_SOCKET_PATH).toBeUndefined()
+  expect(env.HERDR_PANE_ID).toBeUndefined()
   expect(env.HERDR_ENV).toBeUndefined()
+  expect(env.FX_ADE_SOCKET_PATH).toBe("/tmp/fmx-home.ade.sock")
 })
 
 test("hands every agent the control socket, and clears one inherited from another fmx", () => {
-  const env = createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work", null, "/tmp/fmx-42.ctl")
+  const env = createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work", "/tmp/fmx-42.ctl")
   expect(env.FMX_SOCKET_PATH).toBe("/tmp/fmx-42.ctl")
   expect(env.FMX_AGENT_ID).toBe("3")
   expect(createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work").FMX_SOCKET_PATH).toBeUndefined()
@@ -98,7 +101,6 @@ test("hands fx the passive ADE socket with the stable Manifest identity", () => 
     "/work",
     null,
     null,
-    null,
     { socketPath: "/tmp/fmx-home.ade.sock", instanceId: "0123456789abcdef0123456789abcdef" },
   )
   expect(env.FX_ADE_SOCKET_PATH).toBe("/tmp/fmx-home.ade.sock")
@@ -109,7 +111,7 @@ test("applies model and effort to one agent without changing unrelated launches"
   const ambient = { FX_MODEL: "ambient-model", FX_EFFORT: "medium" }
   expect(createFxEnvironment(ambient, 3, "/work")).toMatchObject(ambient)
 
-  const selected = createFxEnvironment(ambient, 4, "/work", null, null, {
+  const selected = createFxEnvironment(ambient, 4, "/work", null, {
     model: "gpt-5.6-luna",
     effort: "max",
   })

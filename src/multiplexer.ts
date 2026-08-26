@@ -17,9 +17,14 @@ import {
 import { realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename } from "node:path"
-import { AgentRegistry, type DisplayState, displayStateFor, shortSessionId } from "./agent-registry.ts"
-import type { AgentSocket } from "./agent-socket.ts"
-import type { AdeRecord, AdeSocket } from "./ade-events.ts"
+import {
+  AgentRegistry,
+  type AgentState,
+  type DisplayState,
+  displayStateFor,
+  shortSessionId,
+} from "./agent-registry.ts"
+import type { AdeEventSource, AdeRecord } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
 import { CODEX_MODELS, codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
 import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
@@ -49,7 +54,6 @@ import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import {
   createFxEnvironment,
   type FxAdeBinding,
-  type FxAgentSocketBinding,
   type FxLaunchLevel,
 } from "./fx-environment.ts"
 import type { AgentManifest, ManifestEntry } from "./agent-manifest.ts"
@@ -87,7 +91,6 @@ import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from
 import { SessionList, stateIcon } from "./session-list.ts"
 import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
-import type { SocketFrame } from "./socket-frames.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
@@ -151,8 +154,7 @@ type MultiplexerOptions = {
   transport: AgentTransportFactory
   /** Agents the join found running: attached, in display order, before anything else. */
   survivors?: readonly ManifestEntry[]
-  agentSocket?: AgentSocket | null
-  adeSocket?: AdeSocket | null
+  adeSocket?: AdeEventSource | null
   initialTrayWidth?: number
   onTrayWidthChange?: (width: number) => void
   initialTrayHidden?: boolean
@@ -217,7 +219,7 @@ class FxAgent {
   readonly terminal: FxTerminalRenderable
   /** The number fmx's UI knows it by: the Manifest's display id. */
   readonly id: number
-  /** What fx addresses its frames to; the identity's, so it survives fmx. */
+  /** Retained stable control and Companion-label identity. */
   readonly paneId: string
   private readonly fallbackLabel: string
   label: string
@@ -236,6 +238,8 @@ class FxAgent {
   private promptWaitingForTransport = false
   /** A prompt has gone in and fx has not yet said it is working on it. */
   awaitingWork = false
+  /** A trustworthy idle boundary observed after `awaitingWork` was armed. */
+  private awaitingWorkSawIdle = false
   private promptTimer: ReturnType<typeof setTimeout> | null = null
   private cursorReportAdapter = new CursorReportAdapter()
   private readonly titleParser: OscTitleParser
@@ -280,6 +284,7 @@ class FxAgent {
     this.pendingPrompt = prompt
     this.launchPrompt = prompt
     this.awaitingWork = true
+    this.awaitingWorkSawIdle = false
   }
 
   /** Whether a launch prompt is still waiting for fx to be ready. */
@@ -289,12 +294,14 @@ class FxAgent {
 
   /** Paste `text` into a running fx and send it, the way a launch prompt
    * goes in — the two writes a beat apart, for the same reason. */
-  send(text: string): void {
+  send(text: string, lifecycleState: AgentState): void {
     if (this.status !== "running") throw new ControlFailure("busy", "the agent is not running")
+    if (!this.transport) throw new ControlFailure("busy", "the agent is reconnecting")
     if (this.pendingPrompt !== null || this.promptTimer !== null) {
       throw new ControlFailure("busy", "the launch prompt has not been sent yet")
     }
     this.awaitingWork = true
+    this.awaitingWorkSawIdle = lifecycleState === "idle"
     const encoder = new TextEncoder()
     this.writeInput(encoder.encode(bracketedPaste(text)), "input")
     this.promptTimer = setTimeout(() => {
@@ -303,9 +310,21 @@ class FxAgent {
     }, PROMPT_SUBMIT_MS)
   }
 
+  /** Observe admission without confusing an already-running turn for the
+   * prompt whose latch was just armed. */
+  observeWorkAdmission(event: string, state: AgentState): void {
+    if (!this.awaitingWork) return
+    if (event === "PromptQueued" || (this.awaitingWorkSawIdle && state !== "idle" && state !== "unknown")) {
+      this.awaitingWork = false
+      this.awaitingWorkSawIdle = false
+      return
+    }
+    if (state === "idle") this.awaitingWorkSawIdle = true
+  }
+
   /**
-   * Type the launch prompt and send it. The pane's first report over the agent
-   * socket is fx saying it is up, but its input is drawn a beat later, so the
+   * Type the launch prompt and send it. The first ADE record says fx's
+   * lifecycle observer is up, but its input is drawn a beat later, so the
    * text goes in after a short settle rather than the instant fx speaks.
    */
   armPrompt(): void {
@@ -454,13 +473,13 @@ export class Multiplexer {
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
   private readonly emptyState: TextRenderable
-  private readonly agentSocket: AgentSocket | null
-  private readonly adeSocket: AdeSocket | null
+  private readonly adeSocket: AdeEventSource | null
+  private adeSubscribed = false
   private readonly registry = new AgentRegistry()
   private readonly sessionNames: SessionNames
-  /** ADE identities are eager and remain authoritative over a late legacy frame. */
-  private readonly adeSessionIds = new Map<string, string | null>()
   private readonly adeSequences = new Map<string, number>()
+  /** Instances whose last accepted process generation ended orderly. */
+  private readonly adeStoppedInstances = new Set<string>()
   private readonly sessionList: SessionList
   /** Hold restored Session-list mutations in the model until one final publish. */
   private sessionListPublicationHeld: boolean
@@ -522,46 +541,6 @@ export class Multiplexer {
   private readonly pasteHandler = () => this.launchDialog.handlePaste()
   private readonly resizeHandler = () => this.applyLayout()
   private readonly adeHandler = (record: AdeRecord) => this.acceptAdeRecord(record)
-  private readonly registryHandler = (frame: SocketFrame) => {
-    const previousReportedSessionId = frame.paneId
-      ? (this.registry.get(frame.paneId)?.sessionId ?? null)
-      : null
-    this.registry.apply(frame)
-    if (frame.paneId) {
-      // fx reporting itself is the only signal fmx has that it is ready to be
-      // typed into.
-      const agent = this.agentForPane(frame.paneId)
-      agent?.armPrompt()
-      const reportedSessionId = this.registry.get(frame.paneId)?.sessionId ?? null
-      if (
-        agent &&
-        reportedSessionId &&
-        previousReportedSessionId !== reportedSessionId &&
-        !this.adeSessionIds.has(agent.entry.agentId)
-      ) {
-        this.sessionNames.recover(reportedSessionId)
-      }
-      // The session id is what a restart seeds the name from; written the
-      // moment fx first says it, and never again for the same one.
-      const sessionId = agent ? this.sessionIdOf(agent) : reportedSessionId
-      if (agent && sessionId) {
-        void this.options.manifest.setFxSessionId(agent.entry.agentId, sessionId).catch(() => {})
-      }
-      if (agent && this.registry.get(frame.paneId)?.state === "working") agent.awaitingWork = false
-    }
-    // A pane the human is already watching is seen the moment it reports, so
-    // finishing in the foreground never shows as an unacknowledged `done`.
-    const active = this.activeAgent()
-    if (active) this.markSeen(active)
-    // A report from somewhere else advances beyond that Agent's seen
-    // version; checkpoint it as unseen so `done` survives a detach too.
-    if (frame.paneId) {
-      const reported = this.agentForPane(frame.paneId)
-      if (reported && reported !== active) this.checkpointAgent(reported)
-    }
-    this.refreshSessionList()
-    this.settleAgentWaiters()
-  }
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -639,7 +618,6 @@ export class Multiplexer {
     this.stage.add(this.divider)
     this.stage.add(this.content)
 
-    this.agentSocket = options.agentSocket ?? null
     this.adeSocket = options.adeSocket ?? null
     this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
     this.sessionListPublicationHeld = (options.survivors?.length ?? 0) > 0
@@ -710,8 +688,6 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
-    this.agentSocket?.addFrameListener(this.registryHandler)
-    this.adeSocket?.addEventListener(this.adeHandler)
     this.applyLayout()
     this.refreshTerminalTitle()
   }
@@ -726,6 +702,10 @@ export class Multiplexer {
     this.subagents.start()
     const survivors = [...(this.options.survivors ?? [])].sort((a, b) => a.displayId - b.displayId)
     const restoring = survivors.map((entry) => this.prepareRestoredAgent(entry))
+    // AdeSocket may already hold records accepted during the Companion join.
+    // Subscribe only after their stable Manifest identities exist so replay
+    // can fold them instead of discarding them as unknown instances.
+    this.subscribeAde()
     if (restoring.length === 0) return
 
     const savedIndex = restoring.findIndex(
@@ -866,7 +846,6 @@ export class Multiplexer {
             process.env,
             entry.displayId,
             cwd,
-            this.agentSocketBinding(entry.paneId),
             this.options.controlSocketPath ?? null,
             launchLevel,
             this.adeBinding(entry.agentId),
@@ -904,7 +883,7 @@ export class Multiplexer {
   }
 
   /**
-   * Attach to an Agent the Companion held between runs. The last socket
+   * Attach to an Agent the Companion held between runs. The last ADE
    * truth is seeded before the renderer can expose this row; it stays true
    * until fx reports something newer. A launch prompt is not replayed —
    * there is none.
@@ -1051,8 +1030,8 @@ export class Multiplexer {
     agent.destroy()
     this.agents.splice(index, 1)
     this.registry.forget(this.paneIdFor(agent))
-    this.adeSessionIds.delete(agent.entry.agentId)
     this.adeSequences.delete(agent.entry.agentId)
+    this.adeStoppedInstances.delete(agent.entry.agentId)
     this.seenSeq.delete(agent.id)
     this.refreshAgentChrome()
     for (const waiter of this.agentWaiters) {
@@ -1237,7 +1216,7 @@ export class Multiplexer {
     this.checkpointAgent(agent)
   }
 
-  /** Keep the last trustworthy socket state and its acknowledgement relation. */
+  /** Keep the last trustworthy ADE snapshot and its acknowledgement relation. */
   private checkpointAgent(agent: FxAgent): void {
     const record = this.registry.get(this.paneIdFor(agent))
     if (!record) return
@@ -1254,45 +1233,56 @@ export class Multiplexer {
     this.switchTo(index)
   }
 
-  private agentForPane(paneId: string): FxAgent | null {
-    return this.agents.find((agent) => this.paneIdFor(agent) === paneId) ?? null
-  }
-
   private acceptAdeRecord(record: AdeRecord): void {
     const agent = this.agents.find((candidate) => candidate.entry.agentId === record.instanceId)
     if (!agent) return
 
-    const previousSequence = this.adeSequences.get(record.instanceId)
+    let previousSequence = this.adeSequences.get(record.instanceId)
+    if (
+      record.event === "FxStarted" &&
+      record.sequence === 1 &&
+      this.adeStoppedInstances.has(record.instanceId)
+    ) {
+      // An orderly in-place Fx relaunch keeps fmx's stable instance identity
+      // but begins a new process-local ADE sequence at one.
+      previousSequence = undefined
+      this.adeSequences.delete(record.instanceId)
+      this.adeStoppedInstances.delete(record.instanceId)
+    }
     if (previousSequence !== undefined && record.sequence <= previousSequence) return
     const gap = previousSequence === undefined ? record.sequence !== 1 : record.sequence !== previousSequence + 1
     this.adeSequences.set(record.instanceId, record.sequence)
+    // The first record observed is the only lifecycle-owned signal that fx is
+    // ready for the delayed launch-prompt paste. A dropped FxStarted can be
+    // repaired by any later record.
+    agent.armPrompt()
 
     let changed = false
-    // Identity is envelope context, not event payload. That makes a first
-    // record observed after an ADE restart authoritative even when its event
-    // is additive or belongs to a child of the main session.
-    const contextualMainSession = record.context.agentRole === "main"
-      ? record.context.sessionId
-      : record.context.parentSessionId
-    const contextualIdentityKnown = record.context.agentRole === "main" || contextualMainSession !== null
+    // Identity and lifecycle are envelope context, not event payload. Main
+    // records alone replace the active main identity: a child's parent
+    // attribution can intentionally name an older session after `/new`.
     const previousSession = this.sessionIdOf(agent)
-    const contextualIdentityChanged = contextualIdentityKnown && (
-      !this.adeSessionIds.has(record.instanceId) || previousSession !== contextualMainSession
-    )
-    if (contextualIdentityKnown) {
-      changed = this.installAdeSession(agent, contextualMainSession) || changed
+    const contextualIdentityChanged =
+      record.context.agentRole === "main" && previousSession !== record.context.sessionId
+    if (record.context.agentRole === "main") {
+      changed = this.installAdeSession(agent, record.context.sessionId) || changed
     }
     if (gap) {
-      const recoverySession = contextualMainSession ?? this.sessionIdOf(agent)
+      const recoverySession = this.sessionIdOf(agent)
       // Installing a different identity already reads its durable sidecar.
       if (recoverySession && !contextualIdentityChanged) {
         changed = this.sessionNames.recover(recoverySession) || changed
       }
     }
     if (record.context.agentRole !== "main") {
+      changed = this.subagents.applyAdeRecord(record) || changed
       if (changed) this.refreshSessionList()
       return
     }
+
+    const folded = this.registry.apply(this.paneIdFor(agent), record)
+    agent.observeWorkAdmission(record.event, folded.state)
+    if (record.event === "FxStopped") this.adeStoppedInstances.add(record.instanceId)
 
     switch (record.event) {
       case "FxStarted":
@@ -1311,15 +1301,19 @@ export class Multiplexer {
         // Schema 1 is additive. Unknown events still advance sequence.
         break
     }
-    if (changed) this.refreshSessionList()
+    // A visible Agent is seen at the snapshot it just reported; an inactive
+    // one is checkpointed as unseen so a completed turn survives Detach.
+    if (this.activeAgent() === agent) this.markSeen(agent)
+    else this.checkpointAgent(agent)
+    this.refreshSessionList()
+    this.settleAgentWaiters()
   }
 
   private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
     if (sessionId !== null && !isSessionId(sessionId)) return false
-    const hadAdeSession = this.adeSessionIds.has(agent.entry.agentId)
+    const hadRecord = this.registry.get(this.paneIdFor(agent)) !== null
     const previous = this.sessionIdOf(agent)
-    const identityChanged = !hadAdeSession || previous !== sessionId
-    this.adeSessionIds.set(agent.entry.agentId, sessionId)
+    const identityChanged = !hadRecord || previous !== sessionId
     this.registry.setSessionId(this.paneIdFor(agent), sessionId)
     if (identityChanged) {
       void this.options.manifest.setFxSessionId(agent.entry.agentId, sessionId).catch(() => {})
@@ -1336,21 +1330,18 @@ export class Multiplexer {
     return agent.paneId
   }
 
-  private agentSocketBinding(paneId: string): FxAgentSocketBinding | null {
-    const socket = this.agentSocket
-    if (!socket) return null
-    return { socketPath: socket.path, paneId }
-  }
-
   private adeBinding(instanceId: string): FxAdeBinding | null {
     const socket = this.adeSocket
     return socket ? { socketPath: socket.path, instanceId } : null
   }
 
+  private subscribeAde(): void {
+    if (this.adeSubscribed || !this.adeSocket) return
+    this.adeSubscribed = true
+    this.adeSocket.addEventListener(this.adeHandler)
+  }
+
   private sessionIdOf(agent: FxAgent): string | null {
-    if (this.adeSessionIds.has(agent.entry.agentId)) {
-      return this.adeSessionIds.get(agent.entry.agentId) ?? null
-    }
     return this.registry.get(this.paneIdFor(agent))?.sessionId ?? null
   }
 
@@ -1814,7 +1805,8 @@ export class Multiplexer {
         const agent = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
         const text = requiredString(params, "text").trim()
         if (text === "") throw new ControlFailure("invalid_params", "text is empty")
-        agent.send(text)
+        const lifecycleState = this.registry.get(this.paneIdFor(agent))?.state ?? "unknown"
+        agent.send(text, lifecycleState)
         return { agent: this.agentInfo(agent) }
       }
       case "launch": {

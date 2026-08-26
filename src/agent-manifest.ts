@@ -22,7 +22,7 @@ export const MANIFEST_VERSION = 1
 export type AgentIdentity = {
   /** 128 random bits as 32 hex characters; the one id that never changes. */
   agentId: string
-  /** What fx addresses its frames to; the wire's term, `p_<agentId>`. */
+  /** Stable `p_<agentId>` alias retained for control targets and Companion labels. */
   paneId: string
   /** The Companion session name, `fmx-<agentId>`. */
   zmxName: string
@@ -30,7 +30,7 @@ export type AgentIdentity = {
 
 export type ManifestPhase = "creating" | "running"
 
-/** The last state fx reported while an fmx held the Agent socket. */
+/** The last lifecycle snapshot fx reported over ADE. */
 export type AgentStatusCheckpoint = {
   state: AgentState
   attention: AgentAttention | null
@@ -165,10 +165,13 @@ function readAgentStatus(raw: unknown): AgentStatusCheckpoint | null {
     attention !== null &&
     attention !== "permission" &&
     attention !== "question" &&
+    attention !== "route_recovery" &&
     attention !== "recovery"
   ) return null
   if (typeof raw.seen !== "boolean") return null
-  return { state, attention, seen: raw.seen }
+  // The sole persistence migration: manifests written by the retired Herdr
+  // projection used `recovery`; live and newly saved state use Fx's ADE word.
+  return { state, attention: attention === "recovery" ? "route_recovery" : attention, seen: raw.seen }
 }
 
 export async function loadManifest(path: string, homeId: string): Promise<Manifest> {
@@ -300,7 +303,7 @@ export class AgentManifest {
   }
 
   setFxSessionId(agentId: string, fxSessionId: string | null): Promise<void> {
-    // Checked before the write is queued: every frame fx sends is a chance
+    // Checked before the write is queued: every ADE record is a chance
     // to record the id, and all but the first would otherwise be a rewrite.
     const current = this.manifest.agents.find((candidate) => candidate.agentId === agentId)
     if (!current || current.fxSessionId === fxSessionId) return Promise.resolve()
@@ -311,7 +314,7 @@ export class AgentManifest {
     })
   }
 
-  /** Checkpoint the last socket truth so a detach does not turn it unknown. */
+  /** Checkpoint the last ADE truth so a detach does not turn it unknown. */
   setAgentStatus(agentId: string, status: AgentStatusCheckpoint): Promise<void> {
     const current = this.manifest.agents.find((candidate) => candidate.agentId === agentId)
     if (!current || sameAgentStatus(current.agentStatus, status)) return Promise.resolve()

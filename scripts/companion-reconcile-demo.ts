@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Demo: fmx's persistence foundation -- the Manifest, the join against the
- * Companion at start, and the one-fmx-per-Home agent socket.
+ * Companion at start, and the ADE-owned one-Runtime-per-Home singleton.
  *
  *   FMX_ZMX_PATH=~/src/zmx/zig-out/bin/zmx bun scripts/companion-reconcile-demo.ts
  *
@@ -12,7 +12,7 @@
 import { existsSync } from "node:fs"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
-import { AgentSocket, AgentSocketActiveError, defaultSocketPath } from "../src/agent-socket.ts"
+import { AdeSocket, defaultAdeSocketPath, HomeActiveError } from "../src/ade-events.ts"
 import { identityFor, AgentManifest, mintIdentity } from "../src/agent-manifest.ts"
 import { ownershipLabels, reconcile, reconcileAgents } from "../src/agent-reconcile.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
@@ -136,17 +136,17 @@ try {
   await showManifest()
   say(`socket still on disk: ${existsSync(join(dir, "zmx", unresolvedId.zmxName))}; inspect now says ${(await companion.inspect(unresolvedId.zmxName)).state}`)
 
-  await step("one fmx per Home: the agent socket refuses a second listener and leaves the first alone")
-  const socketPath = `/tmp/fmx-demo-${process.pid}.sock`
-  say(`a real Home's path would be ${defaultSocketPath(home)}`)
-  const first = new AgentSocket({ path: socketPath })
+  await step("one Runtime per Home: the ADE feed refuses a second listener and leaves the first alone")
+  const socketPath = `/tmp/fmx-demo-${process.pid}.ade.sock`
+  say(`a real Home's path would be ${defaultAdeSocketPath(home)}`)
+  const first = new AdeSocket({ path: socketPath })
   await first.start()
-  const second = new AgentSocket({ path: socketPath })
+  const second = new AdeSocket({ path: socketPath })
   try {
     await second.start()
     say("second bound?! that is the bug this exists to prevent")
   } catch (error) {
-    say(`second fmx: ${error instanceof AgentSocketActiveError ? error.message : String(error)}`)
+    say(`second fmx: ${error instanceof HomeActiveError ? error.message : String(error)}`)
   }
   second.close()
   say(`first still listening, socket file present: ${existsSync(socketPath)}`)

@@ -2,12 +2,12 @@ import { expect, test } from "bun:test"
 import { BoxRenderable, type TerminalColors } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
-import { AgentSocket } from "../src/agent-socket.ts"
+import { AdeSocket } from "../src/ade-events.ts"
 import type { AgentTransport, TerminalSize, TransportHandlers } from "../src/agent-transport.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { LineAssembler } from "../src/socket-frames.ts"
+import { TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { pressLaunch } from "./fixtures/launch-keys.ts"
 import { agentOptions, type PtyTransport } from "./fixtures/pty-transport.ts"
 
@@ -21,15 +21,14 @@ const NEVER = new AbortController().signal
 
 async function harness(name: string) {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
-  const agentSocket = new AgentSocket({ path: `/tmp/fmx-transport-test-${name}-${process.pid}.sock` })
-  await agentSocket.start()
+  const adeSocket = new TestAdeSocket(`/tmp/fmx-transport-test-${name}-${process.pid}.ade.sock`)
   const options = agentOptions()
   const multiplexer = new Multiplexer(setup.renderer, {
     ...options,
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    agentSocket,
+    adeSocket,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -37,36 +36,17 @@ async function harness(name: string) {
   const paneOf = async (id: number) => (await snapshot()).agents.find((i) => i.id === id)!.pane_id
   const report = async (id: number, state: string) => {
     const paneId = await paneOf(id)
-    await exchange(
-      agentSocket.path,
-      `{"id":"${Date.now()}","method":"pane.report_agent","params":{"pane_id":"${paneId}","source":"custom:fx","agent":"fx","state":"${state}"}}`,
-    )
+    if (state === "working") adeSocket.main(paneId, "TurnStarted", { state })
+    else if (state === "blocked") adeSocket.main(paneId, "AttentionRequired", { state })
+    else adeSocket.main(paneId, "PostTurnEnd", { state: "idle" })
     await setup.renderOnce()
   }
   const close = async () => {
     await multiplexer.shutdown()
-    agentSocket.close()
   }
   const modal = setup.renderer.root.findDescendantById("fmx-modal") as BoxRenderable
   await multiplexer.start()
   return { setup, multiplexer, options, control, snapshot, report, close, modal }
-}
-
-async function exchange(path: string, payload: string): Promise<string> {
-  const assembler = new LineAssembler()
-  const { promise, resolve, reject } = Promise.withResolvers<string>()
-  await Bun.connect({
-    unix: path,
-    socket: {
-      open: (socket) => void socket.write(`${payload}\n`),
-      data: (_socket, data) => {
-        const [line] = assembler.push(new TextDecoder().decode(data))
-        if (line !== undefined) resolve(line)
-      },
-      error: (_socket, error) => reject(error),
-    },
-  })
-  return promise
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 3_000): Promise<void> {
@@ -279,6 +259,61 @@ test("publishes restored Session-list metadata only after attaching transports",
   }
 })
 
+test("folds ADE records accepted during startup after survivor identities exist", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+  const options = agentOptions()
+  const claim = options.manifest.claim({
+    cwd: process.cwd(),
+    fxPath: FAKE_FX,
+    fxArgs: [],
+    createdAt: 1,
+  }).result
+  const survivor = await options.manifest.markRunning(claim.agentId)
+  options.transport.attachBehavior = () => ({ bind() {}, write() {}, resize() {}, detach() {} })
+  const adeSocket = new AdeSocket({ path: `/tmp/fmx-startup-ade-${process.pid}.ade.sock` })
+  await adeSocket.start()
+  const sessionId = "1787362101430-1787362101430156000-2897385323da2691"
+  const connection = await Bun.connect({ unix: adeSocket.path, socket: { data: () => {} } })
+  connection.write(`${JSON.stringify({
+    schema_version: 1,
+    sequence: 7,
+    event: "FutureObservation",
+    instance_id: survivor.agentId,
+    context: {
+      agent_role: "main",
+      workspace_root: process.cwd(),
+      session_id: sessionId,
+      parent_session_id: null,
+      agent_state: "blocked",
+      attention_kind: "question",
+    },
+    payload: {},
+  })}\n`)
+  connection.end()
+  await Bun.sleep(20)
+
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...options,
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    survivors: [survivor],
+    adeSocket,
+  })
+  try {
+    await multiplexer.start()
+    const snapshot = (await multiplexer.control.handle("orient", {}, NEVER)) as Snapshot
+    expect(snapshot.agents[0]).toMatchObject({
+      session_id: sessionId,
+      state: "blocked",
+      attention: "question",
+    })
+  } finally {
+    await multiplexer.shutdown()
+    adeSocket.close()
+  }
+})
+
 test("reapplies the host palette after RestoreBegin", async () => {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const options = agentOptions()
@@ -349,6 +384,26 @@ test("a lost transport whose Agent has ended is removed like an exit", async () 
     expect(h.options.manifest.get(entry.agentId)).toBeNull()
     expect(h.options.transport.attaches.get(entry.agentId)).toBe(1)
     expect(h.modal.visible).toBe(false)
+  } finally {
+    await h.close()
+  }
+})
+
+test("refuses agent.send while a lost transport is reconnecting", async () => {
+  const h = await harness("send-reconnecting")
+  try {
+    pressLaunch(h.setup)
+    await waitFor(() => h.options.transport.started.length === 1)
+    const entry = h.options.manifest.entries[0]!
+    const reconnect = Promise.withResolvers<AgentTransport>()
+    h.options.transport.attachBehavior = () => reconnect.promise
+    ;(h.options.transport.started[0] as PtyTransport).lose()
+    await waitFor(() => h.options.transport.attaches.get(entry.agentId) === 1)
+
+    const refusal = await h.control("agent.send", { target: "1", text: "not yet" }).catch((error) => error)
+    expect(refusal).toMatchObject({ code: "busy", message: "the agent is reconnecting" })
+    reconnect.resolve({ bind() {}, write() {}, resize() {}, detach() {} })
+    await Bun.sleep(10)
   } finally {
     await h.close()
   }

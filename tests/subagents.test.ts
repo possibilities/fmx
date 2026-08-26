@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { displayState, SubagentObserver } from "../src/subagents.ts"
+import { record } from "./fixtures/ade-feed.ts"
 
 const PARENT = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
 const UNRELATED_PARENT = "1787368597000-1787368597000000000-cccccccccccccccc"
@@ -142,6 +143,74 @@ describe("SubagentObserver", () => {
     }
   })
 
+  test("folds live ADE snapshots, including recovery resolution and a skipped transition repair", async () => {
+    const home = await homeDirectory()
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      observer.applyAdeRecord(childRecord("TurnStarted", "working"))
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({ state: "working", attention: null })
+
+      observer.applyAdeRecord(childRecord("AttentionRequired", "blocked", "route_recovery"))
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({
+        state: "blocked",
+        attention: "route_recovery",
+      })
+
+      observer.applyAdeRecord(childRecord("AttentionResolved", "working"))
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({ state: "working", attention: null })
+
+      // Pretend PostTurnEnd was dropped. An unrelated later record's context
+      // still repairs the row to the idle snapshot, presented as unseen done.
+      observer.applyAdeRecord(childRecord("FutureObservation", "idle"))
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({ state: "done", attention: null })
+
+      observer.applyAdeRecord(childRecord("FxStopped", "idle"))
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({ state: "unknown", attention: null })
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("does not let filesystem polling overwrite live ADE state", async () => {
+    const home = await homeDirectory()
+    await writeControl(home, CHILD_A, PARENT, { name: "durable-worker", state: "completed" })
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({ state: "done", label: "durable-worker" })
+
+      observer.applyAdeRecord(childRecord("TurnStarted", "working"))
+      observer.sampleReachableStates()
+      await observer.refresh()
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({ state: "working", label: "durable-worker" })
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("replaces an ADE fallback label when control metadata becomes durable", async () => {
+    const home = await homeDirectory()
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      observer.applyAdeRecord(childRecord("TurnStarted", "working"))
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({
+        label: "3e38dc7a8d7c16c2",
+        state: "working",
+      })
+
+      await writeControl(home, CHILD_A, PARENT, { name: "configured-worker", state: "completed" })
+      await observer.refresh()
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({
+        label: "configured-worker",
+        state: "working",
+      })
+    } finally {
+      observer.stop()
+    }
+  })
+
   test("probes locks only for children reachable from live parent sessions", async () => {
     const home = await homeDirectory()
     await writeControl(home, CHILD_A, PARENT, { state: "running" })
@@ -205,6 +274,20 @@ describe("SubagentObserver", () => {
     }
   })
 })
+
+function childRecord(
+  event: string,
+  state: "idle" | "working" | "blocked",
+  attention: "permission" | "question" | "route_recovery" | null = null,
+) {
+  return record(event, {
+    role: "subagent",
+    sessionId: CHILD_A,
+    parentSessionId: PARENT,
+    state,
+    attention,
+  })
+}
 
 async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs

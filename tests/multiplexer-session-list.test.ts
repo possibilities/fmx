@@ -2,9 +2,9 @@ import { expect, test } from "bun:test"
 import { BoxRenderable, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
-import { AgentSocket } from "../src/agent-socket.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { launchAgent } from "./fixtures/launch-keys.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 import { RAMP_FALLBACK } from "../src/host-palette.ts"
@@ -128,7 +128,7 @@ test("keeps the active row legible when a light host answers under the startup l
 test("varies the blocked icon by what fx is waiting for", () => {
   expect(stateIcon("blocked", "permission")).toBe("×")
   expect(stateIcon("blocked", "question")).toBe("?")
-  expect(stateIcon("blocked", "recovery")).toBe("↻")
+  expect(stateIcon("blocked", "route_recovery")).toBe("↻")
   expect(stateIcon("blocked", null)).toBe("×")
 })
 
@@ -395,7 +395,7 @@ test("mounts the list into the tray", async () => {
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    agentSocket: new AgentSocket({ path: `/tmp/fmx-list-test-${process.pid}.sock` }),
+    adeSocket: new TestAdeSocket(`/tmp/fmx-list-test-${process.pid}.ade.sock`),
   })
   await multiplexer.start()
   await launchAgent(setup)

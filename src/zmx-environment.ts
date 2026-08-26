@@ -41,9 +41,9 @@ export const INHERITED_COMPANION_VARIABLES = [
 
 /**
  * The Home id: what labels every session this fmx creates and keys its
- * stable agent socket. Derived from the fmx directory's path rather than
- * minted and stored, so a Home whose manifest is lost can still recognize
- * its own sessions by label, and two Homes on one machine (two
+ * stable ADE and control sockets. Derived from the fmx directory's path
+ * rather than minted and stored, so a Home whose manifest is lost can still
+ * recognize its own sessions by label, and two Homes on one machine (two
  * `XDG_CONFIG_HOME`s) never collide.
  */
 export function homeIdFor(directory: string): string {

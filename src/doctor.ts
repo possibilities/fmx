@@ -31,9 +31,9 @@ export type DoctorReport = {
   lines: string[]
   /**
    * False when the Companion is missing, unreadable, or not the pinned build,
-   * or its directory is not fmx's own — what would stop a start. fx is
-   * reported, not judged; so is a build the override named, which a start
-   * runs with a word about it.
+   * its directory is not fmx's own, or fx lacks the required fxnk ADE
+   * contract. An overridden Companion build is still reported rather than
+   * judged because a start deliberately runs it with a word about it.
    */
   ok: boolean
 }
@@ -90,7 +90,7 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Doct
   try {
     rows.push(["fx", await resolveFx(env[FX_PATH_ENV_VAR] ?? "fx", env)])
   } catch (error) {
-    rows.push(["fx", `${errorMessage(error)}; install it from https://fx.sh/`])
+    fail("fx", `${errorMessage(error)}; install it through the fxnk workshop`)
   }
 
   const width = Math.max(...rows.map(([label]) => label.length))

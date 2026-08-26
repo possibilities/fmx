@@ -9,8 +9,7 @@ import {
 } from "@opentui/core"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { AgentSocket, AgentSocketActiveError } from "./agent-socket.ts"
-import { AdeSocket, adeSocketPathFor } from "./ade-events.ts"
+import { AdeSocket, HomeActiveError } from "./ade-events.ts"
 import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
@@ -127,8 +126,7 @@ async function main(): Promise<void> {
   let startupPaletteDetector: TerminalPaletteDetector | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
-  const agentSocket = new AgentSocket({ homeId: home })
-  let adeSocket: AdeSocket | null = null
+  const adeSocket = new AdeSocket({ homeId: home })
   let controlSocket: ControlSocket | null = null
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
@@ -137,11 +135,9 @@ async function main(): Promise<void> {
   let runtimePalette: TerminalColors | null = null
 
   try {
-    // The socket is the Home's singleton; only its holder may touch the
+    // The ADE feed is the Home's singleton; only its holder may touch the
     // Manifest, so the join runs after the bind and before anything is drawn.
-    await agentSocket.start()
-    adeSocket = new AdeSocket({ path: adeSocketPathFor(agentSocket.path) })
-    adeSocket.start()
+    await adeSocket.start()
 
     // Start the host query as soon as this Runtime owns the Home, while the
     // Companion join still runs. The one-frame choice remains fixed 16 ms
@@ -196,7 +192,7 @@ async function main(): Promise<void> {
       attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
     })
     const survivors = restored.map(({ entry }) => entry)
-    const controlSocketPath = ControlSocket.pathFor(agentSocket.path)
+    const controlSocketPath = ControlSocket.pathFor(adeSocket.path)
     const firstPalette = await firstPaletteChoice
     runtimePalette = firstPalette.kind === "settled" ? firstPalette.colors : null
     await renderer.setupTerminal()
@@ -232,7 +228,6 @@ async function main(): Promise<void> {
       manifest,
       transport,
       survivors,
-      agentSocket,
       adeSocket,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
@@ -295,11 +290,11 @@ async function main(): Promise<void> {
     renderer.start()
     await startup
 
-    // Beside the agent socket and under the same singleton: an fx that
+    // Beside the ADE feed and under the same singleton: an fx that
     // outlives this fmx still reaches the next one for this Home by the path
     // it was given. Do not accept control requests until restored Agents are
     // attached and the selected terminal is ready to receive input.
-    controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(agentSocket.path))
+    controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(adeSocket.path))
     controlSocket.start()
 
     // Detection takes seconds in a terminal that never answers, and a
@@ -329,13 +324,10 @@ async function main(): Promise<void> {
     await manifest?.settled()
     await stateSave
     controlSocket?.close()
-    adeSocket?.close()
+    adeSocket.close()
     startupPaletteDetector?.cleanup()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)
     if (runtimePaletteHandler) renderer?.off(CliRenderEvents.PALETTE, runtimePaletteHandler)
-    // Only the fmx that bound the socket may unlink it; the one refused at
-    // start never had it.
-    agentSocket.close()
   }
 }
 
@@ -409,5 +401,5 @@ function errorMessage(error: unknown): string {
 
 await main().catch((error) => {
   process.stderr.write(`fmx: ${errorMessage(error)}\n`)
-  process.exitCode = error instanceof AgentSocketActiveError ? 2 : 1
+  process.exitCode = error instanceof HomeActiveError ? 2 : 1
 })

@@ -2,9 +2,8 @@ import { strict as assert } from "node:assert"
 import { resolve } from "node:path"
 import { BoxRenderable, type KeyEvent } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
-import type { AgentSocket, FrameListener } from "../src/agent-socket.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
-import type { AdeEventListener, AdeRecord, AdeSocket } from "../src/ade-events.ts"
+import type { AdeEventListener, AdeRecord } from "../src/ade-events.ts"
 import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { LaunchDialog } from "../src/launch-dialog.ts"
@@ -12,7 +11,6 @@ import { Multiplexer } from "../src/multiplexer.ts"
 import type { ProjectChoice } from "../src/projects.ts"
 import { SessionList } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
-import { decodeFrame } from "../src/socket-frames.ts"
 import { Toast, type ToastTone } from "../src/toast.ts"
 import { unusedSpaceBackground } from "../src/unused-space.ts"
 import { GalleryAgentTransportFactory } from "./fakes.ts"
@@ -88,7 +86,7 @@ export const UI_STORIES: readonly UiStory[] = [
       mountSessionList(context, [
         entry({ agentId: 1, name: "needs-permission", state: "blocked", attention: "permission" }),
         entry({ agentId: 2, name: "waiting-for-answer", state: "blocked", attention: "question" }),
-        entry({ agentId: 3, name: "recovering-transport", state: "blocked", attention: "recovery" }),
+        entry({ agentId: 3, name: "recovering-transport", state: "blocked", attention: "route_recovery" }),
         entry({ agentId: 4, name: "implement-gallery", state: "working", active: true }),
         entry({ agentId: 5, name: "review-complete", state: "done" }),
         entry({ agentId: 6, name: "available", state: "idle" }),
@@ -321,7 +319,6 @@ type MultiplexerStoryOptions = {
   afterMount?: (
     multiplexer: Multiplexer,
     context: UiStoryContext,
-    agentSocket: GalleryAgentSocket,
   ) => void | Promise<void>
   transport?: AgentTransportFactory
 }
@@ -340,7 +337,6 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
         backgroundColor: context.palette?.defaultBackground ?? RAMP_FALLBACK.background,
       }))
     }
-    const agentSocket = new GalleryAgentSocket()
     const adeSocket = new GalleryAdeSocket()
     const multiplexer = new Multiplexer(context.setup.renderer, {
       fxPath: "fx",
@@ -349,29 +345,32 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       manifest: AgentManifest.ephemeral("ui-gallery"),
       transport: options.transport ?? new GalleryAgentTransportFactory(options.screen ?? "", (launch) => {
         const sessionId = `1770000000000-000000000-gallery${launch.entry.displayId}`
-        agentSocket.report(launch.entry.paneId, "pane.report_agent_session", {
-          agent_session_id: sessionId,
-        })
-        agentSocket.report(launch.entry.paneId, "pane.report_agent", { state: "working" })
         adeSocket.report({
           schemaVersion: 1,
           sequence: 1,
           event: "FxStarted",
           instanceId: launch.entry.agentId,
-          context: { agentRole: "main", sessionId, parentSessionId: null },
+          context: { agentRole: "main", sessionId, parentSessionId: null, agentState: "idle", attentionKind: null },
           payload: {},
         })
         adeSocket.report({
           schemaVersion: 1,
           sequence: 2,
+          event: "PromptQueued",
+          instanceId: launch.entry.agentId,
+          context: { agentRole: "main", sessionId, parentSessionId: null, agentState: "working", attentionKind: null },
+          payload: {},
+        })
+        adeSocket.report({
+          schemaVersion: 1,
+          sequence: 3,
           event: "SessionMetadataChanged",
           instanceId: launch.entry.agentId,
-          context: { agentRole: "main", sessionId, parentSessionId: null },
+          context: { agentRole: "main", sessionId, parentSessionId: null, agentState: "working", attentionKind: null },
           payload: { title: "Review UI" },
         })
       }),
-      agentSocket: agentSocket as unknown as AgentSocket,
-      adeSocket: adeSocket as unknown as AdeSocket,
+      adeSocket,
       projectRoots: [],
       home: ROOT,
       toastDurationMs: 60_000,
@@ -391,7 +390,8 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
     context.defer(async () => {
       await multiplexer.shutdown()
     })
-    await options.afterMount?.(multiplexer, context, agentSocket)
+    await multiplexer.start()
+    await options.afterMount?.(multiplexer, context)
   }
 }
 
@@ -404,24 +404,6 @@ async function launchGalleryAgent(
     NEVER,
   )
   await settlePromises()
-}
-
-class GalleryAgentSocket {
-  readonly path = "/tmp/fmx-ui-gallery.sock"
-  private readonly listeners = new Set<FrameListener>()
-
-  addFrameListener(listener: FrameListener): void {
-    this.listeners.add(listener)
-  }
-
-  report(paneId: string, method: string, params: Record<string, unknown>): void {
-    const frame = decodeFrame(JSON.stringify({
-      id: "gallery",
-      method,
-      params: { pane_id: paneId, ...params },
-    }))
-    for (const listener of this.listeners) listener(frame)
-  }
 }
 
 class GalleryAdeSocket {

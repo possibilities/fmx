@@ -2,9 +2,9 @@ import { existsSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 
 /**
- * Where an fx agent is working, as far as git is concerned. fx never
- * reports its own directory over the agent socket, so fmx reads this itself
- * from the directory it spawned the agent in.
+ * Where an fx Agent is working, as far as git is concerned. fmx reads this
+ * from the launch directory it owns rather than treating lifecycle context as
+ * repository authority.
  */
 export type GitContext = {
   /** Worktree root — the linked worktree's own path, not the main repo's. */

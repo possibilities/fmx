@@ -1,7 +1,7 @@
-import type { SocketFrame } from "./socket-frames.ts"
+import type { AdeAttentionKind, AdeRecord } from "./ade-events.ts"
 
 /**
- * What fx reports about itself over the agent socket, folded into one record
+ * What fx reports about itself over the ADE feed, folded into one record
  * per pane. Pure: no renderer, no clock, no knowledge of which pane a human is
  * looking at — that belongs to the multiplexer, because fx cannot know it.
  */
@@ -9,8 +9,8 @@ import type { SocketFrame } from "./socket-frames.ts"
 /** The four states fx reports. `unknown` also covers "has not reported yet". */
 export type AgentState = "idle" | "working" | "blocked" | "unknown"
 
-/** fx's attention kinds, sent as `custom_status` alongside a blocked state. */
-export type AgentAttention = "permission" | "question" | "recovery"
+/** Fx's attention kinds, carried with every blocked ADE snapshot. */
+export type AgentAttention = AdeAttentionKind
 
 /**
  * What the row shows. Five values from four states: an idle pane that went
@@ -24,8 +24,6 @@ export type AgentRecord = {
   state: AgentState
   attention: AgentAttention | null
   sessionId: string | null
-  label: string | null
-  agentName: string | null
   /**
    * The registry-local version at the last state change. Compared against
    * the multiplexer's per-agent "seen" version to tell `done` from
@@ -40,53 +38,26 @@ export type AgentSeed = {
   attention: AgentAttention | null
 }
 
-const ATTENTION_VALUES: readonly string[] = ["permission", "question", "recovery"]
-
 export class AgentRegistry {
   private readonly records = new Map<string, AgentRecord>()
-  /** Monotonic across live frames and restored seeds alike. */
+  /** Monotonic across live ADE snapshots and restored seeds alike. */
   private nextStateSeq = 1
 
-  /** Fold one of fx's frames into the record for its pane. */
-  apply(frame: SocketFrame): void {
-    if (frame.malformed || !frame.paneId || !frame.method) return
-    const params = readParams(frame)
-    if (!params) return
-    const record = this.ensure(frame.paneId)
-
-    switch (frame.method) {
-      case "pane.report_agent": {
-        const state = readState(params.state)
-        if (state !== record.state) this.advanceState(record)
-        record.state = state
-        record.attention = readAttention(params.custom_status)
-        return
-      }
-      case "pane.report_agent_session":
-        record.sessionId = readString(params.agent_session_id)
-        return
-      case "pane.rename":
-        record.label = readString(params.label)
-        return
-      case "agent.rename":
-        record.agentName = readString(params.name)
-        return
-      case "pane.clear_agent_authority":
-        // fx is releasing the pane on its way out. Nothing it said still
-        // stands, so the record drops back to knowing nothing.
-        record.state = "unknown"
-        record.attention = null
-        this.advanceState(record)
-        return
-      default:
-        return
-    }
+  /** Fold one schema-1 snapshot into the record for fmx's retained pane id. */
+  apply(paneId: string, event: AdeRecord): AgentRecord {
+    const record = this.ensure(paneId)
+    const state: AgentState = event.event === "FxStopped" ? "unknown" : event.context.agentState
+    if (state !== record.state) this.advanceState(record)
+    record.state = state
+    record.attention = state === "blocked" ? event.context.attentionKind : null
+    if (event.context.agentRole === "main") record.sessionId = event.context.sessionId
+    return record
   }
 
   /**
    * What a restart already knows about a pane from the Manifest: the last
-   * facts fx reported before fmx detached. They remain true until a newer fx
-   * frame says otherwise. A record fx has already reported into is left alone.
+   * facts fx reported before fmx detached. They remain true until a newer ADE
+   * snapshot says otherwise. A record already updated is left alone.
    */
   seed(paneId: string, seed: AgentSeed): AgentRecord {
     const existing = this.records.get(paneId)
@@ -103,8 +74,7 @@ export class AgentRegistry {
     return this.records.get(paneId) ?? null
   }
 
-  /** Install the eager session identity from the ADE feed without inventing
-   * an agent-socket frame. The next lifecycle frame may update other facts. */
+  /** Install the session identity from the ADE envelope. */
   setSessionId(paneId: string, sessionId: string | null): AgentRecord {
     const record = this.ensure(paneId)
     record.sessionId = sessionId
@@ -124,8 +94,6 @@ export class AgentRegistry {
       state: "unknown",
       attention: null,
       sessionId: null,
-      label: null,
-      agentName: null,
       stateSeq: 0,
     }
     this.records.set(paneId, record)
@@ -165,30 +133,4 @@ export function shortSessionId(sessionId: string | null): string | null {
   if (!sessionId) return null
   const segments = sessionId.split("-")
   return segments[segments.length - 1] || sessionId
-}
-
-function readParams(frame: SocketFrame): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(frame.payload)
-    if (parsed === null || typeof parsed !== "object") return null
-    const params = (parsed as Record<string, unknown>).params
-    if (params === null || typeof params !== "object" || Array.isArray(params)) return null
-    return params as Record<string, unknown>
-  } catch {
-    return null
-  }
-}
-
-function readState(value: unknown): AgentState {
-  return value === "idle" || value === "working" || value === "blocked" ? value : "unknown"
-}
-
-function readAttention(value: unknown): AgentAttention | null {
-  return typeof value === "string" && ATTENTION_VALUES.includes(value)
-    ? (value as AgentAttention)
-    : null
-}
-
-function readString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null
 }

@@ -6,10 +6,13 @@ import { VERSION } from "../src/cli.ts"
 import { PROTOCOL_VERSION } from "../src/zmx-protocol.ts"
 import { COMPANION_PIN, homeIdFor } from "../src/zmx-environment.ts"
 
-/** An fx that does nothing: a fixture path that is its own realpath on every OS, unlike /bin/sh. */
+/** A compatible Fx fixture at a path whose realpath is stable on every OS. */
 async function fakeFx(directory: string): Promise<string> {
   const path = join(directory, "fx")
-  await writeFile(path, "#!/bin/sh\nexit 0\n")
+  await writeFile(
+    path,
+    "#!/bin/sh\n[ \"$1\" = --fxnk-version ] || exit 0\nprintf 'fxnk 0.5.0 (fx 0.0.6)\\n'\n",
+  )
   await chmod(path, 0o755)
   return path
 }
@@ -22,7 +25,7 @@ async function fakeCompanion(directory: string, build: string): Promise<string> 
   return path
 }
 
-test("doctor reports a paired installation and judges only the Companion", async () => {
+test("doctor reports a paired installation and requires a compatible Fx", async () => {
   const root = await realpath(await mkdtemp("/tmp/fmx-doctor-"))
   try {
     const companion = await fakeCompanion(root, COMPANION_PIN.build)
@@ -44,11 +47,13 @@ test("doctor reports a paired installation and judges only the Companion", async
     expect(report.lines).toContain(`home       ${homeIdFor(join(root, "config", "fmx"))} (${join(root, "config", "fmx")})`)
     expect(report.lines).toContain(`fx         ${fx}`)
 
-    // fx missing is said, not judged: it is a separate install.
+    // Fx is a required half of the runtime contract, not an informational row.
     await rm(fx)
     const withoutFx = await doctor({ ...env, FMX_FX_PATH: undefined })
-    expect(withoutFx.ok).toBe(true)
-    expect(withoutFx.lines.find((line) => line.startsWith("fx "))).toContain("fx executable not found: fx (set FMX_FX_PATH); install it from https://fx.sh/")
+    expect(withoutFx.ok).toBe(false)
+    expect(withoutFx.lines.find((line) => line.startsWith("fx "))).toContain(
+      "fx executable not found: fx (set FMX_FX_PATH); install it through the fxnk workshop",
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }

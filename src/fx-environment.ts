@@ -2,12 +2,10 @@ import { CONTROL_SOCKET_ENV_VAR } from "./control-protocol.ts"
 import { INHERITED_COMPANION_VARIABLES } from "./zmx-environment.ts"
 
 /**
- * An fx reads the agent socket it reports to out of its environment. Any of
- * these inherited from fmx's own parent name a surface that is not this one,
- * so every fx fmx starts — the agents it renders and the short-lived one
- * that names them — is started without them.
+ * Fx may inherit a Herdr integration from fmx's own parent. That integration
+ * belongs to the outer surface, so every fx fmx starts is isolated from it.
  */
-export const INHERITED_AGENT_SOCKET_VARIABLES = [
+export const INHERITED_HERDR_VARIABLES = [
   "HERDR_ENV",
   "HERDR_SOCKET_PATH",
   "HERDR_CLIENT_SOCKET_PATH",
@@ -24,7 +22,7 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   "ZELLIJ",
   "ZELLIJ_SESSION_NAME",
   "ZELLIJ_PANE_ID",
-  ...INHERITED_AGENT_SOCKET_VARIABLES,
+  ...INHERITED_HERDR_VARIABLES,
   "FX_ADE_SOCKET_PATH",
   "FX_ADE_INSTANCE_ID",
   // These identify fmx's own Companion-held Runtime process. An Agent may
@@ -37,16 +35,6 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   // starts the child.
   ...INHERITED_COMPANION_VARIABLES,
 ] as const
-
-/**
- * The agent socket fx reports its lifecycle to. fx reads the pane id and the
- * socket path from its environment at startup and reports to both or neither,
- * so they are set together or not at all.
- */
-export type FxAgentSocketBinding = {
-  socketPath: string
-  paneId: string
-}
 
 /** The passive ADE event feed shared by Agents, with this Agent's stable identity. */
 export type FxAdeBinding = {
@@ -65,15 +53,13 @@ export type FxLaunchLevel = {
  * screen, or Zellij session. Hiding those parent markers prevents fx from
  * selecting protocols or issuing control commands for the wrong terminal.
  *
- * The agent-socket variables are cleared for the same reason: an inherited
- * socket path and pane id name a surface that is not this one, and fx would
- * report this agent's lifecycle against a stranger's pane.
+ * Inherited Herdr variables are cleared for the same reason: they name an
+ * outer surface, while fmx consumes lifecycle only from its ADE feed.
  */
 export function createFxEnvironment(
   parent: NodeJS.ProcessEnv,
   agentId: number,
   cwd: string,
-  agentSocket: FxAgentSocketBinding | null = null,
   controlSocketPath: string | null = null,
   launchLevel: FxLaunchLevel | null = null,
   ade: FxAdeBinding | null = null,
@@ -91,10 +77,6 @@ export function createFxEnvironment(
   delete env.TERM_PROGRAM_VERSION
   env.FMX_AGENT_ID = String(agentId)
 
-  if (agentSocket) {
-    env.HERDR_SOCKET_PATH = agentSocket.socketPath
-    env.HERDR_PANE_ID = agentSocket.paneId
-  }
   // The control socket is fmx's own: an agent inside the agent drives
   // this fmx through it, and `FMX_AGENT_ID` says which agent it is.
   if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath

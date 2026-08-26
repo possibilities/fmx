@@ -5,13 +5,12 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { defaultSocketPath } from "../src/agent-socket.ts"
+import { defaultAdeSocketPath } from "../src/ade-events.ts"
 import { runCommand } from "../src/control-client.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { ControlSocket } from "../src/control-socket.ts"
 import { loadManifest } from "../src/agent-manifest.ts"
 import { TRAY_DEFAULT_WIDTH } from "../src/multiplexer.ts"
-import { LineAssembler } from "../src/socket-frames.ts"
 import { paintSizingOwnerDefaultBackground } from "../src/unused-space.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
@@ -500,7 +499,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       return child
     }
     const manifest = () => loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))
-    const agentSocketPath = defaultSocketPath(homeOf(tempDirectory))
+    const adeSocketPath = defaultAdeSocketPath(homeOf(tempDirectory))
 
     const firstOutput = { output: "" }
     const first = spawnFmx(firstOutput)
@@ -510,14 +509,26 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await launchAgent(first, () => firstOutput.output)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
       const firstEntry = (await manifest()).agents[0]!
-      await sendAgentFrame(agentSocketPath, sessionFrame(firstEntry.paneId, RESTORED_SESSION_A))
-      await sendAgentFrame(agentSocketPath, stateFrame(firstEntry.paneId, "blocked", "question"))
+      await sendAdeRecord(
+        adeSocketPath,
+        mainAdeRecord(1, firstEntry.paneId, "FxStarted", RESTORED_SESSION_A, "idle"),
+      )
+      await sendAdeRecord(
+        adeSocketPath,
+        mainAdeRecord(2, firstEntry.paneId, "AttentionRequired", RESTORED_SESSION_A, "blocked", "question"),
+      )
 
       await launchAgent(first, () => firstOutput.output)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
       const secondEntry = (await manifest()).agents[1]!
-      await sendAgentFrame(agentSocketPath, sessionFrame(secondEntry.paneId, RESTORED_SESSION_B))
-      await sendAgentFrame(agentSocketPath, stateFrame(secondEntry.paneId, "working"))
+      await sendAdeRecord(
+        adeSocketPath,
+        mainAdeRecord(1, secondEntry.paneId, "FxStarted", RESTORED_SESSION_B, "idle"),
+      )
+      await sendAdeRecord(
+        adeSocketPath,
+        mainAdeRecord(2, secondEntry.paneId, "TurnStarted", RESTORED_SESSION_B, "working"),
+      )
 
       // Leave agent 2 inactive, then let its turn finish there: it must revive
       // as `done`, not collapse to either idle or unknown.
@@ -527,7 +538,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
         5_000,
         () => firstOutput.output,
       )
-      await sendAgentFrame(agentSocketPath, stateFrame(secondEntry.paneId, "idle"))
+      await sendAdeRecord(
+        adeSocketPath,
+        mainAdeRecord(3, secondEntry.paneId, "PostTurnEnd", RESTORED_SESSION_B, "idle"),
+      )
       await waitUntil(
         async () => {
           const entries = (await manifest()).agents
@@ -1293,7 +1307,7 @@ async function orientation(
   tempDirectory: string,
   env: NodeJS.ProcessEnv,
 ): Promise<Snapshot | null> {
-  const socket = ControlSocket.pathFor(defaultSocketPath(homeOf(tempDirectory)))
+  const socket = ControlSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
   try {
     const outcome = await runCommand({ name: "orient" }, socket, {
       env,
@@ -1306,54 +1320,36 @@ async function orientation(
   }
 }
 
-/** One request and one reply, as fx speaks to the Agent socket. */
-async function sendAgentFrame(path: string, payload: string): Promise<void> {
-  const assembler = new LineAssembler()
-  const { promise, resolve, reject } = Promise.withResolvers<void>()
-  const timeout = setTimeout(() => reject(new Error("Agent socket did not reply")), 1_000)
-  let connection: Awaited<ReturnType<typeof Bun.connect>> | null = null
-  try {
-    connection = await Bun.connect({
-      unix: path,
-      socket: {
-        open: (socket) => void socket.write(`${payload}\n`),
-        data: (_socket, data) => {
-          if (assembler.push(new TextDecoder().decode(data)).length > 0) resolve()
-        },
-        error: (_socket, error) => reject(error),
-      },
-    })
-    await promise
-  } finally {
-    clearTimeout(timeout)
-    connection?.end()
-  }
+/** One-way lifecycle publication, exactly as Fx writes the ADE feed. */
+async function sendAdeRecord(path: string, record: Record<string, unknown>): Promise<void> {
+  const connection = await Bun.connect({ unix: path, socket: { data: () => {} } })
+  connection.write(`${JSON.stringify(record)}\n`)
+  connection.end()
 }
 
-function sessionFrame(paneId: string, sessionId: string): string {
-  return JSON.stringify({
-    id: `session-${paneId}`,
-    method: "pane.report_agent_session",
-    params: { pane_id: paneId, source: "custom:fx", agent: "fx", agent_session_id: sessionId },
-  })
-}
-
-function stateFrame(
+function mainAdeRecord(
+  sequence: number,
   paneId: string,
+  event: string,
+  sessionId: string,
   state: "idle" | "working" | "blocked",
-  attention?: "permission" | "question" | "recovery",
-): string {
-  return JSON.stringify({
-    id: `state-${paneId}-${state}`,
-    method: "pane.report_agent",
-    params: {
-      pane_id: paneId,
-      source: "custom:fx",
-      agent: "fx",
-      state,
-      ...(attention ? { custom_status: attention } : {}),
+  attention: "permission" | "question" | "route_recovery" | null = null,
+): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    sequence,
+    event,
+    instance_id: paneId.slice(2),
+    context: {
+      agent_role: "main",
+      workspace_root: ROOT,
+      session_id: sessionId,
+      parent_session_id: null,
+      agent_state: state,
+      attention_kind: attention,
     },
-  })
+    payload: {},
+  }
 }
 
 async function writeSubagentControl(

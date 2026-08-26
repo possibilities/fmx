@@ -10,8 +10,8 @@ import {
   decodeReply,
   encodeRequest,
 } from "./control-protocol.ts"
-import { listenerAnswers } from "./agent-socket.ts"
-import { LineAssembler } from "./socket-frames.ts"
+import { LineAssembler } from "./line-assembler.ts"
+import { listenerAnswers } from "./unix-socket.ts"
 
 /**
  * The client side of the control socket: `fmx control <command>` resolved to one or

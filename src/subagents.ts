@@ -1,6 +1,7 @@
 import { watch, type FSWatcher } from "node:fs"
 import { readdir, readFile } from "node:fs/promises"
 import { join } from "node:path"
+import type { AdeRecord } from "./ade-events.ts"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
 import { exclusiveLockHeld } from "./file-lock.ts"
 import { fxProfileDirectory, isSessionId } from "./fx-sessions.ts"
@@ -52,9 +53,9 @@ export type SubagentObserverOptions = {
 }
 
 /**
- * A filesystem projection of fx's subagent store. The Agent socket has no
- * child-scoped lifecycle, so this joins child control records to the full
- * session ids fx already reported for live Agents.
+ * ADE drives live child lifecycle. Fx's control records and session locks are
+ * retained as cold-restore truth and as metadata for labels and nested
+ * ancestry that the lifecycle envelope deliberately does not duplicate.
  */
 export class SubagentObserver {
   private readonly sessionsDirectory: string
@@ -66,6 +67,9 @@ export class SubagentObserver {
   private records = new Map<string, SubagentRecord>()
   private byParent = new Map<string, SubagentRecord[]>()
   private readonly stableStates = new Map<string, StableState>()
+  /** Children whose current lifecycle comes from ADE rather than the cold
+   * control-record/lock projection. */
+  private readonly liveParents = new Map<string, string>()
   private readonly childWatchers = new Map<string, FSWatcher>()
   private readonly discoveryTimers = new Set<ReturnType<typeof setTimeout>>()
   private rootWatcher: FSWatcher | null = null
@@ -127,6 +131,39 @@ export class SubagentObserver {
     return this.childrenOfInner(parentId, new Set())
   }
 
+  /** Fold a live child snapshot. Any later ADE record repairs a missed
+   * transition; the filesystem projection never overwrites a child once its
+   * live feed has spoken in this Runtime. */
+  applyAdeRecord(record: AdeRecord): boolean {
+    if (record.context.agentRole !== "subagent") return false
+    const childId = record.context.sessionId
+    const parentId = record.context.parentSessionId
+    if (!childId || !parentId || !isSessionId(childId) || !isSessionId(parentId)) return false
+
+    const previousParent = this.liveParents.get(childId)
+    this.liveParents.set(childId, parentId)
+    if (previousParent !== parentId) this.rebuildParentIndex()
+
+    const current = this.stableStates.get(childId)
+    const next = liveDisplayState(record, current?.state ?? null)
+    const changed =
+      previousParent !== parentId ||
+      !current ||
+      current.state !== next.state ||
+      current.attention !== next.attention
+    this.stableStates.set(childId, { ...next, pending: null, pendingSamples: 0 })
+
+    // ADE can arrive just before control.json is durably visible. Read now and
+    // schedule bounded retries so the fallback short id is replaced by fx's
+    // configured child label without a store-wide live-state poll.
+    if (!this.records.has(childId)) {
+      void this.refreshChild(childId)
+      this.scheduleDiscovery(75)
+      this.scheduleDiscovery(750)
+    }
+    return changed
+  }
+
   /** Full discovery is startup/new-session work, never the one-second tick. */
   refresh(): Promise<void> {
     if (this.stopped) return Promise.resolve()
@@ -153,11 +190,12 @@ export class SubagentObserver {
     for (const childId of reachable) {
       const record = this.records.get(childId)
       if (!record) continue
+      if (this.liveParents.has(childId)) continue
       const lock = record.state === "running" ? this.lockProbe(this.lockPath(childId)) : null
       changed = this.acceptSample(record, displayState(record.state, lock)) || changed
     }
     for (const childId of [...this.stableStates.keys()]) {
-      if (reachable.has(childId)) continue
+      if (reachable.has(childId) || this.liveParents.has(childId)) continue
       this.stableStates.delete(childId)
       changed = true
     }
@@ -226,7 +264,21 @@ export class SubagentObserver {
 
   private rebuildParentIndex(): void {
     const next = new Map<string, SubagentRecord[]>()
-    for (const record of this.records.values()) {
+    const combined = new Map(this.records)
+    for (const [childId, parentId] of this.liveParents) {
+      const durable = combined.get(childId)
+      combined.set(childId, durable
+        ? { ...durable, parentId }
+        : {
+            childId,
+            parentId,
+            generation: 0,
+            label: shortSessionId(childId),
+            state: "running",
+            createdAt: 0,
+          })
+    }
+    for (const record of combined.values()) {
       const children = next.get(record.parentId)
       if (children) children.push(record)
       else next.set(record.parentId, [record])
@@ -257,11 +309,12 @@ export class SubagentObserver {
     for (const childId of reachable) {
       const record = this.records.get(childId)
       if (!record) continue
+      if (this.liveParents.has(childId)) continue
       const lock = record.state === "running" ? this.lockProbe(this.lockPath(childId)) : null
       changed = this.acceptSample(record, displayState(record.state, lock)) || changed
     }
     for (const childId of [...this.stableStates.keys()]) {
-      if (reachable.has(childId)) continue
+      if (reachable.has(childId) || this.liveParents.has(childId)) continue
       this.stableStates.delete(childId)
       changed = true
     }
@@ -390,6 +443,23 @@ export class SubagentObserver {
   private lockPath(childId: string): string {
     return join(this.sessionsDirectory, childId, "session.lock")
   }
+}
+
+function liveDisplayState(
+  record: AdeRecord,
+  previous: DisplayState | null,
+): { state: DisplayState; attention: AgentAttention | null } {
+  if (record.event === "FxStopped") return { state: "unknown", attention: null }
+  if (record.context.agentState === "blocked") {
+    return { state: "blocked", attention: record.context.attentionKind }
+  }
+  if (record.context.agentState === "working") return { state: "working", attention: null }
+  // A child row is never selected, so working -> idle is finished and unseen.
+  // Preserve that presentation across later idle snapshots.
+  if (previous === "working" || previous === "blocked" || previous === "done") {
+    return { state: "done", attention: null }
+  }
+  return { state: "idle", attention: null }
 }
 
 export function displayState(

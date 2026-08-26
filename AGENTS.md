@@ -44,8 +44,8 @@
   need project roots because they never open the TUI.
 - fx has no flag for an interactive prompt — `fx ask` is noninteractive and a
   bare positional is an unknown subcommand. A launch prompt is therefore typed
-  into the PTY and submitted, once the pane's first agent-socket frame says fx
-  is up. Do not look for a flag; there isn't one. It goes in as a bracketed
+  into the PTY and submitted once that Agent's first ADE record says fx is up.
+  Do not look for a flag; there isn't one. It goes in as a bracketed
   paste so newlines survive, and the carriage return that sends it is a
   separate write a beat later — fx discards a paste when anything follows its
   end marker in the same write.
@@ -55,7 +55,9 @@
   swallowed key never reaches the widget. fx is blurred while the dialog is
   open, so a key let through can reach nothing else.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
-  is deliberately no `--fx` flag.
+  is deliberately no `--fx` flag. The resolved executable must answer the
+  exact `--fxnk-version` probe with fxnk 0.5.0 or newer; that is the first fork
+  contract whose ADE feed carries complete lifecycle snapshots.
 - One Home has one Companion-held Runtime (`fmxr-<home id>`) and any number
   of thin terminal Clients. The Runtime alone owns OpenTUI, `Multiplexer`,
   the Home sockets, and the Manifest. A Client relays bytes and dimensions;
@@ -99,11 +101,12 @@
   fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the
   same moment — a query half-translated when the last transport dropped must
   not pair with a response from the next.
-- Each Manifest entry checkpoints the last Agent-socket state, attention, and
+- Each Manifest entry checkpoints the last ADE state, attention, and
   whether that exact state was seen. Seed it synchronously as the restored row
   is added; the first visible Agent becomes seen, inactive `done` remains
-  done, and a newer fx frame supersedes it. Subagent state is not duplicated:
-  refresh it from fx's control records and session locks on restore. Hold the
+  done, and a newer ADE snapshot supersedes it. Subagent state is not duplicated:
+  refresh it from fx's control records and session locks on restore, then let
+  live ADE snapshots drive it. Hold the
   restored Session list unpublished until every Agent has attached and Git,
   display metadata, and subagent records have been queried, then paint the
   whole tree once; do not add a second Session-list snapshot.
@@ -142,8 +145,8 @@
   cleanup. Do not await anything renderer-bound in `main` without that race.
   `index.ts` deliberately constructs `CliRenderer` before calling
   `setupTerminal`: its input parser can collect palette replies while no
-  alternate-screen frame exists. Start that query once the Agent-socket
-  singleton is held, so its one-frame budget overlaps the Companion join; the
+  alternate-screen frame exists. Start that query once the ADE-feed singleton
+  is held, so its one-frame budget overlaps the Companion join; the
   deadline remains measured from the query, not extended by other startup
   work. Before first paint it gives a responsive host one 60 Hz frame to
   answer, then locks the chosen selected-row background and structural
@@ -187,32 +190,32 @@
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
   non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.
-- The agent socket speaks the protocol fx already speaks unprompted, which is
-  Herdr's. That is why `src/fx-environment.ts` sets `HERDR_SOCKET_PATH` and
-  `HERDR_PANE_ID` literally — fx reads those names and no others, so they are
-  protocol constants, not a naming choice. They are also the one place the name
-  legitimately appears in code. Inherited `HERDR_*` variables are cleared first:
-  running fmx inside a Herdr pane would otherwise have fx report this
-  agent's lifecycle against a stranger's pane.
-- fx replies-or-blocks: it opens a connection per message and waits up to 250ms
-  for one newline-terminated reply. `src/agent-socket.ts` writes the reply
-  before it does anything else with the request; keep it that way, because any
-  work done first is latency charged directly to the agent.
-- fx sends `custom_status` on `pane.report_agent` (`permission`, `question`,
-  `recovery`). Herdr has no such field and drops it; fmx keeps it. Do not
-  "fix" it to `message` to match Herdr.
+- fmx deliberately does not enable Fx's upstream Herdr integration. Clear every
+  inherited `HERDR_*` variable before launching an Agent and do not set a new
+  binding: an fmx started inside Herdr must not let its child Fx report against
+  the outer pane. Fx keeps that integration independently for hosts that opt in;
+  fmx's lifecycle source is ADE alone.
 - fx takes per-process launch overrides from `FX_MODEL` and `FX_EFFORT`; the
   launch dialog passes both to the one agent it starts. fx rejects both
   `effort` and `codex_model` from a workspace's own `.fx.json` as user-only
   settings. Native session naming is also fx profile configuration; fmx does
   not manage it or write `~/.fx/settings.json`.
-- The ADE socket is a one-way, mode-0600 NDJSON feed beside the Agent socket,
-  under the same Home singleton. Every fx receives its path plus the stable
-  Manifest Agent identity as `FX_ADE_SOCKET_PATH` and `FX_ADE_INSTANCE_ID`.
-  ADE session identity is eager and wins over a later legacy Agent-socket
-  frame. Sequence is monotonic per fx process; after a gap, re-read the active
-  session's `display.json`. Unknown additive schema-1 events still advance the
-  sequence and are otherwise ignored.
+- The ADE feed is fmx's sole fx→fmx lifecycle channel: a one-way, mode-0600
+  NDJSON socket stable per Home at `/tmp/fmx-<uid>-<home id>.ade.sock`. Every Fx
+  receives its path plus the stable Manifest Agent identity as
+  `FX_ADE_SOCKET_PATH` and `FX_ADE_INSTANCE_ID`; fmx never replies. Every schema
+  1 record carries the emitting main Agent's or subagent's current
+  `agent_state` and `attention_kind`, so any later record repairs a dropped
+  transition. `AttentionResolved` returns that actor to working,
+  `route_recovery` is the recovery attention spelling, and `FxStopped` removes
+  lifecycle authority. Sequence is monotonic per Fx process; a gap also
+  re-reads the active session's `display.json`, and a sequence-one `FxStarted`
+  after an accepted `FxStopped` begins a new process generation. Unknown
+  additive events still apply their context and advance the sequence. Only a
+  main record may replace the active main session: a child record's parent is
+  captured attribution and may legitimately lag after `/new`. The socket keeps
+  a bounded startup backlog until survivor identities exist and the Multiplexer
+  subscribes.
 - Session names belong to fx. fmx applies `SessionMetadataChanged` only to the
   session named by its ADE context and reads
   `~/.fx/sessions/<id>/display.json` on attach, identity change, or recovery.
@@ -220,15 +223,13 @@
   normalizes the title, or makes names unique. An exact duplicate is an
   ambiguous control target; `/rename` and generated names follow the same
   path because fx is the sole persistence authority.
-- The control socket (`src/control-socket.ts`) is a second socket, not a
-  second protocol on the agent socket. The agent socket must reply before it
-  acts (see above), and a command that needs its result cannot. The two share
-  nothing but the `LineAssembler`. Keep `FMX_SOCKET_PATH` beside
+- The control socket (`src/control-socket.ts`) is fmx's independent request/reply
+  wire beside the one-way ADE feed. Keep `FMX_SOCKET_PATH` beside
   `FMX_AGENT_ID` in `src/fx-environment.ts`: the client reads both, and
-  `current` as a target is meaningless without the id. The path is the agent
-  socket's with `.ctl` for `.sock` — per Home, not per pid — so the
+  `current` as a target is meaningless without the id. Its path replaces the
+  ADE suffix with `.ctl` — per Home, not per pid — so the
   `FMX_SOCKET_PATH` an fx was given outlives the fmx that gave it; it is bound
-  under the agent socket's singleton, which is what makes unlinking a stale
+  under the ADE feed's singleton, which is what makes unlinking a stale
   one safe. `fmx control` from outside any agent finds a live fmx by
   probing the sockets, not by pid.
 - Every `fmx control <command>` goes through `Multiplexer.handleControl`, and every
@@ -244,19 +245,21 @@
   draft without stealing its keys.
 - `awaiting_work` is why `agent wait` is trustworthy right after `launch`
   or `send`: fx reports idle at startup before the pasted prompt reaches it.
-  The flag is set when a prompt is queued and cleared by the first `working`
-  frame; clear it nowhere else.
-- The agent socket's path is stable per Home (`/tmp/fmx-<uid>-<home id>.sock`)
-  so an fx that outlives the fmx that started it reports to the next one.
-  `AgentSocket.start` therefore takes a flock on `<path minus .sock>.lock`
-  for the life of the process, and only under it probes, unlinks, and binds:
+  The flag is set when a prompt is queued and cleared by `PromptQueued`. If
+  that record drops, an idle boundary observed after the latch was set followed
+  by the next working or blocked snapshot also proves new work; an untyped
+  sequence gap or ordinary current-turn event does not.
+- The ADE socket's path is stable per Home, so an Fx that outlives the fmx that
+  started it reports to the next Runtime. `AdeSocket.start` takes a flock on
+  `/tmp/fmx-<uid>-<home id>.lock`. It holds that lock for the life of the
+  process and only under it probes, unlinks, and binds:
   when the flock is held it waits one bounded handoff window for a predecessor
   finishing terminal teardown, then refuses a holder that remains. It never
   touches the socket without first acquiring the flock. Once acquired,
   a path something answers on is another fmx for this Home, refused with
   exit code 2, and never unlinked — only the process that bound the socket
   removes it. Only a path nothing answers on is the residue of a crash and
-  replaced. The join runs after the bind, because only the socket's holder
+  replaced. The join runs after the ADE bind, because only its singleton holder
   may write the Manifest.
 - The Manifest is written before the Companion is asked to create (`creating`),
   and marked `running` on the acknowledgement, so a crash anywhere in between
@@ -301,10 +304,11 @@
   mismatch is fatal; under the override it is one stderr line, because the
   override is the development loop and a debug build prints a plain
   version. `fmx doctor` runs the same resolution and check without binding
-  anything; its exit code says whether a start would get past the
-  Companion (found, pinned build, private directory) and nothing else —
-  fx is a separate install, and an override's build is the developer's. Keep `--version` one line — the installer and the release script
-  compare it whole.
+  anything; its exit code says whether a start would get past both the
+  Companion checks (found, pinned build, private directory) and Fx's fxnk
+  compatibility probe. An overridden Companion build remains the developer's
+  and is reported rather than judged. Keep `--version` one line — the
+  installer and the release script compare it whole.
 - Moving the pin is a release act: land the fork change on `integration`,
   push, put the commit and `<fork version>+fmx.<12 hex>` in
   `companion.json`, re-check the Companion notices, release the pair. The

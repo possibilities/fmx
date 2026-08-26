@@ -5,14 +5,13 @@ import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSocket } from "../src/agent-socket.ts"
-import { AdeSocket } from "../src/ade-events.ts"
+import type { AdeAgentState, AdeAttentionKind, AdeRecord } from "../src/ade-events.ts"
 import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
+import { record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
-import { LineAssembler } from "../src/socket-frames.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 const CONTROL_PATH = `/tmp/fmx-control-test-${process.pid}.ctl`
@@ -29,15 +28,10 @@ async function workspace(): Promise<{ home: string; code: string }> {
   return { home, code }
 }
 
-async function harness(name: string, withAde = false) {
+async function harness(name: string) {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
-  const agentSocket = new AgentSocket({ path: `/tmp/fmx-control-test-${name}-${process.pid}.sock` })
-  await agentSocket.start()
-  const adeSocket = withAde
-    ? new AdeSocket({ path: `/tmp/fmx-control-test-${name}-${process.pid}.ade.sock` })
-    : null
-  adeSocket?.start()
+  const adeSocket = new TestAdeSocket(`/tmp/fmx-control-test-${name}-${process.pid}.ade.sock`)
   const options = agentOptions()
   const multiplexer = new Multiplexer(setup.renderer, {
     ...options,
@@ -46,7 +40,6 @@ async function harness(name: string, withAde = false) {
     keybindings: resolveKeybindings().keybindings,
     projectRoots: ["~/code"],
     home,
-    agentSocket,
     adeSocket,
     controlSocketPath: CONTROL_PATH,
   })
@@ -54,8 +47,6 @@ async function harness(name: string, withAde = false) {
     multiplexer.control.handle(method, params, NEVER)
   const close = async () => {
     await multiplexer.shutdown()
-    adeSocket?.close()
-    agentSocket.close()
   }
   /**
    * The pane id fx would address: an Agent's is minted with its identity,
@@ -69,33 +60,27 @@ async function harness(name: string, withAde = false) {
     if (!info) throw new Error(`no agent ${match[1]}`)
     return info.pane_id
   }
-  /** Report to the agent socket exactly as fx does: one line, one reply. */
-  const report = async (pane: string, state: string, extra = "") => {
+  /** Publish the same lifecycle snapshot Fx places on every ADE record. */
+  const report = async (pane: string, state: AdeAgentState, attention: AdeAttentionKind | null = null) => {
     const paneId = await paneOf(pane)
-    const payload = `{"id":"${Date.now()}","method":"pane.report_agent","params":{"pane_id":"${paneId}","source":"custom:fx","agent":"fx","state":"${state}"${extra}}}`
-    await exchange(agentSocket.path, payload)
+    if (state === "working") adeSocket.main(paneId, "PromptQueued", { state })
+    else if (state === "blocked") adeSocket.main(paneId, "AttentionRequired", { state, attention })
+    else adeSocket.main(paneId, "PostTurnEnd", { state })
     await setup.renderOnce()
   }
   const session = async (pane: string, sessionId: string) => {
     const paneId = await paneOf(pane)
-    await exchange(
-      agentSocket.path,
-      `{"id":"s","method":"pane.report_agent_session","params":{"pane_id":"${paneId}","source":"custom:fx","agent":"fx","agent_session_id":"${sessionId}"}}`,
-    )
+    adeSocket.main(paneId, "SessionChanged", { sessionId })
     await setup.renderOnce()
   }
   const launch = (params: Record<string, unknown> = {}) =>
     control("launch", params) as Promise<{ agent: { id: number } }>
+  await multiplexer.start()
   return { setup, multiplexer, control, close, report, session, launch, home, code, adeSocket, options }
 }
 
-async function sendAde(socket: AdeSocket, record: Record<string, unknown>): Promise<void> {
-  const connection = await Bun.connect({
-    unix: socket.path,
-    socket: { data: () => {} },
-  })
-  connection.write(`${JSON.stringify(record)}\n`)
-  connection.end()
+async function sendAde(socket: TestAdeSocket, record: AdeRecord): Promise<void> {
+  socket.emit(record)
 }
 
 function adeRecord(
@@ -104,40 +89,20 @@ function adeRecord(
   event: string,
   sessionId: string | null,
   payload: Record<string, unknown> = {},
-): Record<string, unknown> {
+): AdeRecord {
   return {
-    schema_version: 1,
+    schemaVersion: 1,
     sequence,
     event,
-    instance_id: instanceId,
+    instanceId,
     context: {
-      agent_role: "main",
-      workspace_root: "/work",
-      session_id: sessionId,
-      parent_session_id: null,
+      agentRole: "main",
+      sessionId,
+      parentSessionId: null,
+      agentState: "idle",
+      attentionKind: null,
     },
     payload,
-  }
-}
-
-async function exchange(path: string, payload: string): Promise<string> {
-  const assembler = new LineAssembler()
-  const { promise, resolve, reject } = Promise.withResolvers<string>()
-  const connection = await Bun.connect({
-    unix: path,
-    socket: {
-      open: (socket) => void socket.write(`${payload}\n`),
-      data: (_socket, data) => {
-        const [line] = assembler.push(new TextDecoder().decode(data))
-        if (line !== undefined) resolve(line)
-      },
-      error: (_socket, error) => reject(error),
-    },
-  })
-  try {
-    return await promise
-  } finally {
-    connection.end()
   }
 }
 
@@ -241,7 +206,7 @@ test("includes filesystem subagents in the tray orientation", async () => {
     expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
       ["project", 0, "alpha", null],
       ["branch", 1, "trunk", null],
-      ["agent", 2, "· ba9a9f7e16e5ef8c", 1],
+      ["agent", 2, "○ ba9a9f7e16e5ef8c", 1],
       ["subagent", 3, "✓ test-subagent", null],
     ])
     // The model carries them too, so an agent need not parse the drawing.
@@ -362,8 +327,8 @@ test("focuses by position, id, and name, and refuses while something is open", a
   }
 })
 
-test("adopts native session names over ADE, recovers gaps, and keeps eager identity authoritative", async () => {
-  const h = await harness("ade-names", true)
+test("adopts native session names over ADE and recovers sequence gaps", async () => {
+  const h = await harness("ade-names")
   const firstSession = "1787362101388-1787362101388156000-2897385323da2683"
   const secondSession = "1787362101389-1787362101389156000-2897385323da2684"
   const replacementSession = "1787362101390-1787362101390156000-2897385323da2685"
@@ -379,7 +344,7 @@ test("adopts native session names over ADE, recovers gaps, and keeps eager ident
   try {
     await h.launch()
     await h.launch()
-    const ade = h.adeSocket!
+    const ade = h.adeSocket
     const [first, second] = h.options.manifest.entries
     expect(first).toBeDefined()
     expect(second).toBeDefined()
@@ -397,10 +362,6 @@ test("adopts native session names over ADE, recovers gaps, and keeps eager ident
     )
     expect(snapshot.agents[0]).toMatchObject({ session_id: firstSession, name: "Coordinate the review" })
     expect(snapshot.tray.rows.find((row) => row.agent === 1)?.text).toContain("Coordinate the review")
-
-    // A late frame on the legacy socket cannot rewind ADE's eager identity.
-    await h.session("p_1", "legacy-session")
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.session_id).toBe(firstSession)
 
     // An unknown additive event still carries authoritative envelope context.
     // This is the first record a restarted fmx could see after fx changed
@@ -472,11 +433,52 @@ test("adopts native session names over ADE, recovers gaps, and keeps eager ident
       (current) => current.agents[0]?.session_id === firstSession,
     )
     expect(snapshot.agents[0]?.name).toBe("Replacement session")
-    await h.session("p_1", replacementSession)
-    expect(((await h.control("orient")) as Snapshot).agents[0]).toMatchObject({
-      session_id: firstSession,
-      name: "Replacement session",
+  } finally {
+    await h.close()
+  }
+})
+
+test("does not let delayed child attribution rewind the active main session", async () => {
+  const h = await harness("child-attribution")
+  const oldSession = "1787362101400-1787362101400156000-2897385323da2686"
+  const newSession = "1787362101401-1787362101401156000-2897385323da2687"
+  const childSession = "1787362101402-1787362101402156000-2897385323da2688"
+  try {
+    await h.launch()
+    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
+    h.adeSocket.main(paneId, "FxStarted", { sessionId: oldSession, state: "idle" })
+    h.adeSocket.main(paneId, "SessionChanged", { sessionId: newSession, state: "idle" })
+
+    // Child attribution is captured when work is queued and can legitimately
+    // name the prior main session after the TUI has moved to a new one.
+    h.adeSocket.child(paneId, "TurnStarted", {
+      sessionId: childSession,
+      parentSessionId: oldSession,
+      state: "working",
     })
+
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.session_id).toBe(newSession)
+    expect(h.options.manifest.entries[0]?.fxSessionId).toBe(newSession)
+  } finally {
+    await h.close()
+  }
+})
+
+test("accepts a new process-local sequence after an orderly Fx relaunch", async () => {
+  const h = await harness("sequence-generation")
+  const sessionId = "1787362101410-1787362101410156000-2897385323da2689"
+  try {
+    await h.launch()
+    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
+    const instanceId = paneId.slice(2)
+    h.adeSocket.emit(feedRecord("FxStarted", { sequence: 1, instanceId, sessionId, state: "idle" }))
+    h.adeSocket.emit(feedRecord("FxStopped", { sequence: 40, instanceId, sessionId, state: "idle" }))
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.state).toBe("unknown")
+
+    h.adeSocket.emit(feedRecord("FxStarted", { sequence: 1, instanceId, sessionId, state: "idle" }))
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.state).toBe("idle")
+    h.adeSocket.emit(feedRecord("PromptQueued", { sequence: 2, instanceId, sessionId, state: "working" }))
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.state).toBe("working")
   } finally {
     await h.close()
   }
@@ -612,7 +614,7 @@ test("waits for an agent through the prompt it was launched with", async () => {
       "invalid_params",
     )
 
-    await h.report("p_1", "blocked", ',"custom_status":"question"')
+    await h.report("p_1", "blocked", "question")
     expect(await h.control("agent.wait", { target: "1" })).toMatchObject({
       state: "blocked",
       agent: { attention: "question" },
@@ -636,10 +638,53 @@ test("sends text into a running agent and holds a wait until it is picked up", a
       agent: { id: 1, awaiting_work: true },
     })
     const waiting = h.control("agent.wait", { target: "1", timeout_ms: 2000 }) as Promise<{ state: string }>
-    await h.report("p_1", "working")
+    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
+    h.adeSocket.main(paneId, "PromptQueued", { state: "working" })
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
     await h.report("p_1", "idle")
     expect((await waiting).state).toBe("idle")
     expect((await failure(h.control("agent.send", { target: "1", text: "  " }))).code).toBe("invalid_params")
+  } finally {
+    await h.close()
+  }
+})
+
+test("repairs a dropped PromptQueued after an observed idle boundary", async () => {
+  const h = await harness("awaiting-gap")
+  const sessionId = "1787362101420-1787362101420156000-2897385323da2690"
+  try {
+    await h.launch({ prompt: "do the work" })
+    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
+    const instanceId = paneId.slice(2)
+    h.adeSocket.emit(feedRecord("FxStarted", { sequence: 1, instanceId, sessionId, state: "idle" }))
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(true)
+
+    // Sequence two was the dropped PromptQueued admission.
+    h.adeSocket.emit(feedRecord("TurnStarted", { sequence: 3, instanceId, sessionId, state: "working" }))
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
+  } finally {
+    await h.close()
+  }
+})
+
+test("does not treat an unrelated sequence gap as prompt admission", async () => {
+  const h = await harness("awaiting-unrelated-gap")
+  const sessionId = "1787362101421-1787362101421156000-2897385323da2692"
+  try {
+    await h.launch()
+    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
+    const instanceId = paneId.slice(2)
+    h.adeSocket.emit(feedRecord("PreToolUse", { sequence: 10, instanceId, sessionId, state: "working" }))
+    await h.control("agent.send", { target: "1", text: "next prompt" })
+
+    // Sequence eleven was an unrelated dropped child/current-turn record.
+    h.adeSocket.emit(feedRecord("PreToolUse", { sequence: 12, instanceId, sessionId, state: "working" }))
+    h.adeSocket.emit(feedRecord("PostTurnEnd", { sequence: 13, instanceId, sessionId, state: "idle" }))
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(true)
+    expect((await failure(h.control("agent.wait", { target: "1", timeout_ms: 20 }))).code).toBe("timeout")
+
+    h.adeSocket.emit(feedRecord("PromptQueued", { sequence: 14, instanceId, sessionId, state: "working" }))
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
   } finally {
     await h.close()
   }

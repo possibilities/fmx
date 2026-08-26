@@ -23,9 +23,8 @@ const MISSING_SESSION = "—"
 const SESSION_COLOR = RGBA.fromIndex(8)
 
 /**
- * The icon carries the whole status. A blocked pane varies its glyph by what
- * fx is waiting for, which is possible only because fx sends `custom_status`
- * and fmx keeps it.
+ * The icon carries the whole status. A blocked Agent varies its glyph by the
+ * attention kind Fx carries in its ADE lifecycle snapshot.
  */
 export function stateIcon(state: DisplayState, attention: AgentAttention | null): string {
   switch (state) {
@@ -33,7 +32,7 @@ export function stateIcon(state: DisplayState, attention: AgentAttention | null)
       switch (attention) {
         case "question":
           return "?"
-        case "recovery":
+        case "route_recovery":
           return "↻"
         default:
           return "×"

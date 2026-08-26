@@ -73,6 +73,31 @@ test("another Home's manifest, an old version, or garbage reads as empty", () =>
   expect(manifest.nextDisplayId).toBe(1)
 })
 
+test("migrates the retired recovery attention spelling at the persistence boundary", () => {
+  const identity = identityFor("a".repeat(32))
+  const document = {
+    version: 1,
+    homeId: HOME,
+    nextDisplayId: 2,
+    agents: [{
+      ...identity,
+      displayId: 1,
+      cwd: "/w",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 1,
+      phase: "running",
+      agentStatus: { state: "blocked", attention: "recovery", seen: false },
+    }],
+  }
+
+  expect(parseManifest(JSON.stringify(document), HOME).agents[0]?.agentStatus).toEqual({
+    state: "blocked",
+    attention: "route_recovery",
+    seen: false,
+  })
+})
+
 test("creation is written before it is acknowledged, and acknowledged in place", async () => {
   await withDirectory(async (dir) => {
     const path = join(dir, "agents.json")

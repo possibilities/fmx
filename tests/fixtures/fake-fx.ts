@@ -2,6 +2,11 @@
 
 import { appendFileSync } from "node:fs"
 
+if (process.argv[2] === "--fxnk-version") {
+  process.stdout.write("fxnk 0.5.0 (fx 0.0.6)\n")
+  process.exit(0)
+}
+
 recordLifecycle("start", process.argv.slice(2))
 process.stdout.write("\u001b]2;fx · fake session\u0007")
 if (process.env.FMX_TEST_KEYBOARD_MODE === "1") process.stdout.write("\u001b[>4;2m\u001b[>1u")
