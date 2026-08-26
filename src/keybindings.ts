@@ -32,7 +32,7 @@ const KEY_CONFIG_FIELDS = [
   "toggle_tray",
 ] as const
 
-type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
+export type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
 type BindingTrigger = "direct" | "prefix"
 
 type KeyModifiers = {
@@ -74,7 +74,10 @@ type ResolvedKeybindings = {
 type BindingSource = "default" | "user"
 type RegisteredBinding = { field: string; source: BindingSource }
 
-const ACTION_FIELDS = KEY_CONFIG_FIELDS.filter((field) => field !== "prefix")
+/** Every action a key can run, and therefore every row the help lists. */
+export const ACTION_FIELDS = KEY_CONFIG_FIELDS.filter(
+  (field): field is KeyActionName => field !== "prefix",
+)
 const EMPTY_MODIFIERS: KeyModifiers = {
   ctrl: false,
   alt: false,
@@ -282,7 +285,7 @@ function parseActionBindings(
 }
 
 function registerBinding(
-  field: Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">,
+  field: KeyActionName,
   binding: ResolvedBinding,
   source: BindingSource,
   prefix: KeyCombo,

@@ -71,11 +71,13 @@ import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type Launch
 import { hasDetectedBackground, hostRamp, RAMP_FALLBACK, type Ramp, themeModeReport } from "./host-palette.ts"
 import {
   actionForKey,
+  ACTION_FIELDS,
   isCancelKey,
   keyIdentity,
   keyMatchesCombo,
   parseKeyCombo,
   type KeyAction,
+  type KeyActionName,
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
@@ -2241,26 +2243,11 @@ export class Multiplexer {
   }
 
   private keysInfo(): KeysInfo {
-    const commands: Record<string, string | null> = {
-      help: "fmx control keys --show",
-      detach: null,
-      launch: "fmx control launch --editable",
-      previous_tab: "fmx control focus previous",
-      next_tab: "fmx control focus next",
-      toggle_tray: "fmx control tray --toggle",
-    }
     const bindings: KeysInfo["bindings"] = {}
-    for (const action of [
-      "help",
-      "detach",
-      "launch",
-      "previous_tab",
-      "next_tab",
-      "toggle_tray",
-    ] as const) {
+    for (const action of ACTION_FIELDS) {
       bindings[action] = {
         keys: this.keybindings[action].map((binding) => binding.label),
-        command: commands[action] ?? null,
+        command: ACTIONS[action].command,
       }
     }
     return { prefix: this.keybindings.prefixLabel, bindings }
@@ -2275,16 +2262,29 @@ export class Multiplexer {
 
 type HelpEntry = readonly [key: string, description: string]
 
+/**
+ * What each action is called in the help and, where a hand can reach it any
+ * other way, the command that does the same thing. Detach is the one action
+ * with no command: it is the Client's, and an Agent does not own one.
+ * `ACTION_FIELDS` orders both surfaces, so an action added to the keybindings
+ * fails to compile until it has a row here.
+ */
+const ACTIONS: Record<KeyActionName, { help: string; command: string | null }> = {
+  help: { help: "keybinds", command: "fmx control keys --show" },
+  detach: { help: "detach client", command: null },
+  launch: { help: "launch agent", command: "fmx control launch --editable" },
+  previous_tab: { help: "prev agent", command: "fmx control focus previous" },
+  next_tab: { help: "next agent", command: "fmx control focus next" },
+  toggle_tray: { help: "toggle tray", command: "fmx control tray --toggle" },
+}
+
 
 function helpEntries(keybindings: Keybindings): HelpEntry[] {
   return [
     [keybindings.prefixLabel, "prefix mode"],
-    [bindingLabel(keybindings.help), "keybinds"],
-    [bindingLabel(keybindings.detach), "detach client"],
-    [bindingLabel(keybindings.launch), "launch agent"],
-    [bindingLabel(keybindings.previous_tab), "prev agent"],
-    [bindingLabel(keybindings.next_tab), "next agent"],
-    [bindingLabel(keybindings.toggle_tray), "toggle tray"],
+    ...ACTION_FIELDS.map(
+      (action): HelpEntry => [bindingLabel(keybindings[action]), ACTIONS[action].help],
+    ),
   ]
 }
 
