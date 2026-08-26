@@ -5,6 +5,7 @@ import { doctor } from "../src/doctor.ts"
 import { VERSION } from "../src/cli.ts"
 import { PROTOCOL_VERSION } from "../src/zmx-protocol.ts"
 import { COMPANION_PIN, homeIdFor } from "../src/zmx-environment.ts"
+import { MIN_FXNK_VERSION } from "../src/executable.ts"
 
 /** A compatible Fx fixture at a path whose realpath is stable on every OS. */
 async function fakeFx(directory: string): Promise<string> {
@@ -45,7 +46,7 @@ test("doctor reports a paired installation and requires a compatible Fx", async 
     expect(report.lines).toContain(`build      ${COMPANION_PIN.build} (the build this fmx was released with)`)
     expect(report.lines).toContain(`protocol   ${PROTOCOL_VERSION}`)
     expect(report.lines).toContain(`home       ${homeIdFor(join(root, "config", "fmx"))} (${join(root, "config", "fmx")})`)
-    expect(report.lines).toContain(`fx         ${fx}`)
+    expect(report.lines).toContain(`fx         ${fx} (fxnk ${MIN_FXNK_VERSION})`)
 
     // Fx is a required half of the runtime contract, not an informational row.
     await rm(fx)

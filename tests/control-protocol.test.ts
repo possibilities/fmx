@@ -72,7 +72,6 @@ describe("targets", () => {
     expect(parseTarget("3")).toEqual({ kind: "id", id: 3 })
     expect(parseTarget("p_3")).toEqual({ kind: "id", id: 3 })
     expect(parseTarget("next")).toEqual({ kind: "next" })
-    expect(parseTarget("prev")).toEqual({ kind: "previous" })
     expect(parseTarget("current")).toEqual({ kind: "current" })
     expect(parseTarget("fix-flaky-test")).toEqual({ kind: "name", name: "fix-flaky-test" })
   })

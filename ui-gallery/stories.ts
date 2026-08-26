@@ -299,16 +299,16 @@ function toastStory(tone: ToastTone): UiStory {
     viewport: { cols: 62, rows: 12 },
     expectedText: [content],
     arrange(context) {
-      mountToast(context, content, tone, tone === "neutral" ? ["steady-moon"] : [])
+      mountToast(context, content, tone)
     },
   }
 }
 
-function mountToast(context: UiStoryContext, text: string, tone: ToastTone, italic: readonly string[] = []): void {
+function mountToast(context: UiStoryContext, text: string, tone: ToastTone): void {
   const toast = new Toast(context.setup.renderer, { durationMs: 60_000 })
   context.canvas.add(toast.root)
   toast.applyPalette(context.palette)
-  toast.show(text, tone, { italic })
+  toast.show(text, tone)
   toast.layout()
   context.defer(() => toast.destroy())
 }

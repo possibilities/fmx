@@ -1,10 +1,7 @@
 import {
   BoxRenderable,
   type CliRenderer,
-  italic,
-  StyledText,
   type TerminalColors,
-  type TextChunk,
   TextRenderable,
 } from "@opentui/core"
 import { hostRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
@@ -23,15 +20,10 @@ export type ToastTone = "neutral" | "error"
 type ToastMessage = {
   text: string
   tone: ToastTone
-  italic: readonly string[]
 }
 
 type ToastOptions = {
   durationMs?: number
-}
-
-type ToastTextStyle = {
-  italic?: readonly string[]
 }
 
 /** A bottom-center transient notice. Messages queue so a lifecycle burst never
@@ -76,9 +68,9 @@ export class Toast {
     this.root.add(this.text)
   }
 
-  show(text: string, tone: ToastTone = "neutral", style: ToastTextStyle = {}): void {
+  show(text: string, tone: ToastTone = "neutral"): void {
     if (this.destroyed || text === "") return
-    const message = { text, tone, italic: [...(style.italic ?? [])] }
+    const message = { text, tone }
     if (this.current) {
       this.queue.push(message)
       return
@@ -104,7 +96,7 @@ export class Toast {
     this.root.width = width
     this.root.left = Math.floor((this.renderer.width - width) / 2)
     this.root.top = Math.max(0, this.renderer.height - TOAST_HEIGHT - 1)
-    this.text.content = styleText(truncate(this.current.text, contentWidth), this.current.italic)
+    this.text.content = truncate(this.current.text, contentWidth)
     this.root.visible = true
   }
 
@@ -152,40 +144,8 @@ export class Toast {
 
 function truncate(value: string, width: number): string {
   if (width <= 0) return ""
-  if (value.length <= width) return value
+  const characters = [...value]
+  if (characters.length <= width) return value
   if (width === 1) return "…"
-  return `${value.slice(0, width - 1)}…`
-}
-
-function styleText(value: string, italicValues: readonly string[]): string | StyledText {
-  const ranges = italicValues
-    .flatMap((target) => occurrences(value, target))
-    .sort((left, right) => left.start - right.start)
-  if (ranges.length === 0) return value
-
-  const chunks: TextChunk[] = []
-  let offset = 0
-  for (const range of ranges) {
-    if (range.start < offset) continue
-    if (range.start > offset) chunks.push(textChunk(value.slice(offset, range.start)))
-    chunks.push(italic(value.slice(range.start, range.end)))
-    offset = range.end
-  }
-  if (offset < value.length) chunks.push(textChunk(value.slice(offset)))
-  return new StyledText(chunks)
-}
-
-function occurrences(value: string, target: string): Array<{ start: number; end: number }> {
-  if (target === "") return []
-  const ranges: Array<{ start: number; end: number }> = []
-  let start = value.indexOf(target)
-  while (start !== -1) {
-    ranges.push({ start, end: start + target.length })
-    start = value.indexOf(target, start + target.length)
-  }
-  return ranges
-}
-
-function textChunk(text: string): TextChunk {
-  return { __isChunk: true, text }
+  return `${characters.slice(0, width - 1).join("")}…`
 }

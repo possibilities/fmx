@@ -212,7 +212,6 @@ export function parseTarget(raw: string): Target {
     case "previous":
       return { kind: trimmed }
   }
-  if (trimmed === "prev") return { kind: "previous" }
   if (trimmed === "") throw new ControlFailure("invalid_params", "target is empty")
   return { kind: "name", name: trimmed }
 }
