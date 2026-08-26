@@ -196,17 +196,24 @@ function parseAgent(args: string[]): Command {
   }
 }
 
+/** What a launch is made of, wherever one is being described: `launch`
+ * starts an agent with these and `draft set` edits the same fields on an
+ * open dialog, so `launchFields` reads exactly this set from either. */
+const LAUNCH_FIELD_FLAGS = {
+  project: "value",
+  prompt: "value",
+  "prompt-file": "value",
+  worktree: "switch",
+  "no-worktree": "switch",
+  model: "value",
+  effort: "value",
+} as const
+
 function parseLaunch(args: string[]): Command {
   const flags = parseFlags(
     args,
     {
-      project: "value",
-      prompt: "value",
-      "prompt-file": "value",
-      worktree: "switch",
-      "no-worktree": "switch",
-      model: "value",
-      effort: "value",
+      ...LAUNCH_FIELD_FLAGS,
       focus: "switch",
       editable: "switch",
       wait: "switch",
@@ -243,19 +250,7 @@ function parseDraft(args: string[]): Command {
       return draft === undefined ? { name: "draft", verb: "show" } : { name: "draft", verb: "show", draft }
     }
     case "set": {
-      const flags = parseFlags(
-        rest,
-        {
-          project: "value",
-          prompt: "value",
-          "prompt-file": "value",
-          worktree: "switch",
-          "no-worktree": "switch",
-          model: "value",
-          effort: "value",
-        },
-        "draft",
-      )
+      const flags = parseFlags(rest, LAUNCH_FIELD_FLAGS, "draft")
       const draft = flags.positional[0]
       if (draft === undefined) throw new UsageError("draft set needs a draft id", "draft")
       rejectExtra(flags.positional.slice(1), "draft")

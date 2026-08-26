@@ -312,12 +312,7 @@ class FxAgent {
     }
     this.awaitingWork = true
     this.awaitingWorkSawIdle = lifecycleState === "idle"
-    const encoder = new TextEncoder()
-    this.writeInput(encoder.encode(bracketedPaste(text)), "input")
-    this.promptTimer = setTimeout(() => {
-      this.promptTimer = null
-      this.submitPrompt()
-    }, PROMPT_SUBMIT_MS)
+    this.pasteAndSubmit(text)
   }
 
   /** Observe admission without confusing an already-running turn for the
@@ -354,17 +349,24 @@ class FxAgent {
       const prompt = this.pendingPrompt
       this.pendingPrompt = null
       if (prompt === null || this.status !== "running") return
-      // As a bracketed paste, not as typed bytes: a newline typed into fx
-      // submits at the first line, where a pasted one stays part of the text.
-      const encoder = new TextEncoder()
-      this.writeInput(encoder.encode(bracketedPaste(prompt)), "input")
-      // The send is a separate write: fx discards a paste when anything
-      // follows its end marker in the same one.
-      this.promptTimer = setTimeout(() => {
-        this.promptTimer = null
-        this.submitPrompt()
-      }, PROMPT_SUBMIT_MS)
+      this.pasteAndSubmit(prompt)
     }, PROMPT_SETTLE_MS)
+  }
+
+  /**
+   * Put `text` in front of fx and send it a beat later. As a bracketed paste,
+   * not as typed bytes: a newline typed into fx submits at the first line,
+   * where a pasted one stays part of the text. The send is a separate write
+   * because fx discards a paste when anything follows its end marker in the
+   * same one — the launch prompt and `agent send` are the same act, and this
+   * is the one place that ordering lives.
+   */
+  private pasteAndSubmit(text: string): void {
+    this.writeInput(new TextEncoder().encode(bracketedPaste(text)), "input")
+    this.promptTimer = setTimeout(() => {
+      this.promptTimer = null
+      this.submitPrompt()
+    }, PROMPT_SUBMIT_MS)
   }
 
   /**
@@ -603,10 +605,6 @@ export class Multiplexer {
       home: options.home,
       onChange: () => this.refreshSessionList(),
     })
-    const help = helpPlainText(this.keybindings)
-    const helpLines = help.split("\n")
-    const helpWidth = Math.max(...helpLines.map((line) => line.length)) + 5
-    const helpHeight = helpLines.length + 2
 
     this.stage = new BoxRenderable(renderer, {
       id: "fmx-stage",
@@ -677,10 +675,6 @@ export class Multiplexer {
       position: "absolute",
       left: "50%",
       top: "50%",
-      width: helpWidth,
-      height: helpHeight,
-      marginLeft: -Math.floor(helpWidth / 2),
-      marginTop: -Math.floor(helpHeight / 2),
       paddingX: 1,
       border: true,
       borderStyle: "single",
@@ -693,7 +687,6 @@ export class Multiplexer {
     })
     this.modalText = new TextRenderable(renderer, {
       id: "fmx-modal-text",
-      content: styledHelpContent(this.keybindings, hostRamp(this.hostPalette)),
       fg: RAMP_FALLBACK.foreground,
       bg: RAMP_FALLBACK.background,
       selectable: false,
@@ -1065,7 +1058,7 @@ export class Multiplexer {
     this.content.remove(agent.terminal)
     agent.destroy()
     this.agents.splice(index, 1)
-    this.registry.forget(this.paneIdFor(agent))
+    this.registry.forget(agent.paneId)
     this.adeSequences.delete(agent.entry.agentId)
     this.adeStoppedInstances.delete(agent.entry.agentId)
     this.adeStaleRecords.delete(agent.entry.agentId)
@@ -1197,7 +1190,7 @@ export class Multiplexer {
 
   private sessionEntries(): SessionEntry[] {
     return this.agents.map((agent, index) => {
-      const record = this.registry.get(this.paneIdFor(agent))
+      const record = this.registry.get(agent.paneId)
       const sessionId = this.sessionIdOf(agent)
       const git = this.gitContexts.get(agent.cwd) ?? null
       return {
@@ -1248,7 +1241,7 @@ export class Multiplexer {
    * looked at, so a finished turn stops reading as `done`.
    */
   private markSeen(agent: FxAgent): void {
-    const record = this.registry.get(this.paneIdFor(agent))
+    const record = this.registry.get(agent.paneId)
     this.seenSeq.set(agent.id, record?.stateSeq ?? 0)
     this.checkpointAgent(agent)
     // Acknowledging a finished turn moves `done` to `idle`, and an idle Fx
@@ -1258,7 +1251,7 @@ export class Multiplexer {
 
   /** Keep the last trustworthy ADE snapshot and its acknowledgement relation. */
   private checkpointAgent(agent: FxAgent): void {
-    const record = this.registry.get(this.paneIdFor(agent))
+    const record = this.registry.get(agent.paneId)
     if (!record) return
     void this.options.manifest.setAgentStatus(agent.entry.agentId, {
       state: record.state,
@@ -1331,7 +1324,7 @@ export class Multiplexer {
       return
     }
 
-    const folded = this.registry.apply(this.paneIdFor(agent), record)
+    const folded = this.registry.apply(agent.paneId, record)
     agent.observeWorkAdmission(record.event, folded.state)
     if (record.event === "FxStopped") this.adeStoppedInstances.add(record.instanceId)
 
@@ -1362,10 +1355,10 @@ export class Multiplexer {
 
   private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
     if (sessionId !== null && !isSessionId(sessionId)) return false
-    const hadRecord = this.registry.get(this.paneIdFor(agent)) !== null
+    const hadRecord = this.registry.get(agent.paneId) !== null
     const previous = this.sessionIdOf(agent)
     const identityChanged = !hadRecord || previous !== sessionId
-    this.registry.setSessionId(this.paneIdFor(agent), sessionId)
+    this.registry.setSessionId(agent.paneId, sessionId)
     if (identityChanged) {
       void this.options.manifest.setFxSessionId(agent.entry.agentId, sessionId).catch(() => {})
     }
@@ -1375,10 +1368,6 @@ export class Multiplexer {
 
   private home(): string {
     return this.options.home ?? homedir()
-  }
-
-  private paneIdFor(agent: FxAgent): string {
-    return agent.paneId
   }
 
   private adeBinding(instanceId: string): FxAdeBinding | null {
@@ -1393,7 +1382,7 @@ export class Multiplexer {
   }
 
   private sessionIdOf(agent: FxAgent): string | null {
-    return this.registry.get(this.paneIdFor(agent))?.sessionId ?? null
+    return this.registry.get(agent.paneId)?.sessionId ?? null
   }
 
   private beginDividerDrag(event: MouseEvent): void {
@@ -1618,7 +1607,7 @@ export class Multiplexer {
    * which keeps the dialog useful before any root is configured.
    */
   private projectChoices(): ProjectChoice[] {
-    const home = this.options.home ?? homedir()
+    const home = this.home()
     const scanned = scanProjectRoots(this.options.projectRoots ?? [], home)
     const directories =
       scanned.includes(this.options.cwd) || !isRepositoryDirectory(this.options.cwd)
@@ -1772,12 +1761,8 @@ export class Multiplexer {
   }
 
   private showHelp(): void {
-    const helpLines = helpPlainText(this.keybindings).split("\n")
-    this.showModal(
-      "help",
-      Math.max(...helpLines.map((line) => line.length)) + 5,
-      helpLines.length + 2,
-    )
+    const [width, height] = helpModalSize(this.keybindings)
+    this.showModal("help", width, height)
   }
 
   private showError(heading: string, error: unknown): void {
@@ -1856,7 +1841,7 @@ export class Multiplexer {
         const agent = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
         const text = requiredString(params, "text").trim()
         if (text === "") throw new ControlFailure("invalid_params", "text is empty")
-        const lifecycleState = this.registry.get(this.paneIdFor(agent))?.state ?? "unknown"
+        const lifecycleState = this.registry.get(agent.paneId)?.state ?? "unknown"
         agent.send(text, lifecycleState)
         return { agent: this.agentInfo(agent) }
       }
@@ -2087,26 +2072,16 @@ export class Multiplexer {
 
   private waitForDraft(draft: Draft, timeoutMs: number | null, signal: AbortSignal): Promise<DraftInfo> {
     if (draft.info.status !== "open") return Promise.resolve(this.draftInfo(draft))
-    return new Promise((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | null = null
-      const waiter = (info: DraftInfo) => {
-        cleanup()
-        resolve({ ...info, fields: { ...info.fields } })
-      }
-      const cleanup = () => {
-        draft.waiters.delete(waiter)
-        if (timer) clearTimeout(timer)
-        signal.removeEventListener("abort", cleanup)
-      }
-      draft.waiters.add(waiter)
-      signal.addEventListener("abort", cleanup)
-      if (timeoutMs !== null) {
-        timer = setTimeout(() => {
-          cleanup()
-          reject(new ControlFailure("timeout", `draft ${draft.info.draft} is still open after ${timeoutMs}ms`))
-        }, timeoutMs)
-      }
-    })
+    return awaitSettlement(
+      (settle) => {
+        const waiter = (info: DraftInfo) => settle(() => ({ ...info, fields: { ...info.fields } }))
+        draft.waiters.add(waiter)
+        return () => draft.waiters.delete(waiter)
+      },
+      timeoutMs,
+      signal,
+      () => new ControlFailure("timeout", `draft ${draft.info.draft} is still open after ${timeoutMs}ms`),
+    )
   }
 
   private waitForAgent(
@@ -2117,33 +2092,24 @@ export class Multiplexer {
   ): Promise<{ agent: AgentInfo; state: DisplayState }> {
     const settled = this.waitedState(agent, states)
     if (settled) return Promise.resolve({ agent: this.agentInfo(agent), state: settled })
-    return new Promise((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | null = null
-      const waiter: AgentWaiter = {
-        agentId: agent.id,
-        states,
-        settle: (state) => {
-          cleanup()
-          if (state === null) reject(new ControlFailure("not_found", `agent ${agent.id} exited`))
-          else resolve({ agent: this.agentInfo(agent), state })
-        },
-      }
-      const cleanup = () => {
-        this.agentWaiters.delete(waiter)
-        if (timer) clearTimeout(timer)
-        signal.removeEventListener("abort", cleanup)
-      }
-      this.agentWaiters.add(waiter)
-      signal.addEventListener("abort", cleanup)
-      if (timeoutMs !== null) {
-        timer = setTimeout(() => {
-          cleanup()
-          reject(
-            new ControlFailure("timeout", `agent ${agent.id} is ${this.displayStateOf(agent)} after ${timeoutMs}ms`),
-          )
-        }, timeoutMs)
-      }
-    })
+    return awaitSettlement(
+      (settle) => {
+        const waiter: AgentWaiter = {
+          agentId: agent.id,
+          states,
+          settle: (state) =>
+            settle(() => {
+              if (state === null) throw new ControlFailure("not_found", `agent ${agent.id} exited`)
+              return { agent: this.agentInfo(agent), state }
+            }),
+        }
+        this.agentWaiters.add(waiter)
+        return () => this.agentWaiters.delete(waiter)
+      },
+      timeoutMs,
+      signal,
+      () => new ControlFailure("timeout", `agent ${agent.id} is ${this.displayStateOf(agent)} after ${timeoutMs}ms`),
+    )
   }
 
   /** The state a wait resolves on, or null while it should keep waiting. A
@@ -2168,7 +2134,7 @@ export class Multiplexer {
   }
 
   private displayStateOf(agent: FxAgent): DisplayState {
-    return displayStateFor(this.registry.get(this.paneIdFor(agent)), this.seenSeq.get(agent.id) ?? 0)
+    return displayStateFor(this.registry.get(agent.paneId), this.seenSeq.get(agent.id) ?? 0)
   }
 
   private nameOf(agent: FxAgent): string | null {
@@ -2177,12 +2143,12 @@ export class Multiplexer {
   }
 
   private agentInfo(agent: FxAgent): AgentInfo {
-    const record = this.registry.get(this.paneIdFor(agent))
+    const record = this.registry.get(agent.paneId)
     const sessionId = this.sessionIdOf(agent)
     const git = this.gitContexts.get(agent.cwd) ?? null
     return {
       id: agent.id,
-      pane_id: this.paneIdFor(agent),
+      pane_id: agent.paneId,
       cwd: agent.cwd,
       project: projectNameFor(git, agent.cwd),
       branch: git?.branch ?? null,
@@ -2286,6 +2252,49 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
       (action): HelpEntry => [bindingLabel(keybindings[action]), ACTIONS[action].help],
     ),
   ]
+}
+
+/** The modal is sized to the text it shows, plus its border and padding. */
+/**
+ * A control request that waits: register interest, hand back how to withdraw
+ * it, and let one place own the timer, the abort listener, and the cleanup
+ * all three share. `settle` takes what to produce so a waiter can resolve or
+ * throw without knowing which promise it is settling.
+ */
+function awaitSettlement<T>(
+  register: (settle: (produce: () => T) => void) => () => void,
+  timeoutMs: number | null,
+  signal: AbortSignal,
+  onTimeout: () => ControlFailure,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const cleanup = () => {
+      withdraw()
+      if (timer) clearTimeout(timer)
+      signal.removeEventListener("abort", cleanup)
+    }
+    const withdraw = register((produce) => {
+      cleanup()
+      try {
+        resolve(produce())
+      } catch (error) {
+        reject(error)
+      }
+    })
+    signal.addEventListener("abort", cleanup)
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => {
+        cleanup()
+        reject(onTimeout())
+      }, timeoutMs)
+    }
+  })
+}
+
+function helpModalSize(keybindings: Keybindings): [width: number, height: number] {
+  const lines = helpPlainText(keybindings).split("\n")
+  return [Math.max(...lines.map((line) => line.length)) + 5, lines.length + 2]
 }
 
 function helpPlainText(keybindings: Keybindings): string {
