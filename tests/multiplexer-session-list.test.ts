@@ -408,3 +408,24 @@ test("mounts the list into the tray", async () => {
     await multiplexer.shutdown()
   }
 })
+
+/**
+ * OpenTUI's handle table is process-wide and nothing reclaims it, so a row's
+ * text renderable leaked per rebuild is a Runtime that stops being able to
+ * draw. The ADE feed reports before every tool call, so a busy Home reaches
+ * the cap in minutes: this renders far past it.
+ */
+test("rebuilds rows without leaking a native handle per row", async () => {
+  const { setup, list } = await createList(30, 10)
+  try {
+    const tree = buildTree([
+      entry({ agentId: 1, state: "working" }),
+      entry({ agentId: 2, sessionId: "5a75126ce54edb04", state: "idle", active: true }),
+    ])
+    for (let pass = 0; pass < 8000; pass++) list.render(tree, 26)
+    await setup.renderOnce()
+    expect(setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1")).toBeTruthy()
+  } finally {
+    setup.renderer.destroy()
+  }
+})

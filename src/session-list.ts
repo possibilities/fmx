@@ -145,7 +145,11 @@ export class SessionList {
   private clearRows(): void {
     for (const rendered of this.rows) {
       this.root.remove(rendered)
-      rendered.destroy()
+      // Recursively: `destroy` only unparents children, so the row's text
+      // would keep its native renderable, buffer, and syntax style. The
+      // handle table is process-wide and never reclaimed, so a row's text
+      // leaked per rebuild is a Runtime that eventually cannot draw a tray.
+      rendered.destroyRecursively()
     }
     this.rows = []
   }
