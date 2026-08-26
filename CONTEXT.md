@@ -248,7 +248,7 @@ _Avoid_: fmx name, label.
 
 **Control socket** — the Unix socket `fmx control <command>` drives a running
 Runtime through, bound beside the ADE feed as
-`/tmp/fmx-<uid>-<home id>.ctl` — as stable as it, so an Fx that outlives one
+`/tmp/fmx-<uid>/<home id>.ctl` — as stable as it, so an Fx that outlives one
 fmx still reaches the next — and handed to every Agent as `FMX_SOCKET_PATH`.
 It is fmx's request/reply wire, separate from the one-way feed. One request per
 connection; a waiting method holds the connection.

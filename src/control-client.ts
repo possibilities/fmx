@@ -12,6 +12,7 @@ import {
 } from "./control-protocol.ts"
 import { LineAssembler } from "./line-assembler.ts"
 import { listenerAnswers } from "./unix-socket.ts"
+import { privateRootDirectory } from "./zmx-environment.ts"
 
 /**
  * The client side of the control socket: `fmx control <command>` resolved to one or
@@ -268,7 +269,7 @@ export async function resolveSocketPath(explicit: string | null, environment: Cl
  * ones that count.
  */
 async function liveControlSockets(environment: ClientEnvironment): Promise<string[]> {
-  const directory = environment.socketDirectory ?? "/tmp"
+  const directory = environment.socketDirectory ?? privateRootDirectory()
   const alive = environment.isSocketLive ?? listenerAnswers
   let names: string[]
   try {
@@ -278,7 +279,7 @@ async function liveControlSockets(environment: ClientEnvironment): Promise<strin
   }
   const sockets: string[] = []
   for (const name of names.sort()) {
-    if (!/^fmx-\d+-[0-9a-f]+\.ctl$/u.test(name)) continue
+    if (!/^[0-9a-f]+\.ctl$/u.test(name)) continue
     const path = `${directory}/${name}`
     if (await alive(path)) sockets.push(path)
   }

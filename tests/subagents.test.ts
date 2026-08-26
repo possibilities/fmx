@@ -317,6 +317,30 @@ describe("SubagentObserver", () => {
       observer.stop()
     }
   })
+
+  test("screens a configured child name before it becomes row text", async () => {
+    const home = await homeDirectory()
+    await writeControl(home, CHILD_A, PARENT, { name: "review\u001b[31mer\u0007" })
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      expect(observer.childrenOf(PARENT)[0]?.label).toBe("review[31mer")
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("falls back to the short session id when a name has nothing to draw", async () => {
+    const home = await homeDirectory()
+    await writeControl(home, CHILD_A, PARENT, { name: "\u001b\u0007" })
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      expect(observer.childrenOf(PARENT)[0]?.label).toBe("3e38dc7a8d7c16c2")
+    } finally {
+      observer.stop()
+    }
+  })
 })
 
 function childRecord(

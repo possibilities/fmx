@@ -2,7 +2,6 @@ import { expect, test } from "bun:test"
 import { existsSync, statSync } from "node:fs"
 import {
   AdeSocket,
-  adeSocketPathFor,
   decodeAdeRecord,
   defaultAdeSocketPath,
   HomeActiveError,
@@ -56,10 +55,8 @@ test("decodes every lifecycle snapshot without rejecting unknown additive events
 })
 
 test("derives stable Home paths without an Agent socket", () => {
-  expect(defaultAdeSocketPath("abc123", 502)).toBe("/tmp/fmx-502-abc123.ade.sock")
-  expect(adeSocketPathFor("/tmp/fmx-501-home.sock")).toBe("/tmp/fmx-501-home.ade.sock")
-  expect(adeSocketPathFor("/tmp/fmx-501-home.ade.sock")).toBe("/tmp/fmx-501-home.ade.sock")
-  expect(lockPathFor("/tmp/fmx-501-home.ade.sock")).toBe("/tmp/fmx-501-home.lock")
+  expect(defaultAdeSocketPath("abc123", 502)).toBe("/tmp/fmx-502/abc123.ade.sock")
+  expect(lockPathFor("/tmp/fmx-501/home.ade.sock")).toBe("/tmp/fmx-501/home.lock")
   expect(new AdeSocket({ homeId: "abc123" }).path).toBe(defaultAdeSocketPath("abc123"))
 })
 

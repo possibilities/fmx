@@ -77,7 +77,18 @@ export function companionDirectories(
   uid: number = userInfo().uid,
 ): string[] {
   if (env[COMPANION_DIRECTORY_ENV_VAR]) return [env[COMPANION_DIRECTORY_ENV_VAR]]
-  return [`/tmp/fmx-${uid}`, `/tmp/fmx-${uid}/zmx`]
+  return [privateRootDirectory(uid), `${privateRootDirectory(uid)}/zmx`]
+}
+
+/**
+ * The directory fmx keeps its own files in: the Home sockets and their lock.
+ * It is created 0700 and refused when it is not ours or is open to others,
+ * which is what keeps the names inside it out of another user's reach — a
+ * socket in a world-writable directory can be taken by whoever gets there
+ * first once the Runtime that held it exits and unlinks it.
+ */
+export function privateRootDirectory(uid: number = userInfo().uid): string {
+  return `/tmp/fmx-${uid}`
 }
 
 /**

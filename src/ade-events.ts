@@ -1,7 +1,7 @@
 import { chmodSync } from "node:fs"
 import { userInfo } from "node:os"
 import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
-import { homeId } from "./zmx-environment.ts"
+import { homeId, privateRootDirectory } from "./zmx-environment.ts"
 import { isAddressInUse, listenerAnswers, removeSocketFile } from "./unix-socket.ts"
 
 type SocketListener = ReturnType<typeof Bun.listen>
@@ -201,11 +201,7 @@ export class AdeSocket implements AdeEventSource {
 }
 
 export function defaultAdeSocketPath(home: string, uid: number = userInfo().uid): string {
-  return `/tmp/fmx-${uid}-${home}.ade.sock`
-}
-
-export function adeSocketPathFor(basePath: string): string {
-  return basePath.replace(/(?:\.ade)?\.sock$/u, "") + ".ade.sock"
+  return `${privateRootDirectory(uid)}/${home}.ade.sock`
 }
 
 export function lockPathFor(adeSocketPath: string): string {

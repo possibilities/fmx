@@ -209,7 +209,7 @@
   settings. Native session naming is also fx profile configuration; fmx does
   not manage it or write `~/.fx/settings.json`.
 - The ADE feed is fmx's sole fx→fmx lifecycle channel: a one-way, mode-0600
-  NDJSON socket stable per Home at `/tmp/fmx-<uid>-<home id>.ade.sock`. Every Fx
+  NDJSON socket stable per Home at `/tmp/fmx-<uid>/<home id>.ade.sock`. Every Fx
   receives its path plus the stable Manifest Agent identity as
   `FX_ADE_SOCKET_PATH` and `FX_ADE_INSTANCE_ID`; fmx never replies. Every schema
   1 record carries the emitting main Agent's or subagent's current
@@ -263,7 +263,7 @@
   sequence gap or ordinary current-turn event does not.
 - The ADE socket's path is stable per Home, so an Fx that outlives the fmx that
   started it reports to the next Runtime. `AdeSocket.start` takes a flock on
-  `/tmp/fmx-<uid>-<home id>.lock`. It holds that lock for the life of the
+  `/tmp/fmx-<uid>/<home id>.lock`. It holds that lock for the life of the
   process and only under it probes, unlinks, and binds:
   when the flock is held it waits one bounded handoff window for a predecessor
   finishing terminal teardown, then refuses a holder that remains. It never
@@ -297,6 +297,14 @@
   Agent takes its executable from it and records `fxArgs: null`. A session that is not `live` has no readable labels, so
   `list --where` never shows it — enumerate unfiltered when deciding
   ownership.
+- Every file fmx owns lives under `/tmp/fmx-<uid>`, created 0700 and refused
+  when it is not ours or is open to others — the same check the Companion's
+  own directory gets, made before anything is bound into it. A socket in a
+  world-writable directory is one another user can take the moment the
+  Runtime that held it exits and unlinks it, and the Fx processes that
+  outlive it would report to whoever took it. `fmx control` finds a live fmx
+  by scanning that directory, so a name inside it is a Home id and nothing
+  else.
 - The Companion's directory is under `/tmp/fmx-<uid>/zmx`, not the config
   directory: macOS caps a socket path near 104 bytes, and sessions do not
   survive a reboot, so neither need their exit records. A `-Dcompanion`

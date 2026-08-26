@@ -48,8 +48,9 @@ export type HeldLock = { release: () => void }
 /**
  * Take an exclusive flock on `path`, creating it if needed, and hold it until
  * released: the fd stays open for as long as the lock matters. `null` when
- * another process holds it; `undefined` when the native probe is unavailable
- * and nothing can be said either way.
+ * another process holds it — or when the path itself cannot be opened, which
+ * says as much about who owns it; `undefined` only when the native probe is
+ * unavailable and nothing can be said either way.
  */
 export function acquireExclusiveLock(path: string): HeldLock | null | undefined {
   const nativeFlock = loadFlock()
@@ -58,7 +59,9 @@ export function acquireExclusiveLock(path: string): HeldLock | null | undefined 
   try {
     descriptor = openSync(path, "a+")
   } catch {
-    return undefined
+    // A lock file this process cannot open is one it does not hold. Reporting
+    // "no flock here" would let the caller bind the socket unlocked.
+    return null
   }
   try {
     if (nativeFlock(descriptor, LOCK_EXCLUSIVE | LOCK_NONBLOCKING) !== 0) {

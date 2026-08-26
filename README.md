@@ -13,7 +13,9 @@ curl -fsSL https://c1g42cnmuvvspilo.public.blob.vercel-storage.com/setup.sh | ba
 
 This installs `fmx` and its companion `fmx-zmx` to `~/.local/bin`. The two are
 a pair — fmx refuses to start against any other build — so reinstall both
-together. `fx` must be on `PATH` as well; install it from [fx.sh](https://fx.sh/).
+together. `fx` must be on `PATH` as well, built from the
+[fxnk](https://github.com/possibilities/fxnk) workshop: fmx reads an agent's
+lifecycle over an interface that fork adds, and refuses an `fx` without it.
 `fmx doctor` reports what an installation has.
 
 ## Usage
@@ -22,7 +24,6 @@ together. `fx` must be on `PATH` as well; install it from [fx.sh](https://fx.sh/
 
 | | |
 |---|---|
-| `ctrl-b c` | start an agent in the first project root |
 | `ctrl-b l` | launch dialog: prompt, project, worktree, model, effort |
 | `ctrl-b d` | detach this terminal, leaving every agent running |
 

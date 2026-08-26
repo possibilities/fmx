@@ -5,6 +5,7 @@ import type { AdeRecord } from "./ade-events.ts"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
 import { exclusiveLockHeld } from "./file-lock.ts"
 import { fxProfileDirectory, isSessionId } from "./fx-sessions.ts"
+import { sanitizeTitle } from "./title-parser.ts"
 
 const CONTROL_STATES = [
   "idle",
@@ -249,7 +250,7 @@ export class SubagentObserver {
       childId,
       parentId,
       generation: nonNegativeNumber(value.generation) ?? 0,
-      label: nonEmptyString(configuration?.name) ?? shortSessionId(childId),
+      label: drawableLabel(configuration?.name) ?? shortSessionId(childId),
       state,
       createdAt: nonNegativeNumber(value.created_at_ms) ?? 0,
     }
@@ -527,6 +528,17 @@ function stateKey(state: DisplayState, attention: AgentAttention | null): string
 function shortSessionId(sessionId: string): string {
   const segments = sessionId.split("-")
   return segments[segments.length - 1] || sessionId
+}
+
+/**
+ * A child's configured name is fx's, and through fx a model's: it reaches a
+ * human's terminal as row text, so it is screened the way every other
+ * untrusted string fmx draws is. A name left with nothing to draw falls back
+ * to the short session id, exactly as an absent one does.
+ */
+function drawableLabel(value: unknown): string | null {
+  const name = nonEmptyString(value)
+  return name === null ? null : nonEmptyString(sanitizeTitle(name))
 }
 
 function nonEmptyString(value: unknown): string | null {

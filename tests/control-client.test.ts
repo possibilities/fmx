@@ -45,11 +45,13 @@ async function server(answer: (call: Call) => Promise<unknown>, name: string) {
 
 test("names the socket from the flag, then the environment, then a lone live fmx", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-sockets-"))
-  const first = join(directory, "fmx-501-0123456789ab.ctl")
-  const second = join(directory, "fmx-501-ba9876543210.ctl")
+  const first = join(directory, "0123456789ab.ctl")
+  const second = join(directory, "ba9876543210.ctl")
   await writeFile(first, "")
   await writeFile(second, "")
-  await writeFile(join(directory, "fmx-100.ctl"), "")
+  // Sockets live in a directory only this user can reach, so a name is a
+  // Home id and nothing else; anything else in there is not one of ours.
+  await writeFile(join(directory, "zmx.ctl"), "")
   const alive = new Set([first])
   const discover = environment({ socketDirectory: directory, isSocketLive: async (path) => alive.has(path) })
 

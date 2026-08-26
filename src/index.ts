@@ -47,8 +47,10 @@ import {
   companionMismatch,
   ensureCompanionDirectories,
   homeId,
+  privateRootDirectory,
   resolveCompanion,
 } from "./zmx-environment.ts"
+import { ensurePrivateDirectories } from "./private-directory.ts"
 
 /** One 60 Hz frame is enough for a responsive terminal to answer its palette
  * query, and short enough that a silent terminal does not delay first paint. */
@@ -135,6 +137,11 @@ async function main(): Promise<void> {
   let runtimePalette: TerminalColors | null = null
 
   try {
+    // fmx's own files live in a directory only this user can reach, created
+    // and checked before anything is bound into it: a socket in a
+    // world-writable place can be taken by whoever gets there first once the
+    // Runtime that held it exits and unlinks it.
+    await ensurePrivateDirectories([privateRootDirectory()], "fmx")
     // The ADE feed is the Home's singleton; only its holder may touch the
     // Manifest, so the join runs after the bind and before anything is drawn.
     await adeSocket.start()
