@@ -429,3 +429,54 @@ test("rebuilds rows without leaking a native handle per row", async () => {
     setup.renderer.destroy()
   }
 })
+
+test("reuses a row's renderables across renders and repaints it in place", async () => {
+  const { setup, list } = await createList(30, 10)
+  try {
+    list.render(buildTree([entry({ agentId: 1, state: "working" })]), 26)
+    const first = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
+    list.render(buildTree([entry({ agentId: 1, state: "working" })]), 26)
+    expect(setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1")).toBe(first)
+
+    list.render(buildTree([entry({ agentId: 1, state: "blocked", attention: "permission" })]), 26)
+    const repainted = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
+    expect(repainted).toBe(first)
+    expect(repainted.chunks[1]!.text).toContain(stateIcon("blocked", "permission"))
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("keeps surviving Agent rows when another Agent leaves the tray", async () => {
+  const { setup, list } = await createList(30, 10)
+  try {
+    list.render(
+      buildTree([
+        entry({ agentId: 1 }),
+        entry({ agentId: 2, sessionId: "5a75126ce54edb04" }),
+      ]),
+      26,
+    )
+    const survivor = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
+    list.render(buildTree([entry({ agentId: 1 })]), 26)
+    expect(setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1")).toBe(survivor)
+    expect(setup.renderer.root.findDescendantById("fmx-session-row-text-agent-2")).toBeFalsy()
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("a reused row reports the Agent it currently draws", async () => {
+  const { setup, list, selected } = await createList(30, 10)
+  try {
+    list.render(buildTree([entry({ agentId: 1 }), entry({ agentId: 2, sessionId: "5a75126ce54edb04" })]), 26)
+    await setup.renderOnce()
+    list.render(buildTree([entry({ agentId: 2, sessionId: "5a75126ce54edb04" })]), 26)
+    await setup.renderOnce()
+    const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-2") as BoxRenderable
+    await setup.mockMouse.click(row.x + 6, row.y)
+    expect(selected).toEqual([2])
+  } finally {
+    setup.renderer.destroy()
+  }
+})

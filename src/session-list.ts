@@ -87,6 +87,27 @@ export function rowText(row: TreeRow, width: number): string {
   return truncate(row.label || MISSING_SESSION, available - ICON_COLUMN)
 }
 
+/** What the row's click handler reads; kept mutable so a reused row rebinds. */
+type RowBinding = { agentId: number | null }
+
+/** One drawn row: its renderables, what it was drawn from, and its identity. */
+type RenderedRow = {
+  key: string
+  signature: string
+  container: BoxRenderable
+  text: TextRenderable
+  binding: RowBinding
+}
+
+/**
+ * A row's identity across renders. An Agent keeps its row through any change
+ * to it; every other row is identified by where it sits, which is what makes
+ * a project or branch that moved a different row.
+ */
+function rowKey(row: TreeRow, index: number): string {
+  return row.agentId !== null ? `agent-${row.agentId}` : `${row.kind}-${index}`
+}
+
 /**
  * The tray's tree of fx agents: project, branch, and one row per agent.
  * Project and branch labels are the foreground, bold along the path to the
@@ -101,7 +122,9 @@ export class SessionList {
    * fallback-dark fill never carries a light host's dark glyph. */
   private fillRamp: Ramp = RAMP_FALLBACK
   private sessionColor: RGBA | string = SESSION_COLOR
-  private rows: BoxRenderable[] = []
+  private rows: RenderedRow[] = []
+  /** Bumped whenever a palette change makes every drawn row stale. */
+  private paletteGeneration = 0
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -115,11 +138,82 @@ export class SessionList {
     })
   }
 
+  /**
+   * Draw `rows`, reusing what is already on screen. The tray is refreshed
+   * from every ADE record, and Fx reports before each tool call, so a
+   * rebuild-per-call would churn every renderable many times a second for a
+   * tray that usually has not changed. A render that changes nothing touches
+   * nothing and does not ask for a frame.
+   */
   render(rows: TreeRow[], width: number): void {
-    this.clearRows()
-    for (const [index, row] of rows.entries()) this.rows.push(this.buildRow(row, width, index))
-    for (const rendered of this.rows) this.root.add(rendered)
+    const keys = rows.map((row, index) => rowKey(row, index))
+    let changed = keys.length !== this.rows.length
+    if (!changed) {
+      for (const [index, key] of keys.entries()) {
+        if (this.rows[index]!.key !== key) {
+          changed = true
+          break
+        }
+      }
+    }
+
+    if (!changed) {
+      // Same rows in the same order: only their contents can differ.
+      let repainted = false
+      for (const [index, row] of rows.entries()) repainted = this.paint(this.rows[index]!, row, width) || repainted
+      if (repainted) this.renderer.requestRender()
+      return
+    }
+
+    // The shape moved. Keep every row whose key survives — a reused row keeps
+    // its native renderables — and build only what is genuinely new.
+    const reusable = new Map(this.rows.map((rendered) => [rendered.key, rendered]))
+    const next: RenderedRow[] = []
+    for (const [index, row] of rows.entries()) {
+      const key = keys[index]!
+      const existing = reusable.get(key)
+      if (existing) {
+        reusable.delete(key)
+        this.paint(existing, row, width)
+        next.push(existing)
+        continue
+      }
+      next.push(this.buildRow(row, key, width))
+    }
+    for (const rendered of this.rows) this.root.remove(rendered.container)
+    for (const orphan of reusable.values()) orphan.container.destroyRecursively()
+    this.rows = next
+    for (const rendered of this.rows) this.root.add(rendered.container)
     this.renderer.requestRender()
+  }
+
+  /** Bring one already-built row up to date, in place. */
+  private paint(rendered: RenderedRow, row: TreeRow, width: number): boolean {
+    const signature = this.signatureOf(row, width)
+    if (rendered.signature === signature) return false
+    rendered.signature = signature
+    rendered.binding.agentId = row.agentId
+    rendered.container.backgroundColor = row.active ? this.fillRamp.surface : undefined
+    rendered.text.content = this.styleRow(row, width)
+    return true
+  }
+
+  /**
+   * Everything `styleRow` and the row's fill are drawn from. The palette
+   * generation stands in for the three ramps, which change together.
+   */
+  private signatureOf(row: TreeRow, width: number): string {
+    return [
+      width,
+      this.paletteGeneration,
+      row.kind,
+      row.depth,
+      row.state,
+      row.attention ?? "",
+      row.active,
+      row.onPath,
+      row.label,
+    ].join("\u0000")
   }
 
   /**
@@ -140,24 +234,16 @@ export class SessionList {
       this.fillRamp = fillRamp
       this.sessionColor = sessionColor
     }
+    // Every row on screen was drawn from the old ramps.
+    this.paletteGeneration += 1
   }
 
-  private clearRows(): void {
-    for (const rendered of this.rows) {
-      this.root.remove(rendered)
-      // Recursively: `destroy` only unparents children, so the row's text
-      // would keep its native renderable, buffer, and syntax style. The
-      // handle table is process-wide and never reclaimed, so a row's text
-      // leaked per rebuild is a Runtime that eventually cannot draw a tray.
-      rendered.destroyRecursively()
-    }
-    this.rows = []
-  }
-
-  private buildRow(row: TreeRow, width: number, index: number): BoxRenderable {
-    const id = row.agentId !== null ? `agent-${row.agentId}` : `${row.kind}-${index}`
+  private buildRow(row: TreeRow, key: string, width: number): RenderedRow {
+    // The click target outlives any one TreeRow, so the handler reads the
+    // agent from a binding this row keeps rather than from a captured row.
+    const binding: RowBinding = { agentId: row.agentId }
     const container = new BoxRenderable(this.renderer, {
-      id: `fmx-session-row-${id}`,
+      id: `fmx-session-row-${key}`,
       width: "100%",
       height: 1,
       flexShrink: 0,
@@ -170,23 +256,22 @@ export class SessionList {
         // makes a fast switch feel delayed by the human's click duration.
         event.preventDefault()
         event.stopPropagation()
-        if (row.agentId !== null) this.onSelect(row.agentId)
+        if (binding.agentId !== null) this.onSelect(binding.agentId)
       },
       onMouseUp: (event) => {
         event.preventDefault()
         event.stopPropagation()
       },
     })
-    container.add(
-      new TextRenderable(this.renderer, {
-        id: `fmx-session-row-text-${id}`,
-        content: this.styleRow(row, width),
-        // Selection delays navigation until mouse-up and rebuilding the list
-        // mid-selection leaves OpenTUI holding destroyed renderables.
-        selectable: false,
-      }),
-    )
-    return container
+    const text = new TextRenderable(this.renderer, {
+      id: `fmx-session-row-text-${key}`,
+      content: this.styleRow(row, width),
+      // Selection delays navigation until mouse-up and replacing a row while
+      // OpenTUI holds a selection leaves it holding a destroyed renderable.
+      selectable: false,
+    })
+    container.add(text)
+    return { key, signature: this.signatureOf(row, width), container, text, binding }
   }
 
   private styleRow(row: TreeRow, width: number): StyledText {
