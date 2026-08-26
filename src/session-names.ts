@@ -63,7 +63,9 @@ export function nativeSessionName(raw: string): string | null {
   if (raw.trim().length === 0 || Buffer.byteLength(raw, "utf8") > NATIVE_SESSION_NAME_MAX_BYTES) return null
   for (const character of raw) {
     const codepoint = character.codePointAt(0)!
-    if (codepoint <= 0x1f || codepoint === 0x7f) return null
+    // C0, DEL, and C1: a terminal that honours the 8-bit introducers reads
+    // U+0080-U+009F as control sequences, so they are as undrawable as an ESC.
+    if (codepoint <= 0x1f || (codepoint >= 0x7f && codepoint <= 0x9f)) return null
   }
   return raw
 }

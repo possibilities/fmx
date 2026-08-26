@@ -3,9 +3,9 @@ import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { CompanionTransportFactory } from "../src/companion-transport.ts"
 import { AgentManifest, identityFor, type ManifestEntry } from "../src/agent-manifest.ts"
-import { AgentEndedError, type AgentTransport, type TransportHandlers } from "../src/agent-transport.ts"
+import { AgentEndedError, AgentUnreachableError, type AgentTransport, type TransportHandlers } from "../src/agent-transport.ts"
 import { ownershipLabels } from "../src/agent-reconcile.ts"
-import { CompanionCommand, type SessionEntry } from "../src/zmx-command.ts"
+import { CompanionCommand, CompanionCreateError, type SessionEntry } from "../src/zmx-command.ts"
 
 /**
  * The Companion behind the Agent transport seam, against the real
@@ -363,4 +363,27 @@ test.skipIf(!ENABLED)("the child's environment is the one given, with nothing of
   expect(watcher.text).not.toContain("ZMX_DIR=")
   expect(watcher.text).not.toContain("ZMX_NO_DETACH_KEY=")
   transport.detach()
+})
+
+test("a Companion lookup that fails after a create timeout keeps the Agent's claim", async () => {
+  const entry = restoredEntry("f".repeat(32))
+  const factory = new CompanionTransportFactory(
+    {
+      create: async () => {
+        throw new CompanionCreateError("Timeout", "create timed out", null)
+      },
+      settle: async () => {
+        throw new Error("the Companion is not answering")
+      },
+    } as unknown as CompanionCommand,
+    HOME,
+    { connect: async () => inertTransport },
+  )
+
+  // Nothing was learned about a session that may well be live, so the start
+  // is unreachable rather than a proof that fx never ran.
+  const failure = await factory
+    .start({ entry, cwd: entry.cwd, command: ["fx"], env: {}, size: { cols: 80, rows: 24 } })
+    .catch((error: unknown) => error)
+  expect(failure).toBeInstanceOf(AgentUnreachableError)
 })

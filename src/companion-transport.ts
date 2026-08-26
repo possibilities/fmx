@@ -73,7 +73,15 @@ export class CompanionTransportFactory implements AgentTransportFactory {
       // running, and the start failed. Still starting: it may yet be, and
       // the Agent is recovered rather than given up on.
       if (!(error instanceof CompanionCreateError) || !error.sessionMayExist) throw error
-      const session = await this.companion.settle(entry.zmxName, undefined, undefined, () => this.closed)
+      let session: SessionEntry
+      try {
+        session = await this.companion.settle(entry.zmxName, undefined, undefined, () => this.closed)
+      } catch (caught) {
+        // The lookup itself failed, so nothing was learned about a session
+        // that may well be live. Only a start that proves fx never ran may
+        // drop the claim; this one leaves it for the recovery path.
+        throw new AgentUnreachableError(entry, caught instanceof Error ? caught : new Error(String(caught)))
+      }
       if (session.state === "exited" || session.state === "absent") throw error
       if (session.state !== "live" || !session.socketPath || ownedAgentId(session, this.homeId) !== entry.agentId) {
         throw new AgentUnreachableError(entry, error)

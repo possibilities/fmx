@@ -34,6 +34,7 @@ export function afterControlReply(result: unknown, run: () => void): AfterContro
 
 type Connection = {
   assembler: LineAssembler
+  decoder: TextDecoder
   abort: AbortController
   afterReply: (() => void) | null
 }
@@ -88,7 +89,10 @@ export class ControlSocket {
 
   private acceptData(socket: SocketConnection, data: Uint8Array): void {
     const connection = this.connectionFor(socket)
-    for (const line of connection.assembler.push(new TextDecoder().decode(data))) {
+    // One decoder for the life of the connection: a prompt arriving in more
+    // than one read can be cut mid-character, and a fresh decoder per chunk
+    // would replace both halves with U+FFFD before the line is assembled.
+    for (const line of connection.assembler.push(connection.decoder.decode(data, { stream: true }))) {
       void this.acceptLine(socket, connection, line)
     }
   }
@@ -145,7 +149,12 @@ export class ControlSocket {
   private connectionFor(socket: SocketConnection): Connection {
     const existing = this.connections.get(socket as object)
     if (existing) return existing
-    const connection: Connection = { assembler: new LineAssembler(), abort: new AbortController(), afterReply: null }
+    const connection: Connection = {
+      assembler: new LineAssembler(),
+      decoder: new TextDecoder(),
+      abort: new AbortController(),
+      afterReply: null,
+    }
     this.connections.set(socket as object, connection)
     return connection
   }

@@ -121,3 +121,38 @@ test("aborts a waiting handler when the client hangs up", async () => {
 test("a socket nobody listens on is unreachable, not a failure", async () => {
   await expect(exchange(socketPath("absent"), "orient", {}, 1000)).rejects.toBeInstanceOf(UnreachableError)
 })
+
+test("reassembles a request whose characters are split across reads", async () => {
+  const fake = surface(async ({ params }) => ({ text: params.text }))
+  const socket = new ControlSocket(fake, socketPath("split-utf8"))
+  socket.start()
+  try {
+    const text = "em — dash ✓ 中文"
+    const line = `${JSON.stringify({ id: "1", method: "agent.send", params: { text } })}\n`
+    const bytes = new TextEncoder().encode(line)
+    // Cut one byte into the em dash, so each half alone is invalid UTF-8.
+    const cut = bytes.indexOf(0xe2) + 1
+    expect(cut).toBeGreaterThan(0)
+
+    const reply = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      let received = ""
+      void Bun.connect({
+        unix: socket.path,
+        socket: {
+          open: (connection) => {
+            connection.write(bytes.subarray(0, cut))
+            setTimeout(() => connection.write(bytes.subarray(cut)), 5)
+          },
+          data: (_connection, data) => {
+            received += new TextDecoder().decode(data)
+            if (received.includes("\n")) resolve(JSON.parse(received))
+          },
+          error: (_connection, error) => reject(error),
+        },
+      })
+    })
+    expect(reply).toMatchObject({ ok: true, result: { text } })
+  } finally {
+    socket.close()
+  }
+})

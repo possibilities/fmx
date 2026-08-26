@@ -15,6 +15,11 @@ test("validates native names without normalizing their presentation", () => {
   expect(nativeSessionName("  Coordinate the review  ")).toBe("  Coordinate the review  ")
   expect(nativeSessionName("Ship: macOS + Linux")).toBe("Ship: macOS + Linux")
   expect(nativeSessionName("   ")).toBeNull()
+  // C1: a terminal honouring the 8-bit introducers reads these as sequences.
+  expect(nativeSessionName("review\u009ber")).toBeNull()
+  expect(nativeSessionName("review\u0080er")).toBeNull()
+  expect(nativeSessionName("review\u007fer")).toBeNull()
+  expect(nativeSessionName("caf\u00e9 review")).toBe("caf\u00e9 review")
   expect(nativeSessionName("bad\nname")).toBeNull()
   expect(nativeSessionName("x".repeat(NATIVE_SESSION_NAME_MAX_BYTES + 1))).toBeNull()
 })
