@@ -473,3 +473,37 @@ function hostPalette(foreground: string, background: string): TerminalColors {
     highlightForeground: null,
   }
 }
+
+test("keeps a launch prompt whose transport drops before it is typed", async () => {
+  const h = await harness("prompt-reconnect")
+  try {
+    await h.control("launch", { prompt: "write the tests" })
+    await waitFor(() => h.options.transport.started.length === 1)
+
+    const written: string[] = []
+    const decoder = new TextDecoder()
+    const reconnect = Promise.withResolvers<AgentTransport>()
+    h.options.transport.attachBehavior = () => reconnect.promise
+
+    // fx speaks, so the prompt is waiting out its settle; the transport dies
+    // inside that window and the reconnect does not land until after it,
+    // where the write would otherwise vanish into nothing.
+    await h.report(1, "idle")
+    ;(h.options.transport.started[0] as PtyTransport).lose()
+    await Bun.sleep(400)
+    expect(written).toEqual([])
+
+    reconnect.resolve({
+      bind() {},
+      resize() {},
+      detach() {},
+      write: (bytes: Uint8Array) => {
+        written.push(decoder.decode(bytes))
+      },
+    })
+    await waitFor(() => written.join("").includes("\r"))
+    expect(written.join("")).toContain("write the tests")
+  } finally {
+    await h.close()
+  }
+})

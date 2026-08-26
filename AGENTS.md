@@ -106,7 +106,11 @@
   is added; the first visible Agent becomes seen, inactive `done` remains
   done, and a newer ADE snapshot supersedes it. Subagent state is not duplicated:
   refresh it from fx's control records and session locks on restore, then let
-  live ADE snapshots drive it. Hold the
+  live ADE snapshots drive it. A subagent exists only under a parent fmx
+  tracks: a live feed does not keep a child on screen, because an Agent that
+  ended took its children with it, and fx's own control record owns the
+  parent — a child's ADE attribution is captured with its work and may name a
+  session fx has already rebound it away from. Hold the
   restored Session list unpublished until every Agent has attached and Git,
   display metadata, and subagent records have been queried, then paint the
   whole tree once; do not add a second Session-list snapshot.
@@ -128,7 +132,11 @@
   first layout pass — and the resize the layout pass fires finds no
   transport to tell; without the re-send fx draws at the wrong size until
   the next host resize. The same ordering is why `armPrompt` waits for the
-  transport when fx reports first: `create` returns with fx already up.
+  transport when fx reports first: `create` returns with fx already up. A
+  transport lost mid-flight leaves the status `running`, so the prompt waits
+  for the next transport rather than being consumed by a dead one, and the
+  send that follows the paste is retried the same way: the two are one act,
+  and a paste without its send sits unsent in fx's composer.
 - `state.json` remembers the selected agent by its stable `agentId`, not its
   display number. Startup prepares every survivor synchronously in display-id
   order, selects that saved Agent before its first await, then attaches the
@@ -210,7 +218,11 @@
   `route_recovery` is the recovery attention spelling, and `FxStopped` removes
   lifecycle authority. Sequence is monotonic per Fx process; a gap also
   re-reads the active session's `display.json`, and a sequence-one `FxStarted`
-  after an accepted `FxStopped` begins a new process generation. Unknown
+  after an accepted `FxStopped` begins a new process generation. Fx never
+  rewinds, so a short run of records beneath the stored mark means the mark is
+  wrong rather than the records: the newest becomes the new baseline and
+  recovery runs, because one bad record must not be able to silence an
+  Agent's real feed for the life of the Runtime. Unknown
   additive events still apply their context and advance the sequence. Only a
   main record may replace the active main session: a child record's parent is
   captured attribution and may legitimately lag after `/new`. The socket keeps

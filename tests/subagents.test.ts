@@ -273,6 +273,50 @@ describe("SubagentObserver", () => {
       observer.stop()
     }
   })
+
+  test("drops a live child once its parent is no longer tracked", async () => {
+    const home = await homeDirectory()
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      observer.applyAdeRecord(childRecord("TurnStarted", "working"))
+      expect(observer.childrenOf(PARENT)).toHaveLength(1)
+
+      // The Agent ended: a subagent exists only under a parent fmx tracks.
+      await observer.setParents([])
+      observer.sampleReachableStates()
+      expect(observer.childrenOf(PARENT)).toEqual([])
+
+      // And it does not come back when that session is tracked again.
+      await observer.setParents([PARENT])
+      expect(observer.childrenOf(PARENT)).toEqual([])
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("keeps Fx's own parent when a live capture names a superseded session", async () => {
+    const home = await homeDirectory()
+    await writeControl(home, CHILD_A, PARENT, { state: "running" })
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT, UNRELATED_PARENT])
+    try {
+      // A child's ADE attribution is captured with its work, so after `/new`
+      // it can name the session fx has already rebound the child away from.
+      observer.applyAdeRecord(
+        record("TurnStarted", {
+          role: "subagent",
+          sessionId: CHILD_A,
+          parentSessionId: UNRELATED_PARENT,
+          state: "working",
+        }),
+      )
+      expect(observer.childrenOf(UNRELATED_PARENT)).toEqual([])
+      expect(observer.childrenOf(PARENT).map((child) => child.state)).toEqual(["working"])
+    } finally {
+      observer.stop()
+    }
+  })
 })
 
 function childRecord(

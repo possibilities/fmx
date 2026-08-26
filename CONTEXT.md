@@ -141,9 +141,12 @@ move focus back to agent one.
 _Avoid_: agent panel, tab bar, session picker.
 
 **Subagent row** — a non-selectable Session list row for an fx subagent whose
-filesystem control record names a visible Agent's session as its parent.
-It uses the agent-row status icon and nests recursively beneath that parent;
-its state comes from the control record and the subagent's own session lock.
+parent is a session fmx tracks. It uses the agent-row status icon and nests
+recursively beneath that parent; its state comes from the subagent's own ADE
+snapshots once its feed has spoken, and from the filesystem control record and
+session lock until then. Fx's control record owns the parent, and a child
+whose parent is no longer tracked is dropped rather than kept alive by its
+feed.
 _Avoid_: child pane, sub-agent.
 
 **Path** — the active agent and its ancestors. The active row takes the

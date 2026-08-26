@@ -9,7 +9,7 @@ import type { AdeAgentState, AdeAttentionKind, AdeRecord } from "../src/ade-even
 import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
+import { instanceIdForPane, record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
@@ -758,3 +758,50 @@ async function waitForSnapshot(
     await Bun.sleep(10)
   }
 }
+
+test("settles a wait when the human acknowledges a finished turn", async () => {
+  const h = await harness("wait-ack")
+  try {
+    await h.launch({ prompt: "do the work" })
+    await h.launch({ prompt: "more work" })
+    await h.control("focus", { target: "2" })
+    await h.report("p_1", "working")
+    await h.report("p_1", "idle")
+
+    // Agent 1 finished off screen, so it reads `done` rather than `idle`.
+    const waiting = h.control("agent.wait", { target: "1", states: ["idle"] }) as Promise<{ state: string }>
+    let settled = false
+    void waiting.then(() => (settled = true))
+    await Bun.sleep(10)
+    expect(settled).toBe(false)
+
+    // Looking at it acknowledges the finish, and an idle fx sends nothing
+    // more: the wait settles here or never.
+    await h.control("focus", { target: "1" })
+    expect((await waiting).state).toBe("idle")
+  } finally {
+    await h.close()
+  }
+})
+
+test("re-baselines an Agent's feed after a run of records beneath a bad sequence", async () => {
+  const h = await harness("stale-sequence")
+  try {
+    await h.launch({ prompt: "do the work" })
+    await h.report("p_1", "working")
+    const instanceId = instanceIdForPane(((await h.control("orient")) as Snapshot).agents[0]!.pane_id)
+    const state = async () => ((await h.control("orient")) as Snapshot).agents[0]?.state
+
+    // One record with an absurd sequence must not silence the real feed.
+    h.adeSocket.emit(feedRecord("TurnStarted", { instanceId, sequence: Number.MAX_SAFE_INTEGER, state: "blocked" }))
+    await h.report("p_1", "idle")
+    expect(await state()).toBe("blocked")
+
+    // Fx never rewinds, so a run beneath the mark means the mark is wrong.
+    await h.report("p_1", "idle")
+    await h.report("p_1", "idle")
+    expect(await state()).toBe("idle")
+  } finally {
+    await h.close()
+  }
+})

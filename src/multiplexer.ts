@@ -136,6 +136,12 @@ const MODIFIER_ONLY_KEYS = new Set([
 const PROMPT_SETTLE_MS = 250
 /** How long after the paste the send follows, so fx sees them apart. */
 const PROMPT_SUBMIT_MS = 120
+/**
+ * How many records beneath an instance's stored sequence are refused before
+ * fmx concludes the mark is wrong. Fx never rewinds, so one bad record must
+ * not be able to silence an Agent's real feed for the life of the Runtime.
+ */
+const STALE_SEQUENCE_LIMIT = 3
 /** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
@@ -236,6 +242,8 @@ class FxAgent {
   private pendingPrompt: string | null = null
   /** fx reported before the transport arrived; the prompt is armed again at `adopt`. */
   private promptWaitingForTransport = false
+  /** The paste went in and its send did not; the send is retried at `adopt`. */
+  private submitWaitingForTransport = false
   /** A prompt has gone in and fx has not yet said it is working on it. */
   awaitingWork = false
   /** A trustworthy idle boundary observed after `awaitingWork` was armed. */
@@ -306,7 +314,7 @@ class FxAgent {
     this.writeInput(encoder.encode(bracketedPaste(text)), "input")
     this.promptTimer = setTimeout(() => {
       this.promptTimer = null
-      if (this.status === "running") this.writeInput(encoder.encode("\r"), "input")
+      this.submitPrompt()
     }, PROMPT_SUBMIT_MS)
   }
 
@@ -334,7 +342,10 @@ class FxAgent {
       // fx can report before the transport is adopted — `create` returns
       // once fx is running, and fx speaks first. The prompt waits for the
       // transport rather than being dropped on the floor.
-      if (this.status === "starting") {
+      // A transport lost mid-flight leaves the status `running`, and the
+      // write would vanish into nothing. The prompt waits for the next
+      // transport rather than being consumed by a dead one.
+      if (this.status === "starting" || !this.transport) {
         this.promptWaitingForTransport = true
         return
       }
@@ -349,9 +360,24 @@ class FxAgent {
       // follows its end marker in the same one.
       this.promptTimer = setTimeout(() => {
         this.promptTimer = null
-        if (this.status === "running") this.writeInput(encoder.encode("\r"), "input")
+        this.submitPrompt()
       }, PROMPT_SUBMIT_MS)
     }, PROMPT_SETTLE_MS)
+  }
+
+  /**
+   * Send what was pasted. The paste and its send are one act, so a transport
+   * lost between them leaves the text sitting unsent in fx's composer; the
+   * send is retried against the next transport rather than dropped.
+   */
+  private submitPrompt(): void {
+    if (this.status !== "running") return
+    if (!this.transport) {
+      this.submitWaitingForTransport = true
+      return
+    }
+    this.submitWaitingForTransport = false
+    this.writeInput(new TextEncoder().encode("\r"), "input")
   }
 
   /** What a transport should be opened at: the terminal's size once it has one. */
@@ -395,6 +421,12 @@ class FxAgent {
     if (this.promptWaitingForTransport) {
       this.promptWaitingForTransport = false
       this.armPrompt()
+    } else if (this.submitWaitingForTransport) {
+      this.submitWaitingForTransport = false
+      this.promptTimer = setTimeout(() => {
+        this.promptTimer = null
+        this.submitPrompt()
+      }, PROMPT_SUBMIT_MS)
     }
   }
 
@@ -480,6 +512,8 @@ export class Multiplexer {
   private readonly adeSequences = new Map<string, number>()
   /** Instances whose last accepted process generation ended orderly. */
   private readonly adeStoppedInstances = new Set<string>()
+  /** Consecutive records refused as non-increasing, per Fx instance. */
+  private readonly adeStaleRecords = new Map<string, number>()
   private readonly sessionList: SessionList
   /** Hold restored Session-list mutations in the model until one final publish. */
   private sessionListPublicationHeld: boolean
@@ -1032,6 +1066,7 @@ export class Multiplexer {
     this.registry.forget(this.paneIdFor(agent))
     this.adeSequences.delete(agent.entry.agentId)
     this.adeStoppedInstances.delete(agent.entry.agentId)
+    this.adeStaleRecords.delete(agent.entry.agentId)
     this.seenSeq.delete(agent.id)
     this.refreshAgentChrome()
     for (const waiter of this.agentWaiters) {
@@ -1214,6 +1249,9 @@ export class Multiplexer {
     const record = this.registry.get(this.paneIdFor(agent))
     this.seenSeq.set(agent.id, record?.stateSeq ?? 0)
     this.checkpointAgent(agent)
+    // Acknowledging a finished turn moves `done` to `idle`, and an idle Fx
+    // sends nothing more: a wait for that state must settle here or never.
+    this.settleAgentWaiters()
   }
 
   /** Keep the last trustworthy ADE snapshot and its acknowledgement relation. */
@@ -1249,7 +1287,19 @@ export class Multiplexer {
       this.adeSequences.delete(record.instanceId)
       this.adeStoppedInstances.delete(record.instanceId)
     }
-    if (previousSequence !== undefined && record.sequence <= previousSequence) return
+    if (previousSequence !== undefined && record.sequence <= previousSequence) {
+      const stale = (this.adeStaleRecords.get(record.instanceId) ?? 0) + 1
+      if (stale < STALE_SEQUENCE_LIMIT) {
+        this.adeStaleRecords.set(record.instanceId, stale)
+        return
+      }
+      // Fx's sequence only advances, so a run of records beneath the stored
+      // mark means the mark is wrong rather than the records. Take the newest
+      // as the new baseline and recover as if its predecessors were dropped.
+      this.adeStaleRecords.delete(record.instanceId)
+      previousSequence = undefined
+    }
+    this.adeStaleRecords.delete(record.instanceId)
     const gap = previousSequence === undefined ? record.sequence !== 1 : record.sequence !== previousSequence + 1
     this.adeSequences.set(record.instanceId, record.sequence)
     // The first record observed is the only lifecycle-owned signal that fx is
@@ -1257,7 +1307,6 @@ export class Multiplexer {
     // repaired by any later record.
     agent.armPrompt()
 
-    let changed = false
     // Identity and lifecycle are envelope context, not event payload. Main
     // records alone replace the active main identity: a child's parent
     // attribution can intentionally name an older session after `/new`.
@@ -1265,18 +1314,18 @@ export class Multiplexer {
     const contextualIdentityChanged =
       record.context.agentRole === "main" && previousSession !== record.context.sessionId
     if (record.context.agentRole === "main") {
-      changed = this.installAdeSession(agent, record.context.sessionId) || changed
+      this.installAdeSession(agent, record.context.sessionId)
     }
     if (gap) {
       const recoverySession = this.sessionIdOf(agent)
       // Installing a different identity already reads its durable sidecar.
       if (recoverySession && !contextualIdentityChanged) {
-        changed = this.sessionNames.recover(recoverySession) || changed
+        this.sessionNames.recover(recoverySession)
       }
     }
     if (record.context.agentRole !== "main") {
-      changed = this.subagents.applyAdeRecord(record) || changed
-      if (changed) this.refreshSessionList()
+      this.subagents.applyAdeRecord(record)
+      this.refreshSessionList()
       return
     }
 
@@ -1293,7 +1342,7 @@ export class Multiplexer {
         const sessionId = record.context.sessionId
         const title = record.payload.title
         if (sessionId && typeof title === "string") {
-          changed = this.sessionNames.apply(sessionId, title) || changed
+          this.sessionNames.apply(sessionId, title)
         }
         break
       }

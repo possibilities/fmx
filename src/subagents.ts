@@ -120,10 +120,7 @@ export class SubagentObserver {
     this.ensureRootWatcher()
     this.syncChildWatchers()
     if (this.parents.size > 0) return this.refresh()
-    if (this.stableStates.size > 0) {
-      this.stableStates.clear()
-      this.notify()
-    }
+    if (this.pruneUnreachable()) this.notify()
     return Promise.resolve()
   }
 
@@ -194,11 +191,7 @@ export class SubagentObserver {
       const lock = record.state === "running" ? this.lockProbe(this.lockPath(childId)) : null
       changed = this.acceptSample(record, displayState(record.state, lock)) || changed
     }
-    for (const childId of [...this.stableStates.keys()]) {
-      if (reachable.has(childId) || this.liveParents.has(childId)) continue
-      this.stableStates.delete(childId)
-      changed = true
-    }
+    changed = this.pruneUnreachable() || changed
     if (changed) this.notify()
   }
 
@@ -267,8 +260,12 @@ export class SubagentObserver {
     const combined = new Map(this.records)
     for (const [childId, parentId] of this.liveParents) {
       const durable = combined.get(childId)
+      // Fx's own record owns the parent: a child's ADE attribution is
+      // captured with its work and may name a superseded session after
+      // `/new`. A child fx has not written down yet stands under its
+      // captured parent until it does.
       combined.set(childId, durable
-        ? { ...durable, parentId }
+        ? durable
         : {
             childId,
             parentId,
@@ -287,6 +284,29 @@ export class SubagentObserver {
       children.sort((left, right) => left.createdAt - right.createdAt || left.childId.localeCompare(right.childId))
     }
     this.byParent = next
+  }
+
+  /**
+   * Forget every child no longer reachable from a tracked parent. A subagent
+   * exists only under a parent fmx tracks: its live ADE feed does not keep it
+   * on screen, because an Agent that ended took its children with it.
+   */
+  private pruneUnreachable(): boolean {
+    const reachable = this.reachableChildren()
+    let changed = false
+    for (const childId of [...this.stableStates.keys()]) {
+      if (reachable.has(childId)) continue
+      this.stableStates.delete(childId)
+      changed = true
+    }
+    let live = false
+    for (const childId of [...this.liveParents.keys()]) {
+      if (reachable.has(childId)) continue
+      this.liveParents.delete(childId)
+      live = true
+    }
+    if (live) this.rebuildParentIndex()
+    return changed || live
   }
 
   private reachableChildren(): Set<string> {
@@ -313,11 +333,7 @@ export class SubagentObserver {
       const lock = record.state === "running" ? this.lockProbe(this.lockPath(childId)) : null
       changed = this.acceptSample(record, displayState(record.state, lock)) || changed
     }
-    for (const childId of [...this.stableStates.keys()]) {
-      if (reachable.has(childId) || this.liveParents.has(childId)) continue
-      this.stableStates.delete(childId)
-      changed = true
-    }
+    changed = this.pruneUnreachable() || changed
     return changed
   }
 
