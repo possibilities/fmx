@@ -68,6 +68,14 @@
   of watcher installation closing the race and a slow probe covering a lost
   or unavailable notification; do not put the normal path back behind a
   polling interval.
+- A terminal Client conceals its physical cursor before asynchronous TUI
+  preflight. A Client's Runtime Restore does not reset the physical terminal
+  merely because `RestoreBegin` arrived: prepend RIS and concealment to the
+  first actual Restore bytes, in the same write, while an empty cold-Runtime
+  Restore leaves the shell surface intact. The Runtime begins synchronized
+  output before OpenTUI enters the alternate screen, and the first complete
+  frame publishes that transition. Every failure path must end synchronized
+  output and reveal the cursor.
 - `keys.detach` (default `prefix+d`) is intercepted by the thin Client and
   disconnects only that Client, never an Agent. There is deliberately no
   `fmx control detach`: agents do not own physical Client connections. The
@@ -90,7 +98,7 @@
   before the Companion hears the name, and the Manifest must say `running`
   before anything can go wrong in fmx, because those two writes are what a
   crash leaves for the join.
-- A restore resets the visible terminal with RIS at `RestoreBegin` and
+- An Agent Restore resets its embedded terminal with RIS at `RestoreBegin` and
   re-applies the resolved OSC 11 background after: the Companion's replay
   carries the modes, cursor, and keyboard state fx set, but fmx's terminal
   defaults were never fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the

@@ -1,6 +1,33 @@
 import { expect, test } from "bun:test"
 import { resolveKeybindings } from "../src/keybindings.ts"
-import { ClientInputFilter } from "../src/terminal-client.ts"
+import { ClientInputFilter, ClientOutputRelay } from "../src/terminal-client.ts"
+
+test("an empty Runtime Restore leaves the shell surface intact", () => {
+  const writes: Uint8Array[] = []
+  const relay = new ClientOutputRelay((bytes) => writes.push(bytes))
+
+  relay.beginRestore()
+  relay.output(new Uint8Array())
+  relay.ready()
+  relay.output(new TextEncoder().encode("LIVE"))
+
+  expect(writes.map((bytes) => new TextDecoder().decode(bytes))).toEqual(["LIVE"])
+})
+
+test("a populated Restore resets and conceals in the same write as its first bytes", () => {
+  const writes: Uint8Array[] = []
+  const relay = new ClientOutputRelay((bytes) => writes.push(bytes))
+
+  relay.beginRestore()
+  relay.output(new TextEncoder().encode("RESTORED"))
+  relay.output(new TextEncoder().encode(" LIVE"))
+  relay.ready()
+
+  expect(writes.map((bytes) => new TextDecoder().decode(bytes))).toEqual([
+    "\x1bc\x1b[?25lRESTORED",
+    " LIVE",
+  ])
+})
 
 test("prefix Detach is consumed locally and never arms the shared Runtime", () => {
   const forwarded: Uint8Array[] = []

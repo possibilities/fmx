@@ -135,6 +135,15 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     try {
       await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      expect(output.startsWith("\x1b[?25l")).toBe(true)
+      expect(output).not.toContain("\x1bc")
+      const synchronizedSetup = output.indexOf("\x1b[?2026h\x1b[?25l")
+      const alternateScreen = output.indexOf("\x1b[?1049h")
+      const firstContent = output.indexOf("no agents")
+      expect(synchronizedSetup).toBeGreaterThanOrEqual(0)
+      expect(alternateScreen).toBeGreaterThan(synchronizedSetup)
+      expect(firstContent).toBeGreaterThan(alternateScreen)
+      expect(output.indexOf("\x1b[?2026l", firstContent)).toBeGreaterThan(firstContent)
       await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
@@ -209,6 +218,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     let second: ReturnType<typeof spawnClient> | null = null
     try {
       await waitUntil(() => firstOutput.output.includes("no agents"), 8_000, () => firstOutput.output)
+      expect(firstOutput.output.startsWith("\x1b[?25l")).toBe(true)
+      expect(firstOutput.output).not.toContain("\x1bc")
       const initial = await orientation(tempDirectory, env)
       expect(initial?.fmx).toMatchObject({ cols: 100, rows: 24 })
       const runtimePid = initial!.fmx.pid
@@ -230,6 +241,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
       )
       await waitUntil(() => countOccurrences(firstOutput.output, clear) > firstClears, 5_000, () => firstOutput.output)
       expect(firstOutput.output).toContain(unusedClear)
+      expect(secondOutput.output.startsWith("\x1b[?25l")).toBe(true)
+      expect(secondOutput.output).toContain("\x1bc\x1b[?25l")
       expect((await runtimeSession())?.clients).toBe(2)
 
       // A key from the larger Client takes sizing before it reaches fmx. The

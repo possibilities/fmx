@@ -20,11 +20,21 @@ export function clearToUnusedSpace(
   return `${concealCursor}\x1b[48;5;${background.slot}m\x1b[2J\x1b[H\x1b[0m`
 }
 
+/** Hold a terminal transition until OpenTUI publishes its next complete frame. */
+export function beginSynchronizedFrame(): string {
+  return "\x1b[?2026h\x1b[?25l"
+}
+
+/** Release a transition when startup cannot hand it to an OpenTUI frame. */
+export function endSynchronizedFrame(): string {
+  return "\x1b[?2026l"
+}
+
 /**
  * Start one synchronized terminal update with the physical clear. OpenTUI's
  * immediately requested frame starts the same mode again, then its ordinary
  * synchronized-output end marker publishes the clear and resized UI together.
  */
 export function beginSynchronizedResizeClear(theme: FxnkTheme): string {
-  return `\x1b[?2026h${clearToUnusedSpace(theme, { concealCursor: true })}`
+  return `${beginSynchronizedFrame()}${clearToUnusedSpace(theme)}`
 }
