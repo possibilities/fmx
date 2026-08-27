@@ -9,10 +9,8 @@ import {
   type MouseEvent,
   type Selection,
   StyledText,
-  type TerminalColors,
   type TextChunk,
   TextRenderable,
-  type ThemeMode,
 } from "@opentui/core"
 import { realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
@@ -64,7 +62,12 @@ import {
   type TerminalSize,
 } from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
-import { hasDetectedBackground, hostRamp, RAMP_FALLBACK, type Ramp, themeModeReport } from "./host-palette.ts"
+import {
+  type FxnkThemeResolution,
+  fxnkRamp,
+  type Ramp,
+  themeModeReport,
+} from "./host-palette.ts"
 import {
   actionForKey,
   isCancelKey,
@@ -103,11 +106,6 @@ export const TRAY_DEFAULT_WIDTH = 26
 // branch in. Both scale together — the range moved, not just its top.
 const TRAY_MIN_WIDTH = 24
 const TRAY_MAX_SCREEN_FRACTION = 1 / 2
-// Dividers stay invisible until the host palette is known (or fx starts and it
-// is definitively unknowable) so the theme-derived color never flashes over a
-// guessed one on startup.
-const DIVIDER_UNREVEALED_COLOR = "transparent"
-
 const HELP_MODAL_TITLE = " keys "
 const ERROR_MODAL_TITLE = " error "
 
@@ -178,9 +176,8 @@ type MultiplexerOptions = {
   bus?: BusPublisher | null
   /** How long each lifecycle Toast remains; overridden only by renderer tests. */
   toastDurationMs?: number
-  /** The first host palette query is still pending; index.ts has painted the
-   * sizing-owner frame with the terminal's native default background. */
-  initialPalettePending?: boolean
+  /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
+  initialTheme?: FxnkThemeResolution
 }
 
 /** Default states `agent wait` waits for: any that needs someone. */
@@ -200,6 +197,13 @@ type LaunchOverrides = {
   worktree?: boolean
   model?: string
   effort?: string
+}
+
+const DEFAULT_THEME: FxnkThemeResolution = {
+  theme: "dark",
+  background: null,
+  source: "default",
+  explicit: false,
 }
 
 type AgentWaiter = {
@@ -260,7 +264,7 @@ class FxAgent {
     renderer: CliRenderer,
     readonly entry: ManifestEntry,
     readonly cwd: string,
-    private hostPalette: TerminalColors | null,
+    private hostTheme: FxnkThemeResolution,
     private readonly events: AgentEvents,
   ) {
     this.id = entry.displayId
@@ -286,7 +290,7 @@ class FxAgent {
       onData: (data, source) => this.writeInput(data, source),
       onTerminalResize: (cols, rows) => this.resizePty(cols, rows),
     })
-    if (hostPalette) this.terminal.applyHostPalette(hostPalette)
+    this.terminal.applyHostTheme(hostTheme)
   }
 
   /** fx takes no prompt on its command line, so a launch prompt is typed in
@@ -415,10 +419,14 @@ class FxAgent {
     return this.transport !== null
   }
 
-  updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
-    this.hostPalette = colors
-    if (!this.terminal.applyHostPalette(colors)) return
-    if (themeMode && hasDetectedBackground(colors)) this.writeInput(themeModeReport(themeMode), "response")
+  updateHostTheme(resolution: FxnkThemeResolution): void {
+    const changed =
+      resolution.theme !== this.hostTheme.theme || resolution.background !== this.hostTheme.background
+    this.hostTheme = resolution
+    this.terminal.applyHostTheme(resolution)
+    if (changed && !resolution.explicit) {
+      this.writeInput(themeModeReport(resolution.theme), "response")
+    }
   }
 
   /** Let go of fx without ending it, and take the terminal down. */
@@ -446,14 +454,14 @@ class FxAgent {
   /**
    * What the transport replays is the whole terminal, so the one here must
    * hold nothing first: not the screen, not the scrollback, not a cursor
-   * query half-translated when the last transport dropped. The host palette
-   * goes back on afterwards — the replay restores what fx set, and the
-   * host's colors were never fx's.
+   * query half-translated when the last transport dropped. The resolved
+   * terminal-default background goes back on afterwards — the replay restores
+   * what fx set, not fmx's terminal state.
    */
   private resetTerminal(): void {
     this.cursorReportAdapter = new CursorReportAdapter()
     this.terminal.write(TERMINAL_RESET)
-    if (this.hostPalette) this.terminal.applyHostPalette(this.hostPalette)
+    this.terminal.applyHostTheme(this.hostTheme)
   }
 
   private writeInput(data: Uint8Array, source: EmbeddedTerminalDataSource): void {
@@ -522,11 +530,7 @@ export class Multiplexer {
   private modalKind: ModalKind | null = null
   private spawnErrorLines: string[] = []
   private spawnErrorHeading = "fx did not start"
-  private hostPalette: TerminalColors | null = null
-  /** The first frame owns one coherent Ramp across the selected row and
-   * structural dividers. A late answer may theme the embedded terminals and
-   * other surfaces, but cannot mix new grays into it. */
-  private startupChromeLocked = false
+  private theme: FxnkThemeResolution = DEFAULT_THEME
   private shuttingDown = false
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
@@ -541,7 +545,6 @@ export class Multiplexer {
   private readonly keypressHandler = (key: KeyEvent) => this.onKeyPress(key)
   private readonly keyreleaseHandler = (key: KeyEvent) => this.onKeyRelease(key)
   private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
-  private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
   private readonly resizeHandler = () => this.applyLayout()
   private readonly adeHandler = (record: AdeRecord) => this.acceptAdeRecord(record)
 
@@ -552,16 +555,14 @@ export class Multiplexer {
     this.donePromise = new Promise((resolveDone) => {
       this.resolveDone = resolveDone
     })
+    this.theme = options.initialTheme ?? DEFAULT_THEME
+    const initialRamp = fxnkRamp(this.theme.theme)
     // The physical Client is cleared to the unused-field color before each
     // owner-sized frame. A transparent renderer would leave that clear visible
     // anywhere no child draws — around the splash text on first paint and in
-    // stale tray cells after the last Agent disappears. The renderer's opaque
-    // base is therefore the shared frame itself once the palette choice has
-    // settled. While an initial query is pending, index.ts paints the exact
-    // owner rectangle with SGR 49 instead of exposing this guessed RGB.
-    if (!options.initialPalettePending) {
-      this.renderer.setBackgroundColor(RAMP_FALLBACK.background)
-    }
+    // stale tray cells after the last Agent disappears. The renderer's base is
+    // the terminal-default canvas, chosen before any frame is exposed.
+    this.renderer.setBackgroundColor(initialRamp.background)
     this.keybindings = options.keybindings
     this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
     this.trayHidden = options.initialTrayHidden ?? false
@@ -598,7 +599,7 @@ export class Multiplexer {
       flexShrink: 0,
       border: ["left"],
       borderStyle: "single",
-      borderColor: DIVIDER_UNREVEALED_COLOR,
+      borderColor: initialRamp.divider,
       visible: false,
       onMouseDown: (event) => this.beginDividerDrag(event),
       onMouseDrag: (event) => this.continueDividerDrag(event),
@@ -616,7 +617,7 @@ export class Multiplexer {
     this.emptyState = new TextRenderable(renderer, {
       id: "fmx-empty-state",
       content: emptyStateContent(),
-      fg: RAMP_FALLBACK.dim,
+      fg: initialRamp.dim,
       selectable: false,
     })
     this.content.add(this.emptyState)
@@ -626,6 +627,7 @@ export class Multiplexer {
 
     this.adeSocket = options.adeSocket ?? null
     this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
+    this.sessionList.applyTheme(this.theme.theme)
     this.sessionListPublicationHeld = (options.survivors?.length ?? 0) > 0
     this.sessionList.root.visible = !this.sessionListPublicationHeld
     this.tray.add(this.sessionList.root)
@@ -637,7 +639,7 @@ export class Multiplexer {
       left: 0,
       width: "100%",
       height: "100%",
-      backgroundColor: RAMP_FALLBACK.backdrop,
+      backgroundColor: initialRamp.backdrop,
       zIndex: 100,
       visible: false,
       onMouseDown: () => this.hideModal(),
@@ -654,8 +656,8 @@ export class Multiplexer {
       paddingX: 1,
       border: true,
       borderStyle: "single",
-      borderColor: RAMP_FALLBACK.focus,
-      backgroundColor: RAMP_FALLBACK.background,
+      borderColor: initialRamp.focus,
+      backgroundColor: initialRamp.background,
       title: HELP_MODAL_TITLE,
       titleAlignment: "left",
       visible: false,
@@ -663,16 +665,17 @@ export class Multiplexer {
     })
     this.modalText = new TextRenderable(renderer, {
       id: "fmx-modal-text",
-      content: styledHelpContent(this.keybindings, hostRamp(this.hostPalette)),
-      fg: RAMP_FALLBACK.foreground,
-      bg: RAMP_FALLBACK.background,
+      content: styledHelpContent(this.keybindings, initialRamp),
+      fg: initialRamp.foreground,
+      bg: initialRamp.background,
       selectable: false,
     })
     this.modal.add(this.modalText)
     this.modalBackdrop.add(this.modal)
-    this.applyModalPalette(this.hostPalette)
+    this.applyModalTheme()
 
     this.toast = new Toast(renderer, { durationMs: options.toastDurationMs })
+    this.toast.applyTheme(this.theme.theme)
 
     this.renderer.root.add(this.stage)
     this.renderer.root.add(this.toast.root)
@@ -680,7 +683,6 @@ export class Multiplexer {
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
-    this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
     this.applyLayout()
     this.refreshTerminalTitle()
@@ -735,22 +737,17 @@ export class Multiplexer {
     this.publishBusState("restored")
   }
 
-  setHostPalette(colors: TerminalColors): void {
-    this.onPalette(colors)
-  }
-
-  /** Choose the startup chrome Ramp before OpenTUI may draw it. */
-  lockStartupChrome(colors: TerminalColors | null): void {
+  setTheme(resolution: FxnkThemeResolution): void {
     if (this.shuttingDown) return
-    if (colors) this.onPalette(colors)
-    else this.applyDividerPalette(null)
-    this.startupChromeLocked = true
-  }
-
-  /** The initial answer has now either landed or been deliberately ignored;
-   * a later, genuine terminal theme change may update the chrome again. */
-  unlockStartupChrome(): void {
-    this.startupChromeLocked = false
+    this.theme = resolution
+    const ramp = fxnkRamp(resolution.theme)
+    this.renderer.setBackgroundColor(ramp.background)
+    this.applyModalTheme()
+    this.applyDividerTheme()
+    this.toast.applyTheme(resolution.theme)
+    this.refreshEmptyState()
+    for (const agent of this.agents) agent.updateHostTheme(resolution)
+    this.renderer.requestRender()
   }
 
   waitUntilDone(): Promise<void> {
@@ -776,7 +773,6 @@ export class Multiplexer {
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
       this.renderer.off(CliRenderEvents.SELECTION, this.selectionHandler)
-      this.renderer.off(CliRenderEvents.PALETTE, this.paletteHandler)
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const agent of this.agents) agent.destroy()
@@ -926,7 +922,7 @@ export class Multiplexer {
     focus: boolean,
     selectIfEmpty = true,
   ): FxAgent {
-    const agent = new FxAgent(this.renderer, entry, cwd, this.hostPalette, {
+    const agent = new FxAgent(this.renderer, entry, cwd, this.theme, {
       onTitleChange: (candidate) => {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
         this.publishBusState("agent_label_changed")
@@ -1124,7 +1120,7 @@ export class Multiplexer {
 
   private refreshEmptyState(): void {
     const confirmingExit = this.exitConfirmationTimer !== null
-    const palette = hostRamp(this.hostPalette)
+    const palette = fxnkRamp(this.theme.theme)
     this.emptyState.content = confirmingExit
       ? `press ${this.exitConfirmationKey ?? "ctrl+c"} again to exit`
       : emptyStateContent()
@@ -1397,31 +1393,18 @@ export class Multiplexer {
     this.refreshSessionList()
   }
 
-  private onPalette(colors: TerminalColors): void {
-    this.hostPalette = colors
-    this.renderer.setBackgroundColor(hostRamp(colors).background)
-    this.applyModalPalette(colors)
-    this.applyDividerPalette(colors)
-    this.toast.applyPalette(colors)
-    this.refreshEmptyState()
-    const themeMode = this.renderer.themeMode
-    for (const agent of this.agents) agent.updateHostPalette(colors, themeMode)
-  }
-
-  private applyDividerPalette(colors: TerminalColors | null): void {
-    if (!this.startupChromeLocked) {
-      const color = hostRamp(colors).divider
-      this.divider.borderColor = color
-      this.divider.focusedBorderColor = color
-    }
-    this.sessionList.applyPalette(colors, this.startupChromeLocked)
+  private applyDividerTheme(): void {
+    const color = fxnkRamp(this.theme.theme).divider
+    this.divider.borderColor = color
+    this.divider.focusedBorderColor = color
+    this.sessionList.applyTheme(this.theme.theme)
     this.refreshSessionList()
   }
 
   /** The modal takes keys, so its border is the focus hue — or the error hue
    * when what took the screen is a failure. */
-  private applyModalPalette(colors: TerminalColors | null): void {
-    const palette = hostRamp(colors)
+  private applyModalTheme(): void {
+    const palette = fxnkRamp(this.theme.theme)
     const isError = this.modalKind === "spawn-error"
     const borderColor = isError ? palette.error : palette.focus
     this.modalBackdrop.backgroundColor = palette.backdrop
@@ -1619,7 +1602,7 @@ export class Multiplexer {
   private showModal(kind: ModalKind, width: number, height: number): void {
     this.modalKind = kind
     this.resizeModal(width, height)
-    this.applyModalPalette(this.hostPalette)
+    this.applyModalTheme()
     this.modalBackdrop.visible = true
     this.modal.visible = true
     this.activeAgent()?.terminal.blur()

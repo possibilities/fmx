@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type TerminalColors } from "@opentui/core"
+import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { AdeSocket } from "../src/ade-events.ts"
@@ -314,7 +314,7 @@ test("folds ADE records accepted during startup after survivor identities exist"
   }
 })
 
-test("reapplies the host palette after RestoreBegin", async () => {
+test("reapplies the resolved OSC 11 background after RestoreBegin", async () => {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const options = agentOptions()
   const claim = options.manifest.claim({
@@ -333,11 +333,9 @@ test("reapplies the host palette after RestoreBegin", async () => {
     keybindings: resolveKeybindings().keybindings,
     survivors: [survivor],
   })
-  const palette = hostPalette("#101010", "#f0f0f0")
-
   try {
     await multiplexer.start()
-    multiplexer.setHostPalette(palette)
+    multiplexer.setTheme({ theme: "light", background: "#f0f0f0", source: "osc11", explicit: false })
 
     transport.clearWrites()
     transport.restoreAndQueryBackground()
@@ -458,18 +456,3 @@ test("a lost transport that can be reached again is adopted and the Agent stays"
     await h.close()
   }
 })
-
-function hostPalette(foreground: string, background: string): TerminalColors {
-  return {
-    palette: Array(16).fill(null),
-    defaultForeground: foreground,
-    defaultBackground: background,
-    cursorColor: null,
-    mouseForeground: null,
-    mouseBackground: null,
-    tekForeground: null,
-    tekBackground: null,
-    highlightBackground: null,
-    highlightForeground: null,
-  }
-}

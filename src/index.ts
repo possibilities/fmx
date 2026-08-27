@@ -1,12 +1,6 @@
 #!/usr/bin/env bun
 
-import {
-  CliRenderEvents,
-  CliRenderer,
-  createTerminalPalette,
-  type TerminalColors,
-  type TerminalPaletteDetector,
-} from "@opentui/core"
+import { CliRenderer } from "@opentui/core"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { AdeSocket, HomeActiveError } from "./ade-events.ts"
@@ -21,6 +15,11 @@ import { AgentManifest, manifestPath } from "./agent-manifest.ts"
 import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
+import {
+  type FxnkThemeResolution,
+  FxnkThemeMonitor,
+  resolveFxnkTheme,
+} from "./host-palette.ts"
 import { Multiplexer } from "./multiplexer.ts"
 import { RuntimeBus } from "./runtime-bus.ts"
 import { expandTilde } from "./projects.ts"
@@ -35,11 +34,7 @@ import {
   waitForRuntimeBootstrap,
 } from "./runtime-session.ts"
 import { runTerminalClient } from "./terminal-client.ts"
-import {
-  beginSynchronizedResizeClear,
-  clearToUnusedSpace,
-  paintSizingOwnerDefaultBackground,
-} from "./unused-space.ts"
+import { beginSynchronizedResizeClear } from "./unused-space.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PIN,
@@ -51,10 +46,6 @@ import {
   homeId,
   resolveCompanion,
 } from "./zmx-environment.ts"
-
-/** One 60 Hz frame is enough for a responsive terminal to answer its palette
- * query, and short enough that a silent terminal does not delay first paint. */
-const FIRST_FRAME_PALETTE_BUDGET_MS = 16
 
 async function main(): Promise<void> {
   let options
@@ -138,7 +129,7 @@ async function main(): Promise<void> {
   const runtimeBus = new RuntimeBus({ homeId: home, version: VERSION })
 
   let renderer: CliRenderer | null = null
-  let startupPaletteDetector: TerminalPaletteDetector | null = null
+  let themeMonitor: FxnkThemeMonitor | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const adeSocket = new AdeSocket({ homeId: home })
@@ -146,17 +137,15 @@ async function main(): Promise<void> {
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
-  let runtimePaletteHandler: ((colors: TerminalColors) => void) | null = null
-  let runtimePalette: TerminalColors | null = null
+  let runtimeTheme: FxnkThemeResolution | null = null
 
   try {
     // The ADE feed is the Home's singleton; only its holder may touch the
     // Manifest, so the join runs after the bind and before anything is drawn.
     await adeSocket.start()
 
-    // Start the host query as soon as this Runtime owns the Home, while the
-    // Companion join still runs. The one-frame choice remains fixed 16 ms
-    // after the query; only its wait is removed from the later critical path.
+    // Start fx's one OSC 11 query as soon as this Runtime owns the Home, while
+    // the Companion join still runs. No palette or foreground query is made.
     // Constructing the renderer starts its input parser but does not expose the
     // alternate screen, so replies can arrive while nothing has been painted.
     const createdRenderer = new CliRenderer(
@@ -171,23 +160,15 @@ async function main(): Promise<void> {
       },
     )
     renderer = createdRenderer
-    const termProgram = process.env.TERM_PROGRAM?.toLowerCase()
-    const tmuxVersion = termProgram?.includes("tmux") ? process.env.TERM_PROGRAM_VERSION : undefined
-    startupPaletteDetector = createTerminalPalette({
-      stdin: process.stdin,
-      stdout: process.stdout,
-      isTmux: Boolean(process.env.TMUX) || Boolean(termProgram?.includes("tmux")),
-      isLegacyTmux:
-        tmuxVersion !== undefined && tmuxVersion.localeCompare("3.6", undefined, { numeric: true }) < 0,
-      oscSource: {
-        subscribeOsc: (handler) => createdRenderer.subscribeOsc(handler),
-      },
-    })
-    const paletteDetection = detectHostPalette(startupPaletteDetector)
-    const firstPaletteChoice = Promise.race([
-      paletteDetection.then((colors) => ({ kind: "settled" as const, colors })),
-      Bun.sleep(FIRST_FRAME_PALETTE_BUDGET_MS).then(() => ({ kind: "pending" as const })),
-    ])
+    const themePort = {
+      write: (sequence: string) => process.stdout.write(sequence),
+      subscribeOsc: (handler: (sequence: string) => void) => createdRenderer.subscribeOsc(handler),
+      prependInputHandler: (handler: (sequence: string) => boolean) =>
+        createdRenderer.prependInputHandler(handler),
+      removeInputHandler: (handler: (sequence: string) => boolean) =>
+        createdRenderer.removeInputHandler(handler),
+    }
+    const themeDetection = resolveFxnkTheme(themePort)
 
     await ensureCompanionDirectories(companionDirectories())
     // The pair is checked once the directory is ours: `version` creates the
@@ -208,8 +189,15 @@ async function main(): Promise<void> {
     })
     const survivors = restored.map(({ entry }) => entry)
     const busSocketPath = BusSocket.pathFor(adeSocket.path)
-    const firstPalette = await firstPaletteChoice
-    runtimePalette = firstPalette.kind === "settled" ? firstPalette.colors : null
+    runtimeTheme = await themeDetection
+    themeMonitor = new FxnkThemeMonitor(themePort, runtimeTheme, (next) => {
+      runtimeTheme = next
+      if (!app) return
+      // Publish the physical clear and the atomically retinted frame together.
+      process.stdout.write(beginSynchronizedResizeClear(next.theme))
+      app.setTheme(next)
+    })
+    themeMonitor.start()
     await renderer.setupTerminal()
     // One Runtime frame is broadcast to every Client. Apply the new owner size
     // synchronously before clearing every physical terminal; input can follow
@@ -224,17 +212,9 @@ async function main(): Promise<void> {
       )
       // Keep the clear and the resized frame in one synchronized terminal
       // update. OpenTUI's frame closes the mode after restoring its cursor.
-      process.stdout.write(beginSynchronizedResizeClear(runtimePalette))
+      process.stdout.write(beginSynchronizedResizeClear(runtimeTheme?.theme ?? "dark"))
     }
     process.stdout.on("resize", runtimeResizeHandler)
-    // A live host-theme change updates the shared frame through Multiplexer;
-    // repaint the physical field too so larger Clients do not retain the
-    // previous theme's unused margins until another resize.
-    runtimePaletteHandler = (colors) => {
-      runtimePalette = colors
-      process.stdout.write(clearToUnusedSpace(colors))
-    }
-    createdRenderer.on(CliRenderEvents.PALETTE, runtimePaletteHandler)
 
     app = new Multiplexer(renderer, {
       fxPath,
@@ -251,7 +231,7 @@ async function main(): Promise<void> {
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
       initialActiveAgentId: persistedState.activeAgentId,
-      initialPalettePending: firstPalette.kind === "pending",
+      initialTheme: runtimeTheme,
       onTrayWidthChange: (width) => {
         persistedState.trayWidth = width
         // State persistence is an enhancement; a failed write must never
@@ -274,13 +254,6 @@ async function main(): Promise<void> {
         persistState()
       },
     })
-    app.lockStartupChrome(firstPalette.kind === "settled" ? firstPalette.colors : null)
-    if (firstPalette.kind === "pending") {
-      // Do not put a guessed opaque RGB on screen while the terminal is still
-      // answering. SGR 49 paints its exact native background, and row-bounded
-      // ECH keeps a larger observing Client's unused right and bottom margins.
-      process.stdout.write(paintSizingOwnerDefaultBackground(renderer.width, renderer.height))
-    }
 
     for (const [signal, exitCode] of [
       ["SIGHUP", 129],
@@ -293,10 +266,9 @@ async function main(): Promise<void> {
       process.once(signal, handler)
     }
 
-    // Choose the truthful first surface before anything may render. The chrome
-    // was fixed above, before the renderer could expose an empty or partially
-    // restored application. Multiplexer holds the restored Session list until
-    // every durable source and transport-discovered identity has been read.
+    // The complete theme was fixed above, before the renderer can expose an
+    // empty or partially restored application. Multiplexer holds the restored
+    // Session list until every durable source and discovered identity is read.
     const startup = app.start()
     renderer.start()
     await startup
@@ -307,20 +279,6 @@ async function main(): Promise<void> {
     busSocket = new BusSocket(runtimeBus, app.control, busSocketPath)
     busSocket.start()
 
-    // Detection takes seconds in a terminal that never answers, and a
-    // renderer destroyed under it never settles the query: a shutdown in
-    // that window must still reach the cleanup below.
-    const hostPalette = await Promise.race([paletteDetection, app.waitUntilDone().then(() => null)])
-    if (hostPalette) {
-      runtimePalette = hostPalette
-      // The pending frame already has the terminal's native background. Make
-      // that same detected color OpenTUI's opaque base without first clearing
-      // the owner to the lighter unused-field step, which would visibly flash
-      // until the renderer's next frame. Future resizes use runtimePalette;
-      // genuine later theme changes still repaint every physical margin.
-      app.setHostPalette(hostPalette)
-    }
-    app.unlockStartupChrome()
     await app.waitUntilDone()
   } catch (error) {
     if (app) await app.shutdown(1)
@@ -335,9 +293,8 @@ async function main(): Promise<void> {
     await stateSave
     busSocket?.close()
     adeSocket.close()
-    startupPaletteDetector?.cleanup()
+    themeMonitor?.dispose()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)
-    if (runtimePaletteHandler) renderer?.off(CliRenderEvents.PALETTE, runtimePaletteHandler)
   }
 }
 
@@ -393,16 +350,6 @@ async function reconcileAtStartup(manifest: AgentManifest, companion: CompanionC
     process.stderr.write(`fmx: ${outcome.unresolved.length} Companion session(s) unreachable; left for the next start\n`)
   }
   return [...outcome.attached, ...outcome.adopted]
-}
-
-async function detectHostPalette(detector: TerminalPaletteDetector): Promise<TerminalColors | null> {
-  try {
-    return await detector.detect({ size: 16 })
-  } catch {
-    // Palette mirroring is an enhancement; keep fmx usable when a terminal
-    // cannot answer OSC color queries.
-    return null
-  }
 }
 
 function errorMessage(error: unknown): string {

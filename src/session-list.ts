@@ -3,25 +3,18 @@ import {
   BoxRenderable,
   type CliRenderer,
   fg,
-  RGBA,
   StyledText,
-  type TerminalColors,
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
-import { hasDetectedDefaults, hostRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
+import { type FxnkTheme, fxnkRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
 import { indentFor, type TreeRow } from "./session-tree.ts"
 
 /** Inset the text; the row's shading still spans the full tray width. */
 const ROW_PADDING_LEFT = 1
 const ICON_COLUMN = 2
 const MISSING_SESSION = "—"
-/** Agent names before the host palette answers: the terminal's own ANSI gray,
- * which reads as dim text on a light theme and a dark one alike. Once the
- * host has answered they take the ramp's dim step. */
-const SESSION_COLOR = RGBA.fromIndex(8)
-
 /**
  * The icon carries the whole status. A blocked Agent varies its glyph by the
  * attention kind Fx carries in its ADE lifecycle snapshot.
@@ -96,11 +89,6 @@ export function rowText(row: TreeRow, width: number): string {
 export class SessionList {
   readonly root: BoxRenderable
   private ramp: Ramp = RAMP_FALLBACK
-  /** The ramp the active row's fill was chosen from. Under the startup lock
-   * it lags `ramp`, and everything drawn on that fill is drawn from it, so a
-   * fallback-dark fill never carries a light host's dark glyph. */
-  private fillRamp: Ramp = RAMP_FALLBACK
-  private sessionColor: RGBA | string = SESSION_COLOR
   private rows: BoxRenderable[] = []
 
   constructor(
@@ -122,24 +110,8 @@ export class SessionList {
     this.renderer.requestRender()
   }
 
-  /**
-   * The selected-row fill and the agent names are on screen from the first
-   * frame; while the startup chrome is locked, a late initial palette answer
-   * themes everything else and leaves those two as they were drawn — the
-   * fill together with the ramp it came from, which is what the active row's
-   * glyph is painted in. Names take the dim step only once both host
-   * defaults have answered; until then they are the terminal's own gray.
-   */
-  applyPalette(colors: TerminalColors | null, preserveStartupChrome = false): void {
-    const fillRamp = this.fillRamp
-    const sessionColor = this.sessionColor
-    this.ramp = hostRamp(colors)
-    this.fillRamp = this.ramp
-    this.sessionColor = hasDetectedDefaults(colors) ? this.ramp.dim : SESSION_COLOR
-    if (preserveStartupChrome) {
-      this.fillRamp = fillRamp
-      this.sessionColor = sessionColor
-    }
+  applyTheme(theme: FxnkTheme): void {
+    this.ramp = fxnkRamp(theme)
   }
 
   private clearRows(): void {
@@ -160,7 +132,7 @@ export class SessionList {
       paddingLeft: ROW_PADDING_LEFT,
       // Only the active row is filled. Its ancestors are marked by weight, so
       // two faint backgrounds never have to be told apart.
-      backgroundColor: row.active ? this.fillRamp.surface : undefined,
+      backgroundColor: row.active ? this.ramp.surface : undefined,
       onMouseDown: (event) => {
         // Navigation is a press action, like a keybinding: waiting for release
         // makes a fast switch feel delayed by the human's click duration.
@@ -186,8 +158,7 @@ export class SessionList {
   }
 
   private styleRow(row: TreeRow, width: number): StyledText {
-    // What sits on the active row's fill is painted from the fill's own ramp.
-    const ramp = row.active ? this.fillRamp : this.ramp
+    const ramp = this.ramp
     const chunks: TextChunk[] = [fg(ramp.foreground)(indentFor(row.depth))]
     if (isAgentRow(row)) {
       const glyph = fg(ramp[stateRole(row.state)])(`${stateIcon(row.state, row.attention)} `)
@@ -195,7 +166,7 @@ export class SessionList {
       // The selected row's name steps up to the ramp's primary: dim text on
       // the raised fill is the one place the tray asks a name to be read
       // against something other than the background it was measured from.
-      chunks.push(fg(row.active ? ramp.foreground : this.sessionColor)(rowText(row, width)))
+      chunks.push(fg(row.active ? ramp.foreground : ramp.dim)(rowText(row, width)))
       return new StyledText(chunks)
     }
     // An ancestor of the active agent is marked by weight: the path reads

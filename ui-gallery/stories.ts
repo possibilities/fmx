@@ -4,7 +4,6 @@ import { BoxRenderable } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
 import type { AdeEventListener, AdeRecord } from "../src/ade-events.ts"
-import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { SessionList } from "../src/session-list.ts"
@@ -56,7 +55,7 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "multiplexer-larger-client",
     component: "Multiplexer",
     title: "Larger observing Client",
-    description: "The shared sizing-owner frame stays at top left while one flat host-relative field marks the larger Client's unused right and bottom space.",
+    description: "The shared sizing-owner frame stays at top left while one flat fxnk theme step marks the larger Client's unused right and bottom space.",
     viewport: { cols: 86, rows: 24 },
     expectedText: ["Review UI", "Working on the UI gallery", "Review the gallery in a terminal"],
     arrange: mountMultiplexer({
@@ -164,7 +163,7 @@ function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
 function mountSessionList(context: UiStoryContext, entries: SessionEntry[], width = context.setup.renderer.width): void {
   const list = new SessionList(context.setup.renderer, () => {})
   context.canvas.add(list.root)
-  list.applyPalette(context.palette)
+  list.applyTheme(context.themeMode)
   list.render(buildTree(entries), width)
   context.defer(() => list.root.destroyRecursively())
 }
@@ -194,7 +193,7 @@ function toastStory(tone: ToastTone): UiStory {
 function mountToast(context: UiStoryContext, text: string, tone: ToastTone, italic: readonly string[] = []): void {
   const toast = new Toast(context.setup.renderer, { durationMs: 60_000 })
   context.canvas.add(toast.root)
-  toast.applyPalette(context.palette)
+  toast.applyTheme(context.themeMode)
   toast.show(text, tone, { italic })
   toast.layout()
   context.defer(() => toast.destroy())
@@ -213,7 +212,7 @@ type MultiplexerStoryOptions = {
 function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiStoryContext) => Promise<void> {
   return async (context) => {
     if (options.sizingOwnerFrame) {
-      context.canvas.backgroundColor = unusedSpaceBackground(context.palette)
+      context.canvas.backgroundColor = unusedSpaceBackground(context.themeMode)
       context.canvas.add(new BoxRenderable(context.setup.renderer, {
         id: "ui-gallery-sizing-owner-frame",
         position: "absolute",
@@ -221,7 +220,7 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
         left: 0,
         width: options.sizingOwnerFrame.cols,
         height: options.sizingOwnerFrame.rows,
-        backgroundColor: context.palette?.defaultBackground ?? RAMP_FALLBACK.background,
+        backgroundColor: context.palette?.defaultBackground ?? "#1c1c1c",
       }))
     }
     const adeSocket = new GalleryAdeSocket()
@@ -288,6 +287,12 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       projectRoots: [],
       home: ROOT,
       toastDurationMs: 60_000,
+      initialTheme: {
+        theme: context.themeMode,
+        background: context.palette?.defaultBackground ?? null,
+        source: context.palette ? "osc11" : "default",
+        explicit: false,
+      },
     })
     if (options.sizingOwnerFrame) {
       const stage = context.setup.renderer.root.findDescendantById("fmx-stage")
@@ -297,10 +302,6 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       stage.width = options.sizingOwnerFrame.cols
       stage.height = options.sizingOwnerFrame.rows
     }
-    // The path index.ts takes: the first answer, or none, is what the startup
-    // chrome is drawn from.
-    multiplexer.lockStartupChrome(context.palette)
-    multiplexer.unlockStartupChrome()
     context.defer(async () => {
       await multiplexer.shutdown()
     })

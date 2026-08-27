@@ -1,170 +1,364 @@
-import type { TerminalColors, ThemeMode } from "@opentui/core"
+import { RGBA } from "@opentui/core"
 
-const OSC = "\x1b]"
-const ST = "\x1b\\"
-const ANSI_PALETTE_SIZE = 16
+export type FxnkTheme = "dark" | "light"
 
-type DynamicColorKey = Exclude<keyof TerminalColors, "palette">
+export type FxnkThemeSource = "FX_THEME" | "osc11" | "COLORFGBG" | "default"
 
-const DYNAMIC_COLORS: ReadonlyArray<readonly [number, DynamicColorKey]> = [
-  [10, "defaultForeground"],
-  [11, "defaultBackground"],
-  [12, "cursorColor"],
-  [13, "mouseForeground"],
-  [14, "mouseBackground"],
-  [15, "tekForeground"],
-  [16, "tekBackground"],
-  [17, "highlightBackground"],
-  [19, "highlightForeground"],
-]
-
-const DARK_THEME_REPORT = new TextEncoder().encode("\x1b[?997;1n")
-const LIGHT_THEME_REPORT = new TextEncoder().encode("\x1b[?997;2n")
-
-/** Build terminal-native color updates for an embedded terminal. */
-export function buildHostPaletteSequence(colors: TerminalColors): string {
-  const sequences: string[] = []
-  const ansiColors: string[] = []
-
-  for (let index = 0; index < Math.min(colors.palette.length, ANSI_PALETTE_SIZE); index += 1) {
-    const color = detectedTerminalColor(colors.palette[index])
-    if (color) ansiColors.push(`${index};${color}`)
-  }
-  if (ansiColors.length > 0) sequences.push(`${OSC}4;${ansiColors.join(";")}${ST}`)
-
-  for (const [osc, key] of DYNAMIC_COLORS) {
-    const color = detectedTerminalColor(colors[key])
-    if (color) sequences.push(`${OSC}${osc};${color}${ST}`)
-  }
-
-  return sequences.join("")
+export type FxnkThemeResolution = {
+  theme: FxnkTheme
+  /** The terminal background sampled by OSC 11, when one was available. */
+  background: string | null
+  source: FxnkThemeSource
+  /** An explicit override is fixed for the process lifetime, just as in fx. */
+  explicit: boolean
 }
 
-export function hasDetectedBackground(colors: TerminalColors): boolean {
-  return detectedTerminalColor(colors.defaultBackground) !== null
+export type Ramp = {
+  background: RGBA
+  unused: RGBA
+  surface: RGBA
+  divider: RGBA
+  dim: RGBA
+  secondary: RGBA
+  accent: RGBA
+  foreground: RGBA
+  focus: RGBA
+  error: RGBA
+  backdrop: RGBA
 }
 
-/** Both defaults answered, so the ramp is the host's rather than the fallback tier. */
-export function hasDetectedDefaults(colors: TerminalColors | null): boolean {
-  return (
-    detectedTerminalColor(colors?.defaultForeground) !== null &&
-    detectedTerminalColor(colors?.defaultBackground) !== null
-  )
+export type Osc11Port = {
+  write(sequence: string): unknown
+  subscribeOsc(handler: (sequence: string) => void): () => void
+}
+
+export type FxnkThemeMonitorPort = Osc11Port & {
+  prependInputHandler(handler: (sequence: string) => boolean): void
+  removeInputHandler(handler: (sequence: string) => boolean): void
+}
+
+const OSC11_QUERY = "\x1b]11;?\x1b\\"
+const OSC11_RESPONSE_PREFIX = "\x1b]11;rgb:"
+const RESPONSE_FENCE_QUERY = "\x1b[c"
+const PRIMARY_DEVICE_ATTRIBUTES_PREFIX = "\x1b[?"
+const DARK_NOTIFICATION = "\x1b[?997;1n"
+const LIGHT_NOTIFICATION = "\x1b[?997;2n"
+const OSC11_TIMEOUT_MS = 200
+
+/**
+ * fx's indexed roles, plus the two fixed fmx surface steps. The canvas is
+ * always the terminal's default background. Focus and error are direct ANSI
+ * intents, not colors sampled from the host palette.
+ */
+const RAMPS: Readonly<Record<FxnkTheme, Ramp>> = {
+  dark: {
+    background: RGBA.defaultBackground(),
+    unused: RGBA.fromIndex(235),
+    surface: RGBA.fromIndex(236),
+    divider: RGBA.fromIndex(240),
+    dim: RGBA.fromIndex(245),
+    secondary: RGBA.fromIndex(250),
+    accent: RGBA.fromIndex(252),
+    foreground: RGBA.fromIndex(255),
+    focus: RGBA.fromIndex(4),
+    error: RGBA.fromIndex(1),
+    backdrop: RGBA.fromHex("#00000033"),
+  },
+  light: {
+    background: RGBA.defaultBackground(),
+    unused: RGBA.fromIndex(255),
+    surface: RGBA.fromIndex(254),
+    divider: RGBA.fromIndex(250),
+    dim: RGBA.fromIndex(247),
+    secondary: RGBA.fromIndex(241),
+    accent: RGBA.fromIndex(238),
+    foreground: RGBA.fromIndex(235),
+    focus: RGBA.fromIndex(4),
+    error: RGBA.fromIndex(1),
+    backdrop: RGBA.fromHex("#00000033"),
+  },
+}
+
+/** Dark remains the no-signal fallback, matching fx. */
+export const RAMP_FALLBACK = RAMPS.dark
+
+export function fxnkRamp(theme: FxnkTheme): Ramp {
+  return RAMPS[theme]
+}
+
+/** Match fx exactly: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
+export async function resolveFxnkTheme(
+  port: Osc11Port,
+  env: Record<string, string | undefined> = process.env,
+  timeoutMs = OSC11_TIMEOUT_MS,
+): Promise<FxnkThemeResolution> {
+  const override = explicitTheme(env.FX_THEME)
+  if (override) {
+    return { theme: override, background: null, source: "FX_THEME", explicit: true }
+  }
+
+  const background = await queryOsc11(port, timeoutMs)
+  if (background) {
+    return {
+      theme: background.light ? "light" : "dark",
+      background: background.hex,
+      source: "osc11",
+      explicit: false,
+    }
+  }
+
+  const colorFgBgLight = colorFgBgIsLight(env.COLORFGBG)
+  return {
+    theme: colorFgBgLight ? "light" : "dark",
+    background: null,
+    source: colorFgBgLight ? "COLORFGBG" : "default",
+    explicit: false,
+  }
+}
+
+/**
+ * Own fx-style live theme updates. CSI 997 is only a trigger: stale OSC 11
+ * replies are drained behind a DA1 fence, then a fresh OSC 11 sample is
+ * fenced before the complete fixed token set is replaced.
+ */
+export class FxnkThemeMonitor {
+  private phase: "idle" | "drain" | "sample" = "idle"
+  private notification: FxnkTheme | null = null
+  private sample: ParsedOsc11 | null = null
+  /** A notification that arrived after the current sample query began. */
+  private sampleDirty = false
+  private timeout: ReturnType<typeof setTimeout> | null = null
+  private unsubscribeOsc: (() => void) | null = null
+  private disposed = false
+
+  private readonly inputHandler = (sequence: string): boolean => {
+    const notification = notificationTheme(sequence)
+    if (notification) {
+      // FX_THEME fixes the palette for the process lifetime. Still own the
+      // protocol byte so OpenTUI cannot start a second theme query path.
+      if (this.current.explicit) return true
+      this.notification = notification
+      if (this.phase === "idle") this.beginDrain()
+      else if (this.phase === "sample") this.sampleDirty = true
+      return true
+    }
+
+    if (this.phase !== "idle" && isPrimaryDeviceAttributes(sequence)) {
+      if (this.phase === "drain") this.beginSample()
+      else this.finishSample()
+      return true
+    }
+    return false
+  }
+
+  constructor(
+    private readonly port: FxnkThemeMonitorPort,
+    private current: FxnkThemeResolution,
+    private readonly onTheme: (resolution: FxnkThemeResolution) => void,
+    private readonly timeoutMs = OSC11_TIMEOUT_MS,
+  ) {}
+
+  start(): void {
+    if (this.disposed || this.unsubscribeOsc) return
+    this.unsubscribeOsc = this.port.subscribeOsc((sequence) => {
+      if (this.phase !== "sample") return
+      const parsed = parseOsc11Response(sequence)
+      if (parsed) this.sample = parsed
+    })
+    this.port.prependInputHandler(this.inputHandler)
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.clearTimer()
+    this.unsubscribeOsc?.()
+    this.unsubscribeOsc = null
+    this.port.removeInputHandler(this.inputHandler)
+  }
+
+  private beginDrain(): void {
+    this.phase = "drain"
+    this.sample = null
+    this.sampleDirty = false
+    if (!this.tryWrite(RESPONSE_FENCE_QUERY)) this.finishWithNotification()
+    else this.armTimeout()
+  }
+
+  private beginSample(): void {
+    this.clearTimer()
+    this.phase = "sample"
+    this.sample = null
+    this.sampleDirty = false
+    if (!this.tryWrite(`${OSC11_QUERY}${RESPONSE_FENCE_QUERY}`)) this.finishWithNotification()
+    else this.armTimeout()
+  }
+
+  private finishSample(): void {
+    // A fence can arrive before a non-conforming terminal's OSC response.
+    // Keep the bounded sample open; the timeout remains the fallback.
+    if (!this.sample) return
+
+    if (this.sampleDirty) {
+      // Match fx: the sample belongs to an older notification generation.
+      // Drop it and fence a fresh cycle for the newest notification.
+      this.phase = "idle"
+      this.sample = null
+      this.sampleDirty = false
+      this.clearTimer()
+      if (this.notification) this.beginDrain()
+      return
+    }
+
+    const notification = this.notification
+    const sample = this.sample
+    this.phase = "idle"
+    this.notification = null
+    this.sample = null
+    this.sampleDirty = false
+    this.clearTimer()
+    if (!notification) return
+    this.apply({
+      theme: sample ? (sample.light ? "light" : "dark") : notification,
+      background: sample?.hex ?? null,
+      source: sample ? "osc11" : "default",
+      explicit: false,
+    })
+  }
+
+  private finishWithNotification(): void {
+    const notification = this.notification
+    this.phase = "idle"
+    this.notification = null
+    this.sample = null
+    this.sampleDirty = false
+    this.clearTimer()
+    if (!notification) return
+    this.apply({ theme: notification, background: null, source: "default", explicit: false })
+  }
+
+  private apply(next: FxnkThemeResolution): void {
+    const changed =
+      next.theme !== this.current.theme ||
+      (next.background !== null && next.background !== this.current.background)
+    if (!changed) return
+    this.current = next
+    this.onTheme(next)
+  }
+
+  private armTimeout(): void {
+    this.clearTimer()
+    this.timeout = setTimeout(() => this.finishWithNotification(), this.timeoutMs)
+  }
+
+  private clearTimer(): void {
+    if (this.timeout) clearTimeout(this.timeout)
+    this.timeout = null
+  }
+
+  private tryWrite(sequence: string): boolean {
+    try {
+      this.port.write(sequence)
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+export type ParsedOsc11 = { light: boolean; hex: string }
+
+export function parseOsc11Response(sequence: string): ParsedOsc11 | null {
+  if (!sequence.startsWith(OSC11_RESPONSE_PREFIX)) return null
+  const end = sequence.endsWith("\x1b\\")
+    ? sequence.length - 2
+    : sequence.endsWith("\x07")
+      ? sequence.length - 1
+      : -1
+  if (end <= OSC11_RESPONSE_PREFIX.length) return null
+  const parts = sequence.slice(OSC11_RESPONSE_PREFIX.length, end).split("/")
+  if (parts.length !== 3 || parts.some((part) => !/^[0-9a-fA-F]{1,4}$/u.test(part))) return null
+  const components = parts.map(normalizeOscComponent)
+  if (components.some((component) => component === null)) return null
+  const [red, green, blue] = components as [number, number, number]
+  const luminance = Math.floor((red * 299 + green * 587 + blue * 114) / 1000)
+  return {
+    light: luminance > 32768,
+    hex: `#${[red, green, blue]
+      .map((component) => (component >> 8).toString(16).padStart(2, "0"))
+      .join("")}`,
+  }
+}
+
+export function colorFgBgIsLight(value: string | undefined): boolean {
+  if (!value) return false
+  const separator = value.lastIndexOf(";")
+  if (separator === -1) return false
+  const background = value.slice(separator + 1)
+  if (!/^\d+$/u.test(background)) return false
+  const index = Number.parseInt(background, 10)
+  return index <= 255 && index >= 8
+}
+
+/** The one dynamic color the embedded fx needs to answer its own OSC 11. */
+export function buildEmbeddedThemeSequence(resolution: FxnkThemeResolution): string {
+  const background = resolution.background ?? (resolution.theme === "light" ? "#fafafa" : "#1c1c1c")
+  return `\x1b]11;${background}\x1b\\`
 }
 
 /** Ghostty's color-scheme notification consumed by fx's theme monitor. */
-export function themeModeReport(mode: ThemeMode): Uint8Array {
-  return mode === "light" ? LIGHT_THEME_REPORT : DARK_THEME_REPORT
+export function themeModeReport(theme: FxnkTheme): Uint8Array {
+  return new TextEncoder().encode(theme === "light" ? LIGHT_NOTIFICATION : DARK_NOTIFICATION)
 }
 
-/**
- * Blend `base` toward `tint` by `amount` (0..1). Both must be `#rrggbb`, which
- * is what `detectedTerminalColor` guarantees. Used for surfaces that should sit
- * a measured distance from the terminal's own background rather than at a fixed
- * grey the theme never chose.
- */
-export function mixHexColors(base: string, tint: string, amount: number): string {
-  const channel = (offset: number) => {
-    const from = parseInt(base.slice(offset, offset + 2), 16)
-    const to = parseInt(tint.slice(offset, offset + 2), 16)
-    return Math.round(from + (to - from) * amount)
-      .toString(16)
-      .padStart(2, "0")
-  }
-  return `#${channel(1)}${channel(3)}${channel(5)}`
+function explicitTheme(value: string | undefined): FxnkTheme | null {
+  if (value?.toLowerCase() === "light") return "light"
+  if (value?.toLowerCase() === "dark") return "dark"
+  return null
 }
 
-export function detectedTerminalColor(color: string | null | undefined): string | null {
-  if (!color || !/^#[0-9a-f]{6}$/iu.test(color)) return null
-  return color.toLowerCase()
+function queryOsc11(port: Osc11Port, timeoutMs: number): Promise<ParsedOsc11 | null> {
+  return new Promise((resolve) => {
+    let settled = false
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    let unsubscribe = () => {}
+    const finish = (result: ParsedOsc11 | null) => {
+      if (settled) return
+      settled = true
+      if (timeout) clearTimeout(timeout)
+      unsubscribe()
+      resolve(result)
+    }
+
+    unsubscribe = port.subscribeOsc((sequence) => {
+      const parsed = parseOsc11Response(sequence)
+      if (parsed) finish(parsed)
+    })
+    timeout = setTimeout(() => finish(null), Math.max(0, timeoutMs))
+    try {
+      port.write(OSC11_QUERY)
+    } catch {
+      finish(null)
+    }
+  })
 }
 
-/**
- * The ramp: every color fmx paints on a surface of its own — the tray, the
- * help and error modals, the toast, and the unused field
- * around a smaller sizing owner.
- *
- * fx draws with five fixed grays. fmx reproduces the relationships between
- * them as blends between the host terminal's own background and foreground,
- * so fmx never paints a theme the terminal did not choose. The ratios are
- * fx's (fxnk `style/tokens.json`: 255/252/250/245/240 on a dark canvas,
- * 235/238/241/247/250 on a light one); the fallback tier, for a host that
- * answers no color query, keeps fx's dark column exactly and derives fmx's
- * two fill steps from its endpoints. Two hues survive — focus, the host's
- * blue, and error, the host's red. Nothing else takes a hue: state is carried
- * by glyph and weight.
- */
-const RAMP_BLEND = {
-  /** fx 252 — one step below primary: semantic-state text, a done marker. */
-  accent: 0.85,
-  /** fx 250 — labels and secondary text. */
-  secondary: 0.75,
-  /** fx 245 — chrome, standing hints, agent names. */
-  dim: 0.5,
-  /** fx 240 — hairlines, nearest the background. */
-  divider: 0.3,
-  /** Below the divider: a raised fill — the active tray row, the toast body. */
-  surface: 0.12,
-  /** Below every surface: the flat field outside a smaller sizing owner. */
-  unused: 0.06,
-} as const
-
-export const RAMP_FALLBACK = {
-  background: "#1c1c1c",
-  unused: "#292929",
-  surface: "#353535",
-  divider: "#585858",
-  dim: "#8a8a8a",
-  secondary: "#bcbcbc",
-  accent: "#d0d0d0",
-  foreground: "#eeeeee",
-  focus: "#7dd3fc",
-  error: "#e5484d",
-  backdrop: "#00000033",
+function normalizeOscComponent(component: string): number | null {
+  const value = Number.parseInt(component, 16)
+  if (!Number.isFinite(value)) return null
+  const maximum = 2 ** (component.length * 4) - 1
+  return Math.floor((value * 0xffff) / maximum)
 }
 
-export type Ramp = typeof RAMP_FALLBACK
-
-/** fx's light-column primary, for a host whose background answered light but
- * whose foreground did not. */
-const LIGHT_FALLBACK_FOREGROUND = "#262626"
-
-export function hostRamp(colors: TerminalColors | null): Ramp {
-  const focus = ansi(colors, 4, 12) ?? RAMP_FALLBACK.focus
-  const error = ansi(colors, 1, 9) ?? RAMP_FALLBACK.error
-  const detectedForeground = detectedTerminalColor(colors?.defaultForeground)
-  const detectedBackground = detectedTerminalColor(colors?.defaultBackground)
-  if (!detectedForeground && !detectedBackground) return { ...RAMP_FALLBACK, focus, error }
-
-  const background = detectedBackground ?? RAMP_FALLBACK.background
-  const foreground =
-    detectedForeground ??
-    (detectedBackground && isLight(detectedBackground) ? LIGHT_FALLBACK_FOREGROUND : RAMP_FALLBACK.foreground)
-  const step = (amount: number) => mixHexColors(background, foreground, amount)
-  return {
-    background,
-    unused: step(RAMP_BLEND.unused),
-    surface: step(RAMP_BLEND.surface),
-    divider: step(RAMP_BLEND.divider),
-    dim: step(RAMP_BLEND.dim),
-    secondary: step(RAMP_BLEND.secondary),
-    accent: step(RAMP_BLEND.accent),
-    foreground,
-    focus,
-    error,
-    backdrop: RAMP_FALLBACK.backdrop,
-  }
+function notificationTheme(sequence: string): FxnkTheme | null {
+  if (sequence === DARK_NOTIFICATION) return "dark"
+  if (sequence === LIGHT_NOTIFICATION) return "light"
+  return null
 }
 
-/** Weighted channel brightness is enough to tell a light canvas from a dark one. */
-function isLight(color: string): boolean {
-  const red = parseInt(color.slice(1, 3), 16)
-  const green = parseInt(color.slice(3, 5), 16)
-  const blue = parseInt(color.slice(5, 7), 16)
-  return red * 0.299 + green * 0.587 + blue * 0.114 > 128
-}
-
-/** Prefer the normal ANSI slot, fall back to its bright twin. */
-function ansi(colors: TerminalColors | null, normal: number, bright: number): string | null {
-  return detectedTerminalColor(colors?.palette[normal]) ?? detectedTerminalColor(colors?.palette[bright])
+function isPrimaryDeviceAttributes(sequence: string): boolean {
+  return (
+    sequence.startsWith(PRIMARY_DEVICE_ATTRIBUTES_PREFIX) &&
+    /^[0-9]+(?:;[0-9]+)*c$/u.test(sequence.slice(PRIMARY_DEVICE_ATTRIBUTES_PREFIX.length))
+  )
 }

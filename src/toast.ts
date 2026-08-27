@@ -3,11 +3,10 @@ import {
   type CliRenderer,
   italic,
   StyledText,
-  type TerminalColors,
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
-import { hostRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
+import { type FxnkTheme, fxnkRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
 
 export const TOAST_DURATION_MS = 3_000
 
@@ -86,8 +85,8 @@ export class Toast {
     this.present(message)
   }
 
-  applyPalette(colors: TerminalColors | null): void {
-    this.ramp = hostRamp(colors)
+  applyTheme(theme: FxnkTheme): void {
+    this.ramp = fxnkRamp(theme)
     this.paint()
   }
 

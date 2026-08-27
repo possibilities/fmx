@@ -1,6 +1,5 @@
 import { BoxRenderable, type CapturedFrame, type KeyEvent, type TerminalColors, type ThemeMode } from "@opentui/core"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
-import { RAMP_FALLBACK } from "../src/host-palette.ts"
 
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
@@ -9,9 +8,8 @@ export const UI_GALLERY_COMPONENTS = [
 ] as const
 
 export type UiGalleryComponent = (typeof UI_GALLERY_COMPONENTS)[number]
-/** Two simulated hosts and, third, a host that answered no color query at
- * all — the tier fmx falls back to, which should look like fx's own dark
- * theme. `t` cycles them in this order. */
+/** Dark and light OSC 11 outcomes and, third, the default-dark no-signal case.
+ * Every case uses a fixed fxnk token set; `t` cycles them in this order. */
 export const UI_GALLERY_PALETTE_NAMES = ["dark", "light", "fallback"] as const
 export type UiGalleryPaletteName = (typeof UI_GALLERY_PALETTE_NAMES)[number]
 
@@ -31,7 +29,7 @@ export type UiStory = {
 export type UiStoryContext = {
   setup: TestRendererSetup
   canvas: BoxRenderable
-  /** Null for the fallback theme: nothing was detected. */
+  /** Null for the no-signal case; present only to simulate OSC 11 background. */
   palette: TerminalColors | null
   paletteName: UiGalleryPaletteName
   themeMode: ThemeMode
@@ -89,7 +87,7 @@ export class UiStorySession {
       left: 0,
       width: "100%",
       height: "100%",
-      backgroundColor: palette?.defaultBackground ?? RAMP_FALLBACK.background,
+      backgroundColor: palette?.defaultBackground ?? "#1c1c1c",
     })
     setup.renderer.root.add(canvas)
     const cleanups: Array<() => void | Promise<void>> = []

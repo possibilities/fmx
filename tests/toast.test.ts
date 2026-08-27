@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test"
-import { type RGBA, type TerminalColors, TextRenderable } from "@opentui/core"
+import { type RGBA, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Toast } from "../src/toast.ts"
 
-test("centers queued toasts above the bottom edge and themes them from the terminal palette", async () => {
+test("centers queued toasts above the bottom edge and themes them from fxnk", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
   const toast = new Toast(setup.renderer, { durationMs: 30 })
   setup.renderer.root.add(toast.root)
-  toast.applyPalette(hostPalette())
+  toast.applyTheme("dark")
 
   const text = toast.root.findDescendantById("fmx-toast-text")
   expect(text).toBeInstanceOf(TextRenderable)
@@ -22,19 +22,19 @@ test("centers queued toasts above the bottom edge and themes them from the termi
     expect([toast.root.x, toast.root.y, toast.root.width, toast.root.height]).toEqual([30, 20, 19, 3])
     expect(setup.captureCharFrame()).toContain("agent 1 started")
     expect(setup.captureCharFrame()).not.toContain("agent 2 exited")
-    // The surface is lifted 12% off the host background; a neutral notice
-    // gets the dim hairline and the foreground — no hue for "started".
-    expect(rgb(toast.root.backgroundColor)).toEqual([43, 57, 71])
-    expect(rgb(toast.root.borderColor)).toEqual([128, 137, 145])
-    expect(rgb(text.fg)).toEqual([240, 241, 242])
+    // The fixed surface gets the dim hairline and the fx foreground — no hue
+    // for "started".
+    expect(rgb(toast.root.backgroundColor)).toEqual([48, 48, 48])
+    expect(rgb(toast.root.borderColor)).toEqual([138, 138, 138])
+    expect(rgb(text.fg)).toEqual([238, 238, 238])
 
     await Bun.sleep(40)
     await setup.renderOnce()
     expect(setup.captureCharFrame()).not.toContain("agent 1 started")
     expect(setup.captureCharFrame()).toContain("agent 2 exited · code 7")
-    // A failure spends the host's red on the border alone.
-    expect(rgb(toast.root.borderColor)).toEqual([204, 51, 68])
-    expect(rgb(text.fg)).toEqual([240, 241, 242])
+    // A failure spends direct ANSI red on the border alone.
+    expect(toast.root.borderColor.slot).toBe(1)
+    expect(rgb(text.fg)).toEqual([238, 238, 238])
 
     await Bun.sleep(40)
     await setup.renderOnce()
@@ -74,23 +74,6 @@ test("truncates within a narrow viewport and hides when the Toast cannot fit", a
     setup.renderer.destroy()
   }
 })
-
-function hostPalette(): TerminalColors {
-  const palette: Array<string | null> = Array(16).fill(null)
-  palette[1] = "#cc3344"
-  return {
-    palette,
-    defaultForeground: "#f0f1f2",
-    defaultBackground: "#102030",
-    cursorColor: null,
-    mouseForeground: null,
-    mouseBackground: null,
-    tekForeground: null,
-    tekBackground: null,
-    highlightBackground: null,
-    highlightForeground: null,
-  }
-}
 
 function rgb(color: RGBA | undefined): number[] | undefined {
   return color?.toInts().slice(0, 3)

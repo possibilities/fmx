@@ -2,8 +2,6 @@ import { expect, test } from "bun:test"
 import {
   BoxRenderable,
   type CapturedFrame,
-  type RGBA,
-  type TerminalColors,
   TextRenderable,
 } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
@@ -48,9 +46,6 @@ test("starts without an Fx, hiding the tray and centering the empty state", asyn
   const emptyState = setup.renderer.root.findDescendantById("fmx-empty-state") as TextRenderable
 
   try {
-    multiplexer.setHostPalette(
-      hostPalette({}, { foreground: "#a0a0a0", background: "#000000" }),
-    )
     multiplexer.start()
     await setup.renderOnce()
 
@@ -59,7 +54,7 @@ test("starts without an Fx, hiding the tray and centering the empty state", asyn
     expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 80, 24])
     expect(emptyState).toBeInstanceOf(TextRenderable)
     expect([emptyState.x, emptyState.y, emptyState.width, emptyState.height]).toEqual([35, 11, 9, 1])
-    expect(rgb(emptyState.fg)).toEqual([80, 80, 80])
+    expect(emptyState.fg.slot).toBe(245)
     expect(setup.captureCharFrame()).toContain("no agents")
 
     void startAgent(multiplexer)
@@ -93,11 +88,9 @@ test("paints the full owner frame when empty before and after the last Agent", a
   try {
     await multiplexer.start()
     await setup.renderOnce()
-    expectOwnerBackground([28, 28, 28, 255])
+    expectOwnerBackground([0, 0, 0, 255])
 
-    multiplexer.setHostPalette(
-      hostPalette({}, { foreground: "#ffffff", background: "#000000" }),
-    )
+    multiplexer.setTheme({ theme: "light", background: "#ffffff", source: "osc11", explicit: false })
     await setup.renderOnce()
     expectOwnerBackground([0, 0, 0, 255])
 
@@ -207,8 +200,6 @@ test("lays out tray, divider line, and content row", async () => {
     expect([divider.x, divider.y, divider.width, divider.height]).toEqual([26, 0, 1, 24])
     expect([content.x, content.y, content.width, content.height]).toEqual([27, 0, 63, 24])
 
-    // The line is invisible until the host palette reveals it.
-    multiplexer.setHostPalette(hostPalette({}))
     await setup.renderOnce()
     const frame = setup.captureCharFrame().split("\n").filter((row) => row.length > 0)
     expect(frame).toHaveLength(24)
@@ -320,7 +311,7 @@ test("re-clamps the tray when the terminal shrinks", async () => {
   }
 })
 
-test("themes the divider from the host palette", async () => {
+test("themes the divider from fx's fixed dark and light roles", async () => {
   const setup = await createTestRenderer({ width: 90, height: 24 })
   const multiplexer = new Multiplexer(setup.renderer, {
     ...agentOptions(),
@@ -330,55 +321,28 @@ test("themes the divider from the host palette", async () => {
   })
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   try {
-    // Invisible until the host palette settles: painting a guessed color first
-    // would flash and then swap once the real theme arrives.
-    expect(divider.borderColor.toInts()[3]).toBe(0)
+    expect(divider.borderColor.intent).toBe("indexed")
+    expect(divider.borderColor.slot).toBe(240)
 
-    // A palette without usable colors still reveals the fallback: fx's own
-    // divider gray (xterm 240).
-    multiplexer.setHostPalette(hostPalette({}))
-    expect(rgb(divider.borderColor)).toEqual([88, 88, 88])
-
-    // Detected foreground + background: the divider step, 30% of the way
-    // from the background to the foreground.
-    multiplexer.setHostPalette(
-      hostPalette({ 8: "#334455" }, { foreground: "#f1f2f3", background: "#102030" }),
-    )
-    expect(rgb(divider.borderColor)).toEqual([84, 95, 107])
-
-    // ANSI slots alone say nothing about the canvas; the ramp needs the
-    // defaults, so this is the fallback tier again.
-    multiplexer.setHostPalette(hostPalette({ 8: "#334455" }))
-    expect(rgb(divider.borderColor)).toEqual([88, 88, 88])
-
-    multiplexer.setHostPalette(hostPalette({ 7: "#667788" }))
-    expect(rgb(divider.borderColor)).toEqual([88, 88, 88])
+    multiplexer.setTheme({ theme: "light", background: "#f5f5f5", source: "osc11", explicit: false })
+    expect(divider.borderColor.intent).toBe("indexed")
+    expect(divider.borderColor.slot).toBe(250)
   } finally {
     await multiplexer.shutdown()
   }
 })
 
-test("keeps first-frame divider and selected-row colors through a late initial palette", async () => {
+test("switches divider and selected-row colors together on a live theme change", async () => {
   const { setup, multiplexer, divider } = await createMultiplexer(90, 24)
-  const late = hostPalette({}, { foreground: "#ffffff", background: "#000000" })
-  const selectedBackground = () => {
+  const selectedSlot = () => {
     const row = setup.renderer.root.findDescendantById("fmx-session-row-agent-1") as BoxRenderable
-    return rgb(row.backgroundColor)
+    return row.backgroundColor.slot
   }
 
   try {
-    multiplexer.lockStartupChrome(null)
-    const firstDivider = rgb(divider.borderColor)
-    const firstSelection = selectedBackground()
-
-    multiplexer.setHostPalette(late)
-    expect(rgb(divider.borderColor)).toEqual(firstDivider)
-    expect(selectedBackground()).toEqual(firstSelection)
-
-    multiplexer.unlockStartupChrome()
-    multiplexer.setHostPalette(late)
-    expect(rgb(divider.borderColor)).not.toEqual(firstDivider)
-    expect(selectedBackground()).not.toEqual(firstSelection)
+    expect([divider.borderColor.slot, selectedSlot()]).toEqual([240, 236])
+    multiplexer.setTheme({ theme: "light", background: "#ffffff", source: "osc11", explicit: false })
+    expect([divider.borderColor.slot, selectedSlot()]).toEqual([250, 254])
   } finally {
     await multiplexer.shutdown()
   }
@@ -434,30 +398,6 @@ test("clamps a stale persisted width to the current screen", async () => {
     await multiplexer.shutdown()
   }
 })
-
-function hostPalette(
-  entries: Record<number, string>,
-  defaults: { foreground?: string; background?: string } = {},
-): TerminalColors {
-  const palette: Array<string | null> = Array(16).fill(null)
-  for (const [index, color] of Object.entries(entries)) palette[Number(index)] = color
-  return {
-    palette,
-    defaultForeground: defaults.foreground ?? null,
-    defaultBackground: defaults.background ?? null,
-    cursorColor: null,
-    mouseForeground: null,
-    mouseBackground: null,
-    tekForeground: null,
-    tekBackground: null,
-    highlightBackground: null,
-    highlightForeground: null,
-  }
-}
-
-function rgb(color: RGBA | undefined): number[] | undefined {
-  return color?.toInts().slice(0, 3)
-}
 
 function backgroundAt(frame: CapturedFrame, x: number, y: number): number[] {
   const line = frame.lines[y]

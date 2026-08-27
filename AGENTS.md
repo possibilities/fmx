@@ -62,7 +62,7 @@
   immediately restores the most recently active remaining Client's size.
 - A new Runtime waits on its one-use bootstrap marker before constructing
   `CliRenderer`; the creating Client writes it after its attach reaches Ready,
-  so palette queries have a real host terminal to answer. The wait is bounded
+  so the OSC 11 theme query has a real host terminal to answer. The wait is bounded
   so a failed initial attach does not orphan a headless Runtime. A directory
   notification wakes the normal path immediately, with checks on both sides
   of watcher installation closing the race and a slow probe covering a lost
@@ -91,9 +91,9 @@
   before anything can go wrong in fmx, because those two writes are what a
   crash leaves for the join.
 - A restore resets the visible terminal with RIS at `RestoreBegin` and
-  re-applies the host palette after: the Companion's replay carries the
-  modes, cursor, and keyboard state fx set, but the host's colors were never
-  fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the
+  re-applies the resolved OSC 11 background after: the Companion's replay
+  carries the modes, cursor, and keyboard state fx set, but fmx's terminal
+  defaults were never fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the
   same moment — a query half-translated when the last transport dropped must
   not pair with a response from the next.
 - Each Manifest entry checkpoints the last ADE state, attention, and
@@ -134,27 +134,19 @@
   reverses it — every list behind it stays creation order.
   State writes are serialized and awaited during Runtime cleanup so a
   selection immediately followed by the final Client's Detach lands.
-- Palette detection can take seconds in a terminal that never answers, and a
-  renderer destroyed under it never settles the query; `index.ts` races it
-  against shutdown so a signal in that window still reaches the socket
-  cleanup. Do not await anything renderer-bound in `main` without that race.
-  `index.ts` deliberately constructs `CliRenderer` before calling
-  `setupTerminal`: its input parser can collect palette replies while no
-  alternate-screen frame exists. Start that query once the ADE-feed singleton
-  is held, so its one-frame budget overlaps the Companion join; the
-  deadline remains measured from the query, not extended by other startup
-  work. Before first paint it gives a responsive host one 60 Hz frame to
-  answer, then locks the chosen selected-row background and structural
-  dividers until that initial query settles; a late answer may
-  theme everything else — including the embedded terminals — but must not mix
-  new grays into those startup surfaces. Unlock afterward so a real later
-  theme change still applies.
-  Session names are indexed ANSI gray (slot 8, dim on any theme) until both
-  host defaults have answered and the Ramp's dim step after; under that lock
-  a late answer leaves them, like the fill and the divider, as they were
-  first drawn. The fill is kept together with the ramp it came from, and the
-  active row's glyph is painted from that ramp: a fallback-dark fill under a
-  late light answer must not carry the light host's near-black foreground.
+- Theme selection matches fx exactly: valid case-insensitive `FX_THEME`, one
+  bounded 200 ms OSC 11 background query, `COLORFGBG`, then dark. `index.ts`
+  constructs `CliRenderer` before `setupTerminal`, starts the one query as
+  soon as the ADE-feed singleton is held, and overlaps its fixed deadline with
+  the Companion join. It awaits the result before terminal setup and first
+  paint, so a timed-out initial reply can never retint visible content later.
+  The app theme layer never asks for OSC 4, OSC 10, or a full host palette;
+  OpenTUI may still perform its own capability handshake, whose color results
+  do not select or alter fmx's tokens. Live CSI 997 notifications are refresh
+  triggers, not theme authority: drain stale replies behind a DA1 fence,
+  sample OSC 11 behind a second fence, discard a sample superseded by a newer
+  notification, then replace the complete fixed token set in one render turn.
+  A valid `FX_THEME` owns notification bytes but never queries or changes.
 - A Runtime resize applies the new physical size to OpenTUI synchronously,
   then clears the whole physical screen before its next frame. Input can arrive
   before OpenTUI's debounced SIGWINCH handler; applying size first prevents
@@ -166,22 +158,16 @@
   drawn, so the corner cannot flash between them. Begin synchronized output
   before that clear; the next frame's normal end marker publishes the clear and
   resized UI together instead of exposing the unused field alone. Once the
-  startup palette choice has settled, OpenTUI's renderer background must remain
-  the Ramp's opaque host-background step: a transparent renderer lets the unused
-  clear show through around the empty-state text and retains cells from a tray
-  or terminal that just disappeared. The one exception is a first frame whose
-  palette query is still pending: `index.ts` paints exactly the owner rectangle
-  with the terminal's native default background (SGR 49 plus row-bounded ECH),
-  then the detected color becomes the opaque renderer base without an
-  intervening unused-field clear. Do not use EL there; it would consume a larger
-  Client's right margin.
-- Every color fmx paints on a surface of its own comes from `hostRamp`
-  (`src/host-palette.ts`): fx's five gray steps as blends of the host's
-  background toward its foreground, fx's dark column as the fallback tier.
-  Focus (host blue) and error (host red) are the only hues, each with one
-  job. A new surface takes its colors from the Ramp; a state gets a glyph
-  and a weight, never a hue; a surface fx never draws is recorded as a
-  carve-out in fxnk's `style/STYLE.md` before it ships.
+  OpenTUI's renderer background must remain the terminal-default canvas: a
+  transparent renderer lets the unused clear show through around the empty-state
+  text and retains cells from a tray or terminal that just disappeared.
+- Every color fmx paints on a surface of its own comes from `fxnkRamp`
+  (`src/host-palette.ts`): fixed indexed roles `255/252/250/245/240` in dark
+  and `235/238/241/247/250` in light, plus fmx's surface/unused carve-outs
+  `236/235` and `254/255`. Focus and error are direct ANSI slots `4` and `1`,
+  never colors sampled from the host. A new surface takes its colors from the
+  Ramp; a state gets a glyph and a weight, never a hue; a surface fx never
+  draws is recorded as a carve-out in fxnk's `style/STYLE.md` before it ships.
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
   non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.

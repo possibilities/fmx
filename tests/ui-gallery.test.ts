@@ -43,9 +43,9 @@ test(
       const client = built.stories[palette].find((story) => story.id === "multiplexer-larger-client")
       expect(client).toBeDefined()
       const expectedUnused = {
-        dark: [35, 40, 47],
-        light: [225, 229, 228],
-        fallback: [41, 41, 41],
+        dark: [38, 38, 38],
+        light: [238, 238, 238],
+        fallback: [38, 38, 38],
       }[palette]
       expect(backgroundAt(client!.frame, 85, 0)).toEqual(expectedUnused)
       expect(backgroundAt(client!.frame, 0, 23)).toEqual(expectedUnused)

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
+import { BoxRenderable, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { resolveKeybindings } from "../src/keybindings.ts"
@@ -7,7 +7,6 @@ import { Multiplexer } from "../src/multiplexer.ts"
 import { TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { launchAgent } from "./fixtures/agent-launch.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
-import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import { rowText, SessionList, stateIcon, stateRole, truncate } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 
@@ -71,20 +70,8 @@ test("sets the blocked glyph bold in the foreground and the done glyph in the ac
   }
 })
 
-test("keeps the active row legible when a light host answers under the startup lock", async () => {
+test("switches the active row and its text as one complete theme", async () => {
   const { setup, list } = await createList(30, 10)
-  const light: TerminalColors = {
-    palette: Array(16).fill(null),
-    defaultForeground: "#1c1c1c",
-    defaultBackground: "#ffffff",
-    cursorColor: null,
-    mouseForeground: null,
-    mouseBackground: null,
-    tekForeground: null,
-    tekBackground: null,
-    highlightBackground: null,
-    highlightForeground: null,
-  }
   const rows = () => {
     const active = setup.renderer.root.findDescendantById("fmx-session-row-agent-1") as BoxRenderable
     const activeText = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
@@ -100,25 +87,15 @@ test("keeps the active row legible when a light host answers under the startup l
     entry({ agentId: 2, sessionId: "5a75126ce54edb04", state: "blocked", attention: "permission" }),
   ])
   try {
-    // Nothing answered before first paint: the fallback tier, then locked.
-    list.applyPalette(null)
+    list.applyTheme("dark")
     list.render(tree, 26)
     await setup.renderOnce()
-    expect(rows()).toEqual({ fill: [53, 53, 53], activeGlyph: [238, 238, 238], otherGlyph: [238, 238, 238] })
+    expect(rows()).toEqual({ fill: [48, 48, 48], activeGlyph: [238, 238, 238], otherGlyph: [238, 238, 238] })
 
-    // The late answer restyles the other rows but not the fill, and what
-    // sits on the fill stays painted from the fill's own ramp.
-    list.applyPalette(light, true)
+    list.applyTheme("light")
     list.render(tree, 26)
     await setup.renderOnce()
-    expect(rows()).toEqual({ fill: [53, 53, 53], activeGlyph: [238, 238, 238], otherGlyph: [28, 28, 28] })
-
-    // Unlocked, a real theme change moves everything together.
-    list.applyPalette(light)
-    list.render(tree, 26)
-    await setup.renderOnce()
-    expect(rows()).toEqual({ fill: [228, 228, 228], activeGlyph: [28, 28, 28], otherGlyph: [28, 28, 28] })
-    expect(RAMP_FALLBACK.surface).toBe("#353535")
+    expect(rows()).toEqual({ fill: [228, 228, 228], activeGlyph: [38, 38, 38], otherGlyph: [38, 38, 38] })
   } finally {
     list.root.destroy()
     setup.renderer.destroy()
@@ -150,20 +127,8 @@ test("shows a placeholder until fx reports its session", () => {
   expect(rowText(agent!, 26)).toBe("—")
 })
 
-test("draws session names in the terminal's gray until the host answers, then in the ramp's dim step", async () => {
+test("draws session names in the selected theme's fixed dim step", async () => {
   const { setup, list } = await createList(30, 10)
-  const palette: TerminalColors = {
-    palette: Array.from({ length: 16 }, (_, index) => `#${index.toString(16).repeat(6)}`),
-    defaultForeground: "#eeeeee",
-    defaultBackground: "#111111",
-    cursorColor: null,
-    mouseForeground: null,
-    mouseBackground: null,
-    tekForeground: null,
-    tekBackground: null,
-    highlightBackground: null,
-    highlightForeground: null,
-  }
   const sessionColor = () => {
     const text = setup.renderer.root.findDescendantById("fmx-session-row-text-agent-1") as TextRenderable
     return text.chunks.find((chunk) => chunk.text === SESSION_ID)?.fg
@@ -172,19 +137,12 @@ test("draws session names in the terminal's gray until the host answers, then in
   try {
     list.render(buildTree([entry()]), 26)
     expect(sessionColor()?.intent).toBe("indexed")
-    expect(sessionColor()?.slot).toBe(8)
+    expect(sessionColor()?.slot).toBe(245)
 
-    // A late initial answer, with the startup chrome locked, leaves the
-    // names as they were drawn.
-    list.applyPalette(palette, true)
+    list.applyTheme("light")
     list.render(buildTree([entry()]), 26)
     expect(sessionColor()?.intent).toBe("indexed")
-    expect(sessionColor()?.slot).toBe(8)
-
-    list.applyPalette(palette)
-    list.render(buildTree([entry()]), 26)
-    expect(sessionColor()?.intent).not.toBe("indexed")
-    expect(sessionColor()?.toInts().slice(0, 3)).toEqual([128, 128, 128])
+    expect(sessionColor()?.slot).toBe(247)
   } finally {
     list.root.destroy()
     setup.renderer.destroy()

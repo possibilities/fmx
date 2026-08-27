@@ -108,8 +108,8 @@ function assertOwnedRuntime(identity: RuntimeSessionIdentity, session: SessionEn
 
 /**
  * The Runtime waits here before constructing OpenTUI. The first Client writes
- * the marker only after its terminal attach reaches Ready, so palette and
- * capability queries have a real host ready to answer. A failed first attach
+ * the marker only after its terminal attach reaches Ready, so the OSC 11 theme
+ * query and OpenTUI capability probes have a real host ready to answer. A failed first attach
  * cannot leave a headless Runtime behind forever.
  */
 export async function waitForRuntimeBootstrap(
