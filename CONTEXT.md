@@ -58,6 +58,12 @@ fxnk contract fmx accepts. It lands beside fmx as the real native executable
 resolves and probes it once, then every new Agent reuses that absolute path.
 _Avoid_: bundled Fx, wrapper, AgentStart pin, moving latest.
 
+**Current release retention** — The shared Blob store keeps one public fmx
+version and one public Fx Integration commit. A publisher writes and publicly
+verifies the complete replacement and its mutable pointers before removing the
+older exact-version or exact-commit tree.
+_Avoid_: release archive, historical mirror.
+
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates

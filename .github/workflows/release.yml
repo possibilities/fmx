@@ -342,6 +342,107 @@ jobs:
           upload_mutable dist/latest.txt latest.txt text/plain 60
           echo "setup_url=$RELEASE_BASE_URL/setup.sh" >> "$GITHUB_OUTPUT"
 
+      - name: Verify public release
+        run: |
+          set -euo pipefail
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          public_get() {
+            local url="$1"
+            local destination="$2"
+            for _ in $(seq 1 30); do
+              if curl --fail --silent --show-error --location \
+                "$url" -o "$destination" 2>/dev/null; then
+                return 0
+              fi
+              sleep 2
+            done
+            curl --fail --silent --show-error --location \
+              "$url" -o "$destination"
+          }
+          for platform in linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64; do
+            for extension in tar.xz tar.gz; do
+              for suffix in "" .sha256; do
+                name="fmx-$platform.$extension$suffix"
+                public_get \
+                  "$RELEASE_BASE_URL/releases/v$VERSION/$name?verify=$GITHUB_SHA" \
+                  "$verify_dir/$name"
+                cmp -s "dist/release/$name" "$verify_dir/$name"
+              done
+            done
+          done
+          public_get "$RELEASE_BASE_URL/setup.sh?verify=$GITHUB_SHA" \
+            "$verify_dir/setup.sh"
+          cmp -s dist/setup.sh "$verify_dir/setup.sh"
+          public_get "$RELEASE_BASE_URL/latest.txt?verify=$GITHUB_SHA" \
+            "$verify_dir/latest.txt"
+          cmp -s dist/latest.txt "$verify_dir/latest.txt"
+
+      - name: Prune historical Fmx releases
+        run: |
+          set -euo pipefail
+          prune_dir="$(mktemp -d)"
+          trap 'rm -rf "$prune_dir"' EXIT
+          base_without_scheme="${RELEASE_BASE_URL#https://}"
+          case "$base_without_scheme" in
+            */*) blob_prefix="${base_without_scheme#*/}" ;;
+            *) blob_prefix="" ;;
+          esac
+          blob_path() {
+            local relative_path="$1"
+            if [[ -n "$blob_prefix" ]]; then
+              printf '%s/%s' "$blob_prefix" "$relative_path"
+            else
+              printf '%s' "$relative_path"
+            fi
+          }
+          release_prefix="$(blob_path releases/)"
+          keep_prefix="$(blob_path "releases/v$VERSION/")"
+          curl --fail --silent --show-error --location --get \
+            'https://blob.vercel-storage.com' \
+            -H "Authorization: Bearer $BLOB_READ_WRITE_TOKEN" \
+            -H 'x-api-version: 7' \
+            --data-urlencode 'limit=1000' \
+            --data-urlencode "prefix=$release_prefix" \
+            -o "$prune_dir/list.json"
+          jq -e '.hasMore == false' "$prune_dir/list.json" >/dev/null \
+            || { echo '::error::Fmx release pruning exceeded 1000 objects'; exit 1; }
+          jq --arg release_prefix "$release_prefix" --arg keep_prefix "$keep_prefix" \
+            '[.blobs[]
+              | select(.pathname | startswith($release_prefix))
+              | select((.pathname | startswith($keep_prefix)) | not)
+              | {pathname, url}]' \
+            "$prune_dir/list.json" > "$prune_dir/historical.json"
+          jq -e --arg release_prefix "$release_prefix" --arg keep_prefix "$keep_prefix" \
+            'all(.[];
+              (.pathname | startswith($release_prefix)) and
+              ((.pathname | startswith($keep_prefix)) | not))' \
+            "$prune_dir/historical.json" >/dev/null
+          historical_count="$(jq 'length' "$prune_dir/historical.json")"
+          if [[ "$historical_count" -gt 0 ]]; then
+            jq '{urls: map(.url)}' "$prune_dir/historical.json" \
+              > "$prune_dir/delete.json"
+            curl --fail --silent --show-error --location \
+              -X POST 'https://blob.vercel-storage.com/delete' \
+              -H "Authorization: Bearer $BLOB_READ_WRITE_TOKEN" \
+              -H 'x-api-version: 7' \
+              -H 'content-type: application/json' \
+              --data-binary "@$prune_dir/delete.json" \
+              -o /dev/null
+          fi
+          curl --fail --silent --show-error --location --get \
+            'https://blob.vercel-storage.com' \
+            -H "Authorization: Bearer $BLOB_READ_WRITE_TOKEN" \
+            -H 'x-api-version: 7' \
+            --data-urlencode 'limit=1000' \
+            --data-urlencode "prefix=$release_prefix" \
+            -o "$prune_dir/after.json"
+          jq -e --arg keep_prefix "$keep_prefix" \
+            'all(.blobs[]; .pathname | startswith($keep_prefix))' \
+            "$prune_dir/after.json" >/dev/null \
+            || { echo '::error::Historical Fmx releases remain after pruning'; exit 1; }
+          printf 'Pruned %s historical Fmx release objects.\n' "$historical_count"
+
       - name: Tag released commit
         run: |
           set -euo pipefail

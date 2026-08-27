@@ -16,6 +16,10 @@ This installs `fmx`, its companion `fmx-zmx`, and its pinned Fx fork as
 from any `fx` installed for direct use, and fmx resolves it once when a Runtime
 starts. `fmx doctor` reports what an installation has.
 
+The public store retains only the current fmx and Fx-fork releases. Exact
+version overrides are supported for the current release, not as a historical
+archive.
+
 ## Usage
 
 `ctrl-b` is the prefix key. `ctrl-b ?` lists every binding.
