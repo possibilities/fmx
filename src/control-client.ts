@@ -1,22 +1,24 @@
 import { readdirSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
+import {
+  BUS_SOCKET_ENV_VAR,
+  busSocketPathFor,
+  decodeBusResponse,
+  encodeBusRequest,
+} from "./bus-protocol.ts"
 import type { Command, LaunchFieldArgs, TextSource } from "./cli.ts"
 import {
-  CONTROL_SOCKET_ENV_VAR,
   type ControlError,
   type ControlMethod,
   type ControlReply,
-  decodeReply,
-  encodeRequest,
 } from "./control-protocol.ts"
 import { LineAssembler } from "./line-assembler.ts"
 import { listenerAnswers } from "./unix-socket.ts"
 
 /**
- * The client side of the control socket: `fmx control <command>` resolved to one or
- * two requests, sent to the fmx the caller is running inside, and answered
- * as one JSON object on stdout.
+ * The control client over the Runtime Bus: `fmx control <command>` resolves
+ * the Home Bus, sends a typed request, and prints the result.
  *
  * Exit status is the agent's first reading of what happened, so it is fixed:
  * 0 ok · 1 refused · 2 usage · 3 no fmx reachable · 4 timed out.
@@ -47,9 +49,9 @@ export type ClientEnvironment = {
   env: NodeJS.ProcessEnv
   cwd: string
   readStdin: () => Promise<string>
-  /** Where live control sockets are looked for when nothing names one. */
+  /** Where live Runtime buses are looked for when nothing names one. */
   socketDirectory?: string
-  /** Whether an fmx answers at a control socket path; a connect probe unless a test says otherwise. */
+  /** Whether an fmx answers at a Bus path; a connect probe unless a test says otherwise. */
   isSocketLive?: (path: string) => Promise<boolean>
 }
 
@@ -67,7 +69,7 @@ export async function runCommand(
 ): Promise<ClientOutcome> {
   let socketPath: string
   try {
-    socketPath = await resolveSocketPath(explicitSocket, environment)
+    socketPath = await resolveBusPath(explicitSocket, environment)
   } catch (error) {
     return {
       exitCode: EXIT_UNREACHABLE,
@@ -192,14 +194,17 @@ function callerAgent(env: NodeJS.ProcessEnv): number | null {
  * Which fmx to talk to: the one named, the one the caller runs inside, or —
  * for a human testing from outside — the only one alive on this machine.
  */
-export async function resolveSocketPath(explicit: string | null, environment: ClientEnvironment): Promise<string> {
-  if (explicit) return isAbsolute(explicit) ? explicit : resolve(environment.cwd, explicit)
-  const fromEnv = environment.env[CONTROL_SOCKET_ENV_VAR]
-  if (fromEnv) return fromEnv
-  const candidates = await liveControlSockets(environment)
+export async function resolveBusPath(explicit: string | null, environment: ClientEnvironment): Promise<string> {
+  if (explicit) {
+    const path = isAbsolute(explicit) ? explicit : resolve(environment.cwd, explicit)
+    return busSocketPathFor(path)
+  }
+  const fromEnv = environment.env[BUS_SOCKET_ENV_VAR]
+  if (fromEnv) return busSocketPathFor(fromEnv)
+  const candidates = await liveBusSockets(environment)
   if (candidates.length === 1) return candidates[0]!
   if (candidates.length === 0) {
-    throw new UnreachableError(`not running inside fmx (${CONTROL_SOCKET_ENV_VAR} is unset and no fmx is running)`)
+    throw new UnreachableError(`not running inside fmx (${BUS_SOCKET_ENV_VAR} is unset and no fmx is running)`)
   }
   throw new UnreachableError(
     `not running inside fmx, and more than one Runtime is running; pass --socket with one of: ${candidates.join(", ")}`,
@@ -207,11 +212,11 @@ export async function resolveSocketPath(explicit: string | null, environment: Cl
 }
 
 /**
- * Control sockets are named for a Home, not a process, so a file proves
+ * Runtime Buses are named for a Home, not a process, so a file proves
  * nothing about whether an fmx is behind it: the ones that answer are the
  * ones that count.
  */
-async function liveControlSockets(environment: ClientEnvironment): Promise<string[]> {
+async function liveBusSockets(environment: ClientEnvironment): Promise<string[]> {
   const directory = environment.socketDirectory ?? "/tmp"
   const alive = environment.isSocketLive ?? listenerAnswers
   let names: string[]
@@ -222,14 +227,14 @@ async function liveControlSockets(environment: ClientEnvironment): Promise<strin
   }
   const sockets: string[] = []
   for (const name of names.sort()) {
-    if (!/^fmx-\d+-[0-9a-f]+\.ctl$/u.test(name)) continue
+    if (!/^fmx-\d+-[0-9a-f]+\.bus$/u.test(name)) continue
     const path = `${directory}/${name}`
     if (await alive(path)) sockets.push(path)
   }
   return sockets
 }
 
-/** One request, one reply, one connection. */
+/** One request and its correlated response on a bus connection. */
 export async function exchange(
   socketPath: string,
   method: ControlMethod,
@@ -238,6 +243,7 @@ export async function exchange(
 ): Promise<ControlReply> {
   const id = `${process.pid}-${Date.now().toString(36)}`
   const assembler = new LineAssembler()
+  const decoder = new TextDecoder()
   const { promise, resolve: settle, reject } = Promise.withResolvers<ControlReply>()
   let timer: ReturnType<typeof setTimeout> | null = null
   if (timeoutMs !== null) {
@@ -253,16 +259,24 @@ export async function exchange(
       unix: socketPath,
       socket: {
         open: (socket) => {
-          socket.write(encodeRequest({ id, method, params }))
+          socket.write(encodeBusRequest({ id, method, params }))
         },
         data: (_socket, data) => {
-          const [line] = assembler.push(new TextDecoder().decode(data))
-          if (line !== undefined) settle(decodeReply(line))
+          for (const line of assembler.push(decoder.decode(data, { stream: true }))) {
+            const reply = decodeBusResponse(line)
+            if (reply && (reply.id === id || reply.id === null)) settle(reply)
+          }
         },
         close: () => {
-          const [line] = assembler.flush()
-          if (line !== undefined) settle(decodeReply(line))
-          else settle({ id, ok: false, error: { code: "failed", message: "fmx closed the connection without answering" } })
+          const trailing = [...assembler.push(decoder.decode()), ...assembler.flush()]
+          for (const line of trailing) {
+            const reply = decodeBusResponse(line)
+            if (reply && (reply.id === id || reply.id === null)) {
+              settle(reply)
+              return
+            }
+          }
+          settle({ id, ok: false, error: { code: "failed", message: "fmx closed the connection without answering" } })
         },
         error: (_socket, error) => reject(error),
       },

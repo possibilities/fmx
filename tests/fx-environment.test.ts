@@ -88,11 +88,11 @@ test("fmx never enables Herdr while installing its ADE feed", () => {
   expect(env.FX_ADE_SOCKET_PATH).toBe("/tmp/fmx-home.ade.sock")
 })
 
-test("hands every agent the control socket, and clears one inherited from another fmx", () => {
-  const env = createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work", "/tmp/fmx-42.ctl")
-  expect(env.FMX_SOCKET_PATH).toBe("/tmp/fmx-42.ctl")
+test("hands every Agent the Bus path, and clears one inherited from another fmx", () => {
+  const env = createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.bus" }, 3, "/work", "/tmp/fmx-42.bus")
+  expect(env.FMX_SOCKET_PATH).toBe("/tmp/fmx-42.bus")
   expect(env.FMX_AGENT_ID).toBe("3")
-  expect(createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.ctl" }, 3, "/work").FMX_SOCKET_PATH).toBeUndefined()
+  expect(createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.bus" }, 3, "/work").FMX_SOCKET_PATH).toBeUndefined()
 })
 
 test("hands fx the passive ADE socket with the stable Manifest identity", () => {

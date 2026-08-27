@@ -1,4 +1,4 @@
-import { CONTROL_SOCKET_ENV_VAR } from "./control-protocol.ts"
+import { BUS_SOCKET_ENV_VAR } from "./bus-protocol.ts"
 import { INHERITED_COMPANION_VARIABLES } from "./zmx-environment.ts"
 
 /**
@@ -60,7 +60,7 @@ export function createFxEnvironment(
   parent: NodeJS.ProcessEnv,
   agentId: number,
   cwd: string,
-  controlSocketPath: string | null = null,
+  busSocketPath: string | null = null,
   launchLevel: FxLaunchLevel | null = null,
   ade: FxAdeBinding | null = null,
 ): NodeJS.ProcessEnv {
@@ -80,10 +80,10 @@ export function createFxEnvironment(
   delete env.TERM_PROGRAM_VERSION
   env.FMX_AGENT_ID = String(agentId)
 
-  // The control socket is fmx's own: an agent inside the agent drives
-  // this fmx through it, and `FMX_AGENT_ID` says which agent it is.
-  if (controlSocketPath) env[CONTROL_SOCKET_ENV_VAR] = controlSocketPath
-  else delete env[CONTROL_SOCKET_ENV_VAR]
+  // The Runtime Bus is fmx's own: a command inside the Agent drives this fmx
+  // through it, and `FMX_AGENT_ID` says which Agent issued the request.
+  if (busSocketPath) env[BUS_SOCKET_ENV_VAR] = busSocketPath
+  else delete env[BUS_SOCKET_ENV_VAR]
   if (ade) {
     env.FX_ADE_SOCKET_PATH = ade.socketPath
     env.FX_ADE_INSTANCE_ID = ade.instanceId

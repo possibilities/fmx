@@ -56,19 +56,19 @@ fmx control keys                        # every binding and its command
 
 `fmx control` with no arguments prints the rest.
 
-## Observe
+## Bus
 
-`fmx observe` is the read-only machine interface for sidecars and notification
-tools. It prints newline-delimited JSON, beginning with a complete snapshot of
-the active Agent and every Agent's stable identity, display number, session
-metadata, Git context, lifecycle state, and subagents. Later state records are
-also complete, so a consumer can replace its local projection rather than
-patching it:
+The Runtime Bus is the local machine interface for sidecars, alternate views,
+notification tools, and commands. `fmx bus` subscribes to its newline-delimited
+JSON events, beginning with a complete snapshot of the active Agent and every
+Agent's stable identity, display number, session metadata, Git context,
+lifecycle state, and subagents. Later state records are also complete, so a
+consumer can replace its local projection rather than patching it:
 
 ```sh
-fmx observe                              # snapshots and state changes
-fmx observe --activity                   # plus every accepted ADE event
-fmx observe --activity | jq -c 'select(.event == "activity")'
+fmx bus                                  # snapshots and state changes
+fmx bus --activity                       # plus every accepted ADE event
+fmx bus --activity | jq -c 'select(.event == "activity")'
 ```
 
 Activity is attributed to its stable Agent, main or subagent session, parent
@@ -79,23 +79,25 @@ fresh state snapshot. Summary mode excludes tool arguments and assistant text.
 `--raw-payloads` includes complete ADE payloads, may expose secrets, and
 implies `--activity`.
 
-The stream is private to the local user, but even ordinary state includes
+The Bus is private to the local user, but even ordinary state includes
 workspace paths, terminal labels, and prompt-derived session names. Consumers
 that store or forward records own that exposure.
 
-Direct Observers connect to the mode-0600 socket reported as
-`fmx.observation_socket` by `fmx control orient` and send one subscription
-line before reading:
+Direct Bus peers connect to the mode-0600 socket reported as `fmx.socket` by
+`fmx control orient`. A peer can subscribe, send correlated control requests,
+or do both on one connection:
 
-```json
-{"schema_version":1,"topics":["state","activity"],"activity_payload":"summary"}
+```jsonl
+{"schema_version":1,"type":"subscribe","topics":["state","activity"],"activity_payload":"summary"}
+{"schema_version":1,"type":"request","id":"focus-1","method":"focus","params":{"target":"next"}}
 ```
 
-The Runtime then writes schema-1 NDJSON with per-connection
-`stream_sequence` and authoritative `state_revision` values. Slow Observers
-are disconnected instead of delaying fmx or Fx. An Observer is not a terminal
-Client and does not keep the Runtime alive. The complete wire contract is in
-[Observation stream schema 1](docs/observation-stream.md).
+The Runtime answers with typed `event`, `response`, and `error` records.
+Responses carry the authoritative `state_revision` and take priority over
+queued events; queues stay bounded, so a slow Bus peer is disconnected instead
+of delaying fmx or Fx. Bus peers are not terminal Clients and do not keep the
+Runtime alive. `fmx control` uses this same Bus. The complete wire contract is
+in [Runtime Bus schema 1](docs/runtime-bus.md).
 
 ## Development
 

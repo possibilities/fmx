@@ -6,9 +6,9 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { defaultAdeSocketPath } from "../src/ade-events.ts"
+import { BusSocket } from "../src/bus-socket.ts"
 import { runCommand } from "../src/control-client.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
-import { ControlSocket } from "../src/control-socket.ts"
 import { loadManifest } from "../src/agent-manifest.ts"
 import { TRAY_DEFAULT_WIDTH } from "../src/multiplexer.ts"
 import { paintSizingOwnerDefaultBackground } from "../src/unused-space.ts"
@@ -26,10 +26,10 @@ const configWithRoot = (extra = "") => `project_roots = [${JSON.stringify(ROOT)}
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
-/** Start an Agent through the control socket, as `fmx control launch` does. */
+/** Start an Agent through the Bus, as `fmx control launch` does. */
 async function launchAgent(tempDirectory: string): Promise<void> {
   await waitUntil(() => orientation(tempDirectory, process.env).then(Boolean), 8_000, () => "")
-  const socket = ControlSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
+  const socket = BusSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
   const outcome = await runCommand(
     { name: "launch", fields: {}, focus: true },
     socket,
@@ -216,7 +216,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       await waitUntil(async () => (await runtimeSession())?.clients === 1, 5_000, () => firstOutput.output)
 
       // Attach is ownership. The 60x16 Client makes the shared Runtime 60x16;
-      // the 100x24 observer gets a tinted full clear followed by only that
+      // the 100x24 Client gets a tinted full clear followed by only that
       // smaller frame, which leaves its right and bottom margins visibly unused.
       const firstClears = countOccurrences(firstOutput.output, clear)
       const secondOutput = { output: "" }
@@ -233,7 +233,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(firstOutput.output).toContain(unusedClear)
       expect((await runtimeSession())?.clients).toBe(2)
 
-      // A key from the larger observer takes sizing before it reaches fmx. The
+      // A key from the larger Client takes sizing before it reaches fmx. The
       // confirmation must therefore render at 100x24 immediately: an old-size
       // frame after the clear would flash as a small dark island in the unused
       // field before OpenTUI's debounced resize catches up.
@@ -1283,7 +1283,7 @@ async function orientation(
   tempDirectory: string,
   env: NodeJS.ProcessEnv,
 ): Promise<Snapshot | null> {
-  const socket = ControlSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
+  const socket = BusSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
   try {
     const outcome = await runCommand({ name: "orient" }, socket, {
       env,

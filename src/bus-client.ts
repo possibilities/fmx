@@ -1,36 +1,35 @@
-import type { ObserveArgs } from "./cli.ts"
+import {
+  BUS_SCHEMA_VERSION,
+  encodeBusSubscription,
+  type BusSubscription,
+} from "./bus-protocol.ts"
+import type { BusArgs } from "./cli.ts"
 import {
   EXIT_OK,
   EXIT_UNREACHABLE,
-  resolveSocketPath,
+  resolveBusPath,
   type ClientEnvironment,
 } from "./control-client.ts"
 import type { ControlError } from "./control-protocol.ts"
-import {
-  encodeObservationSubscription,
-  OBSERVATION_SCHEMA_VERSION,
-  type ObservationSubscription,
-} from "./observation-protocol.ts"
-import { ObservationSocket } from "./observation-socket.ts"
 
-export type ObservationClientEnvironment = Omit<ClientEnvironment, "readStdin"> & {
+export type BusClientEnvironment = Omit<ClientEnvironment, "readStdin"> & {
   write: (data: Uint8Array) => void | Promise<void>
 }
 
-export type ObservationClientOutcome = {
+export type BusClientOutcome = {
   exitCode: number
   error?: ControlError
 }
 
-/** Connect once and relay the passive stream until the Runtime closes it. */
-export async function runObservation(
-  options: ObserveArgs,
+/** Subscribe once and relay bus events until the Runtime closes the connection. */
+export async function runBus(
+  options: BusArgs,
   explicitSocket: string | null,
-  environment: ObservationClientEnvironment,
-): Promise<ObservationClientOutcome> {
-  let controlPath: string
+  environment: BusClientEnvironment,
+): Promise<BusClientOutcome> {
+  let path: string
   try {
-    controlPath = await resolveSocketPath(explicitSocket, {
+    path = await resolveBusPath(explicitSocket, {
       ...environment,
       readStdin: async () => "",
     })
@@ -40,16 +39,15 @@ export async function runObservation(
       error: { code: "failed", message: error instanceof Error ? error.message : String(error) },
     }
   }
-  const path = ObservationSocket.pathFor(controlPath)
-  const subscription: ObservationSubscription = {
-    schemaVersion: OBSERVATION_SCHEMA_VERSION,
+  const subscription: BusSubscription = {
+    schemaVersion: BUS_SCHEMA_VERSION,
     topics: options.activity ? ["state", "activity"] : ["state"],
     activityPayload: options.rawPayloads ? "raw" : "summary",
   }
 
-  const completion = Promise.withResolvers<ObservationClientOutcome>()
+  const completion = Promise.withResolvers<BusClientOutcome>()
   let settled = false
-  const finish = (outcome: ObservationClientOutcome): void => {
+  const finish = (outcome: BusClientOutcome): void => {
     if (settled) return
     settled = true
     completion.resolve(outcome)
@@ -61,13 +59,14 @@ export async function runObservation(
       unix: path,
       socket: {
         open: (socket) => {
-          const request = encodeObservationSubscription(subscription)
+          const request = encodeBusSubscription(subscription)
           const written = socket.write(request)
           if (written < Buffer.byteLength(request)) {
             finish({
               exitCode: EXIT_UNREACHABLE,
-              error: { code: "failed", message: "could not send observation subscription" },
+              error: { code: "failed", message: "could not send bus subscription" },
             })
+            socket.end()
           }
         },
         data: async (socket, data) => {
@@ -77,10 +76,7 @@ export async function runObservation(
             const detail = error instanceof Error ? error.message : String(error)
             finish({
               exitCode: EXIT_UNREACHABLE,
-              error: {
-                code: "failed",
-                message: `cannot write fmx observation stream: ${detail}`,
-              },
+              error: { code: "failed", message: `cannot write fmx bus: ${detail}` },
             })
             socket.end()
           }
@@ -98,10 +94,7 @@ export async function runObservation(
     const detail = error instanceof Error ? error.message : String(error)
     return {
       exitCode: EXIT_UNREACHABLE,
-      error: {
-        code: "failed",
-        message: `cannot reach fmx observation stream at ${path}: ${detail}`,
-      },
+      error: { code: "failed", message: `cannot reach fmx bus at ${path}: ${detail}` },
     }
   }
 

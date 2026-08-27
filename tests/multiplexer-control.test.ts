@@ -14,7 +14,7 @@ import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
-const CONTROL_PATH = `/tmp/fmx-control-test-${process.pid}.ctl`
+const BUS_PATH = `/tmp/fmx-control-test-${process.pid}.bus`
 const NEVER = new AbortController().signal
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
@@ -41,7 +41,7 @@ async function harness(name: string) {
     projectRoots: ["~/code"],
     home,
     adeSocket,
-    controlSocketPath: CONTROL_PATH,
+    busSocketPath: BUS_PATH,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -127,7 +127,7 @@ test("orients an empty fmx", async () => {
   const h = await harness("empty")
   try {
     const snapshot = (await h.control("orient", { caller: 1 })) as Snapshot
-    expect(snapshot.fmx).toMatchObject({ pid: process.pid, socket: CONTROL_PATH, cols: 100, rows: 30 })
+    expect(snapshot.fmx).toMatchObject({ pid: process.pid, socket: BUS_PATH, cols: 100, rows: 30 })
     expect(snapshot.you).toBeNull()
     expect(snapshot.active).toBeNull()
     expect(snapshot.agents).toEqual([])
@@ -526,6 +526,21 @@ test("waits for an agent through the prompt it was launched with", async () => {
       state: "blocked",
       agent: { attention: "question" },
     })
+  } finally {
+    await h.close()
+  }
+})
+
+test("cancels an Agent wait when its Bus connection closes", async () => {
+  const h = await harness("wait-cancelled")
+  try {
+    await h.launch()
+    const abort = new AbortController()
+    const waiting = h.multiplexer.control.handle("agent.wait", { target: "1" }, abort.signal)
+    abort.abort()
+    const cancelled = await failure(waiting)
+    expect(cancelled.code).toBe("cancelled")
+    expect(cancelled.message).toBe("waiting for agent 1 was cancelled")
   } finally {
     await h.close()
   }

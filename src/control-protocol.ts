@@ -1,18 +1,10 @@
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
 
 /**
- * The control socket's wire: what `fmx control <command>` sends and what the running
- * fmx answers. Pure — no I/O, no renderer, no process state — so the client
- * and the server encode and decode through the same functions.
- *
- * One request per connection, newline-delimited JSON both ways. A request is
- * `{id, method, params}`; the reply is `{id, ok: true, result}` or
- * `{id, ok: false, error: {code, message, data?}}`. A method that waits for
- * something holds its connection until it resolves, so the client's own
- * timeout, not the server's, decides how long an agent is willing to block.
+ * The typed command surface behind `fmx control`. Transport-independent: the
+ * Runtime Bus owns framing, multiplexing, and delivery while Multiplexer owns
+ * what every method means.
  */
-
-export const CONTROL_SOCKET_ENV_VAR = "FMX_SOCKET_PATH"
 
 export type ControlRequest = {
   id: string
@@ -29,6 +21,7 @@ export type ControlErrorCode =
   | "busy"
   | "failed"
   | "timeout"
+  | "cancelled"
   | "shutting_down"
 
 export type ControlError = {
@@ -40,6 +33,25 @@ export type ControlError = {
 export type ControlReply =
   | { id: string | null; ok: true; result: unknown }
   | { id: string | null; ok: false; error: ControlError }
+
+/** What the Runtime Bus drives. A disconnect aborts every request still held
+ * by that connection, so waiting methods can release their resources. */
+export type ControlSurface = {
+  handle(method: ControlMethod, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+}
+
+/** A successful result whose action must wait until its response is written
+ * or the requesting connection has gone away. */
+export class AfterControlReply {
+  constructor(
+    readonly result: unknown,
+    readonly run: () => void,
+  ) {}
+}
+
+export function afterControlReply(result: unknown, run: () => void): AfterControlReply {
+  return new AfterControlReply(result, run)
+}
 
 export const CONTROL_METHODS = [
   "orient",
@@ -131,7 +143,6 @@ export type Snapshot = {
     version: string
     cwd: string
     socket: string
-    observation_socket: string
     cols: number
     rows: number
   }
@@ -187,15 +198,7 @@ export function parseTarget(raw: string): Target {
   return { kind: "name", name: trimmed }
 }
 
-/* ------------------------------------------------------------------ codec */
-
-export function encodeRequest(request: ControlRequest): string {
-  return `${JSON.stringify(request)}\n`
-}
-
-export function encodeReply(reply: ControlReply): string {
-  return `${JSON.stringify(reply)}\n`
-}
+/* --------------------------------------------------------------- responses */
 
 export function successReply(id: string | null, result: unknown): ControlReply {
   return { id, ok: true, result }
@@ -212,56 +215,6 @@ export function failureFrom(error: unknown): ControlError {
       : { code: error.code, message: error.message, data: error.data }
   }
   return { code: "failed", message: error instanceof Error ? error.message : String(error) }
-}
-
-/** Decodes one request line; a malformed line is reported as an error reply
- * the server can send back verbatim. */
-export function decodeRequest(line: string): { request: ControlRequest } | { reply: ControlReply } {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(line)
-  } catch {
-    return { reply: errorReply(null, { code: "invalid_request", message: "expected one JSON object per line" }) }
-  }
-  if (!isRecord(parsed)) {
-    return { reply: errorReply(null, { code: "invalid_request", message: "expected a JSON object" }) }
-  }
-  const id = typeof parsed.id === "string" ? parsed.id : null
-  const method = parsed.method
-  if (typeof method !== "string" || !isControlMethod(method)) {
-    return {
-      reply: errorReply(id, {
-        code: "unknown_method",
-        message: `unknown method: ${String(method)}`,
-        data: { methods: CONTROL_METHODS },
-      }),
-    }
-  }
-  const params = parsed.params === undefined ? {} : parsed.params
-  if (!isRecord(params)) {
-    return { reply: errorReply(id, { code: "invalid_params", message: "params must be an object" }) }
-  }
-  return { request: { id: id ?? "", method, params } }
-}
-
-export function decodeReply(line: string): ControlReply {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(line)
-  } catch {
-    return errorReply(null, { code: "invalid_request", message: "fmx answered with something other than JSON" })
-  }
-  if (!isRecord(parsed) || typeof parsed.ok !== "boolean") {
-    return errorReply(null, { code: "invalid_request", message: "fmx answered with an unexpected shape" })
-  }
-  const id = typeof parsed.id === "string" ? parsed.id : null
-  if (parsed.ok) return successReply(id, parsed.result)
-  const error = isRecord(parsed.error) ? parsed.error : {}
-  return errorReply(id, {
-    code: isErrorCode(error.code) ? error.code : "failed",
-    message: typeof error.message === "string" ? error.message : "unknown error",
-    ...(error.data === undefined ? {} : { data: error.data }),
-  })
 }
 
 /* ------------------------------------------------------- param accessors */
@@ -317,10 +270,11 @@ const ERROR_CODES: readonly string[] = [
   "busy",
   "failed",
   "timeout",
+  "cancelled",
   "shutting_down",
 ]
 
-function isErrorCode(value: unknown): value is ControlErrorCode {
+export function isControlErrorCode(value: unknown): value is ControlErrorCode {
   return typeof value === "string" && ERROR_CODES.includes(value)
 }
 

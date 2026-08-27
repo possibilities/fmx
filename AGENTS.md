@@ -211,16 +211,20 @@
   captured attribution and may legitimately lag after `/new`. The socket keeps
   a bounded startup backlog until survivor identities exist and the Multiplexer
   subscribes.
-- The Observation stream is fmx's Runtime→Observer contract, on its own
-  mode-0600 Home socket at `/tmp/fmx-<uid>-<home id>.obs`; never reuse ADE
-  ingress or control request/reply for it. Bind it under the ADE singleton only
-  after restored Agents and metadata are ready. Every Observer gets a complete
-  state snapshot first, later state is complete and deduplicated, and accepted
-  ADE activity is attributed and published live-only after its state fold, with
-  sequence gaps made explicit. Summary payloads are allowlisted; raw ADE
-  payloads require an explicit subscription. Bound handshakes, Observer count,
-  and each outbound queue, and disconnect a slow Observer: observation must
-  never delay the Runtime, control, or Fx. Observers are not terminal Clients,
+- The Bus is fmx's duplex Runtime contract, on one mode-0600 Home socket at
+  `/tmp/fmx-<uid>-<home id>.bus`, independent of the one-way ADE feed. Bind it
+  under the ADE singleton only after restored Agents and metadata are ready;
+  only that holder may remove crash residue, including the retired `.ctl` and
+  `.obs` paths. Every subscription gets a complete state snapshot first, later
+  state is complete and deduplicated, and accepted ADE activity is attributed
+  and published live-only after its state fold, with sequence gaps explicit.
+  Summary payloads are allowlisted; raw ADE payloads require an explicit
+  subscription. A connection may subscribe, issue multiple correlated control
+  requests, or do both; responses carry the current state revision, take
+  priority over queued events, and may evict whole events not yet written.
+  Bound silent peers, total connections, subscriptions, pending requests, and
+  each outbound queue, and disconnect a slow Bus peer: it must never delay the
+  Runtime, another peer, a command, or Fx. Bus peers are not terminal Clients,
   do not affect sizing, and do not keep the Runtime alive.
 - Session names belong to fx. fmx applies `SessionMetadataChanged` only to the
   session named by its ADE context and reads
@@ -229,15 +233,14 @@
   normalizes the title, or makes names unique. An exact duplicate is an
   ambiguous control target; `/rename` and generated names follow the same
   path because fx is the sole persistence authority.
-- The control socket (`src/control-socket.ts`) is fmx's independent request/reply
-  wire beside the one-way ADE feed. Keep `FMX_SOCKET_PATH` beside
-  `FMX_AGENT_ID` in `src/fx-environment.ts`: the client reads both, and
-  `current` as a target is meaningless without the id. Its path replaces the
-  ADE suffix with `.ctl` — per Home, not per pid — so the
-  `FMX_SOCKET_PATH` an fx was given outlives the fmx that gave it; it is bound
-  under the ADE feed's singleton, which is what makes unlinking a stale
-  one safe. `fmx control` from outside any agent finds a live fmx by
-  probing the sockets, not by pid.
+- Keep the Bus's `FMX_SOCKET_PATH` beside `FMX_AGENT_ID` in
+  `src/fx-environment.ts`: control reads both, and `current` as a target is
+  meaningless without the id. The Bus path is per Home, not per pid, so the
+  value an Fx received outlives the fmx that gave it. An Fx surviving the
+  cutover may retain a `.ctl` value; client resolution normalizes `.ctl`,
+  `.obs`, and `.sock` suffixes to `.bus` rather than keeping a retired listener.
+  `fmx control` from outside any Agent finds a live Runtime by probing Bus
+  sockets, not by pid.
 - Every `fmx control <command>` goes through `Multiplexer.handleControl`, and
   UI writes there take the paths the keys take (`switchTo`, `applyTrayWidth`).
   Launch is the intentional CLI-only exception: the TUI has no creation action.

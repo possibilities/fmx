@@ -38,17 +38,17 @@ test(
       expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("no agents")
       expect(multiplexer.get("multiplexer-working")?.[0]).toContain("Working on the UI gallery")
       expect(multiplexer.get("multiplexer-working")?.[23]).toContain("│")
-      expect(multiplexer.get("multiplexer-larger-observer")?.[0]).toContain("Working on the UI gallery")
+      expect(multiplexer.get("multiplexer-larger-client")?.[0]).toContain("Working on the UI gallery")
 
-      const observer = built.stories[palette].find((story) => story.id === "multiplexer-larger-observer")
-      expect(observer).toBeDefined()
+      const client = built.stories[palette].find((story) => story.id === "multiplexer-larger-client")
+      expect(client).toBeDefined()
       const expectedUnused = {
         dark: [35, 40, 47],
         light: [225, 229, 228],
         fallback: [41, 41, 41],
       }[palette]
-      expect(backgroundAt(observer!.frame, 85, 0)).toEqual(expectedUnused)
-      expect(backgroundAt(observer!.frame, 0, 23)).toEqual(expectedUnused)
+      expect(backgroundAt(client!.frame, 85, 0)).toEqual(expectedUnused)
+      expect(backgroundAt(client!.frame, 0, 23)).toEqual(expectedUnused)
     }
 
     const setup = await createTestRenderer({ width: 112, height: 34, kittyKeyboard: true, exitOnCtrlC: false })

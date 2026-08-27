@@ -53,10 +53,10 @@ export const UI_STORIES: readonly UiStory[] = [
     }),
   },
   {
-    id: "multiplexer-larger-observer",
+    id: "multiplexer-larger-client",
     component: "Multiplexer",
     title: "Larger observing Client",
-    description: "The shared sizing-owner frame stays at top left while one flat host-relative field marks the observer's unused right and bottom space.",
+    description: "The shared sizing-owner frame stays at top left while one flat host-relative field marks the larger Client's unused right and bottom space.",
     viewport: { cols: 86, rows: 24 },
     expectedText: ["Review UI", "Working on the UI gallery", "Review the gallery in a terminal"],
     arrange: mountMultiplexer({

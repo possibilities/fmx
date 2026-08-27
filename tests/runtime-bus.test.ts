@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { AgentInfo } from "../src/control-protocol.ts"
-import { ObservationHub, type ObservationUpdate } from "../src/observation-hub.ts"
+import { RuntimeBus, type BusUpdate } from "../src/runtime-bus.ts"
 import { record } from "./fixtures/ade-feed.ts"
 
 function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
@@ -16,9 +16,9 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
     main_git_root: "/workspace/fmx",
     branch: "main",
     worktree: false,
-    name: "observation-stream",
+    name: "runtime-bus",
     session_id: "1772000000000-1772000000000000000-session",
-    label: "observation-stream",
+    label: "runtime-bus",
     state: "idle",
     attention: null,
     active: true,
@@ -29,19 +29,19 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
 }
 
 test("retains one deduplicated authoritative state with monotonic revisions", () => {
-  const hub = new ObservationHub({ homeId: "home-1", version: "0.3.0", runtimeId: "runtime-1", pid: 123 })
-  const updates: ObservationUpdate[] = []
-  hub.subscribe((update) => updates.push(update))
+  const bus = new RuntimeBus({ homeId: "home-1", version: "0.3.0", runtimeId: "runtime-1", pid: 123 })
+  const updates: BusUpdate[] = []
+  bus.subscribe((update) => updates.push(update))
 
-  expect(hub.runtime).toEqual({ id: "runtime-1", home_id: "home-1", pid: 123, version: "0.3.0" })
-  expect(hub.snapshot()).toEqual({ stateRevision: 0, state: { active_agent_id: null, agents: [] } })
+  expect(bus.runtime).toEqual({ id: "runtime-1", home_id: "home-1", pid: 123, version: "0.3.0" })
+  expect(bus.snapshot()).toEqual({ stateRevision: 0, state: { active_agent_id: null, agents: [] } })
 
   const state = { active_agent_id: agent().agent_id, agents: [agent()] }
-  expect(hub.updateState(state, "agent_added")).toBe(true)
-  expect(hub.updateState({ active_agent_id: state.active_agent_id, agents: [agent()] }, "duplicate")).toBe(false)
-  expect(hub.updateState({ ...state, agents: [agent({ state: "working" })] }, "lifecycle")).toBe(true)
+  expect(bus.updateState(state, "agent_added")).toBe(true)
+  expect(bus.updateState({ active_agent_id: state.active_agent_id, agents: [agent()] }, "duplicate")).toBe(false)
+  expect(bus.updateState({ ...state, agents: [agent({ state: "working" })] }, "lifecycle")).toBe(true)
 
-  expect(hub.snapshot()).toEqual({
+  expect(bus.snapshot()).toEqual({
     stateRevision: 2,
     state: { ...state, agents: [agent({ state: "working" })] },
   })
@@ -52,16 +52,16 @@ test("retains one deduplicated authoritative state with monotonic revisions", ()
 })
 
 test("activity is live-only and carries the state revision current when it was accepted", () => {
-  const hub = new ObservationHub({ homeId: "home-1", version: "0.3.0", runtimeId: "runtime-1" })
+  const bus = new RuntimeBus({ homeId: "home-1", version: "0.3.0", runtimeId: "runtime-1" })
   const ade = record("PromptQueued", { sequence: 3 })
 
-  hub.publishActivity(ade, ade.instanceId, 1, true)
-  const updates: ObservationUpdate[] = []
-  const unsubscribe = hub.subscribe((update) => updates.push(update))
-  hub.updateState({ active_agent_id: ade.instanceId, agents: [agent()] }, "lifecycle")
-  hub.publishActivity(ade, ade.instanceId, 1, true)
+  bus.publishActivity(ade, ade.instanceId, 1, true)
+  const updates: BusUpdate[] = []
+  const unsubscribe = bus.subscribe((update) => updates.push(update))
+  bus.updateState({ active_agent_id: ade.instanceId, agents: [agent()] }, "lifecycle")
+  bus.publishActivity(ade, ade.instanceId, 1, true)
   unsubscribe()
-  hub.publishActivity(record("PostTurnEnd", { sequence: 4 }), ade.instanceId, 1, false)
+  bus.publishActivity(record("PostTurnEnd", { sequence: 4 }), ade.instanceId, 1, false)
 
   expect(updates).toHaveLength(2)
   expect(updates[0]).toMatchObject({ kind: "state", stateRevision: 1 })
@@ -75,12 +75,12 @@ test("activity is live-only and carries the state revision current when it was a
 })
 
 test("one failing local listener cannot disturb publishers or other listeners", () => {
-  const hub = new ObservationHub({ homeId: "home-1", version: "0.3.0" })
+  const bus = new RuntimeBus({ homeId: "home-1", version: "0.3.0" })
   let received = 0
-  hub.subscribe(() => {
-    throw new Error("observer failed")
+  bus.subscribe(() => {
+    throw new Error("peer failed")
   })
-  hub.subscribe(() => received += 1)
-  expect(hub.updateState({ active_agent_id: null, agents: [agent({ active: false })] }, "agent_added")).toBe(true)
+  bus.subscribe(() => received += 1)
+  expect(bus.updateState({ active_agent_id: null, agents: [agent({ active: false })] }, "agent_added")).toBe(true)
   expect(received).toBe(1)
 })
