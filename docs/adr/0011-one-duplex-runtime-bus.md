@@ -1,0 +1,3 @@
+# One duplex Runtime Bus carries events and commands
+
+fmx replaces the separate `.obs` event and `.ctl` request/reply sockets with one stable, mode-0600 Home Bus at `/tmp/fmx-<uid>-<home id>.bus`, because integrations should be able to subscribe and issue multiple correlated commands on the same connection while Fx's ADE ingress remains isolated and one-way. Each peer has bounded queues and pending work, command responses carry the authoritative state revision and take priority over whole events not yet written, and a slow peer is disconnected, so combining the public lanes does not let subscriptions delay the Runtime, another peer, or Fx; `fmx bus` subscribes and the unchanged `fmx control` CLI uses the same wire.

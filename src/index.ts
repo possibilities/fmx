@@ -13,7 +13,8 @@ import { AdeSocket, HomeActiveError } from "./ade-events.ts"
 import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
 import { EXIT_USAGE, runCommand } from "./control-client.ts"
-import { ControlSocket } from "./control-socket.ts"
+import { runBus } from "./bus-client.ts"
+import { BusSocket } from "./bus-socket.ts"
 import { doctor } from "./doctor.ts"
 import { resolveFx } from "./executable.ts"
 import { AgentManifest, manifestPath } from "./agent-manifest.ts"
@@ -21,9 +22,7 @@ import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./
 import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
-import { runObservation } from "./observation-client.ts"
-import { ObservationHub } from "./observation-hub.ts"
-import { ObservationSocket } from "./observation-socket.ts"
+import { RuntimeBus } from "./runtime-bus.ts"
 import { expandTilde } from "./projects.ts"
 import { loadState, saveState, type PersistedState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
@@ -93,8 +92,8 @@ async function main(): Promise<void> {
     process.exitCode = outcome.exitCode
     return
   }
-  if (options.observe) {
-    const outcome = await runObservation(options.observe, options.socket, {
+  if (options.bus) {
+    const outcome = await runBus(options.bus, options.socket, {
       env: process.env,
       cwd: process.cwd(),
       write: (data) => {
@@ -136,15 +135,14 @@ async function main(): Promise<void> {
     stateSave = stateSave.then(() => saveState(snapshot)).catch(() => {})
   }
   const home = homeId()
-  const observationHub = new ObservationHub({ homeId: home, version: VERSION })
+  const runtimeBus = new RuntimeBus({ homeId: home, version: VERSION })
 
   let renderer: CliRenderer | null = null
   let startupPaletteDetector: TerminalPaletteDetector | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const adeSocket = new AdeSocket({ homeId: home })
-  let controlSocket: ControlSocket | null = null
-  let observationSocket: ObservationSocket | null = null
+  let busSocket: BusSocket | null = null
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
@@ -209,8 +207,7 @@ async function main(): Promise<void> {
       attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
     })
     const survivors = restored.map(({ entry }) => entry)
-    const controlSocketPath = ControlSocket.pathFor(adeSocket.path)
-    const observationSocketPath = ObservationSocket.pathFor(adeSocket.path)
+    const busSocketPath = BusSocket.pathFor(adeSocket.path)
     const firstPalette = await firstPaletteChoice
     runtimePalette = firstPalette.kind === "settled" ? firstPalette.colors : null
     await renderer.setupTerminal()
@@ -219,7 +216,7 @@ async function main(): Promise<void> {
     // the resize before OpenTUI's debounced SIGWINCH handler runs, and that
     // interaction must not paint one last frame at the previous owner's size.
     // OpenTUI then repaints only the sizing owner's shared frame. Larger
-    // observers retain the field at the right and bottom.
+    // Clients retain the field at the right and bottom.
     runtimeResizeHandler = () => {
       createdRenderer.resize(
         Math.max(1, process.stdout.columns || createdRenderer.width),
@@ -231,7 +228,7 @@ async function main(): Promise<void> {
     }
     process.stdout.on("resize", runtimeResizeHandler)
     // A live host-theme change updates the shared frame through Multiplexer;
-    // repaint the physical field too so larger observers do not retain the
+    // repaint the physical field too so larger Clients do not retain the
     // previous theme's unused margins until another resize.
     runtimePaletteHandler = (colors) => {
       runtimePalette = colors
@@ -247,11 +244,10 @@ async function main(): Promise<void> {
       transport,
       survivors,
       adeSocket,
-      observation: observationHub,
+      bus: runtimeBus,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
-      controlSocketPath,
-      observationSocketPath,
+      busSocketPath,
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
       initialActiveAgentId: persistedState.activeAgentId,
@@ -305,13 +301,11 @@ async function main(): Promise<void> {
     renderer.start()
     await startup
 
-    // The public read-only stream and the control surface both live beside
-    // the ADE feed under its Home singleton. Do not publish either until
+    // The public Runtime Bus lives beside the ADE feed under its Home
+    // singleton. Do not accept subscriptions or control requests until
     // restored Agents, their metadata, and the selected terminal are ready.
-    observationSocket = new ObservationSocket(observationHub, observationSocketPath)
-    observationSocket.start()
-    controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(adeSocket.path))
-    controlSocket.start()
+    busSocket = new BusSocket(runtimeBus, app.control, busSocketPath)
+    busSocket.start()
 
     // Detection takes seconds in a terminal that never answers, and a
     // renderer destroyed under it never settles the query: a shutdown in
@@ -339,8 +333,7 @@ async function main(): Promise<void> {
     transport?.close()
     await manifest?.settled()
     await stateSave
-    controlSocket?.close()
-    observationSocket?.close()
+    busSocket?.close()
     adeSocket.close()
     startupPaletteDetector?.cleanup()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)

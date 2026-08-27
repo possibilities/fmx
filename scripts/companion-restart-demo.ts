@@ -16,7 +16,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 import { defaultAdeSocketPath } from "../src/ade-events.ts"
 import { loadManifest } from "../src/agent-manifest.ts"
-import { ControlSocket } from "../src/control-socket.ts"
+import { BusSocket } from "../src/bus-socket.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { homeIdFor } from "../src/zmx-environment.ts"
 
@@ -32,7 +32,7 @@ const FAKE_FX = join(ROOT, "tests/fixtures/fake-fx.ts")
 const temp = await mkdtemp("/tmp/fmx-restart-demo-")
 const companionDirectory = `/tmp/fmxz-demo-${basename(temp).slice(-6)}`
 const home = homeIdFor(join(temp, "config", "fmx"))
-const controlSocketPath = ControlSocket.pathFor(defaultAdeSocketPath(home))
+const busSocketPath = BusSocket.pathFor(defaultAdeSocketPath(home))
 const lifecycleLog = join(temp, "lifecycle.log")
 const manifestPath = join(temp, "agents.json")
 const configFile = join(temp, "config.toml")
@@ -91,7 +91,7 @@ const CTRL = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
 const launch = async () => {
   const process_ = Bun.spawn(
-    [process.execPath, "src/index.ts", "control", "launch", "--socket", controlSocketPath, "--project", ROOT],
+    [process.execPath, "src/index.ts", "control", "launch", "--socket", busSocketPath, "--project", ROOT],
     { cwd: ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
   )
   const [stdout, stderr] = await Promise.all([

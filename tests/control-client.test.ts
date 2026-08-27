@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "../src/cli.ts"
+import { BusSocket } from "../src/bus-socket.ts"
 import {
   type ClientEnvironment,
   EXIT_OK,
@@ -10,11 +11,11 @@ import {
   EXIT_TIMEOUT,
   EXIT_UNREACHABLE,
   EXIT_USAGE,
-  resolveSocketPath,
+  resolveBusPath,
   runCommand,
 } from "../src/control-client.ts"
 import { ControlFailure, type ControlMethod } from "../src/control-protocol.ts"
-import { ControlSocket } from "../src/control-socket.ts"
+import { RuntimeBus } from "../src/runtime-bus.ts"
 
 type Call = { method: ControlMethod; params: Record<string, unknown> }
 
@@ -30,14 +31,15 @@ function environment(overrides: Partial<ClientEnvironment> = {}): ClientEnvironm
 
 async function server(answer: (call: Call) => Promise<unknown>, name: string) {
   const calls: Call[] = []
-  const socket = new ControlSocket(
+  const socket = new BusSocket(
+    new RuntimeBus({ homeId: "home", version: "test" }),
     {
       handle: (method, params) => {
         calls.push({ method, params })
         return answer({ method, params })
       },
     },
-    `/tmp/fmx-client-test-${name}-${process.pid}.sock`,
+    `/tmp/fmx-client-test-${name}-${process.pid}.bus`,
   )
   socket.start()
   return { socket, calls }
@@ -45,23 +47,24 @@ async function server(answer: (call: Call) => Promise<unknown>, name: string) {
 
 test("names the socket from the flag, then the environment, then a lone live fmx", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-sockets-"))
-  const first = join(directory, "fmx-501-0123456789ab.ctl")
-  const second = join(directory, "fmx-501-ba9876543210.ctl")
+  const first = join(directory, "fmx-501-0123456789ab.bus")
+  const second = join(directory, "fmx-501-ba9876543210.bus")
   await writeFile(first, "")
   await writeFile(second, "")
-  await writeFile(join(directory, "fmx-100.ctl"), "")
+  await writeFile(join(directory, "fmx-100.bus"), "")
   const alive = new Set([first])
   const discover = environment({ socketDirectory: directory, isSocketLive: async (path) => alive.has(path) })
 
-  expect(await resolveSocketPath("/tmp/given.ctl", discover)).toBe("/tmp/given.ctl")
-  expect(await resolveSocketPath("rel.ctl", discover)).toBe("/work/rel.ctl")
-  expect(await resolveSocketPath(null, { ...discover, env: { FMX_SOCKET_PATH: "/tmp/env.ctl" } })).toBe("/tmp/env.ctl")
-  expect(await resolveSocketPath(null, discover)).toBe(first)
+  expect(await resolveBusPath("/tmp/given.bus", discover)).toBe("/tmp/given.bus")
+  expect(await resolveBusPath("rel.bus", discover)).toBe("/work/rel.bus")
+  expect(await resolveBusPath(null, { ...discover, env: { FMX_SOCKET_PATH: "/tmp/env.bus" } })).toBe("/tmp/env.bus")
+  expect(await resolveBusPath(null, { ...discover, env: { FMX_SOCKET_PATH: "/tmp/survivor.ctl" } })).toBe("/tmp/survivor.bus")
+  expect(await resolveBusPath(null, discover)).toBe(first)
 
   alive.add(second)
-  expect(resolveSocketPath(null, discover)).rejects.toThrow("more than one")
+  expect(resolveBusPath(null, discover)).rejects.toThrow("more than one")
   alive.clear()
-  expect(resolveSocketPath(null, discover)).rejects.toThrow("not running inside fmx")
+  expect(resolveBusPath(null, discover)).rejects.toThrow("not running inside fmx")
 })
 
 test("reports an unreachable fmx as exit 3", async () => {

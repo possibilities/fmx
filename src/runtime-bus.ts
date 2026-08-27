@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto"
 import type { AdeRecord } from "./ade-events.ts"
-import type { ObservationRuntime, ObservationState } from "./observation-protocol.ts"
+import type { BusRuntime, BusState } from "./bus-protocol.ts"
 
-export type ObservationUpdate =
+export type BusUpdate =
   | {
       kind: "state"
       stateRevision: number
       cause: string
-      state: ObservationState
+      state: BusState
     }
   | {
       kind: "activity"
@@ -18,15 +18,15 @@ export type ObservationUpdate =
       gapBefore: boolean
     }
 
-export type ObservationListener = (update: ObservationUpdate) => void
+export type BusListener = (update: BusUpdate) => void
 
 /** The structural surface Multiplexer publishes onto. */
-export type ObservationSink = {
-  updateState(state: ObservationState, cause: string): boolean
+export type BusPublisher = {
+  updateState(state: BusState, cause: string): boolean
   publishActivity(record: AdeRecord, agentId: string, displayId: number, gapBefore: boolean): void
 }
 
-export type ObservationHubOptions = {
+export type RuntimeBusOptions = {
   homeId: string
   version: string
   runtimeId?: string
@@ -34,17 +34,17 @@ export type ObservationHubOptions = {
 }
 
 /**
- * One current Runtime projection and its live observations. State is retained
- * for a subscriber's initial snapshot; activity is deliberately never replayed.
+ * One current Runtime projection and its live bus publications. State is
+ * retained for a subscription's initial snapshot; activity is never replayed.
  */
-export class ObservationHub implements ObservationSink {
-  readonly runtime: ObservationRuntime
-  private listeners = new Set<ObservationListener>()
+export class RuntimeBus implements BusPublisher {
+  readonly runtime: BusRuntime
+  private listeners = new Set<BusListener>()
   private stateRevision = 0
-  private state: ObservationState = { active_agent_id: null, agents: [] }
+  private state: BusState = { active_agent_id: null, agents: [] }
   private stateFingerprint = JSON.stringify(this.state)
 
-  constructor(options: ObservationHubOptions) {
+  constructor(options: RuntimeBusOptions) {
     this.runtime = {
       id: options.runtimeId ?? randomBytes(16).toString("hex"),
       home_id: options.homeId,
@@ -53,16 +53,16 @@ export class ObservationHub implements ObservationSink {
     }
   }
 
-  snapshot(): { stateRevision: number; state: ObservationState } {
+  snapshot(): { stateRevision: number; state: BusState } {
     return { stateRevision: this.stateRevision, state: this.state }
   }
 
-  subscribe(listener: ObservationListener): () => void {
+  subscribe(listener: BusListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
 
-  updateState(state: ObservationState, cause: string): boolean {
+  updateState(state: BusState, cause: string): boolean {
     const fingerprint = JSON.stringify(state)
     if (fingerprint === this.stateFingerprint) return false
     this.state = state
@@ -83,12 +83,12 @@ export class ObservationHub implements ObservationSink {
     })
   }
 
-  private emit(update: ObservationUpdate): void {
+  private emit(update: BusUpdate): void {
     for (const listener of this.listeners) {
       try {
         listener(update)
       } catch {
-        // Observation is passive. A local integration cannot disturb the TUI.
+        // A local Bus listener cannot disturb the Runtime or another connection.
       }
     }
   }

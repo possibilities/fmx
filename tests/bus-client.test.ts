@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test"
-import { runObservation } from "../src/observation-client.ts"
-import { ObservationHub } from "../src/observation-hub.ts"
-import { ObservationSocket } from "../src/observation-socket.ts"
+import { runBus } from "../src/bus-client.ts"
+import { BusSocket } from "../src/bus-socket.ts"
 import { EXIT_OK, EXIT_UNREACHABLE } from "../src/control-client.ts"
+import { RuntimeBus } from "../src/runtime-bus.ts"
 import { record } from "./fixtures/ade-feed.ts"
 
-function controlPath(name: string): string {
-  return `/tmp/fmx-observe-client-${name}-${process.pid}.ctl`
+function legacyControlPath(name: string): string {
+  return `/tmp/fmx-bus-client-${name}-${process.pid}.ctl`
 }
 
 async function waitFor(condition: () => boolean, message: string, timeoutMs = 1_000): Promise<void> {
@@ -15,14 +15,14 @@ async function waitFor(condition: () => boolean, message: string, timeoutMs = 1_
   if (!condition()) throw new Error(message)
 }
 
-test("relays the selected Runtime's NDJSON stream with an explicit raw-activity subscription", async () => {
-  const explicit = controlPath("relay")
-  const hub = new ObservationHub({ homeId: "home", version: "0.3.0", runtimeId: "runtime" })
-  const socket = new ObservationSocket(hub, ObservationSocket.pathFor(explicit))
+test("relays the selected Runtime's NDJSON events with an explicit raw-activity subscription", async () => {
+  const explicit = legacyControlPath("relay")
+  const bus = new RuntimeBus({ homeId: "home", version: "0.3.0", runtimeId: "runtime" })
+  const socket = new BusSocket(bus, { handle: async () => null }, BusSocket.pathFor(explicit))
   socket.start()
   let output = ""
   const decoder = new TextDecoder()
-  const observing = runObservation(
+  const subscribed = runBus(
     { activity: true, rawPayloads: true },
     explicit,
     {
@@ -39,14 +39,15 @@ test("relays the selected Runtime's NDJSON stream with an explicit raw-activity 
       sequence: 8,
       payload: { assistant_text: "complete raw answer", can_continue: false },
     })
-    hub.publishActivity(ade, ade.instanceId, 2, false)
+    bus.publishActivity(ade, ade.instanceId, 2, false)
     await waitFor(() => output.split("\n").filter(Boolean).length === 2, "activity was not relayed")
     socket.close()
-    expect(await observing).toEqual({ exitCode: EXIT_OK })
+    expect(await subscribed).toEqual({ exitCode: EXIT_OK })
 
     const messages = output.split("\n").filter(Boolean).map((line) => JSON.parse(line))
-    expect(messages[0]).toMatchObject({ event: "snapshot", runtime: { id: "runtime" } })
+    expect(messages[0]).toMatchObject({ type: "event", event: "snapshot", runtime: { id: "runtime" } })
     expect(messages[1]).toMatchObject({
+      type: "event",
       event: "activity",
       activity: {
         name: "Stop",
@@ -61,7 +62,7 @@ test("relays the selected Runtime's NDJSON stream with an explicit raw-activity 
 })
 
 test("reports discovery and connection failures as unreachable", async () => {
-  const undiscovered = await runObservation(
+  const undiscovered = await runBus(
     { activity: false, rawPayloads: false },
     null,
     { env: {}, cwd: "/work", socketDirectory: "/nonexistent", write: () => {} },
@@ -69,22 +70,22 @@ test("reports discovery and connection failures as unreachable", async () => {
   expect(undiscovered.exitCode).toBe(EXIT_UNREACHABLE)
   expect(undiscovered.error?.message).toContain("not running inside fmx")
 
-  const missing = await runObservation(
+  const missing = await runBus(
     { activity: false, rawPayloads: false },
-    controlPath("missing"),
+    legacyControlPath("missing"),
     { env: {}, cwd: "/work", write: () => {} },
   )
   expect(missing.exitCode).toBe(EXIT_UNREACHABLE)
-  expect(missing.error?.message).toContain("cannot reach fmx observation stream")
+  expect(missing.error?.message).toContain("cannot reach fmx bus")
 })
 
 test("reports a failed output relay without disturbing the Runtime", async () => {
-  const explicit = controlPath("output")
-  const hub = new ObservationHub({ homeId: "home", version: "0.3.0" })
-  const socket = new ObservationSocket(hub, ObservationSocket.pathFor(explicit))
+  const explicit = legacyControlPath("output")
+  const bus = new RuntimeBus({ homeId: "home", version: "0.3.0" })
+  const socket = new BusSocket(bus, { handle: async () => null }, BusSocket.pathFor(explicit))
   socket.start()
   try {
-    const outcome = await runObservation(
+    const outcome = await runBus(
       { activity: false, rawPayloads: false },
       explicit,
       {
@@ -96,19 +97,19 @@ test("reports a failed output relay without disturbing the Runtime", async () =>
       },
     )
     expect(outcome.exitCode).toBe(EXIT_UNREACHABLE)
-    expect(outcome.error?.message).toBe("cannot write fmx observation stream: output closed")
+    expect(outcome.error?.message).toBe("cannot write fmx bus: output closed")
   } finally {
     socket.close()
   }
 })
 
-test("the fmx binary relays observations without requiring a TTY", async () => {
-  const explicit = controlPath("binary")
-  const hub = new ObservationHub({ homeId: "home", version: "0.3.0", runtimeId: "binary-runtime" })
-  const socket = new ObservationSocket(hub, ObservationSocket.pathFor(explicit))
+test("the fmx binary subscribes to the Bus without requiring a TTY", async () => {
+  const explicit = legacyControlPath("binary")
+  const bus = new RuntimeBus({ homeId: "home", version: "0.3.0", runtimeId: "binary-runtime" })
+  const socket = new BusSocket(bus, { handle: async () => null }, BusSocket.pathFor(explicit))
   socket.start()
   const child = Bun.spawn(
-    [process.execPath, "src/index.ts", "observe", "--socket", explicit],
+    [process.execPath, "src/index.ts", "bus", "--socket", explicit],
     {
       cwd: new URL("..", import.meta.url).pathname,
       env: process.env,
@@ -118,20 +119,23 @@ test("the fmx binary relays observations without requiring a TTY", async () => {
   )
   const reader = child.stdout.getReader()
   let output = ""
+  const decoder = new TextDecoder()
   try {
     while (!output.includes("\n")) {
       const next = await reader.read()
-      if (next.done) throw new Error("fmx observe closed before its initial snapshot")
-      output += new TextDecoder().decode(next.value)
+      if (next.done) throw new Error("fmx bus closed before its initial snapshot")
+      output += decoder.decode(next.value, { stream: true })
     }
     socket.close()
     for (;;) {
       const next = await reader.read()
       if (next.done) break
-      output += new TextDecoder().decode(next.value)
+      output += decoder.decode(next.value, { stream: true })
     }
+    output += decoder.decode()
     expect(await child.exited).toBe(EXIT_OK)
     expect(JSON.parse(output.trim())).toMatchObject({
+      type: "event",
       event: "snapshot",
       runtime: { id: "binary-runtime" },
     })

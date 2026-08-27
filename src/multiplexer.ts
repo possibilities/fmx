@@ -33,6 +33,7 @@ import {
   type ControlMethod,
   type AgentInfo,
   type CatalogInfo,
+  type ControlSurface,
   type KeysInfo,
   optionalBoolean,
   optionalInteger,
@@ -46,7 +47,6 @@ import {
   type Surface,
   type Target,
 } from "./control-protocol.ts"
-import type { ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import {
   createFxEnvironment,
@@ -91,8 +91,8 @@ import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { Toast, type ToastTone } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
-import type { ObservationSink } from "./observation-hub.ts"
-import type { ObservationState } from "./observation-protocol.ts"
+import type { BusState } from "./bus-protocol.ts"
+import type { BusPublisher } from "./runtime-bus.ts"
 
 /** The tray the embedded terminal sits beside; exported so tests can
  * address the terminal by its real screen column rather than a guess. */
@@ -172,11 +172,10 @@ type MultiplexerOptions = {
   /** Where a launch's new worktree is checked out. */
   worktreeRoot?: string
   home?: string
-  /** Where `fmx control <command>` reaches this fmx; handed to every agent. */
-  controlSocketPath?: string
-  /** Read-only Runtime projection for external Observers. */
-  observation?: ObservationSink | null
-  observationSocketPath?: string
+  /** Where every Bus peer, including `fmx control`, reaches this Runtime. */
+  busSocketPath?: string
+  /** State and activity the Multiplexer publishes onto the Runtime Bus. */
+  bus?: BusPublisher | null
   /** How long each lifecycle Toast remains; overridden only by renderer tests. */
   toastDurationMs?: number
   /** The first host palette query is still pending; index.ts has painted the
@@ -571,7 +570,7 @@ export class Multiplexer {
       home: options.home,
       onChange: () => {
         this.refreshSessionList()
-        this.publishObservationState("subagents_changed")
+        this.publishBusState("subagents_changed")
       },
     })
     const help = helpPlainText(this.keybindings)
@@ -685,7 +684,7 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
     this.applyLayout()
     this.refreshTerminalTitle()
-    this.publishObservationState("initialized")
+    this.publishBusState("initialized")
   }
 
   /**
@@ -733,7 +732,7 @@ export class Multiplexer {
     this.sessionListPublicationHeld = false
     this.sessionList.root.visible = true
     this.refreshSessionList()
-    this.publishObservationState("restored")
+    this.publishBusState("restored")
   }
 
   setHostPalette(colors: TerminalColors): void {
@@ -818,7 +817,7 @@ export class Multiplexer {
     })
     const agent = this.addAgent(entry, cwd, focus)
     agent.setPendingPrompt(prompt)
-    this.publishObservationState("awaiting_work_changed")
+    this.publishBusState("awaiting_work_changed")
     // "started" means fx is running, whether or not it could be reached. The
     // notice waits on the attempt itself rather than reading a flag when it
     // happens to run: everything it needs may already be in hand.
@@ -841,7 +840,7 @@ export class Multiplexer {
             process.env,
             entry.displayId,
             cwd,
-            this.options.controlSocketPath ?? null,
+            this.options.busSocketPath ?? null,
             launchLevel,
             this.adeBinding(entry.agentId),
           ),
@@ -930,7 +929,7 @@ export class Multiplexer {
     const agent = new FxAgent(this.renderer, entry, cwd, this.hostPalette, {
       onTitleChange: (candidate) => {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
-        this.publishObservationState("agent_label_changed")
+        this.publishBusState("agent_label_changed")
       },
       onExit: (candidate, exit) => this.handleAgentExit(candidate, exit),
       onLost: (candidate, error) => void this.recoverAgent(candidate, error),
@@ -941,7 +940,7 @@ export class Multiplexer {
     if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
     this.loadGitContext(cwd)
     this.refreshSessionList()
-    this.publishObservationState("agent_added")
+    this.publishBusState("agent_added")
     return agent
   }
 
@@ -1048,7 +1047,7 @@ export class Multiplexer {
     } else if (index < this.activeIndex) {
       this.activeIndex -= 1
     }
-    this.publishObservationState("agent_removed")
+    this.publishBusState("agent_removed")
     return true
   }
 
@@ -1079,7 +1078,7 @@ export class Multiplexer {
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
-    this.publishObservationState("active_agent_changed")
+    this.publishBusState("active_agent_changed")
   }
 
   private activeAgent(): FxAgent | null {
@@ -1196,7 +1195,7 @@ export class Multiplexer {
       if (!this.shuttingDown && context) {
         this.gitContexts.set(cwd, context)
         this.refreshSessionList()
-        this.publishObservationState("git_context_changed")
+        this.publishBusState("git_context_changed")
       }
       return context
     }).finally(() => {
@@ -1277,8 +1276,8 @@ export class Multiplexer {
     if (record.context.agentRole !== "main") {
       changed = this.subagents.applyAdeRecord(record) || changed
       if (changed) this.refreshSessionList()
-      this.publishObservationState("lifecycle")
-      this.options.observation?.publishActivity(record, agent.entry.agentId, agent.id, gap)
+      this.publishBusState("lifecycle")
+      this.options.bus?.publishActivity(record, agent.entry.agentId, agent.id, gap)
       return
     }
 
@@ -1309,8 +1308,8 @@ export class Multiplexer {
     else this.checkpointAgent(agent)
     this.refreshSessionList()
     this.settleAgentWaiters()
-    this.publishObservationState("lifecycle")
-    this.options.observation?.publishActivity(record, agent.entry.agentId, agent.id, gap)
+    this.publishBusState("lifecycle")
+    this.options.bus?.publishActivity(record, agent.entry.agentId, agent.id, gap)
   }
 
   private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
@@ -1679,7 +1678,7 @@ export class Multiplexer {
         if (text === "") throw new ControlFailure("invalid_params", "text is empty")
         const lifecycleState = this.registry.get(this.paneIdFor(agent))?.state ?? "unknown"
         agent.send(text, lifecycleState)
-        this.publishObservationState("awaiting_work_changed")
+        this.publishBusState("awaiting_work_changed")
         return { agent: this.agentInfo(agent) }
       }
       case "launch": {
@@ -1857,13 +1856,21 @@ export class Multiplexer {
           else resolve({ agent: this.agentInfo(agent), state })
         },
       }
+      const abort = () => {
+        cleanup()
+        reject(new ControlFailure("cancelled", `waiting for agent ${agent.id} was cancelled`))
+      }
       const cleanup = () => {
         this.agentWaiters.delete(waiter)
         if (timer) clearTimeout(timer)
-        signal.removeEventListener("abort", cleanup)
+        signal.removeEventListener("abort", abort)
       }
       this.agentWaiters.add(waiter)
-      signal.addEventListener("abort", cleanup)
+      signal.addEventListener("abort", abort, { once: true })
+      if (signal.aborted) {
+        abort()
+        return
+      }
       if (timeoutMs !== null) {
         timer = setTimeout(() => {
           cleanup()
@@ -1932,15 +1939,15 @@ export class Multiplexer {
     }
   }
 
-  private observationState(): ObservationState {
+  private busState(): BusState {
     return {
       active_agent_id: this.activeAgent()?.entry.agentId ?? null,
       agents: this.agents.map((agent) => this.agentInfo(agent)),
     }
   }
 
-  private publishObservationState(cause: string): void {
-    this.options.observation?.updateState(this.observationState(), cause)
+  private publishBusState(cause: string): void {
+    this.options.bus?.updateState(this.busState(), cause)
   }
 
   private surface(): Surface {
@@ -1968,8 +1975,7 @@ export class Multiplexer {
         pid: process.pid,
         version: VERSION,
         cwd: this.options.cwd,
-        socket: this.options.controlSocketPath ?? "",
-        observation_socket: this.options.observationSocketPath ?? "",
+        socket: this.options.busSocketPath ?? "",
         cols: this.renderer.width,
         rows: this.renderer.height,
       },

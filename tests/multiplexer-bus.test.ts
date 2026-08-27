@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import type { AgentInfo } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { ObservationHub, type ObservationUpdate } from "../src/observation-hub.ts"
+import { RuntimeBus, type BusUpdate } from "../src/runtime-bus.ts"
 import { record, TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
@@ -16,14 +16,14 @@ const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 const NEVER = new AbortController().signal
 
 test("projects active Agent metadata and folds ADE state before attributed activity", async () => {
-  const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-observation-")))
+  const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-bus-")))
   const project = join(home, "code", "fmx")
   await initRepository(project, "main")
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
-  const adeSocket = new TestAdeSocket(`/tmp/fmx-observation-mux-${process.pid}.ade.sock`)
-  const hub = new ObservationHub({ homeId: "home", version: "0.3.0", runtimeId: "runtime" })
-  const updates: ObservationUpdate[] = []
-  hub.subscribe((update) => updates.push(update))
+  const adeSocket = new TestAdeSocket(`/tmp/fmx-bus-mux-${process.pid}.ade.sock`)
+  const bus = new RuntimeBus({ homeId: "home", version: "0.3.0", runtimeId: "runtime" })
+  const updates: BusUpdate[] = []
+  bus.subscribe((update) => updates.push(update))
   const multiplexer = new Multiplexer(setup.renderer, {
     ...agentOptions(),
     fxPath: FAKE_FX,
@@ -32,8 +32,8 @@ test("projects active Agent metadata and folds ADE state before attributed activ
     projectRoots: [project],
     home,
     adeSocket,
-    observation: hub,
-    observationSocketPath: "/tmp/fmx-home.obs",
+    bus,
+    busSocketPath: "/tmp/fmx-home.bus",
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -42,7 +42,7 @@ test("projects active Agent metadata and folds ADE state before attributed activ
   try {
     const first = (await control("launch")) as { agent: AgentInfo }
     const second = (await control("launch")) as { agent: AgentInfo }
-    const initial = hub.snapshot().state
+    const initial = bus.snapshot().state
     expect(initial.active_agent_id).toBe(first.agent.agent_id)
     expect(initial.agents).toHaveLength(2)
     expect(initial.agents[0]).toMatchObject({
@@ -62,7 +62,7 @@ test("projects active Agent metadata and folds ADE state before attributed activ
 
     updates.splice(0)
     await control("focus", { target: String(second.agent.id) })
-    expect(hub.snapshot().state.active_agent_id).toBe(second.agent.agent_id)
+    expect(bus.snapshot().state.active_agent_id).toBe(second.agent.agent_id)
     expect(updates).toHaveLength(1)
     expect(updates[0]).toMatchObject({ kind: "state", cause: "active_agent_changed" })
 
@@ -100,7 +100,7 @@ test("projects active Agent metadata and folds ADE state before attributed activ
     }))
     expect(updates.map((update) => update.kind)).toEqual(["state", "activity"])
     expect(updates[1]).toMatchObject({ kind: "activity", gapBefore: true })
-    expect(hub.snapshot().state.agents[0]).toMatchObject({ session_id: firstSession, state: "working" })
+    expect(bus.snapshot().state.agents[0]).toMatchObject({ session_id: firstSession, state: "working" })
 
     updates.splice(0)
     adeSocket.emit(record("PostTurnEnd", {
@@ -125,11 +125,11 @@ test("projects active Agent metadata and folds ADE state before attributed activ
       instanceId: first.agent.agent_id,
       sessionId: nextSession,
       state: "working",
-      payload: { title: "observe-runtime-activity" },
+      payload: { title: "bus-runtime-activity" },
     }))
-    expect(hub.snapshot().state.agents[0]).toMatchObject({
+    expect(bus.snapshot().state.agents[0]).toMatchObject({
       session_id: nextSession,
-      name: "observe-runtime-activity",
+      name: "bus-runtime-activity",
     })
 
     await control("focus", { target: String(second.agent.id) })
@@ -143,12 +143,12 @@ test("projects active Agent metadata and folds ADE state before attributed activ
     }))
     expect(updates.map((update) => update.kind)).toEqual(["state", "activity"])
     expect(updates[1]).toMatchObject({ kind: "activity", gapBefore: false })
-    const completed = hub.snapshot().state
+    const completed = bus.snapshot().state
     expect(completed.active_agent_id).toBe(second.agent.agent_id)
     expect(completed.agents[0]).toMatchObject({ agent_id: first.agent.agent_id, state: "done" })
 
-    const orientation = await control("orient") as { fmx: { observation_socket: string } }
-    expect(orientation.fmx.observation_socket).toBe("/tmp/fmx-home.obs")
+    const orientation = await control("orient") as { fmx: { socket: string } }
+    expect(orientation.fmx.socket).toBe("/tmp/fmx-home.bus")
   } finally {
     await multiplexer.shutdown()
     await rm(home, { recursive: true, force: true })

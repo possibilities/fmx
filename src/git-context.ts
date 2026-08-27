@@ -77,7 +77,7 @@ async function readUnbornContext(cwd: string): Promise<GitContext | null> {
  * Whether a directory is inside a repository, answered without spawning git:
  * the walk to the filesystem root git's own discovery makes, looking for the
  * `.git` a checkout leaves behind — a directory in a normal one, a file in a
- * linked worktree. The project scan and the control socket's parameter checks
+ * linked worktree. The project scan and the Bus's parameter checks
  * are synchronous and cannot wait for `readGitContext`, which remains the
  * authority every launch is held to.
  */

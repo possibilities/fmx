@@ -22,7 +22,7 @@ import { basename, dirname, join, resolve } from "node:path"
 import companionPin from "../companion.json" with { type: "json" }
 import packageMetadata from "../package.json" with { type: "json" }
 import { defaultAdeSocketPath } from "../src/ade-events.ts"
-import { ControlSocket } from "../src/control-socket.ts"
+import { BusSocket } from "../src/bus-socket.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { homeIdFor } from "../src/zmx-environment.ts"
 
@@ -74,7 +74,7 @@ const temp = await mkdtemp("/tmp/fmx-install-demo-")
 const installDirectory = join(temp, "bin")
 const companionDirectory = `/tmp/fmxz-demo-${basename(temp).slice(-6)}`
 const home = homeIdFor(join(temp, "config", "fmx"))
-const controlSocketPath = ControlSocket.pathFor(defaultAdeSocketPath(home))
+const busSocketPath = BusSocket.pathFor(defaultAdeSocketPath(home))
 const lifecycleLog = join(temp, "lifecycle.log")
 await writeFile(join(temp, "config.toml"), `project_roots = [${JSON.stringify(ROOT)}]\n`)
 const fmxEnvironment: Record<string, string> = {
@@ -185,7 +185,7 @@ try {
 
   await step("launch from the CLI: one agent, created by the bundled companion")
   const launched = await run(
-    [join(installDirectory, "fmx"), "control", "launch", "--socket", controlSocketPath, "--project", ROOT],
+    [join(installDirectory, "fmx"), "control", "launch", "--socket", busSocketPath, "--project", ROOT],
     fmxEnvironment,
     temp,
   )

@@ -17,11 +17,11 @@ attached to the Home's Runtime. It relays terminal bytes and size, and alone
 owns Detach; several Clients may watch and interact with the same shared UI.
 _Avoid_: viewer, frontend, session, fmx instance.
 
-**Observer** — an external process that passively reads a Runtime's machine
-state and optional attributed Agent activity. It is not a terminal Client,
-cannot interact with the shared UI, and neither keeps the Runtime alive nor
-changes Agent lifecycle.
-_Avoid_: Client, viewer, frontend, Agent.
+**Bus peer** — an external process connected to a Runtime's Bus. It may
+subscribe to machine state and attributed Agent activity, issue control
+requests, or do both on one connection; it is not a terminal Client and does
+not keep the Runtime alive.
+_Avoid_: Client, Observer, viewer, frontend, Agent.
 
 **Sizing owner** — the Client that most recently connected or interacted by
 focus, keyboard, mouse, paste, or resize. The Runtime renders once at its
@@ -62,7 +62,7 @@ _Avoid_: bundled Fx, wrapper, AgentStart pin, moving latest.
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates
-and keys its stable ADE, control, and Observation sockets. One Home has at most
+and keys its stable ADE-feed and Bus sockets. One Home has at most
 one Runtime, may have several Clients, and owns the Agents its Companion holds
 between Runtime lifetimes.
 _Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
@@ -230,21 +230,17 @@ Duplicate names remain ambiguous. The Fx storage and event schema call the
 field `title`.
 _Avoid_: fmx name, label.
 
-**Control socket** — the Unix socket `fmx control <command>` drives a running
-Runtime through, bound beside the ADE feed as
-`/tmp/fmx-<uid>-<home id>.ctl` — as stable as it, so an Fx that outlives one
-fmx still reaches the next — and handed to every Agent as `FMX_SOCKET_PATH`.
-It is fmx's request/reply wire, separate from the one-way feed. One request per
-connection; a waiting method holds the connection.
-_Avoid_: command socket, API socket, RPC.
-
-**Observation stream** — the read-only, mode-0600, stable-per-Home Unix socket
-at `/tmp/fmx-<uid>-<home id>.obs` over which the Runtime serves Observers. Each
-connection begins with complete authoritative Agent state; later state is
-also complete and deduplicated, while optional ADE activity is attributed and
-live-only, carries gap evidence, and redacts sensitive payload fields unless
-the Observer explicitly requests raw payloads.
-_Avoid_: ADE feed, control socket, event bus, replay log, notification API.
+**Bus** — the duplex, mode-0600, stable-per-Home Unix socket at
+`/tmp/fmx-<uid>-<home id>.bus` over which a running Runtime serves typed NDJSON
+events and multiplexed control requests. It is handed to every Agent as
+`FMX_SOCKET_PATH`; `fmx bus` subscribes and `fmx control` sends requests. A
+subscription begins with complete authoritative Agent state; later state is
+complete and deduplicated, while optional ADE activity is attributed,
+live-only, gap-aware, and payload-redacted unless raw payloads are explicitly
+requested. Per-peer output is bounded, responses take priority over queued
+events, and Bus peers neither count as terminal Clients nor keep the Runtime
+alive.
+_Avoid_: Observation stream, control socket, ADE feed, replay log, notification API.
 
 **Orientation** — what `fmx control orient` answers: the caller's own agent as
 `you`, every agent, the tray's rows as drawn, and whatever surface is

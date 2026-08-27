@@ -11,7 +11,7 @@ describe("parseArgs", () => {
       help: false,
       version: false,
       doctor: false,
-      observe: null,
+      bus: null,
       command: null,
       socket: null,
     })
@@ -65,7 +65,7 @@ describe("commands", () => {
     expect(parseArgs([]).command).toBeNull()
     expect(parseArgs(["doctor"])).toMatchObject({ doctor: true, command: null })
     expect(() => parseArgs(["doctor", "now"])).toThrow("unexpected argument: now")
-    expect(() => parseArgs(["orient"])).toThrow("Commands: control, observe, doctor.")
+    expect(() => parseArgs(["orient"])).toThrow("Commands: control, bus, doctor.")
     expect(parseArgs(["control", "orient"]).command).toEqual({ name: "orient" })
     expect(() => parseArgs(["control", "detach"])).toThrow("unknown control command: detach")
     expect(() => parseArgs(["orient"])).toThrow("unknown command: orient")
@@ -130,16 +130,17 @@ describe("commands", () => {
   })
 
   test("takes the socket anywhere on the line", () => {
-    expect(parseArgs(["--socket", "/tmp/x.ctl", "control", "orient"]).socket).toBe("/tmp/x.ctl")
-    expect(parseArgs(["control", "focus", "next", "--socket=/tmp/x.ctl"]).socket).toBe("/tmp/x.ctl")
+    expect(parseArgs(["--socket", "/tmp/x.bus", "control", "orient"]).socket).toBe("/tmp/x.bus")
+    expect(parseArgs(["control", "focus", "next", "--socket=/tmp/x.bus"]).socket).toBe("/tmp/x.bus")
   })
 
-  test("observes state by default and opts into safe or raw activity", () => {
-    expect(parseArgs(["observe"]).observe).toEqual({ activity: false, rawPayloads: false })
-    expect(parseArgs(["observe", "--activity"]).observe).toEqual({ activity: true, rawPayloads: false })
-    expect(parseArgs(["observe", "--raw-payloads"]).observe).toEqual({ activity: true, rawPayloads: true })
-    expect(parseArgs(["observe", "--socket", "/tmp/fmx.ctl"]).socket).toBe("/tmp/fmx.ctl")
-    expect(() => parseArgs(["observe", "later"])).toThrow("unexpected argument: later")
+  test("subscribes to Bus state by default and opts into safe or raw activity", () => {
+    expect(parseArgs(["bus"]).bus).toEqual({ activity: false, rawPayloads: false })
+    expect(parseArgs(["bus", "--activity"]).bus).toEqual({ activity: true, rawPayloads: false })
+    expect(parseArgs(["bus", "--raw-payloads"]).bus).toEqual({ activity: true, rawPayloads: true })
+    expect(parseArgs(["bus", "--socket", "/tmp/fmx.bus"]).socket).toBe("/tmp/fmx.bus")
+    expect(() => parseArgs(["bus", "later"])).toThrow("unexpected argument: later")
+    expect(() => parseArgs(["observe"])).toThrow("unknown command: observe")
   })
 
   test("keys, focus, and tray", () => {
