@@ -33,8 +33,12 @@ import {
   RUNTIME_BOOTSTRAP_ENV_VAR,
   waitForRuntimeBootstrap,
 } from "./runtime-session.ts"
-import { runTerminalClient } from "./terminal-client.ts"
-import { beginSynchronizedResizeClear } from "./unused-space.ts"
+import { concealClientCursor, revealClientCursor, runTerminalClient } from "./terminal-client.ts"
+import {
+  beginSynchronizedFrame,
+  beginSynchronizedResizeClear,
+  endSynchronizedFrame,
+} from "./unused-space.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PIN,
@@ -104,7 +108,19 @@ async function main(): Promise<void> {
   }
 
   if (!isRuntimeProcess()) {
-    await startTerminalClient()
+    const releaseStartupSignals = installClientStartupSignalGuard()
+    // Own the physical cursor before any asynchronous Client preflight. A
+    // cold Runtime leaves the shell surface intact until its first frame, so
+    // this is the only visible startup state.
+    concealClientCursor()
+    try {
+      await startTerminalClient(releaseStartupSignals)
+    } finally {
+      // runTerminalClient performs the complete terminal cleanup. This guard
+      // covers failures before a Companion connection exists.
+      releaseStartupSignals()
+      revealClientCursor()
+    }
     return
   }
   const bootstrapPath = process.env[RUNTIME_BOOTSTRAP_ENV_VAR]
@@ -198,6 +214,10 @@ async function main(): Promise<void> {
       app.setTheme(next)
     })
     themeMonitor.start()
+    // Do not expose OpenTUI's alternate-screen setup as a blank intermediate
+    // surface. Its first ordinary frame ends synchronized output after the
+    // complete application has been drawn.
+    process.stdout.write(beginSynchronizedFrame())
     await renderer.setupTerminal()
     // One Runtime frame is broadcast to every Client. Apply the new owner size
     // synchronously before clearing every physical terminal; input can follow
@@ -281,6 +301,10 @@ async function main(): Promise<void> {
 
     await app.waitUntilDone()
   } catch (error) {
+    // Harmless before synchronization begins, and essential if setup or the
+    // application constructor failed after the alternate-screen transition
+    // was held but before OpenTUI could publish its first frame.
+    process.stdout.write(endSynchronizedFrame())
     if (app) await app.shutdown(1)
     else renderer?.destroy()
     throw error
@@ -298,7 +322,7 @@ async function main(): Promise<void> {
   }
 }
 
-async function startTerminalClient(): Promise<void> {
+async function startTerminalClient(onSignalHandlersInstalled: () => void): Promise<void> {
   const loadedConfig = await loadConfig()
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
   if (loadedConfig.projectRoots.length === 0) {
@@ -324,7 +348,35 @@ async function startTerminalClient(): Promise<void> {
     socketPath: runtime.socketPath,
     bootstrapPath: runtime.bootstrapPath,
     keybindings: loadedConfig.keybindings,
+    onSignalHandlersInstalled,
   })
+}
+
+/**
+ * The Client conceals before config and Companion preflight, earlier than its
+ * connection-level signal handlers can exist. Keep that gap safe, then remove
+ * these temporary handlers only after runTerminalClient owns every signal.
+ */
+function installClientStartupSignalGuard(): () => void {
+  const handlers = new Map<NodeJS.Signals, () => void>()
+  let active = true
+  const release = (): void => {
+    if (!active) return
+    active = false
+    for (const [signal, handler] of handlers) process.off(signal, handler)
+  }
+  for (const signal of ["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"] as const) {
+    const handler = () => {
+      revealClientCursor()
+      release()
+      // Preserve the shell-visible meaning of a signal received before the
+      // Client can translate it into its ordinary numeric exit outcome.
+      process.kill(process.pid, signal)
+    }
+    handlers.set(signal, handler)
+    process.once(signal, handler)
+  }
+  return release
 }
 
 /**

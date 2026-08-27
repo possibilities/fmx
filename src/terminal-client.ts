@@ -4,7 +4,9 @@ import { CompanionConnection, type CloseReason } from "./companion-client.ts"
 import { keyMatchesCombo, type Keybindings } from "./keybindings.ts"
 import { Tag, type Resize } from "./zmx-protocol.ts"
 
-const RESTORE_RESET = "\x1bc"
+const CURSOR_CONCEAL = "\x1b[?25l"
+const CURSOR_REVEAL = "\x1b[?25h"
+const RESTORE_RESET = Buffer.from(`\x1bc${CURSOR_CONCEAL}`)
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~")
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~")
 const TERMINAL_CLEANUP = [
@@ -13,7 +15,7 @@ const TERMINAL_CLEANUP = [
   "\x1b[?2004l", // bracketed paste off
   "\x1b[<u", // pop Kitty keyboard mode
   "\x1b[?7h", // autowrap on
-  "\x1b[0m\x1b[?25h", // attributes reset, cursor visible
+  `\x1b[0m${CURSOR_REVEAL}`, // attributes reset, cursor visible
   "\x1b[?1049l", // main screen
 ].join("")
 
@@ -25,9 +27,53 @@ export type TerminalClientOptions = {
   keybindings: Keybindings
   stdin?: NodeJS.ReadStream
   stdout?: NodeJS.WriteStream
+  /** Release temporary startup signal ownership once this Client owns it. */
+  onSignalHandlersInstalled?: () => void
 }
 
 type ClientOutcome = { exitCode: number; error?: Error }
+
+/**
+ * Keep the shell's surface intact through a cold Runtime bootstrap. A real
+ * Restore still starts from RIS, but an empty Restore emits nothing: OpenTUI
+ * can perform its invisible probes before atomically replacing the screen.
+ */
+export class ClientOutputRelay {
+  private restorePending = false
+
+  constructor(private readonly write: (bytes: Uint8Array) => void) {}
+
+  beginRestore(): void {
+    this.restorePending = true
+  }
+
+  output(bytes: Uint8Array): void {
+    if (bytes.byteLength === 0) return
+    if (!this.restorePending) {
+      this.write(bytes)
+      return
+    }
+    this.restorePending = false
+    this.write(Buffer.concat([RESTORE_RESET, bytes]))
+  }
+
+  ready(): void {
+    // No Restore output means this is a fresh, blank Runtime. Its alternate
+    // screen is the reset, so clearing the physical Client here would only
+    // expose an empty screen before the first frame exists.
+    this.restorePending = false
+  }
+}
+
+/** Conceal as soon as a terminal invocation commits to opening the TUI. */
+export function concealClientCursor(stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout): void {
+  stdout.write(CURSOR_CONCEAL)
+}
+
+/** Undo early concealment when startup fails before the normal Client cleanup. */
+export function revealClientCursor(stdout: Pick<NodeJS.WriteStream, "write"> = process.stdout): void {
+  stdout.write(CURSOR_REVEAL)
+}
 
 /**
  * Relay one physical terminal to the shared Runtime. Rendering remains the
@@ -44,6 +90,7 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
   let inputFilter: ClientInputFilter | null = null
   let inputStarted = false
   const wasRaw = Boolean(stdin.isRaw)
+  const outputRelay = new ClientOutputRelay((bytes) => stdout.write(bytes))
 
   const finish = (outcome: ClientOutcome): void => {
     if (completed) return
@@ -58,8 +105,8 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
   }
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
 
-  connection.onRestoreBegin(() => stdout.write(RESTORE_RESET))
-  connection.onOutput((bytes) => stdout.write(bytes))
+  connection.onRestoreBegin(() => outputRelay.beginRestore())
+  connection.onOutput((bytes) => outputRelay.output(bytes))
   connection.onFrame((frame) => {
     if (frame.tag === Tag.Resize && frame.payload.byteLength === 0 && !connection.isClosed) {
       connection.resize(terminalSize(stdout))
@@ -77,6 +124,7 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
   const ready = Promise.withResolvers<void>()
   let readyHandled = false
   connection.onReady(() => {
+    outputRelay.ready()
     if (readyHandled) return
     readyHandled = true
     void writeFile(options.bootstrapPath, "", { mode: 0o600 })
@@ -109,6 +157,7 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
       signalHandlers.set(signal, handler)
       process.once(signal, handler)
     }
+    options.onSignalHandlersInstalled?.()
 
     connection.attach(terminalSize(stdout))
     await Promise.race([ready.promise, completion.promise])

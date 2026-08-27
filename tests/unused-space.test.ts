@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test"
 import {
+  beginSynchronizedFrame,
   beginSynchronizedResizeClear,
   clearToUnusedSpace,
+  endSynchronizedFrame,
   unusedSpaceBackground,
 } from "../src/unused-space.ts"
 
@@ -27,4 +29,9 @@ test("a resize clear joins the synchronized update the next OpenTUI frame closes
   expect(beginSynchronizedResizeClear("light")).toBe(
     "\x1b[?2026h\x1b[?25l\x1b[48;5;255m\x1b[2J\x1b[H\x1b[0m",
   )
+})
+
+test("a full-screen transition conceals the cursor before OpenTUI takes over", () => {
+  expect(beginSynchronizedFrame()).toBe("\x1b[?2026h\x1b[?25l")
+  expect(endSynchronizedFrame()).toBe("\x1b[?2026l")
 })

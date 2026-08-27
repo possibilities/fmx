@@ -54,7 +54,43 @@ test.skipIf(typeof Bun.Terminal !== "function")("the TUI exits 1 with the config
     expect(await child.exited).toBe(1)
     expect(output).toContain(`fmx: no project roots configured; add project_roots = ["~/code"] to ${path}`)
     expect(output).not.toContain("missing-fx")
+    expect(output.startsWith("\x1b[?25l")).toBe(true)
+    expect(output.indexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("\x1b[?25l"))
   } finally {
+    child.terminal?.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(typeof Bun.Terminal !== "function")("a signal during concealed Client preflight restores the cursor", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-preflight-signal-"))
+  const path = join(directory, "config.toml")
+  expect(await Bun.spawn(["mkfifo", path], { stdout: "ignore", stderr: "ignore" }).exited).toBe(0)
+  let output = ""
+  const decoder = new TextDecoder()
+  const concealed = Promise.withResolvers<void>()
+  const child = Bun.spawn([process.execPath, "src/index.ts"], {
+    cwd: new URL("..", import.meta.url).pathname,
+    env: { ...process.env, FMX_CONFIG_PATH: path },
+    terminal: {
+      cols: 80,
+      rows: 24,
+      data: (_terminal, bytes) => {
+        output += decoder.decode(bytes, { stream: true })
+        if (output.includes("\x1b[?25l")) concealed.resolve()
+      },
+    },
+  })
+
+  try {
+    await withTimeout(concealed.promise, 2_000, "Client did not conceal during preflight")
+    child.kill("SIGTERM")
+    expect(await withTimeout(child.exited, 2_000, "Client did not terminate after SIGTERM")).toBe(143)
+    const conceal = output.indexOf("\x1b[?25l")
+    expect(conceal).toBeGreaterThanOrEqual(0)
+    expect(output.indexOf("\x1b[?25h", conceal)).toBeGreaterThan(conceal)
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL")
     child.terminal?.close()
     await rm(directory, { recursive: true, force: true })
   }
@@ -166,3 +202,17 @@ describe("commands", () => {
     expect(usage()).toContain("fmx control")
   })
 })
+
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), milliseconds)
+      }),
+    ])
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
+}
