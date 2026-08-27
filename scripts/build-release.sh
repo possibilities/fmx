@@ -252,9 +252,11 @@ for extracted in "$work_dir/verify-xz/fmx" "$work_dir/verify-gz/fmx"; do
   [[ -f "$(dirname "$extracted")/LICENSE" ]]
   [[ -f "$(dirname "$extracted")/THIRD_PARTY_NOTICES.md" ]]
   # The pair, as installed: fmx finds the Companion beside itself and
-  # accepts it as the pinned build. The build host's own override, if it
-  # has one for its checkout, must not stand in for the sibling.
-  if ! env -u FMX_ZMX_PATH FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" "$extracted" doctor > "$work_dir/doctor.txt" \
+  # accepts it as the pinned build. The repository's compatible fake Fx lets
+  # doctor verify the other half of the installation contract too. The build
+  # host's own overrides must not stand in for either one.
+  if ! env -u FMX_ZMX_PATH FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" \
+    FMX_FX_PATH="$root_dir/tests/fixtures/fake-fx.ts" "$extracted" doctor > "$work_dir/doctor.txt" \
     || ! grep -q "^build  *$companion_build (the build this fmx was released with)" "$work_dir/doctor.txt" \
     || ! grep -q "^companion  *.*/fmx-zmx (beside " "$work_dir/doctor.txt"; then
     printf 'fmx release: the extracted pair did not pass fmx doctor:\n' >&2
