@@ -6,6 +6,8 @@ release_base_url="${FMX_RELEASE_BASE_URL:-__FMX_RELEASE_BASE_URL__}"
 unconfigured_release_base_url='__FMX_'"RELEASE_BASE_URL__"
 install_dir="${FMX_INSTALL_DIR:-$HOME/.local/bin}"
 requested_version="${FMX_VERSION:-}"
+fx_setup_url="${FMX_FX_SETUP_URL:-__FMX_FX_SETUP_URL__}"
+unconfigured_fx_setup_url='__FMX_FX_'"SETUP_URL__"
 
 fail() {
   printf 'fmx setup: %s\n' "$*" >&2
@@ -16,8 +18,10 @@ if [[ "$release_base_url" == "$unconfigured_release_base_url" ]]; then
   fail 'this installer has not been configured with a public release URL'
 fi
 release_base_url="${release_base_url%/}"
-
-for command in curl tar gzip; do
+if [[ "$fx_setup_url" == "$unconfigured_fx_setup_url" ]]; then
+  fail 'this installer has not been configured with the fmx-fx setup URL'
+fi
+for command in awk curl env tar gzip; do
   command -v "$command" >/dev/null 2>&1 || fail "required command not found: $command"
 done
 
@@ -100,8 +104,17 @@ esac
 # the directory it is given, and installing must touch nothing of the user's.
 [[ -x "$extract_dir/fmx" ]] || fail 'archive does not contain an executable fmx binary'
 [[ -x "$extract_dir/fmx-zmx" ]] || fail 'archive does not contain an executable fmx-zmx companion'
+[[ -f "$extract_dir/fx.json" ]] || fail 'archive does not contain its Fx pin'
 if [[ "$("$extract_dir/fmx" --version)" != "$version" ]]; then
   fail 'downloaded binary version does not match the requested release'
+fi
+fx_version="$(awk -F '"' '$2 == "commit" { print $4 }' "$extract_dir/fx.json")"
+fxnk_version="$(awk -F '"' '$2 == "fxnk" { print $4 }' "$extract_dir/fx.json")"
+if [[ ! "$fx_version" =~ ^[0-9a-f]{40}$ ]]; then
+  fail "downloaded release has an invalid fmx-fx Integration commit: $fx_version"
+fi
+if [[ ! "$fxnk_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+  fail "downloaded release has an invalid fxnk compatibility floor: $fxnk_version"
 fi
 companion_build_of() {
   local output
@@ -125,6 +138,21 @@ for name in fmx fmx-zmx; do
     fail "$install_dir/$name exists and is not a regular file"
   fi
 done
+
+# The private Fx dependency lands first. If its verified installer fails, the
+# existing fmx pair remains untouched; if a later pair rename fails, the new
+# fmx-fx is still a harmless complete installation for the next retry.
+fx_setup="$temp_dir/fmx-fx-setup.sh"
+curl_get "$fx_setup_url" -o "$fx_setup"
+bash -n "$fx_setup" || fail 'downloaded fmx-fx installer is not valid Bash'
+FMX_FX_INSTALL_DIR="$install_dir" FMX_FX_VERSION="$fx_version" bash "$fx_setup"
+[[ -x "$install_dir/fmx-fx" ]] || fail 'fmx-fx installer did not install an executable fmx-fx'
+if ! FMX_ZMX_PATH="$extract_dir/fmx-zmx" FMX_ZMX_DIR="$temp_dir/fx-doctor-zmx" \
+  XDG_CONFIG_HOME="$temp_dir/fx-doctor-config" FMX_FX_PATH="$install_dir/fmx-fx" \
+  "$extract_dir/fmx" doctor >"$temp_dir/fx-doctor.txt"; then
+  fail "pinned fmx-fx does not satisfy this fmx release's fxnk $fxnk_version contract"
+fi
+
 install_temp="$(mktemp "$install_dir/.fmx.XXXXXX")"
 cp "$extract_dir/fmx" "$install_temp"
 chmod 0755 "$install_temp"
@@ -141,6 +169,11 @@ fi
 if [[ "$(companion_build_of "$install_dir/fmx-zmx")" != "$companion_build" ]]; then
   fail 'installed companion did not pass its build check'
 fi
+if ! env -u FMX_FX_PATH -u FMX_ZMX_PATH FMX_ZMX_DIR="$temp_dir/installed-doctor-zmx" \
+  XDG_CONFIG_HOME="$temp_dir/installed-doctor-config" "$install_dir/fmx" doctor \
+  >"$temp_dir/installed-doctor.txt"; then
+  fail 'installed fmx, fmx-zmx, and fmx-fx did not pass fmx doctor'
+fi
 
 printf 'Installed fmx %s at %s/fmx, with its companion fmx-zmx (%s) beside it\n' "$version" "$install_dir" "$companion_build"
 case ":${PATH:-}:" in
@@ -150,6 +183,3 @@ case ":${PATH:-}:" in
       "  export PATH=\"$install_dir:\$PATH\""
     ;;
 esac
-if ! command -v fx >/dev/null 2>&1; then
-  printf 'fmx setup: fx is not on PATH; install it from https://fx.sh/ before running fmx\n' >&2
-fi

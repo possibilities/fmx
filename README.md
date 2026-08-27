@@ -11,10 +11,10 @@ in a companion daemon, so they keep running when fmx is not.
 curl -fsSL https://c1g42cnmuvvspilo.public.blob.vercel-storage.com/setup.sh | bash
 ```
 
-This installs `fmx` and its companion `fmx-zmx` to `~/.local/bin`. The two are
-a pair — fmx refuses to start against any other build — so reinstall both
-together. `fx` must be on `PATH` as well; install it from [fx.sh](https://fx.sh/).
-`fmx doctor` reports what an installation has.
+This installs `fmx`, its companion `fmx-zmx`, and its pinned Fx fork as
+`fmx-fx` to `~/.local/bin`. The installer keeps that private copy separate
+from any `fx` installed for direct use, and fmx resolves it once when a Runtime
+starts. `fmx doctor` reports what an installation has.
 
 ## Usage
 

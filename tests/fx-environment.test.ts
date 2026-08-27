@@ -26,6 +26,7 @@ test("fx child environment describes the embedded terminal, not the outer multip
     COLORTERM: "truecolor",
     TERM_PROGRAM: "fmx",
     FMX_AGENT_ID: "12",
+    FX_AUTO_UPGRADE: "0",
   })
   expect(env.TMUX).toBeUndefined()
   expect(env.TMUX_PANE).toBeUndefined()
@@ -117,6 +118,11 @@ test("applies model and effort to one agent without changing unrelated launches"
   })
   expect(selected.FX_MODEL).toBe("gpt-5.6-luna")
   expect(selected.FX_EFFORT).toBe("max")
+})
+
+test("the fmx-owned Fx binary cannot inherit or enable upstream auto-upgrade", () => {
+  expect(createFxEnvironment({}, 1, "/work").FX_AUTO_UPGRADE).toBe("0")
+  expect(createFxEnvironment({ FX_AUTO_UPGRADE: "1" }, 1, "/work").FX_AUTO_UPGRADE).toBe("0")
 })
 
 test("an inherited Companion session is not handed on to fx", () => {

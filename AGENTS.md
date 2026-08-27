@@ -46,10 +46,13 @@
   paste so newlines survive, and the carriage return that sends it is a
   separate write a beat later — fx discards a paste when anything follows its
   end marker in the same write.
-- fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
-  is deliberately no `--fx` flag. The resolved executable must answer the
-  exact `--fxnk-version` probe with fxnk 0.5.0 or newer; that is the first fork
-  contract whose ADE feed carries complete lifecycle snapshots.
+- Fx executable resolution happens once per Runtime: `FMX_FX_PATH`, then
+  `fmx-fx` beside an installed fmx, then `fmx-fx` on `PATH`, then the legacy
+  `fx` on `PATH`. There is deliberately no `--fx` flag. The resolved executable
+  must answer the exact `--fxnk-version` probe with the minimum in `fx.json`;
+  every Agent reuses that absolute path without another lookup or probe.
+  AgentStart still installs the same fork separately as `fx`; fmx installs its
+  pinned private copy as `fmx-fx` and launches it with `FX_AUTO_UPGRADE=0`.
 - One Home has one Companion-held Runtime (`fmxr-<home id>`) and any number
   of thin terminal Clients. The Runtime alone owns OpenTUI, `Multiplexer`,
   the Home sockets, and the Manifest. A Client relays bytes and dimensions;

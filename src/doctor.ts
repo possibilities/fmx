@@ -88,9 +88,9 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Doct
   rows.push(["home", `${homeIdFor(home)} (${home})`])
 
   try {
-    rows.push(["fx", await resolveFx(env[FX_PATH_ENV_VAR] ?? "fx", env)])
+    rows.push(["fx", await resolveFx(env[FX_PATH_ENV_VAR], env)])
   } catch (error) {
-    fail("fx", `${errorMessage(error)}; install it through the fxnk workshop`)
+    fail("fx", errorMessage(error))
   }
 
   const width = Math.max(...rows.map(([label]) => label.length))

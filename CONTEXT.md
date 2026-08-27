@@ -46,6 +46,13 @@ any other build, and runs one named by `FMX_ZMX_PATH` with a word about it,
 because that override is how a checkout develops the two together.
 _Avoid_: lock file, version file, dependency.
 
+**Fx pin** — `fx.json`: the exact approved Fx Integration commit an fmx
+release's installer obtains from the public fork installer, plus the minimum
+fxnk contract fmx accepts. It lands beside fmx as the real native executable
+`fmx-fx`, separate from the `fx` AgentStart installs for direct use; a Runtime
+resolves and probes it once, then every new Agent reuses that absolute path.
+_Avoid_: bundled Fx, wrapper, AgentStart pin, moving latest.
+
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates

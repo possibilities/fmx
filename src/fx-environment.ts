@@ -70,6 +70,9 @@ export function createFxEnvironment(
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
     TERM_PROGRAM: "fmx",
+    // fmx owns this private fork binary and upgrades it only through its
+    // pinned installer. Fx must never replace it with an upstream release.
+    FX_AUTO_UPGRADE: "0",
   }
   const inheritedScreenSession = env.STY !== undefined
   for (const variable of OUTER_MULTIPLEXER_VARIABLES) delete env[variable]
