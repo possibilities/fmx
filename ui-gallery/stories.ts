@@ -237,7 +237,16 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
           sequence: 1,
           event: "FxStarted",
           instanceId: launch.entry.agentId,
-          context: { agentRole: "main", sessionId, parentSessionId: null, agentState: "idle", attentionKind: null },
+          context: {
+            agentRole: "main",
+            workspaceRoot: null,
+            sessionId,
+            parentSessionId: null,
+            subagentId: null,
+            turnId: null,
+            agentState: "idle",
+            attentionKind: null,
+          },
           payload: {},
         })
         adeSocket.report({
@@ -245,7 +254,16 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
           sequence: 2,
           event: "PromptQueued",
           instanceId: launch.entry.agentId,
-          context: { agentRole: "main", sessionId, parentSessionId: null, agentState: "working", attentionKind: null },
+          context: {
+            agentRole: "main",
+            workspaceRoot: null,
+            sessionId,
+            parentSessionId: null,
+            subagentId: null,
+            turnId: null,
+            agentState: "working",
+            attentionKind: null,
+          },
           payload: {},
         })
         adeSocket.report({
@@ -253,7 +271,16 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
           sequence: 3,
           event: "SessionMetadataChanged",
           instanceId: launch.entry.agentId,
-          context: { agentRole: "main", sessionId, parentSessionId: null, agentState: "working", attentionKind: null },
+          context: {
+            agentRole: "main",
+            workspaceRoot: null,
+            sessionId,
+            parentSessionId: null,
+            subagentId: null,
+            turnId: null,
+            agentState: "working",
+            attentionKind: null,
+          },
           payload: { title: "Review UI" },
         })
       }),

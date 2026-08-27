@@ -21,6 +21,9 @@ import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./
 import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
 import { Multiplexer } from "./multiplexer.ts"
+import { runObservation } from "./observation-client.ts"
+import { ObservationHub } from "./observation-hub.ts"
+import { ObservationSocket } from "./observation-socket.ts"
 import { expandTilde } from "./projects.ts"
 import { loadState, saveState, type PersistedState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
@@ -90,6 +93,19 @@ async function main(): Promise<void> {
     process.exitCode = outcome.exitCode
     return
   }
+  if (options.observe) {
+    const outcome = await runObservation(options.observe, options.socket, {
+      env: process.env,
+      cwd: process.cwd(),
+      write: (data) => {
+        if (process.stdout.write(data)) return
+        return new Promise<void>((resolve) => process.stdout.once("drain", resolve))
+      },
+    })
+    if (outcome.error) process.stderr.write(`${JSON.stringify({ error: outcome.error })}\n`)
+    process.exitCode = outcome.exitCode
+    return
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("fmx requires an interactive terminal (TTY)")
   }
@@ -120,6 +136,7 @@ async function main(): Promise<void> {
     stateSave = stateSave.then(() => saveState(snapshot)).catch(() => {})
   }
   const home = homeId()
+  const observationHub = new ObservationHub({ homeId: home, version: VERSION })
 
   let renderer: CliRenderer | null = null
   let startupPaletteDetector: TerminalPaletteDetector | null = null
@@ -127,6 +144,7 @@ async function main(): Promise<void> {
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const adeSocket = new AdeSocket({ homeId: home })
   let controlSocket: ControlSocket | null = null
+  let observationSocket: ObservationSocket | null = null
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
@@ -192,6 +210,7 @@ async function main(): Promise<void> {
     })
     const survivors = restored.map(({ entry }) => entry)
     const controlSocketPath = ControlSocket.pathFor(adeSocket.path)
+    const observationSocketPath = ObservationSocket.pathFor(adeSocket.path)
     const firstPalette = await firstPaletteChoice
     runtimePalette = firstPalette.kind === "settled" ? firstPalette.colors : null
     await renderer.setupTerminal()
@@ -228,9 +247,11 @@ async function main(): Promise<void> {
       transport,
       survivors,
       adeSocket,
+      observation: observationHub,
       projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
       controlSocketPath,
+      observationSocketPath,
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
       initialActiveAgentId: persistedState.activeAgentId,
@@ -284,10 +305,11 @@ async function main(): Promise<void> {
     renderer.start()
     await startup
 
-    // Beside the ADE feed and under the same singleton: an fx that
-    // outlives this fmx still reaches the next one for this Home by the path
-    // it was given. Do not accept control requests until restored Agents are
-    // attached and the selected terminal is ready to receive input.
+    // The public read-only stream and the control surface both live beside
+    // the ADE feed under its Home singleton. Do not publish either until
+    // restored Agents, their metadata, and the selected terminal are ready.
+    observationSocket = new ObservationSocket(observationHub, observationSocketPath)
+    observationSocket.start()
     controlSocket = new ControlSocket(app.control, ControlSocket.pathFor(adeSocket.path))
     controlSocket.start()
 
@@ -318,6 +340,7 @@ async function main(): Promise<void> {
     await manifest?.settled()
     await stateSave
     controlSocket?.close()
+    observationSocket?.close()
     adeSocket.close()
     startupPaletteDetector?.cleanup()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)

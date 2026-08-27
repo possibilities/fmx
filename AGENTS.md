@@ -211,6 +211,17 @@
   captured attribution and may legitimately lag after `/new`. The socket keeps
   a bounded startup backlog until survivor identities exist and the Multiplexer
   subscribes.
+- The Observation stream is fmx's Runtime→Observer contract, on its own
+  mode-0600 Home socket at `/tmp/fmx-<uid>-<home id>.obs`; never reuse ADE
+  ingress or control request/reply for it. Bind it under the ADE singleton only
+  after restored Agents and metadata are ready. Every Observer gets a complete
+  state snapshot first, later state is complete and deduplicated, and accepted
+  ADE activity is attributed and published live-only after its state fold, with
+  sequence gaps made explicit. Summary payloads are allowlisted; raw ADE
+  payloads require an explicit subscription. Bound handshakes, Observer count,
+  and each outbound queue, and disconnect a slow Observer: observation must
+  never delay the Runtime, control, or Fx. Observers are not terminal Clients,
+  do not affect sizing, and do not keep the Runtime alive.
 - Session names belong to fx. fmx applies `SessionMetadataChanged` only to the
   session named by its ADE context and reads
   `~/.fx/sessions/<id>/display.json` on attach, identity change, or recovery.
