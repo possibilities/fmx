@@ -14,6 +14,11 @@ export type LaunchFieldArgs = {
   effort?: string
 }
 
+export type ObserveArgs = {
+  activity: boolean
+  rawPayloads: boolean
+}
+
 export type Command =
   | { name: "orient" }
   | { name: "agent"; verb: "list" }
@@ -34,6 +39,8 @@ export type CliOptions = {
   version: boolean
   /** `fmx doctor`: report the installation instead of running. */
   doctor: boolean
+  /** `fmx observe`: relay the running Runtime's passive observation stream. */
+  observe: ObserveArgs | null
   /** A control command, when the invocation is one rather than the TUI. */
   command: Command | null
   /** `--socket PATH`: which fmx to talk to, for a caller outside any. */
@@ -43,8 +50,9 @@ export type CliOptions = {
 /** Every control command lives under `fmx control`, leaving the top level
  * free for concerns that are not about driving a running fmx. */
 const CONTROL_GROUP = "control"
-/** The one other top-level command: a report on the installation, never a running fmx. */
+/** The diagnostic top-level command reports the installation, never a running fmx. */
 const DOCTOR_COMMAND = "doctor"
+const OBSERVE_COMMAND = "observe"
 const COMMAND_NAMES = ["orient", "agent", "launch", "focus", "tray", "keys", "catalog"] as const
 const AGENT_VERBS = ["list", "wait", "send"] as const
 
@@ -63,6 +71,7 @@ export function parseArgs(args: string[]): CliOptions {
     help: false,
     version: false,
     doctor: false,
+    observe: null,
     command: null,
     socket: null,
   }
@@ -103,8 +112,14 @@ export function parseArgs(args: string[]): CliOptions {
     options.doctor = true
     return options
   }
+  if (rest[0] === OBSERVE_COMMAND) {
+    options.observe = parseObserve(rest.slice(1))
+    return options
+  }
   if (rest[0] !== CONTROL_GROUP) {
-    throw new UsageError(`unknown command: ${rest[0]}\nCommands: ${CONTROL_GROUP}, ${DOCTOR_COMMAND}.`)
+    throw new UsageError(
+      `unknown command: ${rest[0]}\nCommands: ${CONTROL_GROUP}, ${OBSERVE_COMMAND}, ${DOCTOR_COMMAND}.`,
+    )
   }
   const name = rest[1]
   if (name === undefined) throw new UsageError("control needs a command", CONTROL_GROUP)
@@ -113,6 +128,13 @@ export function parseArgs(args: string[]): CliOptions {
   }
   options.command = parseCommand(name, rest.slice(2))
   return options
+}
+
+function parseObserve(args: string[]): ObserveArgs {
+  const flags = parseFlags(args, { activity: "switch", "raw-payloads": "switch" }, "observe")
+  rejectExtra(flags.positional, "observe")
+  const rawPayloads = flags.switches.has("raw-payloads")
+  return { activity: flags.switches.has("activity") || rawPayloads, rawPayloads }
 }
 
 function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Command {
@@ -302,12 +324,16 @@ export function usage(topic: string | null = null): string {
       return "Usage: fmx control tray [--width N] [--show | --hide | --toggle]\n"
     case "keys":
       return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running Runtime as well\n"
+    case "observe":
+      return OBSERVE_USAGE
   }
   return `fmx ${VERSION} — run multiple fx sessions in one terminal
 
 Usage:
   fmx [options]
   fmx control <command> [args]           drive a running fmx Runtime from inside it
+  fmx observe [--activity] [--raw-payloads]
+                                         watch a running fmx Runtime as NDJSON
   fmx doctor                             report the installation
 
 Options:
@@ -316,6 +342,7 @@ Options:
 
 Commands:
   control        shared UI actions for agents; see fmx control
+  observe        passive state snapshots and optional attributed Agent activity
   doctor         versions, the companion and whether it is the one this fmx
                  was released with, its directory, and fx; exits 1 when the
                  companion is missing, not that build, or its directory is
@@ -367,4 +394,14 @@ const AGENT_USAGE = `Usage: fmx control agent <verb> [args]
                                     default states: idle,done,blocked)
   send <target> <text|-> [--file PATH]
                                    paste text into the agent and send it
+`
+
+const OBSERVE_USAGE = `Usage: fmx observe [--activity] [--raw-payloads]
+
+Print a private running Runtime's observation stream as newline-delimited JSON.
+Every connection begins with a complete state snapshot.
+
+  --activity       include attributed Fx lifecycle activity
+  --raw-payloads   include complete ADE payloads (may contain secrets; implies --activity)
+  --socket PATH    observe a specific fmx (default: FMX_SOCKET_PATH)
 `

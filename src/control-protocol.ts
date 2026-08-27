@@ -72,10 +72,17 @@ export class ControlFailure extends Error {
 
 /** One agent as the CLI sees it: the tray's model, not its drawing. */
 export type AgentInfo = {
+  /** Stable 128-bit Manifest identity; use this across Runtime restarts. */
+  agent_id: string
+  /** Human-facing number, retained as `id` for control targets. */
   id: number
+  display_id: number
   pane_id: string
+  created_at: number
   cwd: string
   project: string
+  git_root: string | null
+  main_git_root: string | null
   /** null while git has not answered for the directory, and again whenever it
    * cannot: an agent is launched into a repository, so this is never a report
    * that the directory was untracked. */
@@ -124,6 +131,7 @@ export type Snapshot = {
     version: string
     cwd: string
     socket: string
+    observation_socket: string
     cols: number
     rows: number
   }

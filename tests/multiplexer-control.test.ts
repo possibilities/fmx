@@ -97,8 +97,11 @@ function adeRecord(
     instanceId,
     context: {
       agentRole: "main",
+      workspaceRoot: null,
       sessionId,
       parentSessionId: null,
+      subagentId: null,
+      turnId: null,
       agentState: "idle",
       attentionKind: null,
     },

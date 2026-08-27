@@ -91,6 +91,8 @@ import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { Toast, type ToastTone } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
+import type { ObservationSink } from "./observation-hub.ts"
+import type { ObservationState } from "./observation-protocol.ts"
 
 /** The tray the embedded terminal sits beside; exported so tests can
  * address the terminal by its real screen column rather than a guess. */
@@ -172,6 +174,9 @@ type MultiplexerOptions = {
   home?: string
   /** Where `fmx control <command>` reaches this fmx; handed to every agent. */
   controlSocketPath?: string
+  /** Read-only Runtime projection for external Observers. */
+  observation?: ObservationSink | null
+  observationSocketPath?: string
   /** How long each lifecycle Toast remains; overridden only by renderer tests. */
   toastDurationMs?: number
   /** The first host palette query is still pending; index.ts has painted the
@@ -564,7 +569,10 @@ export class Multiplexer {
     this.sessionNames = new SessionNames({ home: options.home })
     this.subagents = new SubagentObserver({
       home: options.home,
-      onChange: () => this.refreshSessionList(),
+      onChange: () => {
+        this.refreshSessionList()
+        this.publishObservationState("subagents_changed")
+      },
     })
     const help = helpPlainText(this.keybindings)
     const helpLines = help.split("\n")
@@ -677,6 +685,7 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
     this.applyLayout()
     this.refreshTerminalTitle()
+    this.publishObservationState("initialized")
   }
 
   /**
@@ -724,6 +733,7 @@ export class Multiplexer {
     this.sessionListPublicationHeld = false
     this.sessionList.root.visible = true
     this.refreshSessionList()
+    this.publishObservationState("restored")
   }
 
   setHostPalette(colors: TerminalColors): void {
@@ -808,6 +818,7 @@ export class Multiplexer {
     })
     const agent = this.addAgent(entry, cwd, focus)
     agent.setPendingPrompt(prompt)
+    this.publishObservationState("awaiting_work_changed")
     // "started" means fx is running, whether or not it could be reached. The
     // notice waits on the attempt itself rather than reading a flag when it
     // happens to run: everything it needs may already be in hand.
@@ -919,6 +930,7 @@ export class Multiplexer {
     const agent = new FxAgent(this.renderer, entry, cwd, this.hostPalette, {
       onTitleChange: (candidate) => {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
+        this.publishObservationState("agent_label_changed")
       },
       onExit: (candidate, exit) => this.handleAgentExit(candidate, exit),
       onLost: (candidate, error) => void this.recoverAgent(candidate, error),
@@ -929,6 +941,7 @@ export class Multiplexer {
     if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
     this.loadGitContext(cwd)
     this.refreshSessionList()
+    this.publishObservationState("agent_added")
     return agent
   }
 
@@ -1035,6 +1048,7 @@ export class Multiplexer {
     } else if (index < this.activeIndex) {
       this.activeIndex -= 1
     }
+    this.publishObservationState("agent_removed")
     return true
   }
 
@@ -1065,6 +1079,7 @@ export class Multiplexer {
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
+    this.publishObservationState("active_agent_changed")
   }
 
   private activeAgent(): FxAgent | null {
@@ -1181,6 +1196,7 @@ export class Multiplexer {
       if (!this.shuttingDown && context) {
         this.gitContexts.set(cwd, context)
         this.refreshSessionList()
+        this.publishObservationState("git_context_changed")
       }
       return context
     }).finally(() => {
@@ -1261,6 +1277,8 @@ export class Multiplexer {
     if (record.context.agentRole !== "main") {
       changed = this.subagents.applyAdeRecord(record) || changed
       if (changed) this.refreshSessionList()
+      this.publishObservationState("lifecycle")
+      this.options.observation?.publishActivity(record, agent.entry.agentId, agent.id, gap)
       return
     }
 
@@ -1291,6 +1309,8 @@ export class Multiplexer {
     else this.checkpointAgent(agent)
     this.refreshSessionList()
     this.settleAgentWaiters()
+    this.publishObservationState("lifecycle")
+    this.options.observation?.publishActivity(record, agent.entry.agentId, agent.id, gap)
   }
 
   private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
@@ -1659,6 +1679,7 @@ export class Multiplexer {
         if (text === "") throw new ControlFailure("invalid_params", "text is empty")
         const lifecycleState = this.registry.get(this.paneIdFor(agent))?.state ?? "unknown"
         agent.send(text, lifecycleState)
+        this.publishObservationState("awaiting_work_changed")
         return { agent: this.agentInfo(agent) }
       }
       case "launch": {
@@ -1889,10 +1910,15 @@ export class Multiplexer {
     const sessionId = this.sessionIdOf(agent)
     const git = this.gitContexts.get(agent.cwd) ?? null
     return {
+      agent_id: agent.entry.agentId,
       id: agent.id,
+      display_id: agent.id,
       pane_id: this.paneIdFor(agent),
+      created_at: agent.entry.createdAt,
       cwd: agent.cwd,
       project: projectNameFor(git, agent.cwd),
+      git_root: git?.root ?? null,
+      main_git_root: git?.mainRoot ?? null,
       branch: git?.branch ?? null,
       worktree: git ? git.root !== git.mainRoot : null,
       name: this.nameOf(agent),
@@ -1904,6 +1930,17 @@ export class Multiplexer {
       awaiting_work: agent.awaitingWork,
       subagents: sessionId ? subagentInfos(this.subagents.childrenOf(sessionId)) : [],
     }
+  }
+
+  private observationState(): ObservationState {
+    return {
+      active_agent_id: this.activeAgent()?.entry.agentId ?? null,
+      agents: this.agents.map((agent) => this.agentInfo(agent)),
+    }
+  }
+
+  private publishObservationState(cause: string): void {
+    this.options.observation?.updateState(this.observationState(), cause)
   }
 
   private surface(): Surface {
@@ -1932,6 +1969,7 @@ export class Multiplexer {
         version: VERSION,
         cwd: this.options.cwd,
         socket: this.options.controlSocketPath ?? "",
+        observation_socket: this.options.observationSocketPath ?? "",
         cols: this.renderer.width,
         rows: this.renderer.height,
       },

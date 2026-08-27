@@ -17,6 +17,12 @@ attached to the Home's Runtime. It relays terminal bytes and size, and alone
 owns Detach; several Clients may watch and interact with the same shared UI.
 _Avoid_: viewer, frontend, session, fmx instance.
 
+**Observer** — an external process that passively reads a Runtime's machine
+state and optional attributed Agent activity. It is not a terminal Client,
+cannot interact with the shared UI, and neither keeps the Runtime alive nor
+changes Agent lifecycle.
+_Avoid_: Client, viewer, frontend, Agent.
+
 **Sizing owner** — the Client that most recently connected or interacted by
 focus, keyboard, mouse, paste, or resize. The Runtime renders once at its
 dimensions; larger Clients have flat, host-theme-relative unused space and
@@ -56,9 +62,9 @@ _Avoid_: bundled Fx, wrapper, AgentStart pin, moving latest.
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates
-and keys its stable ADE and control sockets. One Home has at most one Runtime,
-may have several Clients, and owns the Agents its Companion holds between
-Runtime lifetimes.
+and keys its stable ADE, control, and Observation sockets. One Home has at most
+one Runtime, may have several Clients, and owns the Agents its Companion holds
+between Runtime lifetimes.
 _Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
 is fx's own settings), installation, workspace.
 
@@ -95,7 +101,7 @@ sole Fx lifecycle source: each record carries the stable Manifest Agent
 identity, session context, and a complete state-and-attention snapshot, so an
 unknown additive event or the first record after a gap repairs live state;
 session-name gaps additionally recover from Fx's durable display record.
-_Avoid_: control socket, event bus, request/reply channel.
+_Avoid_: Observation stream, control socket, event bus, request/reply channel.
 
 **Pane id** — the retained opaque control and Companion-label identity for an
 Agent, `p_<agent id>`. fmx exposes it as `pane_id`, accepts it as a Target, and
@@ -231,6 +237,14 @@ fmx still reaches the next — and handed to every Agent as `FMX_SOCKET_PATH`.
 It is fmx's request/reply wire, separate from the one-way feed. One request per
 connection; a waiting method holds the connection.
 _Avoid_: command socket, API socket, RPC.
+
+**Observation stream** — the read-only, mode-0600, stable-per-Home Unix socket
+at `/tmp/fmx-<uid>-<home id>.obs` over which the Runtime serves Observers. Each
+connection begins with complete authoritative Agent state; later state is
+also complete and deduplicated, while optional ADE activity is attributed and
+live-only, carries gap evidence, and redacts sensitive payload fields unless
+the Observer explicitly requests raw payloads.
+_Avoid_: ADE feed, control socket, event bus, replay log, notification API.
 
 **Orientation** — what `fmx control orient` answers: the caller's own agent as
 `you`, every agent, the tray's rows as drawn, and whatever surface is
