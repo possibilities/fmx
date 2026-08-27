@@ -9,10 +9,8 @@ import {
   type MouseEvent,
   type Selection,
   StyledText,
-  type TerminalColors,
   type TextChunk,
   TextRenderable,
-  type ThemeMode,
 } from "@opentui/core"
 import { realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
@@ -31,25 +29,22 @@ import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
-  type DraftInfo,
   type AgentInfo,
   type CatalogInfo,
+  type ControlSurface,
   type KeysInfo,
-  type LaunchChoices,
   optionalBoolean,
   optionalInteger,
   optionalString,
   optionalStringList,
   parseTarget,
   requiredString,
-  isRecord,
   type TrayRow,
   type Snapshot,
   type SubagentInfo,
   type Surface,
   type Target,
 } from "./control-protocol.ts"
-import type { ControlSurface } from "./control-socket.ts"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import {
   createFxEnvironment,
@@ -67,11 +62,15 @@ import {
   type TerminalSize,
 } from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
-import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
-import { hasDetectedBackground, hostRamp, RAMP_FALLBACK, type Ramp, themeModeReport } from "./host-palette.ts"
 import {
-  actionForKey,
+  type FxnkThemeResolution,
+  fxnkRamp,
+  type Ramp,
+  themeModeReport,
+} from "./host-palette.ts"
+import {
   ACTION_FIELDS,
+  actionForKey,
   isCancelKey,
   keyIdentity,
   keyMatchesCombo,
@@ -86,18 +85,17 @@ import {
   readGitContext,
   projectNameFor,
   type GitContext,
-  treeNameFor,
 } from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
-import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
+import { expandTilde, scanProjectRoots } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
 import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
-import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
-import { Toast, type ToastTone } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
+import type { BusState } from "./bus-protocol.ts"
+import type { BusPublisher } from "./runtime-bus.ts"
 
 /** The tray the embedded terminal sits beside; exported so tests can
  * address the terminal by its real screen column rather than a guess. */
@@ -108,11 +106,6 @@ export const TRAY_DEFAULT_WIDTH = 26
 // branch in. Both scale together — the range moved, not just its top.
 const TRAY_MIN_WIDTH = 24
 const TRAY_MAX_SCREEN_FRACTION = 1 / 2
-// Dividers stay invisible until the host palette is known (or fx starts and it
-// is definitively unknowable) so the theme-derived color never flashes over a
-// guessed one on startup.
-const DIVIDER_UNREVEALED_COLOR = "transparent"
-
 const HELP_MODAL_TITLE = " keys "
 const ERROR_MODAL_TITLE = " error "
 
@@ -138,12 +131,16 @@ const MODIFIER_ONLY_KEYS = new Set([
 const PROMPT_SETTLE_MS = 250
 /** How long after the paste the send follows, so fx sees them apart. */
 const PROMPT_SUBMIT_MS = 120
-/**
- * How many records beneath an instance's stored sequence are refused before
- * fmx concludes the mark is wrong. Fx never rewinds, so one bad record must
- * not be able to silence an Agent's real feed for the life of the Runtime.
- */
+/** A run beneath a stored mark proves the mark is wrong; one bad record does not. */
 const STALE_SEQUENCE_LIMIT = 3
+const PASTE_START = "\u001b[200~"
+const PASTE_END = "\u001b[201~"
+
+/** Preserve newlines while typing a CLI Launch prompt into Fx. The submit is
+ * always a later write because Fx discards a paste followed in the same one. */
+function bracketedPaste(text: string): string {
+  return `${PASTE_START}${text}${PASTE_END}`
+}
 /** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
@@ -170,32 +167,43 @@ type MultiplexerOptions = {
   /** Stable identity to focus before the first restored frame. */
   initialActiveAgentId?: string
   onActiveAgentChange?: (agentId: string | null) => void
-  /** Directories the launch dialog scans one level deep for projects. */
+  /** Directories scanned one level deep for a CLI launch's default project. */
   projectRoots?: string[]
   /** Where a launch's new worktree is checked out. */
   worktreeRoot?: string
   home?: string
-  /** Agents started per directory so far, which orders the picker. */
-  initialProjectLaunches?: Record<string, number>
-  onProjectLaunch?: (launches: Record<string, number>) => void
-  /** Where `fmx control <command>` reaches this fmx; handed to every agent. */
-  controlSocketPath?: string
-  /** How long each lifecycle Toast remains; overridden only by renderer tests. */
-  toastDurationMs?: number
-  /** The first host palette query is still pending; index.ts has painted the
-   * sizing-owner frame with the terminal's native default background. */
-  initialPalettePending?: boolean
+  /** Where every Bus peer, including `fmx control`, reaches this Runtime. */
+  busSocketPath?: string
+  /** State and activity the Multiplexer publishes onto the Runtime Bus. */
+  bus?: BusPublisher | null
+  /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
+  initialTheme?: FxnkThemeResolution
 }
 
 /** Default states `agent wait` waits for: any that needs someone. */
 const WAIT_DEFAULT_STATES: readonly DisplayState[] = ["idle", "done", "blocked"]
 const DISPLAY_STATES: readonly string[] = ["blocked", "working", "done", "idle", "unknown"]
-/** How many resolved drafts stay readable after they close. */
-const DRAFT_HISTORY = 32
+type LaunchRequest = {
+  directory: string
+  prompt: string
+  worktree: boolean
+  model: string
+  effort: string
+}
 
-type Draft = {
-  info: DraftInfo
-  waiters: Set<(info: DraftInfo) => void>
+type LaunchOverrides = {
+  directory?: string
+  prompt?: string
+  worktree?: boolean
+  model?: string
+  effort?: string
+}
+
+const DEFAULT_THEME: FxnkThemeResolution = {
+  theme: "dark",
+  background: null,
+  source: "default",
+  explicit: false,
 }
 
 type AgentWaiter = {
@@ -244,7 +252,7 @@ class FxAgent {
   private pendingPrompt: string | null = null
   /** fx reported before the transport arrived; the prompt is armed again at `adopt`. */
   private promptWaitingForTransport = false
-  /** The paste went in and its send did not; the send is retried at `adopt`. */
+  /** The paste went in and its send did not; retry the send at `adopt`. */
   private submitWaitingForTransport = false
   /** A prompt has gone in and fx has not yet said it is working on it. */
   awaitingWork = false
@@ -258,7 +266,7 @@ class FxAgent {
     renderer: CliRenderer,
     readonly entry: ManifestEntry,
     readonly cwd: string,
-    private hostPalette: TerminalColors | null,
+    private hostTheme: FxnkThemeResolution,
     private readonly events: AgentEvents,
   ) {
     this.id = entry.displayId
@@ -284,7 +292,7 @@ class FxAgent {
       onData: (data, source) => this.writeInput(data, source),
       onTerminalResize: (cols, rows) => this.resizePty(cols, rows),
     })
-    if (hostPalette) this.terminal.applyHostPalette(hostPalette)
+    this.terminal.applyHostTheme(hostTheme)
   }
 
   /** fx takes no prompt on its command line, so a launch prompt is typed in
@@ -339,9 +347,6 @@ class FxAgent {
       // fx can report before the transport is adopted — `create` returns
       // once fx is running, and fx speaks first. The prompt waits for the
       // transport rather than being dropped on the floor.
-      // A transport lost mid-flight leaves the status `running`, and the
-      // write would vanish into nothing. The prompt waits for the next
-      // transport rather than being consumed by a dead one.
       if (this.status === "starting" || !this.transport) {
         this.promptWaitingForTransport = true
         return
@@ -353,14 +358,7 @@ class FxAgent {
     }, PROMPT_SETTLE_MS)
   }
 
-  /**
-   * Put `text` in front of fx and send it a beat later. As a bracketed paste,
-   * not as typed bytes: a newline typed into fx submits at the first line,
-   * where a pasted one stays part of the text. The send is a separate write
-   * because fx discards a paste when anything follows its end marker in the
-   * same one — the launch prompt and `agent send` are the same act, and this
-   * is the one place that ordering lives.
-   */
+  /** Paste first, then submit in a separate write so Fx preserves newlines. */
   private pasteAndSubmit(text: string): void {
     this.writeInput(new TextEncoder().encode(bracketedPaste(text)), "input")
     this.promptTimer = setTimeout(() => {
@@ -369,11 +367,7 @@ class FxAgent {
     }, PROMPT_SUBMIT_MS)
   }
 
-  /**
-   * Send what was pasted. The paste and its send are one act, so a transport
-   * lost between them leaves the text sitting unsent in fx's composer; the
-   * send is retried against the next transport rather than dropped.
-   */
+  /** A paste and its submit are one act; reconnect finishes an interrupted one. */
   private submitPrompt(): void {
     if (this.status !== "running") return
     if (!this.transport) {
@@ -439,10 +433,14 @@ class FxAgent {
     return this.transport !== null
   }
 
-  updateHostPalette(colors: TerminalColors, themeMode: ThemeMode | null): void {
-    this.hostPalette = colors
-    if (!this.terminal.applyHostPalette(colors)) return
-    if (themeMode && hasDetectedBackground(colors)) this.writeInput(themeModeReport(themeMode), "response")
+  updateHostTheme(resolution: FxnkThemeResolution): void {
+    const changed =
+      resolution.theme !== this.hostTheme.theme || resolution.background !== this.hostTheme.background
+    this.hostTheme = resolution
+    this.terminal.applyHostTheme(resolution)
+    if (changed && !resolution.explicit) {
+      this.writeInput(themeModeReport(resolution.theme), "response")
+    }
   }
 
   /** Let go of fx without ending it, and take the terminal down. */
@@ -470,14 +468,14 @@ class FxAgent {
   /**
    * What the transport replays is the whole terminal, so the one here must
    * hold nothing first: not the screen, not the scrollback, not a cursor
-   * query half-translated when the last transport dropped. The host palette
-   * goes back on afterwards — the replay restores what fx set, and the
-   * host's colors were never fx's.
+   * query half-translated when the last transport dropped. The resolved
+   * terminal-default background goes back on afterwards — the replay restores
+   * what fx set, not fmx's terminal state.
    */
   private resetTerminal(): void {
     this.cursorReportAdapter = new CursorReportAdapter()
     this.terminal.write(TERMINAL_RESET)
-    if (this.hostPalette) this.terminal.applyHostPalette(this.hostPalette)
+    this.terminal.applyHostTheme(this.hostTheme)
   }
 
   private writeInput(data: Uint8Array, source: EmbeddedTerminalDataSource): void {
@@ -534,15 +532,9 @@ export class Multiplexer {
   private trayHidden = false
   private dividerDragging = false
   private dragStartWidth = TRAY_DEFAULT_WIDTH
-  private readonly launchDialog: LaunchDialog
-  private readonly projectLaunches: Map<string, number>
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
-  private readonly toast: Toast
-  /** Per-Agent tails keep a fast exit behind its start notice even when
-   * both are waiting for Git context. */
-  private readonly lifecycleNoticeTails = new Map<number, Promise<void>>()
   private readonly keybindings: Keybindings
   private readonly agents: FxAgent[] = []
   private activeIndex = -1
@@ -550,21 +542,11 @@ export class Multiplexer {
   private modalKind: ModalKind | null = null
   private spawnErrorLines: string[] = []
   private spawnErrorHeading = "fx did not start"
-  private hostPalette: TerminalColors | null = null
-  /** The first frame owns one coherent Ramp across the selected row and
-   * structural dividers. A late answer may theme the embedded terminals and
-   * other surfaces, but cannot mix new grays into it. */
-  private startupChromeLocked = false
+  private theme: FxnkThemeResolution = DEFAULT_THEME
   private shuttingDown = false
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
   private readonly swallowedReleases = new Set<string>()
-  /** Every launch dialog opening, by id, the open one included. */
-  private readonly drafts = new Map<string, Draft>()
-  private openDraft: Draft | null = null
-  /** Handed from the dialog's close to the launch that follows it. */
-  private submittedDraft: Draft | null = null
-  private nextDraftId = 1
   private readonly agentWaiters = new Set<AgentWaiter>()
   /** What `fmx control <command>` drives. */
   readonly control: ControlSurface = {
@@ -575,8 +557,6 @@ export class Multiplexer {
   private readonly keypressHandler = (key: KeyEvent) => this.onKeyPress(key)
   private readonly keyreleaseHandler = (key: KeyEvent) => this.onKeyRelease(key)
   private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
-  private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
-  private readonly pasteHandler = () => this.launchDialog.handlePaste()
   private readonly resizeHandler = () => this.applyLayout()
   private readonly adeHandler = (record: AdeRecord) => this.acceptAdeRecord(record)
 
@@ -587,24 +567,26 @@ export class Multiplexer {
     this.donePromise = new Promise((resolveDone) => {
       this.resolveDone = resolveDone
     })
+    this.theme = options.initialTheme ?? DEFAULT_THEME
+    const initialRamp = fxnkRamp(this.theme.theme)
     // The physical Client is cleared to the unused-field color before each
     // owner-sized frame. A transparent renderer would leave that clear visible
     // anywhere no child draws — around the splash text on first paint and in
-    // stale tray cells after the last Agent disappears. The renderer's opaque
-    // base is therefore the shared frame itself once the palette choice has
-    // settled. While an initial query is pending, index.ts paints the exact
-    // owner rectangle with SGR 49 instead of exposing this guessed RGB.
-    if (!options.initialPalettePending) {
-      this.renderer.setBackgroundColor(RAMP_FALLBACK.background)
-    }
+    // stale tray cells after the last Agent disappears. The renderer's base is
+    // the terminal-default canvas, chosen before any frame is exposed.
+    this.renderer.setBackgroundColor(initialRamp.background)
     this.keybindings = options.keybindings
     this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
     this.trayHidden = options.initialTrayHidden ?? false
     this.sessionNames = new SessionNames({ home: options.home })
     this.subagents = new SubagentObserver({
       home: options.home,
-      onChange: () => this.refreshSessionList(),
+      onChange: () => {
+        this.refreshSessionList()
+        this.publishBusState("subagents_changed")
+      },
     })
+    const [helpWidth, helpHeight] = helpModalSize(this.keybindings)
 
     this.stage = new BoxRenderable(renderer, {
       id: "fmx-stage",
@@ -626,7 +608,7 @@ export class Multiplexer {
       flexShrink: 0,
       border: ["left"],
       borderStyle: "single",
-      borderColor: DIVIDER_UNREVEALED_COLOR,
+      borderColor: initialRamp.divider,
       visible: false,
       onMouseDown: (event) => this.beginDividerDrag(event),
       onMouseDrag: (event) => this.continueDividerDrag(event),
@@ -643,8 +625,8 @@ export class Multiplexer {
     })
     this.emptyState = new TextRenderable(renderer, {
       id: "fmx-empty-state",
-      content: emptyStateContent(this.keybindings),
-      fg: RAMP_FALLBACK.dim,
+      content: emptyStateContent(),
+      fg: initialRamp.dim,
       selectable: false,
     })
     this.content.add(this.emptyState)
@@ -654,6 +636,7 @@ export class Multiplexer {
 
     this.adeSocket = options.adeSocket ?? null
     this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
+    this.sessionList.applyTheme(this.theme.theme)
     this.sessionListPublicationHeld = (options.survivors?.length ?? 0) > 0
     this.sessionList.root.visible = !this.sessionListPublicationHeld
     this.tray.add(this.sessionList.root)
@@ -665,7 +648,7 @@ export class Multiplexer {
       left: 0,
       width: "100%",
       height: "100%",
-      backgroundColor: RAMP_FALLBACK.backdrop,
+      backgroundColor: initialRamp.backdrop,
       zIndex: 100,
       visible: false,
       onMouseDown: () => this.hideModal(),
@@ -675,11 +658,15 @@ export class Multiplexer {
       position: "absolute",
       left: "50%",
       top: "50%",
+      width: helpWidth,
+      height: helpHeight,
+      marginLeft: -Math.floor(helpWidth / 2),
+      marginTop: -Math.floor(helpHeight / 2),
       paddingX: 1,
       border: true,
       borderStyle: "single",
-      borderColor: RAMP_FALLBACK.focus,
-      backgroundColor: RAMP_FALLBACK.background,
+      borderColor: initialRamp.focus,
+      backgroundColor: initialRamp.background,
       title: HELP_MODAL_TITLE,
       titleAlignment: "left",
       visible: false,
@@ -687,38 +674,24 @@ export class Multiplexer {
     })
     this.modalText = new TextRenderable(renderer, {
       id: "fmx-modal-text",
-      fg: RAMP_FALLBACK.foreground,
-      bg: RAMP_FALLBACK.background,
+      content: styledHelpContent(this.keybindings, initialRamp),
+      fg: initialRamp.foreground,
+      bg: initialRamp.background,
       selectable: false,
     })
     this.modal.add(this.modalText)
     this.modalBackdrop.add(this.modal)
-    this.applyModalPalette(this.hostPalette)
-
-    this.toast = new Toast(renderer, { durationMs: options.toastDurationMs })
-
-    this.projectLaunches = new Map(Object.entries(options.initialProjectLaunches ?? {}))
-    this.launchDialog = new LaunchDialog(renderer, {
-      onLaunch: (request) => void this.startLaunch(request),
-      onClose: (outcome) => {
-        if (!this.shuttingDown) this.restoreFocus()
-        this.closeDraft(outcome)
-      },
-      onProjectChange: (directory) => this.answerWorktreeAvailability(directory),
-    })
+    this.applyModalTheme()
 
     this.renderer.root.add(this.stage)
-    this.renderer.root.add(this.toast.root)
     this.renderer.root.add(this.modalBackdrop)
-    this.renderer.root.add(this.launchDialog.root)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
-    this.renderer.keyInput.on("paste", this.pasteHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
-    this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
     this.applyLayout()
     this.refreshTerminalTitle()
+    this.publishBusState("initialized")
   }
 
   /**
@@ -766,24 +739,19 @@ export class Multiplexer {
     this.sessionListPublicationHeld = false
     this.sessionList.root.visible = true
     this.refreshSessionList()
+    this.publishBusState("restored")
   }
 
-  setHostPalette(colors: TerminalColors): void {
-    this.onPalette(colors)
-  }
-
-  /** Choose the startup chrome Ramp before OpenTUI may draw it. */
-  lockStartupChrome(colors: TerminalColors | null): void {
+  setTheme(resolution: FxnkThemeResolution): void {
     if (this.shuttingDown) return
-    if (colors) this.onPalette(colors)
-    else this.applyDividerPalette(null)
-    this.startupChromeLocked = true
-  }
-
-  /** The initial answer has now either landed or been deliberately ignored;
-   * a later, genuine terminal theme change may update the chrome again. */
-  unlockStartupChrome(): void {
-    this.startupChromeLocked = false
+    this.theme = resolution
+    const ramp = fxnkRamp(resolution.theme)
+    this.renderer.setBackgroundColor(ramp.background)
+    this.applyModalTheme()
+    this.applyDividerTheme()
+    this.refreshEmptyState()
+    for (const agent of this.agents) agent.updateHostTheme(resolution)
+    this.renderer.requestRender()
   }
 
   waitUntilDone(): Promise<void> {
@@ -797,7 +765,6 @@ export class Multiplexer {
     if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
     this.exitConfirmationTimer = null
     this.exitConfirmationKey = null
-    this.launchDialog.close()
     this.hideModal()
     this.subagents.stop()
     for (const waiter of this.agentWaiters) waiter.settle(null)
@@ -809,13 +776,10 @@ export class Multiplexer {
       for (const agent of this.agents) agent.detach()
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
-      this.renderer.keyInput.off("paste", this.pasteHandler)
       this.renderer.off(CliRenderEvents.SELECTION, this.selectionHandler)
-      this.renderer.off(CliRenderEvents.PALETTE, this.paletteHandler)
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const agent of this.agents) agent.destroy()
-      this.toast.destroy()
     } finally {
       this.agents.length = 0
       this.renderer.destroy()
@@ -852,15 +816,7 @@ export class Multiplexer {
     })
     const agent = this.addAgent(entry, cwd, focus)
     agent.setPendingPrompt(prompt)
-    this.countLaunch(cwd)
-    // "started" means fx is running, whether or not it could be reached. The
-    // notice waits on the attempt itself rather than reading a flag when it
-    // happens to run: everything it needs may already be in hand.
-    let markStarted: (started: boolean) => void = () => {}
-    const startAttempt = new Promise<boolean>((resolve) => {
-      markStarted = resolve
-    })
-    this.queueLifecycleNotice(agent, `agent ${agent.id}`, "started", "neutral", null, () => startAttempt)
+    this.publishBusState("awaiting_work_changed")
     let transport: AgentTransport
     try {
       await saved
@@ -875,7 +831,7 @@ export class Multiplexer {
             process.env,
             entry.displayId,
             cwd,
-            this.options.controlSocketPath ?? null,
+            this.options.busSocketPath ?? null,
             launchLevel,
             this.adeBinding(entry.agentId),
           ),
@@ -886,12 +842,10 @@ export class Multiplexer {
       if (error instanceof AgentUnreachableError) {
         // fx is running; only the way to it failed. It is recovered like a
         // lost transport, never removed — the Manifest says so first.
-        markStarted(true)
         await this.options.manifest.markRunning(entry.agentId).catch(() => {})
         void this.recoverAgent(agent, error)
         return agent
       }
-      markStarted(false)
       this.removeAgent(agent)
       // A write that fails here is the same disk that failed above; the
       // reason the start failed is the one to show.
@@ -901,7 +855,6 @@ export class Multiplexer {
     // fx is running whatever happens from here; the record says so before
     // anything else, because this is the acknowledgement a crash loses. A
     // write that fails leaves `creating` on disk, which the join resolves.
-    markStarted(true)
     await this.options.manifest.markRunning(entry.agentId).catch(() => {})
     if (this.shuttingDown || !this.agents.includes(agent)) {
       transport.detach()
@@ -961,11 +914,12 @@ export class Multiplexer {
     focus: boolean,
     selectIfEmpty = true,
   ): FxAgent {
-    const agent = new FxAgent(this.renderer, entry, cwd, this.hostPalette, {
+    const agent = new FxAgent(this.renderer, entry, cwd, this.theme, {
       onTitleChange: (candidate) => {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
+        this.publishBusState("agent_label_changed")
       },
-      onExit: (candidate, exit) => this.handleAgentExit(candidate, exit),
+      onExit: (candidate) => this.handleAgentExit(candidate),
       onLost: (candidate, error) => void this.recoverAgent(candidate, error),
     })
     this.agents.push(agent)
@@ -974,23 +928,20 @@ export class Multiplexer {
     if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
     this.loadGitContext(cwd)
     this.refreshSessionList()
+    this.publishBusState("agent_added")
     return agent
   }
 
   /**
    * fx ended: the Agent, its claim, and whatever the Companion recorded
-   * all go. `exit` is null when the end was observed but its status was not.
+   * all go.
    */
-  private handleAgentExit(agent: FxAgent, exit: AgentExit | null): void {
+  private handleAgentExit(agent: FxAgent): void {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
     void this.options.manifest.remove(agent.entry.agentId).catch(() => {})
     if (this.shuttingDown) return
-    const identity = this.nameOf(agent) ?? `agent ${agent.id}`
-    // The shell's number for a signal, so a notice reads the way `$?` would.
-    const exitCode = exit === null ? 0 : exit.signal ? 128 + exit.signal : exit.code
-    this.queueLifecycleNotice(agent, identity, "exited", exitCode === 0 ? "neutral" : "error", exitCode)
     this.removeAgent(agent)
   }
 
@@ -1016,7 +967,7 @@ export class Multiplexer {
         return
       } catch (caught) {
         if (caught instanceof AgentEndedError) {
-          this.handleAgentExit(agent, caught.exit)
+          this.handleAgentExit(agent)
           return
         }
         error = caught
@@ -1024,31 +975,6 @@ export class Multiplexer {
     }
     if (this.shuttingDown || !this.removeAgent(agent)) return
     this.showError(`lost agent ${agent.id}`, error)
-  }
-
-  private queueLifecycleNotice(
-    agent: FxAgent,
-    identity: string,
-    event: "started" | "exited",
-    tone: ToastTone,
-    exitCode: number | null,
-    shouldShow: () => boolean | Promise<boolean> = () => true,
-  ): void {
-    const context = this.loadGitContext(agent.cwd)
-    const previous = this.lifecycleNoticeTails.get(agent.id) ?? Promise.resolve()
-    const queued = previous.then(async () => {
-      const git = await context
-      if (this.shuttingDown || !(await shouldShow())) return
-      const project = projectNameFor(git, agent.cwd)
-      const tree = treeNameFor(git)
-      const location = tree === null ? project : `${project} / ${tree}`
-      const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` / code ${exitCode}` : ""
-      this.toast.show(`${location} / ${identity} ${event}${code}`, tone)
-    })
-    this.lifecycleNoticeTails.set(agent.id, queued)
-    void queued.finally(() => {
-      if (this.lifecycleNoticeTails.get(agent.id) === queued) this.lifecycleNoticeTails.delete(agent.id)
-    })
   }
 
   private removeAgent(agent: FxAgent): boolean {
@@ -1081,6 +1007,7 @@ export class Multiplexer {
     } else if (index < this.activeIndex) {
       this.activeIndex -= 1
     }
+    this.publishBusState("agent_removed")
     return true
   }
 
@@ -1107,10 +1034,11 @@ export class Multiplexer {
     active.terminal.setHostSelectionEnabled(true)
     // A surface drawn over fx keeps the keys; it hands them back when it
     // closes, so an agent shown behind it must not take them now.
-    if (!this.launchDialog.isOpen() && !this.modalKind) this.restoreFocus()
+    if (!this.modalKind) this.restoreFocus()
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
+    this.publishBusState("active_agent_changed")
   }
 
   private activeAgent(): FxAgent | null {
@@ -1140,7 +1068,7 @@ export class Multiplexer {
   }
 
   private restoreFocus(): void {
-    if (this.launchDialog.isOpen() || this.modalKind) return
+    if (this.modalKind) return
     this.activeAgent()?.terminal.focus()
   }
 
@@ -1156,10 +1084,10 @@ export class Multiplexer {
 
   private refreshEmptyState(): void {
     const confirmingExit = this.exitConfirmationTimer !== null
-    const palette = hostRamp(this.hostPalette)
+    const palette = fxnkRamp(this.theme.theme)
     this.emptyState.content = confirmingExit
       ? `press ${this.exitConfirmationKey ?? "ctrl+c"} again to exit`
-      : emptyStateContent(this.keybindings)
+      : emptyStateContent()
     this.emptyState.fg = confirmingExit ? palette.foreground : palette.dim
   }
 
@@ -1227,6 +1155,7 @@ export class Multiplexer {
       if (!this.shuttingDown && context) {
         this.gitContexts.set(cwd, context)
         this.refreshSessionList()
+        this.publishBusState("git_context_changed")
       }
       return context
     }).finally(() => {
@@ -1244,8 +1173,7 @@ export class Multiplexer {
     const record = this.registry.get(agent.paneId)
     this.seenSeq.set(agent.id, record?.stateSeq ?? 0)
     this.checkpointAgent(agent)
-    // Acknowledging a finished turn moves `done` to `idle`, and an idle Fx
-    // sends nothing more: a wait for that state must settle here or never.
+    // Acknowledging `done` produces idle without another ADE record.
     this.settleAgentWaiters()
   }
 
@@ -1288,9 +1216,7 @@ export class Multiplexer {
         this.adeStaleRecords.set(record.instanceId, stale)
         return
       }
-      // Fx's sequence only advances, so a run of records beneath the stored
-      // mark means the mark is wrong rather than the records. Take the newest
-      // as the new baseline and recover as if its predecessors were dropped.
+      // Fx never rewinds: a run beneath the mark means the mark is wrong.
       this.adeStaleRecords.delete(record.instanceId)
       previousSequence = undefined
     }
@@ -1302,6 +1228,7 @@ export class Multiplexer {
     // repaired by any later record.
     agent.armPrompt()
 
+    let changed = false
     // Identity and lifecycle are envelope context, not event payload. Main
     // records alone replace the active main identity: a child's parent
     // attribution can intentionally name an older session after `/new`.
@@ -1309,18 +1236,20 @@ export class Multiplexer {
     const contextualIdentityChanged =
       record.context.agentRole === "main" && previousSession !== record.context.sessionId
     if (record.context.agentRole === "main") {
-      this.installAdeSession(agent, record.context.sessionId)
+      changed = this.installAdeSession(agent, record.context.sessionId) || changed
     }
     if (gap) {
       const recoverySession = this.sessionIdOf(agent)
       // Installing a different identity already reads its durable sidecar.
       if (recoverySession && !contextualIdentityChanged) {
-        this.sessionNames.recover(recoverySession)
+        changed = this.sessionNames.recover(recoverySession) || changed
       }
     }
     if (record.context.agentRole !== "main") {
-      this.subagents.applyAdeRecord(record)
-      this.refreshSessionList()
+      changed = this.subagents.applyAdeRecord(record) || changed
+      if (changed) this.refreshSessionList()
+      this.publishBusState("lifecycle")
+      this.options.bus?.publishActivity(record, agent.entry.agentId, agent.id, gap)
       return
     }
 
@@ -1337,7 +1266,7 @@ export class Multiplexer {
         const sessionId = record.context.sessionId
         const title = record.payload.title
         if (sessionId && typeof title === "string") {
-          this.sessionNames.apply(sessionId, title)
+          changed = this.sessionNames.apply(sessionId, title) || changed
         }
         break
       }
@@ -1351,6 +1280,8 @@ export class Multiplexer {
     else this.checkpointAgent(agent)
     this.refreshSessionList()
     this.settleAgentWaiters()
+    this.publishBusState("lifecycle")
+    this.options.bus?.publishActivity(record, agent.entry.agentId, agent.id, gap)
   }
 
   private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
@@ -1421,8 +1352,6 @@ export class Multiplexer {
 
   private applyLayout(requestedTrayWidth = this.trayWidth): void {
     this.applyTrayWidth(requestedTrayWidth)
-    this.launchDialog.layout()
-    this.toast.layout()
   }
 
   private applyTrayWidth(requested = this.trayWidth): void {
@@ -1435,32 +1364,18 @@ export class Multiplexer {
     this.refreshSessionList()
   }
 
-  private onPalette(colors: TerminalColors): void {
-    this.hostPalette = colors
-    this.renderer.setBackgroundColor(hostRamp(colors).background)
-    this.applyModalPalette(colors)
-    this.applyDividerPalette(colors)
-    this.toast.applyPalette(colors)
-    this.refreshEmptyState()
-    const themeMode = this.renderer.themeMode
-    for (const agent of this.agents) agent.updateHostPalette(colors, themeMode)
-  }
-
-  private applyDividerPalette(colors: TerminalColors | null): void {
-    if (!this.startupChromeLocked) {
-      const color = hostRamp(colors).divider
-      this.divider.borderColor = color
-      this.divider.focusedBorderColor = color
-    }
-    this.launchDialog.applyPalette(colors)
-    this.sessionList.applyPalette(colors, this.startupChromeLocked)
+  private applyDividerTheme(): void {
+    const color = fxnkRamp(this.theme.theme).divider
+    this.divider.borderColor = color
+    this.divider.focusedBorderColor = color
+    this.sessionList.applyTheme(this.theme.theme)
     this.refreshSessionList()
   }
 
   /** The modal takes keys, so its border is the focus hue — or the error hue
    * when what took the screen is a failure. */
-  private applyModalPalette(colors: TerminalColors | null): void {
-    const palette = hostRamp(colors)
+  private applyModalTheme(): void {
+    const palette = fxnkRamp(this.theme.theme)
     const isError = this.modalKind === "spawn-error"
     const borderColor = isError ? palette.error : palette.focus
     this.modalBackdrop.backgroundColor = palette.backdrop
@@ -1502,19 +1417,6 @@ export class Multiplexer {
     if (this.renderer.hasSelection) this.renderer.clearSelection()
     if (this.shuttingDown) {
       this.swallow(key)
-      return
-    }
-
-    if (this.launchDialog.isOpen()) {
-      if (MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) {
-        this.swallow(key)
-        return
-      }
-      // A key the dialog declines belongs to its focused prompt field, which
-      // the renderer feeds through its own dispatch — swallowing it here
-      // would stop it ever arriving. fx is blurred, so nothing else can take
-      // it either.
-      if (this.launchDialog.handleKey(key)) this.swallow(key)
       return
     }
 
@@ -1575,13 +1477,6 @@ export class Multiplexer {
         // Runtime. Treat a leaked or stale binding as inert: terminal input
         // must never turn one Client's Detach into a shared shutdown.
         return
-      case "launch":
-        try {
-          this.showLaunchDialog()
-        } catch (error) {
-          if (!(error instanceof ControlFailure)) throw error
-        }
-        return
       case "previous_tab":
         this.switchTo(this.activeIndex - 1)
         return
@@ -1601,104 +1496,17 @@ export class Multiplexer {
     this.prefixArmed = false
   }
 
-  /**
-   * The projects on offer, freshly scanned so a repository made a minute ago
-   * is already there. fmx's own workspace joins the list when it is one too,
-   * which keeps the dialog useful before any root is configured.
-   */
-  private projectChoices(): ProjectChoice[] {
-    const home = this.home()
-    const scanned = scanProjectRoots(this.options.projectRoots ?? [], home)
-    const directories =
-      scanned.includes(this.options.cwd) || !isRepositoryDirectory(this.options.cwd)
-        ? scanned
-        : [...scanned, this.options.cwd]
-    return orderProjects(directories, this.projectLaunches, home)
-  }
-
-  private showLaunchDialog(openedBy: "keys" | "agent" = "keys", prefill: LaunchPrefill = {}): Draft {
-    if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    if (this.modalKind || this.launchDialog.isOpen()) {
-      throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
-    }
-    const active = this.activeAgent()
-    this.launchDialog.applyPalette(this.hostPalette)
-    const projects = this.projectChoices()
-    if (prefill.directory !== undefined) {
-      projects.push(...orderProjects([prefill.directory], this.projectLaunches, this.home()))
-    }
-    const draft: Draft = {
-      info: {
-        draft: `d${this.nextDraftId++}`,
-        kind: "launch",
-        status: "open",
-        opened_by: openedBy,
-        fields: {
-          prompt: "",
-          directory: "",
-          worktree: false,
-          worktree_available: null,
-          model: DEFAULT_CODEX_MODEL.id,
-          effort: DEFAULT_CODEX_MODEL.defaultEffort,
-        },
-        outcome: null,
-      },
-      waiters: new Set(),
-    }
-    this.drafts.set(draft.info.draft, draft)
-    this.openDraft = draft
-    this.forgetOldDrafts()
-    this.launchDialog.show(projects, prefill.directory ?? active?.cwd ?? this.options.cwd, prefill)
-    active?.terminal.blur()
-    return draft
-  }
-
-  /** The dialog has left the screen. A submitted draft stays open until its
-   * launch has answered; a cancelled one is resolved here. */
-  private closeDraft(outcome: LaunchDialogOutcome): void {
-    const draft = this.openDraft
-    if (!draft) return
-    draft.info.fields = this.launchDialog.fields()
-    this.openDraft = null
-    if (outcome === "cancelled") this.resolveDraft(draft, "cancelled", null)
-    else this.submittedDraft = draft
-  }
-
-  private resolveDraft(draft: Draft, status: DraftInfo["status"], outcome: DraftInfo["outcome"]): void {
-    draft.info.status = status
-    draft.info.outcome = outcome
-    for (const waiter of draft.waiters) waiter(draft.info)
-    draft.waiters.clear()
-  }
-
-  private forgetOldDrafts(): void {
-    for (const [id, draft] of this.drafts) {
-      if (this.drafts.size <= DRAFT_HISTORY) return
-      if (draft.info.status === "open") continue
-      this.drafts.delete(id)
-    }
-  }
-
-  /** The dialog's path: what goes wrong is shown, since there is no caller
-   * to answer. */
-  private async startLaunch(request: LaunchRequest): Promise<void> {
-    const draft = this.submittedDraft
-    this.submittedDraft = null
-    try {
-      const agent = await this.performLaunch(request, true)
-      if (draft) this.resolveDraft(draft, "submitted", { agent: agent.id })
-    } catch (error) {
-      if (draft) this.resolveDraft(draft, "failed", { error: errorMessage(error) })
-      if (error instanceof ControlFailure && error.code === "shutting_down") return
-      this.showError(launchErrorHeading(error), error)
-    }
+  /** The configured Projects, freshly scanned so a repository made a minute
+   * ago is already available to a CLI launch that names no directory. */
+  private projectDirectories(): string[] {
+    const home = this.options.home ?? homedir()
+    return scanProjectRoots(this.options.projectRoots ?? [], home)
   }
 
   /**
-   * Check the repository, cut the worktree if asked, then start fx; throws
-   * with the reason. Every launch passes here, by key or by command, which is
-   * what makes the repository a condition of running an agent rather than a
-   * rule each caller has to remember. The context git answers with is kept,
+   * Check the repository, cut the worktree if asked, then start fx. Every CLI
+   * launch passes here, making the repository a condition of running an Agent
+   * rather than a rule the client has to remember. The context git answers with is kept,
    * so the row this launch adds is drawn under its branch from the first
    * frame rather than a beat later.
    */
@@ -1737,29 +1545,6 @@ export class Multiplexer {
     return plan.checkout
   }
 
-  /**
-   * Whether a worktree can be cut in `directory`. Every project on the row is
-   * a repository, so the only thing left to ask is whether it has a commit to
-   * branch from — a repository with nothing committed yet cannot offer one.
-   */
-  private answerWorktreeAvailability(directory: string): void {
-    const answer = (available: boolean) => {
-      if (this.shuttingDown) return
-      this.launchDialog.setWorktreeAvailability(directory, available)
-    }
-    void readHeadCommit(directory).then(
-      () => answer(true),
-      () => answer(false),
-    )
-  }
-
-  /** Every start counts, whichever key opened it, so the picker's order
-   * reflects where work actually happens. */
-  private countLaunch(cwd: string): void {
-    this.projectLaunches.set(cwd, (this.projectLaunches.get(cwd) ?? 0) + 1)
-    this.options.onProjectLaunch?.(Object.fromEntries(this.projectLaunches))
-  }
-
   private showHelp(): void {
     const [width, height] = helpModalSize(this.keybindings)
     this.showModal("help", width, height)
@@ -1784,7 +1569,7 @@ export class Multiplexer {
   private showModal(kind: ModalKind, width: number, height: number): void {
     this.modalKind = kind
     this.resizeModal(width, height)
-    this.applyModalPalette(this.hostPalette)
+    this.applyModalTheme()
     this.modalBackdrop.visible = true
     this.modal.visible = true
     this.activeAgent()?.terminal.blur()
@@ -1843,6 +1628,7 @@ export class Multiplexer {
         if (text === "") throw new ControlFailure("invalid_params", "text is empty")
         const lifecycleState = this.registry.get(agent.paneId)?.state ?? "unknown"
         agent.send(text, lifecycleState)
+        this.publishBusState("awaiting_work_changed")
         return { agent: this.agentInfo(agent) }
       }
       case "launch": {
@@ -1858,47 +1644,6 @@ export class Multiplexer {
         this.selectAgent(agent.id)
         return { agent: this.agentInfo(agent) }
       }
-      case "draft.open": {
-        const kind = optionalString(params, "kind") ?? "launch"
-        if (kind !== "launch") throw new ControlFailure("invalid_params", `unknown draft kind: ${kind}`)
-        const fields = isRecord(params.fields) ? params.fields : {}
-        const draft = this.showLaunchDialog("agent", this.prefillFrom(fields))
-        return this.draftInfo(draft)
-      }
-      case "draft.show":
-        return this.draftInfo(this.draftFor(optionalString(params, "draft")))
-      case "draft.set": {
-        const draft = this.openDraftFor(requiredString(params, "draft"))
-        const fields = isRecord(params.fields) ? params.fields : {}
-        const prefill = this.prefillFrom(fields, this.launchDialog.fields().model)
-        if (prefill.directory !== undefined) {
-          const [choice] = orderProjects([prefill.directory], this.projectLaunches, this.home())
-          if (choice) this.launchDialog.offerProject(choice)
-        }
-        this.launchDialog.apply(prefill)
-        return this.draftInfo(draft)
-      }
-      case "draft.submit": {
-        const draft = this.openDraftFor(requiredString(params, "draft"))
-        const resolved = this.waitForDraft(draft, null, signal)
-        this.launchDialog.submit()
-        const info = await resolved
-        if (info.status === "failed") {
-          throw new ControlFailure("failed", info.outcome && "error" in info.outcome ? info.outcome.error : "launch failed")
-        }
-        return info
-      }
-      case "draft.cancel": {
-        const draft = this.openDraftFor(requiredString(params, "draft"))
-        this.launchDialog.close()
-        return this.draftInfo(draft)
-      }
-      case "draft.wait":
-        return this.waitForDraft(
-          this.draftFor(optionalString(params, "draft")),
-          optionalInteger(params, "timeout_ms") ?? null,
-          signal,
-        )
       case "catalog":
         return catalogInfo()
       case "tray": {
@@ -1926,7 +1671,7 @@ export class Multiplexer {
   /** Something drawn over fx takes the keys; a command that would fight it
    * for the screen is refused rather than silently stealing focus. */
   private refuseIfBusy(): void {
-    if (this.modalKind || this.launchDialog.isOpen()) {
+    if (this.modalKind) {
       throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
     }
   }
@@ -1974,10 +1719,8 @@ export class Multiplexer {
 
   /**
    * Where a launch that names no project and comes from no agent starts: fmx's
-   * own workspace when it is a repository, and otherwise the first project on
-   * offer — the same fallback the dialog's project row makes when the
-   * workspace is not among its choices. A command and a key land in the same
-   * place, which is the whole point of routing both through `performLaunch`.
+   * own workspace when it is a repository, and otherwise the first configured
+   * Project on offer.
    * The first configured root is commonly a directory of repositories rather
    * than one itself, and `~/code` is the very line startup tells a human to
    * add, so this is the ordinary case and not an edge.
@@ -1985,9 +1728,9 @@ export class Multiplexer {
   private defaultLaunchDirectory(): string {
     const workspace = this.options.cwd
     if (isRepositoryDirectory(workspace)) return workspace
-    const [first] = this.projectChoices()
+    const [first] = this.projectDirectories()
     if (!first) throw new NotARepositoryError(workspace)
-    return first.directory
+    return first
   }
 
   private agentById(id: number): FxAgent {
@@ -1997,20 +1740,20 @@ export class Multiplexer {
   }
 
   private launchRequestFrom(params: Record<string, unknown>, caller: number | null): LaunchRequest {
-    const prefill = this.prefillFrom(params)
+    const overrides = this.launchOverridesFrom(params)
     const callerAgent = caller === null ? null : (this.agents.find((agent) => agent.id === caller) ?? null)
     return {
-      directory: prefill.directory ?? callerAgent?.cwd ?? this.defaultLaunchDirectory(),
-      prompt: prefill.prompt ?? "",
-      worktree: prefill.worktree ?? false,
-      model: prefill.model ?? DEFAULT_CODEX_MODEL.id,
-      effort: prefill.effort ?? DEFAULT_CODEX_MODEL.defaultEffort,
+      directory: overrides.directory ?? callerAgent?.cwd ?? this.defaultLaunchDirectory(),
+      prompt: overrides.prompt ?? "",
+      worktree: overrides.worktree ?? false,
+      model: overrides.model ?? DEFAULT_CODEX_MODEL.id,
+      effort: overrides.effort ?? DEFAULT_CODEX_MODEL.defaultEffort,
     }
   }
 
-  /** Fields an agent gave, checked; a directory must exist to be offered. */
-  private prefillFrom(fields: Record<string, unknown>, currentModel = DEFAULT_CODEX_MODEL.id): LaunchPrefill {
-    const prefill: LaunchPrefill = {}
+  /** Validate the optional fields supplied by `fmx control launch`. */
+  private launchOverridesFrom(fields: Record<string, unknown>): LaunchOverrides {
+    const overrides: LaunchOverrides = {}
     const directory = optionalString(fields, "directory")
     if (directory !== undefined) {
       let resolved: string
@@ -2020,19 +1763,17 @@ export class Multiplexer {
       } catch {
         throw new ControlFailure("invalid_params", `${directory} is not a directory`)
       }
-      // Refused here rather than at the launch so a draft can never be left
-      // holding a directory no agent could ever be started in.
       if (!isRepositoryDirectory(resolved)) throw new NotARepositoryError(directory)
-      prefill.directory = resolved
+      overrides.directory = resolved
     }
     const prompt = optionalString(fields, "prompt")
-    if (prompt !== undefined) prefill.prompt = prompt
+    if (prompt !== undefined) overrides.prompt = prompt
     const worktree = optionalBoolean(fields, "worktree")
-    if (worktree !== undefined) prefill.worktree = worktree
+    if (worktree !== undefined) overrides.worktree = worktree
     const modelId = optionalString(fields, "model")
-    const model = codexModel(modelId ?? currentModel)
-    if (!model) throw new ControlFailure("invalid_params", `unknown Codex model: ${modelId ?? currentModel}`)
-    if (modelId !== undefined) prefill.model = modelId
+    const model = codexModel(modelId ?? DEFAULT_CODEX_MODEL.id)
+    if (!model) throw new ControlFailure("invalid_params", `unknown Codex model: ${modelId}`)
+    if (modelId !== undefined) overrides.model = modelId
     const effort = optionalString(fields, "effort")
     if (effort !== undefined) {
       if (!codexEffort(model, effort)) {
@@ -2041,47 +1782,9 @@ export class Multiplexer {
           efforts: model.efforts,
         })
       }
-      prefill.effort = effort
+      overrides.effort = effort
     }
-    return prefill
-  }
-
-  private draftFor(id: string | undefined): Draft {
-    if (id === undefined) {
-      if (!this.openDraft) throw new ControlFailure("not_found", "no draft is open")
-      return this.openDraft
-    }
-    const draft = this.drafts.get(id)
-    if (!draft) throw new ControlFailure("not_found", `no draft ${id}`)
-    return draft
-  }
-
-  /** A draft a command may change: the one on screen, named by its own id. */
-  private openDraftFor(id: string): Draft {
-    const draft = this.draftFor(id)
-    if (draft !== this.openDraft || !this.launchDialog.isOpen()) {
-      throw new ControlFailure("busy", `draft ${id} is ${draft.info.status}`, { draft: this.draftInfo(draft) })
-    }
-    return draft
-  }
-
-  private draftInfo(draft: Draft): DraftInfo {
-    if (draft === this.openDraft && this.launchDialog.isOpen()) draft.info.fields = this.launchDialog.fields()
-    return { ...draft.info, fields: { ...draft.info.fields }, choices: launchChoices(draft.info.fields.model) }
-  }
-
-  private waitForDraft(draft: Draft, timeoutMs: number | null, signal: AbortSignal): Promise<DraftInfo> {
-    if (draft.info.status !== "open") return Promise.resolve(this.draftInfo(draft))
-    return awaitSettlement(
-      (settle) => {
-        const waiter = (info: DraftInfo) => settle(() => ({ ...info, fields: { ...info.fields } }))
-        draft.waiters.add(waiter)
-        return () => draft.waiters.delete(waiter)
-      },
-      timeoutMs,
-      signal,
-      () => new ControlFailure("timeout", `draft ${draft.info.draft} is still open after ${timeoutMs}ms`),
-    )
+    return overrides
   }
 
   private waitForAgent(
@@ -2092,24 +1795,41 @@ export class Multiplexer {
   ): Promise<{ agent: AgentInfo; state: DisplayState }> {
     const settled = this.waitedState(agent, states)
     if (settled) return Promise.resolve({ agent: this.agentInfo(agent), state: settled })
-    return awaitSettlement(
-      (settle) => {
-        const waiter: AgentWaiter = {
-          agentId: agent.id,
-          states,
-          settle: (state) =>
-            settle(() => {
-              if (state === null) throw new ControlFailure("not_found", `agent ${agent.id} exited`)
-              return { agent: this.agentInfo(agent), state }
-            }),
-        }
-        this.agentWaiters.add(waiter)
-        return () => this.agentWaiters.delete(waiter)
-      },
-      timeoutMs,
-      signal,
-      () => new ControlFailure("timeout", `agent ${agent.id} is ${this.displayStateOf(agent)} after ${timeoutMs}ms`),
-    )
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const waiter: AgentWaiter = {
+        agentId: agent.id,
+        states,
+        settle: (state) => {
+          cleanup()
+          if (state === null) reject(new ControlFailure("not_found", `agent ${agent.id} exited`))
+          else resolve({ agent: this.agentInfo(agent), state })
+        },
+      }
+      const abort = () => {
+        cleanup()
+        reject(new ControlFailure("cancelled", `waiting for agent ${agent.id} was cancelled`))
+      }
+      const cleanup = () => {
+        this.agentWaiters.delete(waiter)
+        if (timer) clearTimeout(timer)
+        signal.removeEventListener("abort", abort)
+      }
+      this.agentWaiters.add(waiter)
+      signal.addEventListener("abort", abort, { once: true })
+      if (signal.aborted) {
+        abort()
+        return
+      }
+      if (timeoutMs !== null) {
+        timer = setTimeout(() => {
+          cleanup()
+          reject(
+            new ControlFailure("timeout", `agent ${agent.id} is ${this.displayStateOf(agent)} after ${timeoutMs}ms`),
+          )
+        }, timeoutMs)
+      }
+    })
   }
 
   /** The state a wait resolves on, or null while it should keep waiting. A
@@ -2147,10 +1867,15 @@ export class Multiplexer {
     const sessionId = this.sessionIdOf(agent)
     const git = this.gitContexts.get(agent.cwd) ?? null
     return {
+      agent_id: agent.entry.agentId,
       id: agent.id,
+      display_id: agent.id,
       pane_id: agent.paneId,
+      created_at: agent.entry.createdAt,
       cwd: agent.cwd,
       project: projectNameFor(git, agent.cwd),
+      git_root: git?.root ?? null,
+      main_git_root: git?.mainRoot ?? null,
       branch: git?.branch ?? null,
       worktree: git ? git.root !== git.mainRoot : null,
       name: this.nameOf(agent),
@@ -2164,8 +1889,18 @@ export class Multiplexer {
     }
   }
 
+  private busState(): BusState {
+    return {
+      active_agent_id: this.activeAgent()?.entry.agentId ?? null,
+      agents: this.agents.map((agent) => this.agentInfo(agent)),
+    }
+  }
+
+  private publishBusState(cause: string): void {
+    this.options.bus?.updateState(this.busState(), cause)
+  }
+
   private surface(): Surface {
-    if (this.launchDialog.isOpen() && this.openDraft) return { kind: "launch", draft: this.draftInfo(this.openDraft) }
     if (this.modalKind === "help") return { kind: "help" }
     if (this.modalKind === "spawn-error") {
       return { kind: "error", heading: this.spawnErrorHeading, message: this.spawnErrorLines.join("") }
@@ -2190,7 +1925,7 @@ export class Multiplexer {
         pid: process.pid,
         version: VERSION,
         cwd: this.options.cwd,
-        socket: this.options.controlSocketPath ?? "",
+        socket: this.options.busSocketPath ?? "",
         cols: this.renderer.width,
         rows: this.renderer.height,
       },
@@ -2228,22 +1963,13 @@ export class Multiplexer {
 
 type HelpEntry = readonly [key: string, description: string]
 
-/**
- * What each action is called in the help and, where a hand can reach it any
- * other way, the command that does the same thing. Detach is the one action
- * with no command: it is the Client's, and an Agent does not own one.
- * `ACTION_FIELDS` orders both surfaces, so an action added to the keybindings
- * fails to compile until it has a row here.
- */
 const ACTIONS: Record<KeyActionName, { help: string; command: string | null }> = {
   help: { help: "keybinds", command: "fmx control keys --show" },
   detach: { help: "detach client", command: null },
-  launch: { help: "launch agent", command: "fmx control launch --editable" },
   previous_tab: { help: "prev agent", command: "fmx control focus previous" },
   next_tab: { help: "next agent", command: "fmx control focus next" },
   toggle_tray: { help: "toggle tray", command: "fmx control tray --toggle" },
 }
-
 
 function helpEntries(keybindings: Keybindings): HelpEntry[] {
   return [
@@ -2252,44 +1978,6 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
       (action): HelpEntry => [bindingLabel(keybindings[action]), ACTIONS[action].help],
     ),
   ]
-}
-
-/** The modal is sized to the text it shows, plus its border and padding. */
-/**
- * A control request that waits: register interest, hand back how to withdraw
- * it, and let one place own the timer, the abort listener, and the cleanup
- * all three share. `settle` takes what to produce so a waiter can resolve or
- * throw without knowing which promise it is settling.
- */
-function awaitSettlement<T>(
-  register: (settle: (produce: () => T) => void) => () => void,
-  timeoutMs: number | null,
-  signal: AbortSignal,
-  onTimeout: () => ControlFailure,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const cleanup = () => {
-      withdraw()
-      if (timer) clearTimeout(timer)
-      signal.removeEventListener("abort", cleanup)
-    }
-    const withdraw = register((produce) => {
-      cleanup()
-      try {
-        resolve(produce())
-      } catch (error) {
-        reject(error)
-      }
-    })
-    signal.addEventListener("abort", cleanup)
-    if (timeoutMs !== null) {
-      timer = setTimeout(() => {
-        cleanup()
-        reject(onTimeout())
-      }, timeoutMs)
-    }
-  })
 }
 
 function helpModalSize(keybindings: Keybindings): [width: number, height: number] {
@@ -2328,17 +2016,8 @@ function helpKeyColumn(entries: HelpEntry[]): number {
   return Math.max(...entries.map(([key]) => key.length)) + 2
 }
 
-/**
- * The one thing an empty Home offers. The key is named from the binding, not
- * from a literal, because the launch dialog is the only way a key starts an
- * agent: a rebound `keys.launch` that still read `prefix+l` here would name a
- * key that does nothing. `prefix` stays the word it is — the help modal spells
- * the prefix out on its own row, and this line is not the place to repeat it.
- * A binding the config disabled says so rather than naming nothing.
- */
-function emptyStateContent(keybindings: Keybindings): string {
-  if (keybindings.launch.length === 0) return "set keys.launch in the config to launch an agent"
-  return `${bindingLabel(keybindings.launch)} to launch agent`
+function emptyStateContent(): string {
+  return "no agents"
 }
 
 function bindingLabel(bindings: ResolvedBinding[]): string {
@@ -2385,11 +2064,6 @@ function subagentInfos(entries: SubagentEntry[]): SubagentInfo[] {
   }))
 }
 
-function launchChoices(modelId: string): LaunchChoices {
-  const model = codexModel(modelId) ?? DEFAULT_CODEX_MODEL
-  return { models: CODEX_MODELS.map((candidate) => candidate.id), efforts: [...model.efforts] }
-}
-
 function catalogInfo(): CatalogInfo {
   return {
     default: { model: DEFAULT_CODEX_MODEL.id, effort: DEFAULT_CODEX_MODEL.defaultEffort },
@@ -2411,8 +2085,7 @@ function waitStates(raw: string[] | undefined): readonly DisplayState[] {
   return raw as DisplayState[]
 }
 
-/** A launch that failed before fx ran: the error modal names the worktree
- * rather than fx, and a caller sees it as a plain failure. */
+/** A launch that failed before Fx ran, reported to the CLI caller. */
 class WorktreeError extends ControlFailure {
   constructor(message: string) {
     super("failed", message)
@@ -2426,10 +2099,4 @@ class NotARepositoryError extends ControlFailure {
     super("invalid_params", `${directory} is not a git repository`)
     this.name = "NotARepositoryError"
   }
-}
-
-function launchErrorHeading(error: unknown): string {
-  if (error instanceof WorktreeError) return "worktree not created"
-  if (error instanceof NotARepositoryError) return "agent not started"
-  return "fx did not start"
 }

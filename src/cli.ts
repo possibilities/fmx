@@ -14,6 +14,11 @@ export type LaunchFieldArgs = {
   effort?: string
 }
 
+export type BusArgs = {
+  activity: boolean
+  rawPayloads: boolean
+}
+
 export type Command =
   | { name: "orient" }
   | { name: "agent"; verb: "list" }
@@ -23,15 +28,7 @@ export type Command =
       name: "launch"
       fields: LaunchFieldArgs
       focus: boolean
-      editable: boolean
-      wait: boolean
-      timeoutMs?: number
     }
-  | { name: "draft"; verb: "show"; draft?: string }
-  | { name: "draft"; verb: "set"; draft: string; fields: LaunchFieldArgs }
-  | { name: "draft"; verb: "submit"; draft: string }
-  | { name: "draft"; verb: "cancel"; draft: string }
-  | { name: "draft"; verb: "wait"; draft?: string; timeoutMs?: number }
   | { name: "focus"; target: string }
   | { name: "tray"; width?: number; hidden?: boolean; toggle?: boolean }
   | { name: "keys"; show: boolean }
@@ -42,6 +39,8 @@ export type CliOptions = {
   version: boolean
   /** `fmx doctor`: report the installation instead of running. */
   doctor: boolean
+  /** `fmx bus`: relay subscribed events from the running Runtime bus. */
+  bus: BusArgs | null
   /** A control command, when the invocation is one rather than the TUI. */
   command: Command | null
   /** `--socket PATH`: which fmx to talk to, for a caller outside any. */
@@ -51,10 +50,10 @@ export type CliOptions = {
 /** Every control command lives under `fmx control`, leaving the top level
  * free for concerns that are not about driving a running fmx. */
 const CONTROL_GROUP = "control"
-/** The one other top-level command: a report on the installation, never a running fmx. */
+/** The diagnostic top-level command reports the installation, never a running fmx. */
 const DOCTOR_COMMAND = "doctor"
-const COMMAND_NAMES = ["orient", "agent", "launch", "draft", "focus", "tray", "keys", "catalog"] as const
-const DRAFT_VERBS = ["show", "set", "submit", "cancel", "wait"] as const
+const BUS_COMMAND = "bus"
+const COMMAND_NAMES = ["orient", "agent", "launch", "focus", "tray", "keys", "catalog"] as const
 const AGENT_VERBS = ["list", "wait", "send"] as const
 
 export class UsageError extends Error {
@@ -72,6 +71,7 @@ export function parseArgs(args: string[]): CliOptions {
     help: false,
     version: false,
     doctor: false,
+    bus: null,
     command: null,
     socket: null,
   }
@@ -112,8 +112,14 @@ export function parseArgs(args: string[]): CliOptions {
     options.doctor = true
     return options
   }
+  if (rest[0] === BUS_COMMAND) {
+    options.bus = parseBus(rest.slice(1))
+    return options
+  }
   if (rest[0] !== CONTROL_GROUP) {
-    throw new UsageError(`unknown command: ${rest[0]}\nCommands: ${CONTROL_GROUP}, ${DOCTOR_COMMAND}.`)
+    throw new UsageError(
+      `unknown command: ${rest[0]}\nCommands: ${CONTROL_GROUP}, ${BUS_COMMAND}, ${DOCTOR_COMMAND}.`,
+    )
   }
   const name = rest[1]
   if (name === undefined) throw new UsageError("control needs a command", CONTROL_GROUP)
@@ -122,6 +128,13 @@ export function parseArgs(args: string[]): CliOptions {
   }
   options.command = parseCommand(name, rest.slice(2))
   return options
+}
+
+function parseBus(args: string[]): BusArgs {
+  const flags = parseFlags(args, { activity: "switch", "raw-payloads": "switch" }, "bus")
+  rejectExtra(flags.positional, "bus")
+  const rawPayloads = flags.switches.has("raw-payloads")
+  return { activity: flags.switches.has("activity") || rawPayloads, rawPayloads }
 }
 
 function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Command {
@@ -133,8 +146,6 @@ function parseCommand(name: (typeof COMMAND_NAMES)[number], args: string[]): Com
       return parseAgent(args)
     case "launch":
       return parseLaunch(args)
-    case "draft":
-      return parseDraft(args)
     case "focus": {
       const flags = parseFlags(args, {}, "focus")
       const target = flags.positional[0]
@@ -196,28 +207,18 @@ function parseAgent(args: string[]): Command {
   }
 }
 
-/** What a launch is made of, wherever one is being described: `launch`
- * starts an agent with these and `draft set` edits the same fields on an
- * open dialog, so `launchFields` reads exactly this set from either. */
-const LAUNCH_FIELD_FLAGS = {
-  project: "value",
-  prompt: "value",
-  "prompt-file": "value",
-  worktree: "switch",
-  "no-worktree": "switch",
-  model: "value",
-  effort: "value",
-} as const
-
 function parseLaunch(args: string[]): Command {
   const flags = parseFlags(
     args,
     {
-      ...LAUNCH_FIELD_FLAGS,
+      project: "value",
+      prompt: "value",
+      "prompt-file": "value",
+      worktree: "switch",
+      "no-worktree": "switch",
+      model: "value",
+      effort: "value",
       focus: "switch",
-      editable: "switch",
-      wait: "switch",
-      timeout: "value",
     },
     "launch",
   )
@@ -227,54 +228,8 @@ function parseLaunch(args: string[]): Command {
     name: "launch",
     fields,
     focus: flags.switches.has("focus"),
-    editable: flags.switches.has("editable"),
-    wait: flags.switches.has("wait"),
   }
-  if (command.wait && !command.editable) throw new UsageError("--wait only applies with --editable", "launch")
-  if (flags.values.timeout !== undefined) command.timeoutMs = integerFlag("--timeout", flags.values.timeout)
   return command
-}
-
-function parseDraft(args: string[]): Command {
-  const verb = args[0]
-  if (verb === undefined || !(DRAFT_VERBS as readonly string[]).includes(verb)) {
-    throw new UsageError(verb === undefined ? "draft needs a verb" : `unknown draft verb: ${verb}`, "draft")
-  }
-  const rest = args.slice(1)
-  const draftVerb = verb as (typeof DRAFT_VERBS)[number]
-  switch (draftVerb) {
-    case "show": {
-      const flags = parseFlags(rest, {}, "draft")
-      rejectExtra(flags.positional.slice(1), "draft")
-      const draft = flags.positional[0]
-      return draft === undefined ? { name: "draft", verb: "show" } : { name: "draft", verb: "show", draft }
-    }
-    case "set": {
-      const flags = parseFlags(rest, LAUNCH_FIELD_FLAGS, "draft")
-      const draft = flags.positional[0]
-      if (draft === undefined) throw new UsageError("draft set needs a draft id", "draft")
-      rejectExtra(flags.positional.slice(1), "draft")
-      const fields = launchFields({ ...flags, positional: [] }, "draft")
-      if (Object.keys(fields).length === 0) throw new UsageError("draft set needs a field to change", "draft")
-      return { name: "draft", verb: "set", draft, fields }
-    }
-    case "submit":
-    case "cancel": {
-      const flags = parseFlags(rest, {}, "draft")
-      const draft = flags.positional[0]
-      if (draft === undefined) throw new UsageError(`draft ${draftVerb} needs a draft id`, "draft")
-      rejectExtra(flags.positional.slice(1), "draft")
-      return { name: "draft", verb: draftVerb, draft }
-    }
-    case "wait": {
-      const flags = parseFlags(rest, { timeout: "value" }, "draft")
-      rejectExtra(flags.positional.slice(1), "draft")
-      const command: Command = { name: "draft", verb: "wait" }
-      if (flags.positional[0] !== undefined) command.draft = flags.positional[0]
-      if (flags.values.timeout !== undefined) command.timeoutMs = integerFlag("--timeout", flags.values.timeout)
-      return command
-    }
-  }
 }
 
 function launchFields(flags: ParsedFlags, topic: string): LaunchFieldArgs {
@@ -361,8 +316,6 @@ export function usage(topic: string | null = null): string {
       return CONTROL_USAGE
     case "launch":
       return LAUNCH_USAGE
-    case "draft":
-      return DRAFT_USAGE
     case "agent":
       return AGENT_USAGE
     case "focus":
@@ -371,12 +324,15 @@ export function usage(topic: string | null = null): string {
       return "Usage: fmx control tray [--width N] [--show | --hide | --toggle]\n"
     case "keys":
       return "Usage: fmx control keys [--show]\n\n  --show  open the keys modal in the running Runtime as well\n"
+    case "bus":
+      return BUS_USAGE
   }
   return `fmx ${VERSION} — run multiple fx sessions in one terminal
 
 Usage:
   fmx [options]
   fmx control <command> [args]           drive a running fmx Runtime from inside it
+  fmx bus [--activity] [--raw-payloads]  subscribe to the Runtime bus as NDJSON
   fmx doctor                             report the installation
 
 Options:
@@ -385,6 +341,7 @@ Options:
 
 Commands:
   control        shared UI actions for agents; see fmx control
+  bus            state snapshots, attributed activity, and the Runtime command wire
   doctor         versions, the companion and whether it is the one this fmx
                  was released with, its directory, and fx; exits 1 when the
                  companion is missing, not that build, or its directory is
@@ -401,15 +358,13 @@ const CONTROL_USAGE = `Usage: fmx control <command> [args]
 Each command prints one JSON object.
 
   orient                       where you are and what the interface shows
-  launch [prompt] [flags]      start an agent; --editable opens the dialog instead
-  draft show|set|submit|cancel|wait [id]
-                               an open dialog an agent can finish or hand over
+  launch [prompt] [flags]      start an agent
   focus <target>               switch to an agent (next, previous, id, session name)
   agent list|wait|send      read, wait on, or type into agents
   tray [--width N] [--show|--hide|--toggle]
                                the session list's width and visibility
   keys [--show]                the keybindings and their command equivalents
-  catalog                      the models and efforts the launch dialog offers
+  catalog                      the models and efforts launch accepts
 
   --socket PATH                talk to a specific fmx (default: FMX_SOCKET_PATH)
   fmx control <command> with no arguments prints that command's usage.
@@ -427,21 +382,6 @@ const LAUNCH_USAGE = `Usage: fmx control launch [prompt] [flags]
   --prompt TEXT        the prompt to start on; a bare positional works too
   --prompt-file PATH   read the prompt from a file; --prompt - reads stdin
   --focus              switch the screen to the new agent
-  --editable           open the launch dialog prefilled instead of starting;
-                       prints the draft id. Omitted fields keep their defaults.
-  --wait               with --editable, block until the draft resolves
-  --timeout MS         with --wait, give up after MS (exit 4)
-`
-
-const DRAFT_USAGE = `Usage: fmx control draft <verb> [id] [flags]
-
-  show [id]            fields and status (default: the open draft)
-  set <id> [flags]     change fields: --prompt, --prompt-file, --project,
-                       --worktree, --no-worktree, --model, --effort
-  submit <id>          launch it; prints the agent started
-  cancel <id>          close it without launching
-  wait [id] [--timeout MS]
-                       block until a human or agent resolves it
 `
 
 const AGENT_USAGE = `Usage: fmx control agent <verb> [args]
@@ -453,4 +393,14 @@ const AGENT_USAGE = `Usage: fmx control agent <verb> [args]
                                     default states: idle,done,blocked)
   send <target> <text|-> [--file PATH]
                                    paste text into the agent and send it
+`
+
+const BUS_USAGE = `Usage: fmx bus [--activity] [--raw-payloads]
+
+Subscribe to a private running Runtime bus and print newline-delimited JSON.
+Every subscription begins with a complete state snapshot.
+
+  --activity       include attributed Fx lifecycle activity
+  --raw-payloads   include complete ADE payloads (may contain secrets; implies --activity)
+  --socket PATH    connect to a specific fmx bus (default: FMX_SOCKET_PATH)
 `

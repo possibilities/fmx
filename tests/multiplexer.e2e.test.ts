@@ -6,12 +6,11 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { defaultAdeSocketPath } from "../src/ade-events.ts"
+import { BusSocket } from "../src/bus-socket.ts"
 import { runCommand } from "../src/control-client.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
-import { ControlSocket } from "../src/control-socket.ts"
 import { loadManifest } from "../src/agent-manifest.ts"
 import { TRAY_DEFAULT_WIDTH } from "../src/multiplexer.ts"
-import { paintSizingOwnerDefaultBackground } from "../src/unused-space.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
@@ -26,31 +25,16 @@ const configWithRoot = (extra = "") => `project_roots = [${JSON.stringify(ROOT)}
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
-type Child = { terminal?: { write(bytes: Uint8Array): void } | null }
-
-/** The launch dialog's empty prompt row: what says it is on screen. */
-const LAUNCH_PROMPT_ROW = "what should the agent do?"
-
-/**
- * Start an agent from the keyboard: ctrl+b l opens the launch dialog, the
- * first return commits the empty prompt, and the second launches into the
- * project the dialog opened on. The returns wait for the dialog to be drawn
- * rather than for a fixed beat, because one sent before it is on screen
- * reaches nothing.
- */
-async function launchAgent(
-  child: Child,
-  readOutput: () => string,
-  prefixByte = control("b"),
-): Promise<void> {
-  // A test that launches twice has the row in its output already, so what is
-  // waited for is another painting of it, not the first.
-  const drawn = countOccurrences(readOutput(), LAUNCH_PROMPT_ROW)
-  child.terminal?.write(Uint8Array.of(prefixByte, "l".charCodeAt(0)))
-  await waitUntil(() => countOccurrences(readOutput(), LAUNCH_PROMPT_ROW) > drawn, 8_000, readOutput)
-  child.terminal?.write(Uint8Array.of(13))
-  await Bun.sleep(50)
-  child.terminal?.write(Uint8Array.of(13))
+/** Start an Agent through the Bus, as `fmx control launch` does. */
+async function launchAgent(tempDirectory: string): Promise<void> {
+  await waitUntil(() => orientation(tempDirectory, process.env).then(Boolean), 8_000, () => "")
+  const socket = BusSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
+  const outcome = await runCommand(
+    { name: "launch", fields: {}, focus: true },
+    socket,
+    { env: process.env, cwd: ROOT, readStdin: async () => "" },
+  )
+  if (outcome.exitCode !== 0) throw new Error(outcome.error?.message ?? "launch failed")
 }
 
 const RESTORED_SESSION_A = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
@@ -150,8 +134,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
         async () => (await loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))).agents[0]?.phase === "running",
@@ -217,21 +201,21 @@ test.skipIf(!PTY_TEST_ENABLED)(
         (session) => session.labels.kind === "runtime" && session.labels.home === homeOf(tempDirectory),
       )
     const clear = "\u001b[2J\u001b[H"
-    const unusedClear = `\u001b[48;2;41;41;41m${clear}\u001b[0m`
+    const unusedClear = `\u001b[48;5;235m${clear}\u001b[0m`
     const atomicResizeStart = `\u001b[?2026h\u001b[?25l${unusedClear}\u001b[?2026h`
 
     const firstOutput = { output: "" }
     const first = spawnClient(firstOutput, 100, 24)
     let second: ReturnType<typeof spawnClient> | null = null
     try {
-      await waitUntil(() => firstOutput.output.includes("prefix+l"), 8_000, () => firstOutput.output)
+      await waitUntil(() => firstOutput.output.includes("no agents"), 8_000, () => firstOutput.output)
       const initial = await orientation(tempDirectory, env)
       expect(initial?.fmx).toMatchObject({ cols: 100, rows: 24 })
       const runtimePid = initial!.fmx.pid
       await waitUntil(async () => (await runtimeSession())?.clients === 1, 5_000, () => firstOutput.output)
 
       // Attach is ownership. The 60x16 Client makes the shared Runtime 60x16;
-      // the 100x24 observer gets a tinted full clear followed by only that
+      // the 100x24 Client gets a tinted full clear followed by only that
       // smaller frame, which leaves its right and bottom margins visibly unused.
       const firstClears = countOccurrences(firstOutput.output, clear)
       const secondOutput = { output: "" }
@@ -248,13 +232,13 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(firstOutput.output).toContain(unusedClear)
       expect((await runtimeSession())?.clients).toBe(2)
 
-      // A key from the larger observer takes sizing before it reaches fmx. The
+      // A key from the larger Client takes sizing before it reaches fmx. The
       // confirmation must therefore render at 100x24 immediately: an old-size
       // frame after the clear would flash as a small dark island in the unused
       // field before OpenTUI's debounced resize catches up.
       const smallFrameOffset = firstOutput.output.lastIndexOf(unusedClear)
       await waitUntil(
-        () => hasRgbSgr(firstOutput.output.slice(smallFrameOffset), "background", [28, 28, 28]),
+        () => firstOutput.output.slice(smallFrameOffset).includes("no agents"),
         5_000,
         () => firstOutput.output.slice(smallFrameOffset),
       )
@@ -375,7 +359,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "the launch dialog opens on the first configured project root",
+  "a CLI launch defaults to the first configured project root",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-first-root-e2e-"))
@@ -417,8 +401,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
         async () =>
@@ -432,7 +416,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
-      await waitUntil(() => output.includes("prefix+l to launch agent"), 5_000, () => output)
+      await waitUntil(() => output.includes("no agents"), 5_000, () => output)
       await Bun.sleep(250)
       child.terminal?.write(Uint8Array.of(control("c")))
       await waitUntil(() => output.includes("press ctrl+c again to exit"), 5_000, () => output)
@@ -505,8 +489,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     const first = spawnFmx(firstOutput)
     let replacement: ReturnType<typeof spawnFmx> | null = null
     try {
-      await waitUntil(() => firstOutput.output.includes("prefix+l"), 8_000, () => firstOutput.output)
-      await launchAgent(first, () => firstOutput.output)
+      await waitUntil(() => firstOutput.output.includes("no agents"), 8_000, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
       const firstEntry = (await manifest()).agents[0]!
       await sendAdeRecord(
@@ -518,7 +502,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         mainAdeRecord(2, firstEntry.paneId, "AttentionRequired", RESTORED_SESSION_A, "blocked", "question"),
       )
 
-      await launchAgent(first, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
       const secondEntry = (await manifest()).agents[1]!
       await sendAdeRecord(
@@ -604,18 +588,18 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(restoredOutput.output).not.toContain(`· ${RESTORED_SESSION_A.split("-").at(-1)}`)
       expect(restoredOutput.output).not.toContain(`· ${RESTORED_SESSION_B.split("-").at(-1)}`)
 
-      // The host answers during the pre-display frame budget. The selected
-      // row and divider must therefore first appear in their detected colors;
-      // neither guessed RGB fallback may ever reach the terminal.
+      // The host answers during the pre-display frame budget. Its OSC 11
+      // luminance chooses the dark fxnk ramp, so the selected row and divider
+      // must appear in their fixed indexed roles in the first restored frame.
       await waitUntil(
         () =>
-          hasRgbSgr(restoredOutput.output, "background", [18, 50, 81]) &&
-          hasRgbSgr(restoredOutput.output, "foreground", [17, 46, 75]),
+          hasIndexedSgr(restoredOutput.output, "background", 236) &&
+          hasIndexedSgr(restoredOutput.output, "foreground", 240),
         5_000,
         () => restoredOutput.output,
       )
-      expect(hasRgbSgr(restoredOutput.output, "background", [53, 53, 53])).toBe(false)
-      expect(hasRgbSgr(restoredOutput.output, "foreground", [88, 88, 88])).toBe(false)
+      expect(hasIndexedSgr(restoredOutput.output, "background", 254)).toBe(false)
+      expect(hasIndexedSgr(restoredOutput.output, "foreground", 250)).toBe(false)
 
       replacement.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
       expect(await withTimeout(replacement.exited, 6_000, "replacement fmx did not detach")).toBe(0)
@@ -673,10 +657,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
     const first = spawnFmx(firstOutput)
     let replacement: ReturnType<typeof spawnFmx> | null = null
     try {
-      await waitUntil(() => firstOutput.output.includes("prefix+l"), 8_000, () => firstOutput.output)
-      await launchAgent(first, () => firstOutput.output)
+      await waitUntil(() => firstOutput.output.includes("no agents"), 8_000, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
-      await launchAgent(first, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
 
       // Exercise an actual selection change, ending on agent 2.
@@ -789,8 +773,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output, 0)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("start 1"), 8_000, () => output)
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("private-terminal-response 1"),
@@ -829,7 +813,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(await readLifecycle(lifecycleLog)).not.toContain("start 2")
 
       const activeFakeTitleCount = countOccurrences(output, "\u001b]0;fmx · fake session\u0007")
-      await launchAgent(child, () => output, 0)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
       await waitUntil(
         () => countOccurrences(output, "\u001b]0;fmx · fake session\u0007") > activeFakeTitleCount,
@@ -864,10 +848,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(child.exitCode).toBeNull()
       expect(await readLifecycle(lifecycleLog)).not.toContain("graceful 2")
 
-      // Counted with the agent on screen: the empty state is drawn behind
-      // the launch dialog too, so a count taken before the launch grows
-      // before anything has exited.
-      const emptyStateBeforeExit = countOccurrences(output, "prefix+l")
+      const emptyStateBeforeExit = countOccurrences(output, "no agents")
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("terminal-response 2"),
@@ -875,7 +856,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => output,
       )
       await waitUntil(
-        () => countOccurrences(output, "prefix+l") > emptyStateBeforeExit,
+        () => countOccurrences(output, "no agents") > emptyStateBeforeExit,
         5_000,
         () => output,
       )
@@ -937,10 +918,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
@@ -955,14 +936,11 @@ test.skipIf(!PTY_TEST_ENABLED)(
       )
       expect(child.exitCode).toBeNull()
 
-      // Counted with the agent on screen: the empty state is drawn behind
-      // the launch dialog too, so a count taken before the launch grows
-      // before anything has exited.
-      const emptyStateBeforeExit = countOccurrences(output, "prefix+l")
+      const emptyStateBeforeExit = countOccurrences(output, "no agents")
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
       await waitUntil(
-        () => countOccurrences(output, "prefix+l") > emptyStateBeforeExit,
+        () => countOccurrences(output, "no agents") > emptyStateBeforeExit,
         5_000,
         () => output,
       )
@@ -991,7 +969,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "mirrors the outer terminal background before fx starts",
+  "resolves fxnk from OSC 11 before first paint and keeps embedded fx synchronized",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-palette-e2e-"))
@@ -1009,7 +987,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
     }
     let delayedFirstReply = true
     let outputBeforePaletteReply = ""
-    const firstPaletteReply = Promise.withResolvers<void>()
+    const firstThemeReply = Promise.withResolvers<void>()
     const respondToPaletteQueries = createHostPaletteResponder(
       (reply) => {
         if (!delayedFirstReply) {
@@ -1020,7 +998,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         setTimeout(() => {
           outputBeforePaletteReply = output
           sendHostReply(reply)
-          firstPaletteReply.resolve()
+          firstThemeReply.resolve()
         }, 80)
       },
       () => hostBackground,
@@ -1048,6 +1026,9 @@ test.skipIf(!PTY_TEST_ENABLED)(
           const text = decoder.decode(bytes, { stream: true })
           output += text
           respondToPaletteQueries(text)
+          for (let index = 0; index < countOccurrences(text, "\x1b[c"); index += 1) {
+            sendHostReply("\x1b[?1;2c")
+          }
         },
       },
     })
@@ -1055,14 +1036,15 @@ test.skipIf(!PTY_TEST_ENABLED)(
     for (const reply of pendingReplies) sendHostReply(reply)
 
     try {
-      await withTimeout(firstPaletteReply.promise, 2_000, "fmx did not query the host palette")
-      expect(outputBeforePaletteReply).toContain("prefix+l")
-      expect(outputBeforePaletteReply).toContain(paintSizingOwnerDefaultBackground(100, 24))
-      expect(hasRgbSgr(outputBeforePaletteReply, "background", [28, 28, 28])).toBe(false)
-      const paletteTransitionOffset = outputBeforePaletteReply.length
+      await withTimeout(firstThemeReply.promise, 2_000, "fmx did not query OSC 11")
+      // The theme is resolved before OpenTUI exposes a frame, so there is no
+      // fallback-dark frame for a late answer to retint.
+      expect(outputBeforePaletteReply).not.toContain("no agents")
 
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      expect(output).toContain("\x1b[38;5;245m")
+      expect(output).not.toContain("\x1b]4;")
+      await launchAgent(tempDirectory)
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("background-response 1"),
         8_000,
@@ -1070,7 +1052,6 @@ test.skipIf(!PTY_TEST_ENABLED)(
       )
       const lifecycle = await readLifecycle(lifecycleLog)
       expect(lifecycle).toContain("rgb:1212/3434/5656")
-      expect(output.slice(paletteTransitionOffset)).not.toContain("\x1b[2J")
 
       hostBackground = "#eeeeee"
       child.terminal?.write(encoder.encode("\u001b[?997;2n"))
@@ -1082,14 +1063,12 @@ test.skipIf(!PTY_TEST_ENABLED)(
       const updatedLifecycle = await readLifecycle(lifecycleLog)
       expect(updatedLifecycle).toContain("theme-notification 1")
       expect(updatedLifecycle).toContain("rgb:eeee/eeee/eeee")
+      expect(output).toContain("\x1b[38;5;247m")
 
-      // Counted with the agent on screen: the empty state is drawn behind
-      // the launch dialog too, so a count taken before the launch grows
-      // before anything has exited.
-      const emptyStateBeforeExit = countOccurrences(output, "prefix+l")
+      const emptyStateBeforeExit = countOccurrences(output, "no agents")
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(
-        () => countOccurrences(output, "prefix+l") > emptyStateBeforeExit,
+        () => countOccurrences(output, "no agents") > emptyStateBeforeExit,
         5_000,
         () => output,
       )
@@ -1152,10 +1131,10 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
       const one = spawnFmx(first)
       let two: ReturnType<typeof spawnFmx> | null = null
       try {
-        await waitUntil(() => first.output.includes("prefix+l"), 8_000, () => first.output)
-        await launchAgent(one, () => first.output)
+        await waitUntil(() => first.output.includes("no agents"), 8_000, () => first.output)
+        await launchAgent(tempDirectory)
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => first.output)
-        await launchAgent(one, () => first.output)
+        await launchAgent(tempDirectory)
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => first.output)
         // Both claims are acknowledged before fmx is taken down.
         await waitUntil(
@@ -1213,7 +1192,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
         await Bun.sleep(300)
         // The restored Agent is the first surface the renderer exposes:
         // the empty state belongs only to a Home the join found empty.
-        expect(second.output).not.toContain("prefix+l to launch agent")
+        expect(second.output).not.toContain("no agents")
         expect(await readLifecycle(lifecycleLog)).not.toContain("start 3")
         expect(countOccurrences(await readLifecycle(lifecycleLog), "start ")).toBe(2)
 
@@ -1228,7 +1207,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
 
         two.terminal?.write(Uint8Array.of(control("c"), control("c")))
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 2"), 5_000, () => second.output)
-        await waitUntil(() => second.output.includes("prefix+l to launch agent"), 5_000, () => second.output)
+        await waitUntil(() => second.output.includes("no agents"), 5_000, () => second.output)
         expect(two.exitCode).toBeNull()
         await Bun.sleep(250)
         two.terminal?.write(Uint8Array.of(control("c")))
@@ -1292,22 +1271,28 @@ function createHostPaletteResponder(
       buffer = buffer.slice(match.index + match[0].length)
       if (match[1] !== undefined) {
         const index = Number(match[1])
-        send(`\u001b]4;${index};${ansi[index] ?? "#000000"}\u0007`)
+        send(`\u001b]4;${index};${oscRgb(ansi[index] ?? "#000000")}\u0007`)
       } else {
         const index = Number(match[2])
         const color = index === 11 ? defaultBackground() : (special.get(index) ?? "#000000")
-        send(`\u001b]${index};${color}\u0007`)
+        send(`\u001b]${index};${oscRgb(color)}\u0007`)
       }
     }
     if (buffer.length > 4_096) buffer = buffer.slice(-4_096)
   }
 }
 
+function oscRgb(hex: string): string {
+  const color = hex.startsWith("#") ? hex.slice(1) : hex
+  const [red = "00", green = "00", blue = "00"] = color.match(/.{1,2}/gu) ?? []
+  return `rgb:${red}${red}/${green}${green}/${blue}${blue}`
+}
+
 async function orientation(
   tempDirectory: string,
   env: NodeJS.ProcessEnv,
 ): Promise<Snapshot | null> {
-  const socket = ControlSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
+  const socket = BusSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
   try {
     const outcome = await runCommand({ name: "orient" }, socket, {
       env,
@@ -1425,13 +1410,13 @@ function synchronizedFrames(output: string): string[] {
   }
 }
 
-function hasRgbSgr(
+function hasIndexedSgr(
   output: string,
   layer: "foreground" | "background",
-  [red, green, blue]: readonly [number, number, number],
+  index: number,
 ): boolean {
   const selector = layer === "foreground" ? 38 : 48
-  return new RegExp(`\\u001b\\[[0-9;]*${selector};2;${red};${green};${blue}(?:;|m)`, "u").test(output)
+  return new RegExp(`\\u001b\\[[0-9;]*${selector};5;${index}(?:;|m)`, "u").test(output)
 }
 
 /**

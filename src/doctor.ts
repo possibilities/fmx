@@ -89,13 +89,11 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Doct
   rows.push(["home", `${homeIdFor(home)} (${home})`])
 
   try {
-    const fxPath = await resolveFx(env[FX_PATH_ENV_VAR] ?? "fx", env)
-    // The version is what a start actually checks, so report it beside the
-    // path the way the Companion's build is reported beside its own.
+    const fxPath = await resolveFx(env[FX_PATH_ENV_VAR], env)
     const fxnkVersion = await probeFxnkVersion(fxPath, env)
     rows.push(["fx", fxnkVersion ? `${fxPath} (fxnk ${fxnkVersion})` : fxPath])
   } catch (error) {
-    fail("fx", `${errorMessage(error)}; install it through the fxnk workshop`)
+    fail("fx", errorMessage(error))
   }
 
   const width = Math.max(...rows.map(([label]) => label.length))

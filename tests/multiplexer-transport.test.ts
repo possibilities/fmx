@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type TerminalColors } from "@opentui/core"
+import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { fileURLToPath } from "node:url"
 import { AdeSocket } from "../src/ade-events.ts"
@@ -8,7 +8,7 @@ import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { TestAdeSocket } from "./fixtures/ade-feed.ts"
-import { pressLaunch } from "./fixtures/launch-keys.ts"
+import { startAgent } from "./fixtures/agent-launch.ts"
 import { agentOptions, type PtyTransport } from "./fixtures/pty-transport.ts"
 
 /**
@@ -97,7 +97,7 @@ test("a transport adopted after the layout pass is told the terminal's real size
     h.options.transport.gate = new Promise((resolve) => {
       release = resolve
     })
-    pressLaunch(h.setup)
+    void startAgent(h.multiplexer)
     await waitFor(() => h.options.transport.started.length === 1)
     const transport = h.options.transport.started[0]!
     await h.setup.renderOnce()
@@ -314,7 +314,7 @@ test("folds ADE records accepted during startup after survivor identities exist"
   }
 })
 
-test("reapplies the host palette after RestoreBegin", async () => {
+test("reapplies the resolved OSC 11 background after RestoreBegin", async () => {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const options = agentOptions()
   const claim = options.manifest.claim({
@@ -333,11 +333,9 @@ test("reapplies the host palette after RestoreBegin", async () => {
     keybindings: resolveKeybindings().keybindings,
     survivors: [survivor],
   })
-  const palette = hostPalette("#101010", "#f0f0f0")
-
   try {
     await multiplexer.start()
-    multiplexer.setHostPalette(palette)
+    multiplexer.setTheme({ theme: "light", background: "#f0f0f0", source: "osc11", explicit: false })
 
     transport.clearWrites()
     transport.restoreAndQueryBackground()
@@ -375,7 +373,7 @@ test("a launch prompt armed before the transport arrives goes in once it has", a
 test("a lost transport whose Agent has ended is removed like an exit", async () => {
   const h = await harness("ended")
   try {
-    pressLaunch(h.setup)
+    void startAgent(h.multiplexer)
     await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
     const entry = h.options.manifest.entries[0]!
     h.options.transport.attachBehavior = "ended"
@@ -392,7 +390,7 @@ test("a lost transport whose Agent has ended is removed like an exit", async () 
 test("refuses agent.send while a lost transport is reconnecting", async () => {
   const h = await harness("send-reconnecting")
   try {
-    pressLaunch(h.setup)
+    void startAgent(h.multiplexer)
     await waitFor(() => h.options.transport.started.length === 1)
     const entry = h.options.manifest.entries[0]!
     const reconnect = Promise.withResolvers<AgentTransport>()
@@ -412,7 +410,7 @@ test("refuses agent.send while a lost transport is reconnecting", async () => {
 test("a lost transport that cannot be reached again leaves the screen but keeps its claim", async () => {
   const h = await harness("unreachable")
   try {
-    pressLaunch(h.setup)
+    void startAgent(h.multiplexer)
     await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
     const entry = h.options.manifest.entries[0]!
     h.options.transport.attachBehavior = "unreachable"
@@ -431,7 +429,7 @@ test("a lost transport that cannot be reached again leaves the screen but keeps 
 test("a lost transport that can be reached again is adopted and the Agent stays", async () => {
   const h = await harness("recovered")
   try {
-    pressLaunch(h.setup)
+    void startAgent(h.multiplexer)
     await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
     const entry = h.options.manifest.entries[0]!
     const first = h.options.transport.started[0] as PtyTransport
@@ -459,25 +457,10 @@ test("a lost transport that can be reached again is adopted and the Agent stays"
   }
 })
 
-function hostPalette(foreground: string, background: string): TerminalColors {
-  return {
-    palette: Array(16).fill(null),
-    defaultForeground: foreground,
-    defaultBackground: background,
-    cursorColor: null,
-    mouseForeground: null,
-    mouseBackground: null,
-    tekForeground: null,
-    tekBackground: null,
-    highlightBackground: null,
-    highlightForeground: null,
-  }
-}
-
 test("keeps a launch prompt whose transport drops before it is typed", async () => {
   const h = await harness("prompt-reconnect")
   try {
-    await h.control("launch", { prompt: "write the tests" })
+    await h.control("launch", { prompt: "write the tests", directory: process.cwd() })
     await waitFor(() => h.options.transport.started.length === 1)
 
     const written: string[] = []
@@ -485,9 +468,6 @@ test("keeps a launch prompt whose transport drops before it is typed", async () 
     const reconnect = Promise.withResolvers<AgentTransport>()
     h.options.transport.attachBehavior = () => reconnect.promise
 
-    // fx speaks, so the prompt is waiting out its settle; the transport dies
-    // inside that window and the reconnect does not land until after it,
-    // where the write would otherwise vanish into nothing.
     await h.report(1, "idle")
     ;(h.options.transport.started[0] as PtyTransport).lose()
     await Bun.sleep(400)
@@ -497,12 +477,37 @@ test("keeps a launch prompt whose transport drops before it is typed", async () 
       bind() {},
       resize() {},
       detach() {},
-      write: (bytes: Uint8Array) => {
-        written.push(decoder.decode(bytes))
-      },
+      write: (bytes: Uint8Array) => written.push(decoder.decode(bytes)),
     })
     await waitFor(() => written.join("").includes("\r"))
     expect(written.join("")).toContain("write the tests")
+  } finally {
+    await h.close()
+  }
+})
+
+test("submits a pasted prompt after its transport reconnects", async () => {
+  const h = await harness("submit-reconnect")
+  try {
+    void startAgent(h.multiplexer)
+    await waitFor(() => h.options.transport.started.length === 1)
+
+    const written: string[] = []
+    const reconnect = Promise.withResolvers<AgentTransport>()
+    h.options.transport.attachBehavior = () => reconnect.promise
+
+    await h.control("agent.send", { target: "1", text: "finish the review" })
+    ;(h.options.transport.started[0] as PtyTransport).lose()
+    await Bun.sleep(200)
+    expect(written).toEqual([])
+
+    reconnect.resolve({
+      bind() {},
+      resize() {},
+      detach() {},
+      write: (bytes: Uint8Array) => written.push(new TextDecoder().decode(bytes)),
+    })
+    await waitFor(() => written.includes("\r"))
   } finally {
     await h.close()
   }

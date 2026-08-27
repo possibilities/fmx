@@ -76,6 +76,20 @@ if [[ "$companion_build" != *"+fmx.${companion_commit:0:12}" ]]; then
   exit 1
 fi
 
+# The Fx pin is installed separately by setup.sh, but it is compiled into fmx
+# as the minimum compatibility contract and must be a reproducible release
+# input just like the Companion pin.
+fx_commit="$(bun -e 'const pin = await Bun.file("fx.json").json(); console.log(pin.commit)')"
+fxnk_version="$(bun -e 'const pin = await Bun.file("fx.json").json(); console.log(pin.fxnk)')"
+if [[ ! "$fx_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'fmx release: fx.json commit is not a full sha: %s\n' "$fx_commit" >&2
+  exit 1
+fi
+if [[ ! "$fxnk_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+  printf 'fmx release: fx.json fxnk is not SemVer: %s\n' "$fxnk_version" >&2
+  exit 1
+fi
+
 binary="$root_dir/dist/fmx"
 companion_binary="$root_dir/dist/fmx-zmx"
 release_dir="${FMX_RELEASE_DIR:-$root_dir/dist/release}"
@@ -162,6 +176,7 @@ package_dir="$work_dir/package"
 mkdir -p "$package_dir"
 cp "$binary" "$root_dir/LICENSE" "$package_dir/"
 cp "$companion_binary" "$package_dir/fmx-zmx"
+cp "$root_dir/fx.json" "$package_dir/fx.json"
 cp "$root_dir/THIRD_PARTY_NOTICES.md" "$package_dir/THIRD_PARTY_NOTICES.md"
 chmod 0755 "$package_dir/fmx" "$package_dir/fmx-zmx"
 
@@ -208,7 +223,7 @@ xz_archive="$release_dir/$archive_base.tar.xz"
 gz_archive="$release_dir/$archive_base.tar.gz"
 rm -f "$xz_archive" "$xz_archive.sha256" "$gz_archive" "$gz_archive.sha256"
 
-COPYFILE_DISABLE=1 tar -cf "$raw_archive" -C "$package_dir" fmx fmx-zmx LICENSE THIRD_PARTY_NOTICES.md
+COPYFILE_DISABLE=1 tar -cf "$raw_archive" -C "$package_dir" fmx fmx-zmx fx.json LICENSE THIRD_PARTY_NOTICES.md
 xz -9e -T0 -c "$raw_archive" > "$xz_archive"
 gzip -9 -n -c "$raw_archive" > "$gz_archive"
 
@@ -247,14 +262,17 @@ for extracted in "$work_dir/verify-xz/fmx" "$work_dir/verify-gz/fmx"; do
   [[ "$($extracted --version)" == "$version" ]]
   file "$extracted" | grep -Eq "$architecture_pattern"
   [[ -x "$(dirname "$extracted")/fmx-zmx" ]]
+  cmp -s "$(dirname "$extracted")/fx.json" "$root_dir/fx.json"
   companion_healthy "$(dirname "$extracted")/fmx-zmx"
   file "$(dirname "$extracted")/fmx-zmx" | grep -Eq "$architecture_pattern"
   [[ -f "$(dirname "$extracted")/LICENSE" ]]
   [[ -f "$(dirname "$extracted")/THIRD_PARTY_NOTICES.md" ]]
   # The pair, as installed: fmx finds the Companion beside itself and
-  # accepts it as the pinned build. The build host's own override, if it
-  # has one for its checkout, must not stand in for the sibling.
-  if ! env -u FMX_ZMX_PATH FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" "$extracted" doctor > "$work_dir/doctor.txt" \
+  # accepts it as the pinned build. The repository's compatible fake Fx lets
+  # doctor verify the other half of the installation contract too. The build
+  # host's own overrides must not stand in for either one.
+  if ! env -u FMX_ZMX_PATH FMX_ZMX_DIR="$work_dir/doctor-zmx" XDG_CONFIG_HOME="$work_dir/doctor-config" \
+    FMX_FX_PATH="$root_dir/tests/fixtures/fake-fx.ts" "$extracted" doctor > "$work_dir/doctor.txt" \
     || ! grep -q "^build  *$companion_build (the build this fmx was released with)" "$work_dir/doctor.txt" \
     || ! grep -q "^companion  *.*/fmx-zmx (beside " "$work_dir/doctor.txt"; then
     printf 'fmx release: the extracted pair did not pass fmx doctor:\n' >&2

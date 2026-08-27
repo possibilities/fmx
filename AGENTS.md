@@ -10,19 +10,17 @@
 - The `[keys]` table in `~/.config/fmx/config.toml` intentionally shares
   Herdr's binding grammar: binding strings, string arrays, `prefix+` trigger
   syntax, and direct modified chords work in both programs. Common action
-  fields keep the same spelling and meaning. `keys.launch` and
-  `keys.toggle_tray` are fmx-owned: Herdr has no launch counterpart and calls
-  its own left surface a Sidebar, not a Tray. Herdr ignores fields it does not
-  know with a diagnostic. Do not mention Herdr in user-facing text (README,
-  `--help`, diagnostics) — only here.
+  fields keep the same spelling and meaning. `keys.toggle_tray` is fmx-owned;
+  Herdr calls its own left surface a Sidebar, not a Tray. Herdr ignores fields
+  it does not know with a diagnostic. Do not mention Herdr in user-facing text
+  (README, `--help`, diagnostics) — only here.
 - `project_roots` is deliberately empty by default. Personal roots belong in
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.
-  The first configured root is fmx's working directory, and the launch
-  dialog opens on it when no agent is active. Only the roots and children
-  that are inside a git repository are offered: an Agent runs in a repository
-  or it does not run, which `performLaunch` enforces for every launch — a key
-  or a command — with `readGitContext`, while the scan and the control
+  The first configured root is fmx's working directory. Only roots and children
+  inside a git repository are offered: an Agent runs in a repository
+  or it does not run, which `performLaunch` enforces for every CLI launch
+  with `readGitContext`, while the scan and the control
   socket's parameter checks use the synchronous `isRepositoryDirectory` walk
   because neither can wait for git. A repository with nothing committed yet is
   a project — its unborn HEAD still names the branch the tray draws, which is
@@ -32,12 +30,11 @@
   that only looks like a checkout. A HEAD that names neither a ref nor a
   commit names no branch, so `readGitContext` answers null and it is no
   project.
-  The empty state names the launch key from `keys.launch` rather than a
-  literal: the launch dialog is the only way a key starts an agent, so a
-  rebound key that still read `prefix+l` would name a dead one.
+  The empty state is deliberately only `no agents`; Agent creation belongs to
+  `fmx control launch`, not to the TUI.
   That first root is commonly a directory of repositories rather than one
   itself, so a launch naming no project and coming from no agent falls back
-  to the first project on offer, exactly as the dialog's project row does; a
+  to the first project on offer; a
   Home whose roots hold no repository has nowhere to send it and is refused.
   TUI startup refuses an empty resolved list with exit 1 and the exact config
   line to add; control commands, `--help`, `--version`, and `doctor` do not
@@ -49,15 +46,13 @@
   paste so newlines survive, and the carriage return that sends it is a
   separate write a beat later — fx discards a paste when anything follows its
   end marker in the same write.
-- The launch dialog's prompt is OpenTUI's textarea, fed by the renderer's own
-  dispatch to the focused renderable. That is why `Multiplexer.onKeyPress`
-  swallows a key only when `LaunchDialog.handleKey` says it kept it: a
-  swallowed key never reaches the widget. fx is blurred while the dialog is
-  open, so a key let through can reach nothing else.
-- fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
-  is deliberately no `--fx` flag. The resolved executable must answer the
-  exact `--fxnk-version` probe with fxnk 0.5.0 or newer; that is the first fork
-  contract whose ADE feed carries complete lifecycle snapshots.
+- Fx executable resolution happens once per Runtime: `FMX_FX_PATH`, then
+  `fmx-fx` beside an installed fmx, then `fmx-fx` on `PATH`, then the legacy
+  `fx` on `PATH`. There is deliberately no `--fx` flag. The resolved executable
+  must answer the exact `--fxnk-version` probe with the minimum in `fx.json`;
+  every Agent reuses that absolute path without another lookup or probe.
+  AgentStart still installs the same fork separately as `fx`; fmx installs its
+  pinned private copy as `fmx-fx` and launches it with `FX_AUTO_UPGRADE=0`.
 - One Home has one Companion-held Runtime (`fmxr-<home id>`) and any number
   of thin terminal Clients. The Runtime alone owns OpenTUI, `Multiplexer`,
   the Home sockets, and the Manifest. A Client relays bytes and dimensions;
@@ -67,7 +62,7 @@
   immediately restores the most recently active remaining Client's size.
 - A new Runtime waits on its one-use bootstrap marker before constructing
   `CliRenderer`; the creating Client writes it after its attach reaches Ready,
-  so palette queries have a real host terminal to answer. The wait is bounded
+  so the OSC 11 theme query has a real host terminal to answer. The wait is bounded
   so a failed initial attach does not orphan a headless Runtime. A directory
   notification wakes the normal path immediately, with checks on both sides
   of watcher installation closing the race and a slow probe covering a lost
@@ -96,9 +91,9 @@
   before anything can go wrong in fmx, because those two writes are what a
   crash leaves for the join.
 - A restore resets the visible terminal with RIS at `RestoreBegin` and
-  re-applies the host palette after: the Companion's replay carries the
-  modes, cursor, and keyboard state fx set, but the host's colors were never
-  fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the
+  re-applies the resolved OSC 11 background after: the Companion's replay
+  carries the modes, cursor, and keyboard state fx set, but fmx's terminal
+  defaults were never fx's and RIS takes them too. The `CursorReportAdapter` is replaced at the
   same moment — a query half-translated when the last transport dropped must
   not pair with a response from the next.
 - Each Manifest entry checkpoints the last ADE state, attention, and
@@ -147,27 +142,19 @@
   reverses it — every list behind it stays creation order.
   State writes are serialized and awaited during Runtime cleanup so a
   selection immediately followed by the final Client's Detach lands.
-- Palette detection can take seconds in a terminal that never answers, and a
-  renderer destroyed under it never settles the query; `index.ts` races it
-  against shutdown so a signal in that window still reaches the socket
-  cleanup. Do not await anything renderer-bound in `main` without that race.
-  `index.ts` deliberately constructs `CliRenderer` before calling
-  `setupTerminal`: its input parser can collect palette replies while no
-  alternate-screen frame exists. Start that query once the ADE-feed singleton
-  is held, so its one-frame budget overlaps the Companion join; the
-  deadline remains measured from the query, not extended by other startup
-  work. Before first paint it gives a responsive host one 60 Hz frame to
-  answer, then locks the chosen selected-row background and structural
-  dividers until that initial query settles; a late answer may
-  theme everything else — including the embedded terminals — but must not mix
-  new grays into those startup surfaces. Unlock afterward so a real later
-  theme change still applies.
-  Session names are indexed ANSI gray (slot 8, dim on any theme) until both
-  host defaults have answered and the Ramp's dim step after; under that lock
-  a late answer leaves them, like the fill and the divider, as they were
-  first drawn. The fill is kept together with the ramp it came from, and the
-  active row's glyph is painted from that ramp: a fallback-dark fill under a
-  late light answer must not carry the light host's near-black foreground.
+- Theme selection matches fx exactly: valid case-insensitive `FX_THEME`, one
+  bounded 200 ms OSC 11 background query, `COLORFGBG`, then dark. `index.ts`
+  constructs `CliRenderer` before `setupTerminal`, starts the one query as
+  soon as the ADE-feed singleton is held, and overlaps its fixed deadline with
+  the Companion join. It awaits the result before terminal setup and first
+  paint, so a timed-out initial reply can never retint visible content later.
+  The app theme layer never asks for OSC 4, OSC 10, or a full host palette;
+  OpenTUI may still perform its own capability handshake, whose color results
+  do not select or alter fmx's tokens. Live CSI 997 notifications are refresh
+  triggers, not theme authority: drain stale replies behind a DA1 fence,
+  sample OSC 11 behind a second fence, discard a sample superseded by a newer
+  notification, then replace the complete fixed token set in one render turn.
+  A valid `FX_THEME` owns notification bytes but never queries or changes.
 - A Runtime resize applies the new physical size to OpenTUI synchronously,
   then clears the whole physical screen before its next frame. Input can arrive
   before OpenTUI's debounced SIGWINCH handler; applying size first prevents
@@ -179,22 +166,16 @@
   drawn, so the corner cannot flash between them. Begin synchronized output
   before that clear; the next frame's normal end marker publishes the clear and
   resized UI together instead of exposing the unused field alone. Once the
-  startup palette choice has settled, OpenTUI's renderer background must remain
-  the Ramp's opaque host-background step: a transparent renderer lets the unused
-  clear show through around the empty-state text and retains cells from a tray
-  or terminal that just disappeared. The one exception is a first frame whose
-  palette query is still pending: `index.ts` paints exactly the owner rectangle
-  with the terminal's native default background (SGR 49 plus row-bounded ECH),
-  then the detected color becomes the opaque renderer base without an
-  intervening unused-field clear. Do not use EL there; it would consume a larger
-  Client's right margin.
-- Every color fmx paints on a surface of its own comes from `hostRamp`
-  (`src/host-palette.ts`): fx's five gray steps as blends of the host's
-  background toward its foreground, fx's dark column as the fallback tier.
-  Focus (host blue) and error (host red) are the only hues, each with one
-  job. A new surface takes its colors from the Ramp; a state gets a glyph
-  and a weight, never a hue; a surface fx never draws is recorded as a
-  carve-out in fxnk's `style/STYLE.md` before it ships.
+  OpenTUI's renderer background must remain the terminal-default canvas: a
+  transparent renderer lets the unused clear show through around the empty-state
+  text and retains cells from a tray or terminal that just disappeared.
+- Every color fmx paints on a surface of its own comes from `fxnkRamp`
+  (`src/host-palette.ts`): fixed indexed roles `255/252/250/245/240` in dark
+  and `235/238/241/247/250` in light, plus fmx's surface/unused carve-outs
+  `236/235` and `254/255`. Focus and error are direct ANSI slots `4` and `1`,
+  never colors sampled from the host. A new surface takes its colors from the
+  Ramp; a state gets a glyph and a weight, never a hue; a surface fx never
+  draws is recorded as a carve-out in fxnk's `style/STYLE.md` before it ships.
 - Agent rows activate on mouse-down, not mouse-up. Their text is deliberately
   non-selectable: rebuilding the list to switch while OpenTUI holds a tray
   selection is unsafe, and pointer navigation must be as immediate as a key.
@@ -204,7 +185,7 @@
   the outer pane. Fx keeps that integration independently for hosts that opt in;
   fmx's lifecycle source is ADE alone.
 - fx takes per-process launch overrides from `FX_MODEL` and `FX_EFFORT`; the
-  launch dialog passes both to the one agent it starts. fx rejects both
+  CLI launch passes both to the one agent it starts. fx rejects both
   `effort` and `codex_model` from a workspace's own `.fx.json` as user-only
   settings. Native session naming is also fx profile configuration; fmx does
   not manage it or write `~/.fx/settings.json`.
@@ -228,6 +209,21 @@
   captured attribution and may legitimately lag after `/new`. The socket keeps
   a bounded startup backlog until survivor identities exist and the Multiplexer
   subscribes.
+- The Bus is fmx's duplex Runtime contract, on one mode-0600 Home socket at
+  `/tmp/fmx-<uid>/<home id>.bus`, independent of the one-way ADE feed. Bind it
+  under the ADE singleton only after restored Agents and metadata are ready;
+  only that holder may remove crash residue, including the retired `.ctl` and
+  `.obs` paths. Every subscription gets a complete state snapshot first, later
+  state is complete and deduplicated, and accepted ADE activity is attributed
+  and published live-only after its state fold, with sequence gaps explicit.
+  Summary payloads are allowlisted; raw ADE payloads require an explicit
+  subscription. A connection may subscribe, issue multiple correlated control
+  requests, or do both; responses carry the current state revision, take
+  priority over queued events, and may evict whole events not yet written.
+  Bound silent peers, total connections, subscriptions, pending requests, and
+  each outbound queue, and disconnect a slow Bus peer: it must never delay the
+  Runtime, another peer, a command, or Fx. Bus peers are not terminal Clients,
+  do not affect sizing, and do not keep the Runtime alive.
 - Session names belong to fx. fmx applies `SessionMetadataChanged` only to the
   session named by its ADE context and reads
   `~/.fx/sessions/<id>/display.json` on attach, identity change, or recovery.
@@ -235,26 +231,22 @@
   normalizes the title, or makes names unique. An exact duplicate is an
   ambiguous control target; `/rename` and generated names follow the same
   path because fx is the sole persistence authority.
-- The control socket (`src/control-socket.ts`) is fmx's independent request/reply
-  wire beside the one-way ADE feed. Keep `FMX_SOCKET_PATH` beside
-  `FMX_AGENT_ID` in `src/fx-environment.ts`: the client reads both, and
-  `current` as a target is meaningless without the id. Its path replaces the
-  ADE suffix with `.ctl` — per Home, not per pid — so the
-  `FMX_SOCKET_PATH` an fx was given outlives the fmx that gave it; it is bound
-  under the ADE feed's singleton, which is what makes unlinking a stale
-  one safe. `fmx control` from outside any agent finds a live fmx by
-  probing the sockets, not by pid.
-- Every `fmx control <command>` goes through `Multiplexer.handleControl`, and every
-  write there takes the path the keys take (`showLaunchDialog`, `switchTo`,
-  `applyTrayWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
-  command that does something a hand cannot; add the key first. Detach is the
-  intentional exception in the other direction: it is Client-local and must
-  never acquire a control method.
+- Keep the Bus's `FMX_SOCKET_PATH` beside `FMX_AGENT_ID` in
+  `src/fx-environment.ts`: control reads both, and `current` as a target is
+  meaningless without the id. The Bus path is per Home, not per pid, so the
+  value an Fx received outlives the fmx that gave it. An Fx surviving the
+  cutover may retain a `.ctl` value; client resolution normalizes `.ctl`,
+  `.obs`, and `.sock` suffixes to `.bus` rather than keeping a retired listener.
+  `fmx control` from outside any Agent finds a live Runtime by probing Bus
+  sockets, not by pid.
+- Every `fmx control <command>` goes through `Multiplexer.handleControl`, and
+  UI writes there take the paths the keys take (`switchTo`, `applyTrayWidth`).
+  Launch is the intentional CLI-only exception: the TUI has no creation action.
+  Detach is the intentional exception in the other direction: it is Client-local
+  and must never acquire a control method.
 - A launch from the CLI is background by default: `createAgent` only
   switches when asked or when nothing is on screen. `switchTo` never focuses a
-  terminal while the launch dialog or a modal is up — those hand focus back
-  when they close — which is what lets a background launch land under an open
-  draft without stealing its keys.
+  terminal while a modal is up; the modal hands focus back when it closes.
 - `awaiting_work` is why `agent wait` is trustworthy right after `launch`
   or `send`: fx reports idle at startup before the pasted prompt reaches it.
   The flag is set when a prompt is queued and cleared by `PromptQueued`. If

@@ -23,6 +23,7 @@ jobs:
       configured: ${{ steps.release.outputs.configured }}
       needed: ${{ steps.release.outputs.needed }}
       version: ${{ steps.release.outputs.version }}
+      fx_commit: ${{ steps.release.outputs.fx_commit }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -41,6 +42,17 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          fx_commit="$(jq -r '.commit' fx.json)"
+          fxnk_version="$(jq -r '.fxnk' fx.json)"
+          if [[ ! "$fx_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::fx.json commit is not a full SHA"
+            exit 1
+          fi
+          if [[ ! "$fxnk_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::fx.json fxnk is not SemVer"
+            exit 1
+          fi
+          echo "fx_commit=$fx_commit" >> "$GITHUB_OUTPUT"
 
           if git rev-parse --verify --quiet "refs/tags/v$version" >/dev/null; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
@@ -63,6 +75,63 @@ jobs:
             echo "::error::FMX_RELEASE_BASE_URL must be a public Vercel Blob URL"
             exit 1
           fi
+          for platform in linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64; do
+            for extension in tar.xz tar.gz; do
+              for suffix in "" .sha256; do
+                curl --fail --silent --show-error --location \
+                  "$RELEASE_BASE_URL/fx/releases/$fx_commit/fmx-fx-$platform.$extension$suffix" \
+                  -o /dev/null
+              done
+            done
+          done
+          curl --fail --silent --show-error --location "$RELEASE_BASE_URL/fx/setup.sh" -o /dev/null
+          probe_dir="$(mktemp -d)"
+          trap 'rm -rf "$probe_dir"' EXIT
+          probe_archive="fmx-fx-linux-x86_64.tar.gz"
+          curl --fail --silent --show-error --location \
+            "$RELEASE_BASE_URL/fx/releases/$fx_commit/$probe_archive" -o "$probe_dir/$probe_archive"
+          curl --fail --silent --show-error --location \
+            "$RELEASE_BASE_URL/fx/releases/$fx_commit/$probe_archive.sha256" -o "$probe_dir/$probe_archive.sha256"
+          (cd "$probe_dir" && sha256sum --check "$probe_archive.sha256")
+          tar -xzf "$probe_dir/$probe_archive" -C "$probe_dir"
+          probe="$("$probe_dir/fmx-fx" --fxnk-version)"
+          probe_pattern='^fxnk ([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?) \(fx [^)]+\)$'
+          if [[ ! "$probe" =~ $probe_pattern ]]; then
+            echo "::error::pinned fmx-fx returned an invalid --fxnk-version probe"
+            exit 1
+          fi
+          python3 - "${BASH_REMATCH[1]}" "$fxnk_version" <<'PY'
+          import re
+          import sys
+
+          def semver(value):
+              match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?", value)
+              if match is None:
+                  raise SystemExit(f"invalid SemVer: {value}")
+              return tuple(map(int, match.group(1, 2, 3))), match.group(4)
+
+          def compare_prerelease(left, right):
+              if left == right:
+                  return 0
+              if left is None:
+                  return 1
+              if right is None:
+                  return -1
+              for a, b in zip(left.split("."), right.split(".")):
+                  if a == b:
+                      continue
+                  if a.isdigit() and b.isdigit():
+                      return (int(a) > int(b)) - (int(a) < int(b))
+                  if a.isdigit() != b.isdigit():
+                      return -1 if a.isdigit() else 1
+                  return (a > b) - (a < b)
+              return (len(left.split(".")) > len(right.split("."))) - (len(left.split(".")) < len(right.split(".")))
+
+          actual, required = map(semver, sys.argv[1:])
+          compatible = actual[0] > required[0] or (actual[0] == required[0] and compare_prerelease(actual[1], required[1]) >= 0)
+          if not compatible:
+              raise SystemExit(f"pinned fmx-fx reports fxnk {sys.argv[1]}; fmx requires {sys.argv[2]} or newer")
+          PY
           echo "configured=true" >> "$GITHUB_OUTPUT"
 
   build:
@@ -262,7 +331,10 @@ jobs:
             done
           done
 
-          sed "s|__FMX_RELEASE_BASE_URL__|$RELEASE_BASE_URL|g" setup.sh > dist/setup.sh
+          sed \
+            -e "s|__FMX_RELEASE_BASE_URL__|$RELEASE_BASE_URL|g" \
+            -e "s|__FMX_FX_SETUP_URL__|$RELEASE_BASE_URL/fx/setup.sh|g" \
+            setup.sh > dist/setup.sh
           bash -n dist/setup.sh
           upload_mutable dist/setup.sh setup.sh text/x-shellscript 300
 

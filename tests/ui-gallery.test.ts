@@ -13,14 +13,7 @@ test(
     expect(UI_GALLERY_COMPONENTS).toEqual([
       "Multiplexer",
       "Session list",
-      "Launch dialog",
-      "Toast",
     ])
-    const toastStates = UI_STORIES.filter((story) => story.component === "Toast")
-    expect(toastStates).toHaveLength(2)
-    expect(new Set(toastStates.map((story) => `${story.viewport.cols}×${story.viewport.rows}`))).toEqual(
-      new Set(["62×12"]),
-    )
     const built = await buildUiGallery()
     expect(UI_GALLERY_PALETTE_NAMES).toEqual(["dark", "light", "fallback"])
     for (const palette of UI_GALLERY_PALETTE_NAMES) {
@@ -36,20 +29,20 @@ test(
           .filter((story) => story.component === "Multiplexer")
           .map((story) => [story.id, story.text.split("\n")]),
       )
-      expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("prefix+l to launch agent")
+      expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("no agents")
       expect(multiplexer.get("multiplexer-working")?.[0]).toContain("Working on the UI gallery")
       expect(multiplexer.get("multiplexer-working")?.[23]).toContain("│")
-      expect(multiplexer.get("multiplexer-larger-observer")?.[0]).toContain("Working on the UI gallery")
+      expect(multiplexer.get("multiplexer-larger-client")?.[0]).toContain("Working on the UI gallery")
 
-      const observer = built.stories[palette].find((story) => story.id === "multiplexer-larger-observer")
-      expect(observer).toBeDefined()
+      const client = built.stories[palette].find((story) => story.id === "multiplexer-larger-client")
+      expect(client).toBeDefined()
       const expectedUnused = {
-        dark: [35, 40, 47],
-        light: [225, 229, 228],
-        fallback: [41, 41, 41],
+        dark: [38, 38, 38],
+        light: [238, 238, 238],
+        fallback: [38, 38, 38],
       }[palette]
-      expect(backgroundAt(observer!.frame, 85, 0)).toEqual(expectedUnused)
-      expect(backgroundAt(observer!.frame, 0, 23)).toEqual(expectedUnused)
+      expect(backgroundAt(client!.frame, 85, 0)).toEqual(expectedUnused)
+      expect(backgroundAt(client!.frame, 0, 23)).toEqual(expectedUnused)
     }
 
     const setup = await createTestRenderer({ width: 112, height: 34, kittyKeyboard: true, exitOnCtrlC: false })
@@ -57,7 +50,7 @@ test(
     try {
       await setup.renderOnce()
       expect(setup.captureCharFrame()).toContain("UI GALLERY")
-      expect(setup.captureCharFrame()).toContain("4 components · 13 states")
+      expect(setup.captureCharFrame()).toContain("2 components · 6 states")
       expect(app.activeComponent).toBe("Multiplexer")
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
 
@@ -92,9 +85,9 @@ test(
       expect(app.activeStoryId).toBe(built.stories.light[3]!.id)
       expect(setup.captureCharFrame()).toContain("state 1/3")
 
-      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressArrow("up")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Launch dialog")
+      expect(app.activeComponent).toBe("Multiplexer")
       expect(setup.captureCharFrame()).toContain("ENTER TO INTERACT")
 
       setup.mockInput.pressEnter()
@@ -102,11 +95,6 @@ test(
       await setup.renderOnce()
       expect(app.isInteracting).toBe(true)
       expect(setup.captureCharFrame()).toContain("INTERACTING")
-
-      await setup.mockInput.typeText("Audit")
-      await app.waitForInteraction()
-      await setup.renderOnce()
-      expect(setup.captureCharFrame()).toContain("Audit")
 
       setup.mockInput.pressEscape()
       await app.waitForInteraction()
@@ -134,13 +122,13 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("slide 1/13 · playing")
+      expect(setup.captureCharFrame()).toContain("slide 1/6 · playing")
 
       setup.mockInput.pressArrow("left")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Toast")
+      expect(app.activeComponent).toBe("Session list")
       expect(app.activeStoryId).toBe(built.stories.dark.at(-1)!.id)
-      expect(setup.captureCharFrame()).toContain("slide 13/13")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 6/6")
 
       setup.mockInput.pressArrow("right")
       setup.mockInput.pressKey("t")
@@ -163,12 +151,12 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.light[1]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/13")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/6")
 
       setup.mockInput.pressEscape()
       await setup.renderOnce()
       expect(app.isSlideshow).toBe(false)
-      expect(setup.captureCharFrame()).toContain("4 components · 13 states")
+      expect(setup.captureCharFrame()).toContain("2 components · 6 states")
       const stoppedStory = app.activeStoryId
       await new Promise((resolve) => setTimeout(resolve, 70))
       expect(app.activeStoryId).toBe(stoppedStory)

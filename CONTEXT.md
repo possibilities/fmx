@@ -17,11 +17,16 @@ attached to the Home's Runtime. It relays terminal bytes and size, and alone
 owns Detach; several Clients may watch and interact with the same shared UI.
 _Avoid_: viewer, frontend, session, fmx instance.
 
+**Bus peer** — an external process connected to a Runtime's Bus. It may
+subscribe to machine state and attributed Agent activity, issue control
+requests, or do both on one connection; it is not a terminal Client and does
+not keep the Runtime alive.
+_Avoid_: Client, Observer, viewer, frontend, Agent.
+
 **Sizing owner** — the Client that most recently connected or interacted by
 focus, keyboard, mouse, paste, or resize. The Runtime renders once at its
-dimensions; larger Clients have flat, host-theme-relative unused space and
-smaller Clients crop the right and bottom until they interact and take
-ownership.
+dimensions; larger Clients have flat, fxnk-theme unused space and smaller
+Clients crop the right and bottom until they interact and take ownership.
 _Avoid_: leader, primary, active Client, controller.
 
 **Detach** — disconnecting one Client from the Runtime without ending an
@@ -46,12 +51,19 @@ any other build, and runs one named by `FMX_ZMX_PATH` with a word about it,
 because that override is how a checkout develops the two together.
 _Avoid_: lock file, version file, dependency.
 
+**Fx pin** — `fx.json`: the exact approved Fx Integration commit an fmx
+release's installer obtains from the public fork installer, plus the minimum
+fxnk contract fmx accepts. It lands beside fmx as the real native executable
+`fmx-fx`, separate from the `fx` AgentStart installs for direct use; a Runtime
+resolves and probes it once, then every new Agent reuses that absolute path.
+_Avoid_: bundled Fx, wrapper, AgentStart pin, moving latest.
+
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates
-and keys its stable ADE and control sockets. One Home has at most one Runtime,
-may have several Clients, and owns the Agents its Companion holds between
-Runtime lifetimes.
+and keys its stable ADE-feed and Bus sockets. One Home has at most
+one Runtime, may have several Clients, and owns the Agents its Companion holds
+between Runtime lifetimes.
 _Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
 is fx's own settings), installation, workspace.
 
@@ -88,7 +100,7 @@ sole Fx lifecycle source: each record carries the stable Manifest Agent
 identity, session context, and a complete state-and-attention snapshot, so an
 unknown additive event or the first record after a gap repairs live state;
 session-name gaps additionally recover from Fx's durable display record.
-_Avoid_: control socket, event bus, request/reply channel.
+_Avoid_: Observation stream, control socket, event bus, request/reply channel.
 
 **Pane id** — the retained opaque control and Companion-label identity for an
 Agent, `p_<agent id>`. fmx exposes it as `pane_id`, accepts it as a Target, and
@@ -97,24 +109,14 @@ longer addresses an Fx lifecycle protocol.
 _Avoid_: agent id (that is the Manifest's 128-bit token; the number
 exported as `FMX_AGENT_ID` is the display id).
 
-**Ramp** — the gray steps every surface fmx draws itself is painted in:
-foreground, accent, secondary, dim, and divider, plus a surface fill below
-the divider and an unused-field fill below every surface, each a fixed
-fraction of the way from the host terminal's background to its foreground
-(`hostRamp` in `src/host-palette.ts`). The unused field is the 6% step and the
-surface fill the 12% step, so both remain visible even on a pure-black canvas.
-A host that answers no color query gets fx's dark grays and those two derived
-fills exactly. Two hues survive it, each with one job: focus, the host's
-blue, on the border of a surface that takes keys and on the caret and
-cursor; error, the host's red, on the border of a surface that reports a
-failure. A state is a glyph and a weight, never a hue.
-_Avoid_: theme, palette (that is the host's answer), modal colors.
-
-**Toast** — a transient, bottom-center notice drawn over the active surface:
-foreground text on the Ramp's surface fill inside a dim hairline, which only
-a notice reporting a failure colors, in the error hue. Toasts appear one at a
-time in arrival order and do not take focus.
-_Avoid_: status bar, modal, success toast.
+**Ramp** — the complete fixed indexed set every fmx-owned surface uses after
+selecting an fxnk dark or light theme: foreground, accent, secondary, dim,
+divider, surface, and unused field (`fxnkRamp` in `src/host-palette.ts`). The
+canvas stays the terminal default. Dark is `255/252/250/245/240` with
+surface/unused `236/235`; light is `235/238/241/247/250` with `254/255`.
+Focus and error are direct ANSI slots `4` and `1`, each with one job and never
+sampled from the host. A state is a glyph and a weight, never a hue.
+_Avoid_: host ramp, derived palette, modal colors.
 
 **Tray** — the collapsible left column that carries the Session list: hidden
 while no agent runs or when toggled away, resizable by its divider, its width
@@ -132,21 +134,17 @@ not selectable. The switch happens on mouse-down and tray text itself is
 not selectable, so pointer navigation never waits for release. Project and
 branch labels are the Ramp's foreground and agent names its dim step; the
 status icon carries its state by shape and weight, never hue — blocked bold
-in the foreground, done in the accent step, the rest dim. Before the host
-palette answers, names are the terminal's own ANSI gray, and — like the
-selected-row fill and the divider — what was drawn at first paint stays
-through a late initial answer. The selected agent's stable Agent identity is
+in the foreground, done in the accent step, the rest dim. The fxnk theme is
+resolved before the first frame, so every row, fill, and divider uses one
+coherent set immediately. The selected agent's stable Agent identity is
 machine state, restored before the first frame so detach and reattach do not
 move focus back to agent one.
 _Avoid_: agent panel, tab bar, session picker.
 
 **Subagent row** — a non-selectable Session list row for an fx subagent whose
-parent is a session fmx tracks. It uses the agent-row status icon and nests
-recursively beneath that parent; its state comes from the subagent's own ADE
-snapshots once its feed has spoken, and from the filesystem control record and
-session lock until then. Fx's control record owns the parent, and a child
-whose parent is no longer tracked is dropped rather than kept alive by its
-feed.
+filesystem control record names a visible Agent's session as its parent.
+It uses the agent-row status icon and nests recursively beneath that parent;
+its state comes from the control record and the subagent's own session lock.
 _Avoid_: child pane, sub-agent.
 
 **Path** — the active agent and its ancestors. The active row takes the
@@ -158,15 +156,9 @@ _Avoid_: selection, breadcrumb.
 offered as Projects, along with the root itself. Roots are scanned one level
 deep and never recursively; a root that is not on this machine, or not inside
 a repository, contributes nothing. A Home must configure at least one before
-its TUI can start; its first root is fmx's working directory and what the
-launch dialog opens on when no agent is active.
+its TUI can start. Its first root is fmx's working directory; a CLI launch
+that names no Project uses it when the root is itself a repository.
 _Avoid_: workspace root, search path, scan directory.
-
-**Launch dialog** — the modal that gathers what an agent is started with
-before fx runs: a prompt, a project, whether to cut a worktree, and the launch
-level, one row each. `tab` moves between rows; a chooser row answers a letter
-by cycling to the next value starting with it, and space opens its picker.
-_Avoid_: new tab modal, launcher, form.
 
 **Launch level** — the Codex model and reasoning effort a new agent starts
 with, passed to that fx alone through `FX_MODEL` and `FX_EFFORT`. Its allowed
@@ -180,20 +172,11 @@ has published that Agent's first ADE record. An agent launched with one is
 therefore already working when it is first looked at.
 _Avoid_: intent, initial message, seed.
 
-**Prompt editor** — the launch dialog's prompt row: OpenTUI's textarea, which
-is a real line editor. Everything readline-shaped is the widget's; fmx owns
-only the kill ring it yanks from and the handoff to `$EDITOR`. It takes keys
-through the renderer's dispatch to the focused renderable, so the dialog lets
-its keys through rather than swallowing them, and a blurred field is what
-leaves a letter on another row free to cycle.
-_Avoid_: input, textarea, prompt field.
-
 **Worktree** — a checkout fmx cuts for a launch, branched from what the chosen
 project has checked out. Its branch and its directory share one name,
 `<project>-<ordinal>`, and the ordinal counts against the main repository, so
 launching from inside `fmx-1` produces `fmx-2` rather than `fmx-1-1`. A
-Project with no commit to branch from cannot offer one, which is the only
-thing the launch dialog's Worktree row has left to ask.
+Project with no commit to branch from cannot produce one.
 _Avoid_: branch, checkout, clone.
 
 **Project** — a directory an agent can be started in, which is to say a
@@ -204,17 +187,6 @@ unborn HEAD still names the branch the Session list draws — that simply cannot
 offer a Worktree. A HEAD naming neither a ref nor a commit names no branch,
 so it is not a Project at all.
 _Avoid_: workspace, folder, tracked directory.
-
-**Project picker** — the filterable list the launch dialog opens on space.
-Typing filters by subsequence, so `agl` finds `agentlaunch`; enter applies the
-highlighted project to the row rather than starting anything. Dismissing it
-changes nothing.
-_Avoid_: overlay, palette, fuzzy finder.
-
-**Launch count** — how many agents have been started in a directory, kept
-in `state.json` and incremented by every start whichever key opened it. It
-orders the project picker and is never drawn in it.
-_Avoid_: frecency, history, usage.
 
 **Git context** — the worktree root and branch fmx reads from the launch
 directory it owns rather than treating lifecycle context as repository
@@ -246,25 +218,22 @@ Duplicate names remain ambiguous. The Fx storage and event schema call the
 field `title`.
 _Avoid_: fmx name, label.
 
-**Control socket** — the Unix socket `fmx control <command>` drives a running
-Runtime through, bound beside the ADE feed as
-`/tmp/fmx-<uid>/<home id>.ctl` — as stable as it, so an Fx that outlives one
-fmx still reaches the next — and handed to every Agent as `FMX_SOCKET_PATH`.
-It is fmx's request/reply wire, separate from the one-way feed. One request per
-connection; a waiting method holds the connection.
-_Avoid_: command socket, API socket, RPC.
+**Bus** — the duplex, mode-0600, stable-per-Home Unix socket at
+`/tmp/fmx-<uid>/<home id>.bus` over which a running Runtime serves typed NDJSON
+events and multiplexed control requests. It is handed to every Agent as
+`FMX_SOCKET_PATH`; `fmx bus` subscribes and `fmx control` sends requests. A
+subscription begins with complete authoritative Agent state; later state is
+complete and deduplicated, while optional ADE activity is attributed,
+live-only, gap-aware, and payload-redacted unless raw payloads are explicitly
+requested. Per-peer output is bounded, responses take priority over queued
+events, and Bus peers neither count as terminal Clients nor keep the Runtime
+alive.
+_Avoid_: Observation stream, control socket, ADE feed, replay log, notification API.
 
 **Orientation** — what `fmx control orient` answers: the caller's own agent as
 `you`, every agent, the tray's rows as drawn, and whatever surface is
 open. A read, which never marks anything seen.
 _Avoid_: status, state dump, introspection.
-
-**Draft** — one opening of the launch dialog, addressable by id from the
-moment it opens until it is submitted or cancelled, and readable after. Every
-opening is one, whether a key or an agent opened it, so an agent can finish a
-dialog the human started and a human can finish one an agent prefilled. Ids
-exist so an agent can never submit a draft it did not mean to.
-_Avoid_: pending launch, form state, staged launch.
 
 **Target** — how a command names an agent: its id, `current` for the
 caller's own, `active` for the one on screen, `next` or `previous` relative to
@@ -279,10 +248,9 @@ _Avoid_: busy, pending, queued.
 
 **UI gallery** — the developer-only TUI that browses fmx-owned OpenTUI
 components and blocks. Each component has executable states that mount the real
-renderables under deterministic fakes; the selected theme — a dark host, a
-light host, or the fallback tier a host that answered nothing gets — applies
-to the whole gallery independently of the selected component and state. Useful
-states can accept their real keys and mouse controls inside an isolated
-exact-size renderer. `gallery:check` renders and asserts every state under
-every theme headlessly.
+renderables under deterministic fakes; the selected fixed fxnk set — dark,
+light, or the default-dark no-signal case — applies to the whole gallery
+independently of the selected component and state. Useful states can accept
+their real keys and mouse controls inside an isolated exact-size renderer.
+`gallery:check` renders and asserts every state under every theme headlessly.
 _Avoid_: Storybook (there is no Storybook runtime), screenshot suite.

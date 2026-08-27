@@ -1,18 +1,14 @@
 import { BoxRenderable, type CapturedFrame, type KeyEvent, type TerminalColors, type ThemeMode } from "@opentui/core"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
-import { RAMP_FALLBACK } from "../src/host-palette.ts"
 
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
   "Session list",
-  "Launch dialog",
-  "Toast",
 ] as const
 
 export type UiGalleryComponent = (typeof UI_GALLERY_COMPONENTS)[number]
-/** Two simulated hosts and, third, a host that answered no color query at
- * all — the tier fmx falls back to, which should look like fx's own dark
- * theme. `t` cycles them in this order. */
+/** Dark and light OSC 11 outcomes and, third, the default-dark no-signal case.
+ * Every case uses a fixed fxnk token set; `t` cycles them in this order. */
 export const UI_GALLERY_PALETTE_NAMES = ["dark", "light", "fallback"] as const
 export type UiGalleryPaletteName = (typeof UI_GALLERY_PALETTE_NAMES)[number]
 
@@ -32,7 +28,7 @@ export type UiStory = {
 export type UiStoryContext = {
   setup: TestRendererSetup
   canvas: BoxRenderable
-  /** Null for the fallback theme: nothing was detected. */
+  /** Null for the no-signal case; present only to simulate OSC 11 background. */
   palette: TerminalColors | null
   paletteName: UiGalleryPaletteName
   themeMode: ThemeMode
@@ -57,8 +53,8 @@ export type UiStorySnapshot = {
 /**
  * A story kept alive in its exact-size test renderer. The gallery paints its
  * captured spans, then forwards input back here while interaction mode is on.
- * That keeps components which measure against their renderer (notably the
- * Multiplexer and Toast) honest without making production renderables aware of
+ * That keeps renderer-measured components (notably the Multiplexer) honest
+ * without making production renderables aware of
  * the gallery's surrounding chrome.
  */
 export class UiStorySession {
@@ -90,7 +86,7 @@ export class UiStorySession {
       left: 0,
       width: "100%",
       height: "100%",
-      backgroundColor: palette?.defaultBackground ?? RAMP_FALLBACK.background,
+      backgroundColor: palette?.defaultBackground ?? "#1c1c1c",
     })
     setup.renderer.root.add(canvas)
     const cleanups: Array<() => void | Promise<void>> = []
@@ -162,7 +158,7 @@ export class UiStorySession {
     this.ensureOpen()
     // Several component actions deliberately finish through microtasks. Two
     // passes make those immediate transitions visible without waiting on the
-    // long timers used by Toasts and launch prompting.
+    // long timers used by launch prompting.
     await Promise.resolve()
     await new Promise<void>((resolve) => setImmediate(resolve))
     await this.setup.renderOnce()

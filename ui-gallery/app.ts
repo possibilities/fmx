@@ -12,7 +12,7 @@ import {
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
-import { hostRamp, RAMP_FALLBACK } from "../src/host-palette.ts"
+import { fxnkRamp } from "../src/host-palette.ts"
 import {
   UI_GALLERY_COMPONENTS,
   UI_GALLERY_PALETTE_NAMES,
@@ -847,7 +847,7 @@ function frameText(
         textChunk(
           "\n",
           foreground,
-          RGBA.fromHex(UI_GALLERY_PALETTES[palette]?.defaultBackground ?? RAMP_FALLBACK.background),
+          RGBA.fromHex(UI_GALLERY_PALETTES[palette]?.defaultBackground ?? "#1c1c1c"),
         ),
       )
     }
@@ -855,17 +855,16 @@ function frameText(
   return new StyledText(chunks)
 }
 
-/** The gallery's own chrome is on the same ramp as what it showcases: gray
- * steps from the theme's host palette, focus for the one live signal. */
+/** The gallery's own chrome uses the same fixed fxnk tokens it showcases. */
 function galleryTheme(name: UiGalleryPaletteName): GalleryTheme {
-  const ramp = hostRamp(UI_GALLERY_PALETTES[name])
+  const ramp = fxnkRamp(name === "light" ? "light" : "dark")
   return {
-    background: RGBA.fromHex(ramp.background),
-    foreground: RGBA.fromHex(ramp.foreground),
-    dim: RGBA.fromHex(ramp.dim),
-    accent: RGBA.fromHex(ramp.accent),
-    signal: RGBA.fromHex(ramp.focus),
-    selectedBackground: RGBA.fromHex(ramp.surface),
+    background: ramp.background,
+    foreground: ramp.foreground,
+    dim: ramp.dim,
+    accent: ramp.accent,
+    signal: ramp.focus,
+    selectedBackground: ramp.surface,
   }
 }
 

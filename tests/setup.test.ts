@@ -14,6 +14,9 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
   const payloadDirectory = join(tempDirectory, "payload")
   const releaseDirectory = join(tempDirectory, "release")
   const version = "9.8.7"
+  const fxCommit = "0123456789abcdef0123456789abcdef01234567"
+  const olderVersion = "8.7.6"
+  const olderFxCommit = "89abcdef0123456789abcdef0123456789abcdef"
   const companionBuild = "0.7.0+fmx.0123456789ab"
   const os = process.platform === "darwin" ? "macos" : "linux"
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64"
@@ -21,14 +24,33 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
   const archivePath = join(releaseDirectory, archiveName)
   let corruptChecksum = false
   let archive: "pair" | "lone" = "pair"
+  let fxProbeVersion = "0.5.0"
 
   await mkdir(payloadDirectory)
   await mkdir(releaseDirectory)
-  await writeFile(
-    join(payloadDirectory, "fmx"),
-    `#!/bin/sh\nif [ "\${1:-}" = "--version" ]; then printf '%s\\n' '${version}'; exit 0; fi\nexit 0\n`,
-  )
-  await chmod(join(payloadDirectory, "fmx"), 0o755)
+  const writeFmx = async (releaseVersion: string) => {
+    await writeFile(
+      join(payloadDirectory, "fmx"),
+      [
+        "#!/bin/sh",
+        `if [ "\${1:-}" = "--version" ]; then printf '%s\\n' '${releaseVersion}'; exit 0; fi`,
+        'if [ "${1:-}" = doctor ]; then',
+        '  probe="$("${FMX_FX_PATH:-${0%/*}/fmx-fx}" --fxnk-version 2>/dev/null || true)"',
+        "  case \"$probe\" in 'fxnk 0.5.0 ('*) printf 'fx  %s\\n' \"\${FMX_FX_PATH:-\${0%/*}/fmx-fx}\"; exit 0;; esac",
+        "  printf 'fx  incompatible\\n'",
+        "  exit 1",
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
+    )
+    await chmod(join(payloadDirectory, "fmx"), 0o755)
+  }
+  const writeFxPin = async (commit: string) => {
+    await writeFile(join(payloadDirectory, "fx.json"), `${JSON.stringify({ repository: "https://github.com/possibilities/fx.git", branch: "integration", commit, fxnk: "0.5.0" }, null, 2)}\n`)
+  }
+  await writeFmx(version)
+  await writeFxPin(fxCommit)
   // The companion answers \`version\` the way the fork does: a tab-separated table whose first line is the build.
   await writeFile(
     join(payloadDirectory, "fmx-zmx"),
@@ -44,8 +66,14 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
     const bytes = await Bun.file(archivePath).arrayBuffer()
     return { bytes, checksum: new Bun.CryptoHasher("sha256").update(bytes).digest("hex") }
   }
-  const lone = await pack(["fmx", "LICENSE", "THIRD_PARTY_NOTICES.md"])
-  const pair = await pack(["fmx", "fmx-zmx", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+  const members = ["fmx", "fmx-zmx", "fx.json", "LICENSE", "THIRD_PARTY_NOTICES.md"]
+  const lone = await pack(["fmx", "fx.json", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+  const pair = await pack(members)
+  await writeFmx(olderVersion)
+  await writeFxPin(olderFxCommit)
+  const olderPair = await pack(members)
+  await writeFmx(version)
+  await writeFxPin(fxCommit)
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -54,10 +82,26 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
       const path = new URL(request.url).pathname
       const served = archive === "pair" ? pair : lone
       if (path === "/latest.txt") return new Response(`v${version}`)
+      if (path === "/fx/setup.sh") {
+        return new Response(
+          [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            'mkdir -p "$FMX_FX_INSTALL_DIR"',
+            `printf '%s\\n' '#!/bin/sh' "# $FMX_FX_VERSION" '[ "$1" = --fxnk-version ] || exit 0' "printf 'fxnk ${fxProbeVersion} (fx 0.0.6)\\\\n'" > "$FMX_FX_INSTALL_DIR/fmx-fx"`,
+            'chmod 0755 "$FMX_FX_INSTALL_DIR/fmx-fx"',
+            "",
+          ].join("\n"),
+        )
+      }
       if (path === `/releases/v${version}/${archiveName}`) return new Response(served.bytes)
       if (path === `/releases/v${version}/${archiveName}.sha256`) {
         const digest = corruptChecksum ? "0".repeat(64) : served.checksum
         return new Response(`${digest}  ${archiveName}\n`)
+      }
+      if (path === `/releases/v${olderVersion}/${archiveName}`) return new Response(olderPair.bytes)
+      if (path === `/releases/v${olderVersion}/${archiveName}.sha256`) {
+        return new Response(`${olderPair.checksum}  ${archiveName}\n`)
       }
       return new Response("not found", { status: 404 })
     },
@@ -67,17 +111,43 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
     const baseUrl = `http://127.0.0.1:${server.port}`
     const publishedSetup = join(tempDirectory, "published-setup.sh")
     const setupSource = await readFile(join(ROOT, "setup.sh"), "utf8")
-    await writeFile(publishedSetup, setupSource.replaceAll("__FMX_RELEASE_BASE_URL__", baseUrl))
+    await writeFile(
+      publishedSetup,
+      setupSource
+        .replaceAll("__FMX_RELEASE_BASE_URL__", baseUrl)
+        .replaceAll("__FMX_FX_SETUP_URL__", `${baseUrl}/fx/setup.sh`),
+    )
     const installDirectory = join(tempDirectory, "verified", "bin")
     const installed = await runSetup(undefined, installDirectory, publishedSetup)
     expect(installed.code).toBe(0)
     expect(installed.stdout).toContain(`Installed fmx ${version} at ${installDirectory}/fmx, with its companion fmx-zmx (${companionBuild}) beside it`)
     expect(await readFile(join(installDirectory, "fmx"), "utf8")).toContain(version)
     expect(await readFile(join(installDirectory, "fmx-zmx"), "utf8")).toContain(companionBuild)
-    // Nothing but the pair: no temp file survived the renames.
-    expect((await readdir(installDirectory)).sort()).toEqual(["fmx", "fmx-zmx"])
+    expect(await readFile(join(installDirectory, "fmx-fx"), "utf8")).toContain("fxnk 0.5.0")
+    expect(await readFile(join(installDirectory, "fmx-fx"), "utf8")).toContain(fxCommit)
+    // Nothing but the pair and its private Fx: no temp file survived the renames.
+    expect((await readdir(installDirectory)).sort()).toEqual(["fmx", "fmx-fx", "fmx-zmx"])
     // Installing touched no directory of the user's: the companion's `version` ran in the installer's own.
     expect(await Bun.file(join(tempDirectory, "zmx")).exists()).toBe(false)
+
+    // Selecting an immutable older fmx release selects the Fx pin carried in
+    // that archive, never an ambient or mutable-installer pin.
+    const olderDirectory = join(tempDirectory, "older", "bin")
+    const older = await runSetup(baseUrl, olderDirectory, publishedSetup, {
+      FMX_VERSION: olderVersion,
+      FMX_FX_VERSION: "0".repeat(40),
+    })
+    expect(older.code).toBe(0)
+    expect(await readFile(join(olderDirectory, "fmx-fx"), "utf8")).toContain(olderFxCommit)
+
+    fxProbeVersion = "0.4.0"
+    const incompatibleDirectory = join(tempDirectory, "incompatible", "bin")
+    const incompatible = await runSetup(baseUrl, incompatibleDirectory, publishedSetup)
+    expect(incompatible.code).toBe(1)
+    expect(incompatible.stderr).toContain("does not satisfy this fmx release's fxnk 0.5.0 contract")
+    expect(await Bun.file(join(incompatibleDirectory, "fmx")).exists()).toBe(false)
+    expect(await Bun.file(join(incompatibleDirectory, "fmx-zmx")).exists()).toBe(false)
+    fxProbeVersion = "0.5.0"
 
     corruptChecksum = true
     const rejectedDirectory = join(tempDirectory, "rejected", "bin")
@@ -85,6 +155,7 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
     expect(rejected.code).toBe(1)
     expect(rejected.stderr).toContain("SHA-256 mismatch")
     expect(await Bun.file(join(rejectedDirectory, "fmx")).exists()).toBe(false)
+    expect(await Bun.file(join(rejectedDirectory, "fmx-fx")).exists()).toBe(false)
     expect(await Bun.file(join(rejectedDirectory, "fmx-zmx")).exists()).toBe(false)
 
     // An archive with no companion is not a release: nothing is placed, not even fmx.
@@ -95,16 +166,19 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
     expect(refused.code).toBe(1)
     expect(refused.stderr).toContain("does not contain an executable fmx-zmx companion")
     expect(await Bun.file(join(loneDirectory, "fmx")).exists()).toBe(false)
+    expect(await Bun.file(join(loneDirectory, "fmx-fx")).exists()).toBe(false)
     expect(await Bun.file(join(loneDirectory, "fmx-zmx")).exists()).toBe(false)
 
     // Over an existing install, a refused archive leaves the old pair exactly as it was.
     const installedFmx = await readFile(join(installDirectory, "fmx"))
+    const installedFx = await readFile(join(installDirectory, "fmx-fx"))
     const installedCompanion = await readFile(join(installDirectory, "fmx-zmx"))
     const overExisting = await runSetup(baseUrl, installDirectory)
     expect(overExisting.code).toBe(1)
     expect(Buffer.compare(await readFile(join(installDirectory, "fmx")), installedFmx)).toBe(0)
+    expect(Buffer.compare(await readFile(join(installDirectory, "fmx-fx")), installedFx)).toBe(0)
     expect(Buffer.compare(await readFile(join(installDirectory, "fmx-zmx")), installedCompanion)).toBe(0)
-    expect((await readdir(installDirectory)).sort()).toEqual(["fmx", "fmx-zmx"])
+    expect((await readdir(installDirectory)).sort()).toEqual(["fmx", "fmx-fx", "fmx-zmx"])
 
     // A directory where an executable must go is refused before anything is placed.
     archive = "pair"
@@ -114,10 +188,11 @@ test.skipIf(!SUPPORTED_HOST)("setup installs a verified pair from the gzip fallb
     expect(blocked.code).toBe(1)
     expect(blocked.stderr).toContain(`${blockedDirectory}/fmx-zmx exists and is not a regular file`)
     expect(await Bun.file(join(blockedDirectory, "fmx")).exists()).toBe(false)
+    expect(await Bun.file(join(blockedDirectory, "fmx-fx")).exists()).toBe(false)
 
     // A companion that cannot report its build is said so, not swallowed by errexit.
     await writeFile(join(payloadDirectory, "fmx-zmx"), "#!/bin/sh\necho 'illegal hardware instruction' >&2\nexit 134\n")
-    const crashing = await pack(["fmx", "fmx-zmx", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+    const crashing = await pack(members)
     pair.bytes = crashing.bytes
     pair.checksum = crashing.checksum
     const unreported = await runSetup(baseUrl, join(tempDirectory, "crashing", "bin"))
@@ -133,13 +208,17 @@ async function runSetup(
   releaseBaseUrl: string | undefined,
   installDirectory: string,
   setupPath = join(ROOT, "setup.sh"),
+  overrides: NodeJS.ProcessEnv = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const env = {
     ...process.env,
     FMX_INSTALL_DIR: installDirectory,
     FMX_RELEASE_BASE_URL: releaseBaseUrl,
+    FMX_FX_SETUP_URL: releaseBaseUrl === undefined ? undefined : `${releaseBaseUrl}/fx/setup.sh`,
+    ...overrides,
   }
   if (releaseBaseUrl === undefined) delete env.FMX_RELEASE_BASE_URL
+  if (releaseBaseUrl === undefined) delete env.FMX_FX_SETUP_URL
 
   const child = Bun.spawn(["bash", setupPath], {
     cwd: ROOT,

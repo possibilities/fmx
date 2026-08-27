@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { BoxRenderable, type RGBA, type TerminalColors, TextAttributes, TextRenderable } from "@opentui/core"
+import { BoxRenderable, type RGBA, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
@@ -12,8 +12,8 @@ test("themes the empty state and keyboard-opened help", async () => {
     fxPath: "fx",
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
+    initialTheme: { theme: "light", background: "#f1f2f3", source: "osc11", explicit: false },
   })
-  multiplexer.setHostPalette(hostPalette("#102030", "#f1f2f3", "#00aabb"))
 
   const stage = setup.renderer.root.findDescendantById("fmx-stage")
   const modalBackdrop = setup.renderer.root.findDescendantById("fmx-modal-backdrop")
@@ -38,9 +38,8 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect([stage.x, stage.y, stage.width, stage.height]).toEqual([0, 0, 80, 24])
     expect(modalBackdrop.visible).toBe(false)
     expect(modal.visible).toBe(false)
-    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
-    // dim: halfway from the host background to its foreground.
-    expect(rgb(emptyState.fg)).toEqual([129, 137, 146])
+    expect(setup.captureCharFrame()).toContain("no agents")
+    expect(emptyState.fg.slot).toBe(247)
 
     setup.mockInput.pressKey("b", { ctrl: true })
     setup.mockInput.pressKey("?")
@@ -52,35 +51,36 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect([modalBackdrop.x, modalBackdrop.y, modalBackdrop.width, modalBackdrop.height]).toEqual([0, 0, 80, 24])
     expect(modal.borderStyle).toBe("single")
     expect(modal.title).toBe(" keys ")
-    expect(rgb(modal.titleColor)).toEqual([16, 32, 48])
+    expect(modal.titleColor?.slot).toBe(235)
     expect(helpFrame).toContain("keybinds")
-    expect(helpFrame).toContain("prefix+l")
+    expect(helpFrame).toContain("prefix+p")
     expect([modalText.x - modal.x, modalText.y - modal.y]).toEqual([2, 1])
     expect([
       modal.width - (modalText.x - modal.x) - modalText.width,
       modal.height - (modalText.y - modal.y) - modalText.height,
     ]).toEqual([2, 1])
     expect(rgba(modalBackdrop.backgroundColor)).toEqual([0, 0, 0, 51])
-    expect(rgb(modal.backgroundColor)).toEqual([241, 242, 243])
-    expect(rgb(modal.borderColor)).toEqual([0, 170, 187])
-    expect(rgb(modalText.fg)).toEqual([16, 32, 48])
-    expect(rgb(modalText.bg)).toEqual([241, 242, 243])
+    expect(modal.backgroundColor.intent).toBe("default")
+    expect(modal.borderColor.intent).toBe("indexed")
+    expect(modal.borderColor.slot).toBe(4)
+    expect(modalText.fg.slot).toBe(235)
+    expect(modalText.bg.intent).toBe("default")
     const keyChunk = modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))
-    const labelChunk = modalText.chunks.find((chunk) => chunk.text === "launch agent")
-    // Keys are labels: bold, one step down the ramp (secondary, 75%).
-    expect(rgb(keyChunk?.fg)).toEqual([72, 85, 97])
+    const labelChunk = modalText.chunks.find((chunk) => chunk.text === "prev agent")
+    // Keys are labels: bold, at fx's fixed secondary step.
+    expect(keyChunk?.fg?.slot).toBe(241)
     expect((keyChunk?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
-    expect(rgb(labelChunk?.fg)).toEqual([16, 32, 48])
+    expect(labelChunk?.fg?.slot).toBe(235)
 
-    multiplexer.setHostPalette(hostPalette("#e8e9ea", "#111213", "#33ccdd"))
+    multiplexer.setTheme({ theme: "dark", background: "#111213", source: "osc11", explicit: false })
 
     expect(rgba(modalBackdrop.backgroundColor)).toEqual([0, 0, 0, 51])
-    expect(rgb(modal.backgroundColor)).toEqual([17, 18, 19])
-    expect(rgb(modal.borderColor)).toEqual([51, 204, 221])
-    expect(rgb(modalText.fg)).toEqual([232, 233, 234])
-    expect(rgb(modalText.bg)).toEqual([17, 18, 19])
-    expect(rgb(modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))?.fg)).toEqual([178, 179, 180])
-    expect(rgb(emptyState.fg)).toEqual([125, 126, 127])
+    expect(modal.backgroundColor.intent).toBe("default")
+    expect(modal.borderColor.slot).toBe(4)
+    expect(modalText.fg.slot).toBe(255)
+    expect(modalText.bg.intent).toBe("default")
+    expect(modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))?.fg?.slot).toBe(250)
+    expect(emptyState.fg.slot).toBe(245)
 
     await setup.mockMouse.click(modal.x + 1, modal.y + 1)
     await setup.renderOnce()
@@ -90,32 +90,11 @@ test("themes the empty state and keyboard-opened help", async () => {
     await setup.renderOnce()
     expect(modalBackdrop.visible).toBe(false)
     expect(modal.visible).toBe(false)
-    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
+    expect(setup.captureCharFrame()).toContain("no agents")
   } finally {
     await multiplexer.shutdown()
   }
 })
-
-function hostPalette(foreground: string, background: string, focus: string): TerminalColors {
-  const palette: Array<string | null> = Array(16).fill(null)
-  palette[4] = focus
-  return {
-    palette,
-    defaultForeground: foreground,
-    defaultBackground: background,
-    cursorColor: null,
-    mouseForeground: null,
-    mouseBackground: null,
-    tekForeground: null,
-    tekBackground: null,
-    highlightBackground: null,
-    highlightForeground: null,
-  }
-}
-
-function rgb(color: RGBA | undefined): number[] | undefined {
-  return color?.toInts().slice(0, 3)
-}
 
 function rgba(color: RGBA | undefined): number[] | undefined {
   return color?.toInts()

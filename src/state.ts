@@ -10,8 +10,6 @@ export type PersistedState = {
   /** Hidden by the toggle key; absent when shown, so an untouched state.json
    * stays as it was. */
   trayHidden?: boolean
-  /** Agents started per directory, which orders the project picker. */
-  projectLaunches?: Record<string, number>
   /** Stable Manifest identity of the agent that most recently owned focus. */
   activeAgentId?: string
 }
@@ -59,25 +57,10 @@ export async function loadState(path = statePath()): Promise<PersistedState> {
     state.trayWidth = document.trayWidth
   }
   if (document.trayHidden === true) state.trayHidden = true
-  const launches = readLaunches(document.projectLaunches)
-  if (launches) state.projectLaunches = launches
   if (typeof document.activeAgentId === "string" && /^[0-9a-f]{32}$/u.test(document.activeAgentId)) {
     state.activeAgentId = document.activeAgentId
   }
   return state
-}
-
-/** Counts a hand-edit or an older fmx could have left in any shape; only
- * whole positive tallies for absolute directories are kept. */
-function readLaunches(raw: unknown): Record<string, number> | null {
-  if (!isRecord(raw)) return null
-  const launches: Record<string, number> = {}
-  for (const [directory, count] of Object.entries(raw)) {
-    if (!directory.startsWith("/")) continue
-    if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) continue
-    launches[directory] = count
-  }
-  return Object.keys(launches).length > 0 ? launches : null
 }
 
 export async function saveState(state: PersistedState, path = statePath()): Promise<void> {

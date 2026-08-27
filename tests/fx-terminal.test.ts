@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { buildKittyKeyboardFlags, CliRenderEvents, type Selection, type TerminalColors } from "@opentui/core"
+import { buildKittyKeyboardFlags, CliRenderEvents, type Selection } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { FX_KEYBOARD_PROTOCOL, FxTerminalRenderable } from "../src/fx-terminal.ts"
 
@@ -7,7 +7,7 @@ test("matches fx's host Kitty keyboard protocol", () => {
   expect(buildKittyKeyboardFlags(FX_KEYBOARD_PROTOCOL)).toBe(1)
 })
 
-test("mirrors the host palette into the embedded terminal", async () => {
+test("gives embedded fx the resolved OSC 11 background without remapping its palette", async () => {
   const setup = await createTestRenderer({ width: 20, height: 6 })
   const responses: string[] = []
 
@@ -22,26 +22,17 @@ test("mirrors the host palette into the embedded terminal", async () => {
     setup.renderer.root.add(terminal)
 
     expect(
-      terminal.applyHostPalette({
-        palette: ["#010203", "#aabbcc"],
-        defaultForeground: "#102030",
-        defaultBackground: "#123456",
-        cursorColor: "#abcdef",
-        mouseForeground: null,
-        mouseBackground: null,
-        tekForeground: null,
-        tekBackground: null,
-        highlightBackground: null,
-        highlightForeground: null,
-      } satisfies TerminalColors),
-    ).toBe(true)
+      terminal.applyHostTheme({
+        theme: "dark",
+        background: "#123456",
+        source: "osc11",
+        explicit: false,
+      }),
+    ).toBeUndefined()
 
     terminal.write("\x1b]4;0;?\x1b\\\x1b]10;?;?;?\x1b\\")
 
-    expect(responses.join("")).toContain("\x1b]4;0;rgb:0101/0202/0303\x1b\\")
-    expect(responses.join("")).toContain("\x1b]10;rgb:1010/2020/3030\x1b\\")
     expect(responses.join("")).toContain("\x1b]11;rgb:1212/3434/5656\x1b\\")
-    expect(responses.join("")).toContain("\x1b]12;rgb:abab/cdcd/efef\x1b\\")
   } finally {
     setup.renderer.destroy()
   }
@@ -166,17 +157,11 @@ test("conceals the fresh origin cursor until fx places it", async () => {
       setCursorPosition(x, y, visible)
     }
     terminal.focus()
-    terminal.applyHostPalette({
-      palette: [],
-      defaultForeground: "#102030",
-      defaultBackground: "#123456",
-      cursorColor: null,
-      mouseForeground: null,
-      mouseBackground: null,
-      tekForeground: null,
-      tekBackground: null,
-      highlightBackground: null,
-      highlightForeground: null,
+    terminal.applyHostTheme({
+      theme: "dark",
+      background: "#123456",
+      source: "osc11",
+      explicit: false,
     })
     await setup.renderOnce()
 
@@ -325,4 +310,3 @@ test("fx mouse reporting cancels OpenTUI's provisional selection", async () => {
     setup.renderer.destroy()
   }
 })
-

@@ -10,12 +10,15 @@ type MainOptions = {
   sessionId?: string | null
   state?: AdeAgentState
   attention?: AdeAttentionKind | null
+  workspaceRoot?: string | null
+  turnId?: number | null
   payload?: Record<string, unknown>
 }
 
 type ChildOptions = MainOptions & {
   parentSessionId: string
   sessionId: string
+  subagentId?: number | null
 }
 
 /** Synchronous ADE surface for Multiplexer unit tests. */
@@ -59,8 +62,11 @@ export class TestAdeSocket {
       instanceId,
       context: {
         agentRole: "main",
+        workspaceRoot: options.workspaceRoot ?? null,
         sessionId: context.sessionId,
         parentSessionId: null,
+        subagentId: null,
+        turnId: options.turnId ?? null,
         agentState: state,
         attentionKind: attention,
       },
@@ -79,8 +85,11 @@ export class TestAdeSocket {
       instanceId,
       context: {
         agentRole: "subagent",
+        workspaceRoot: options.workspaceRoot ?? null,
         sessionId: options.sessionId,
         parentSessionId: options.parentSessionId,
+        subagentId: options.subagentId ?? null,
+        turnId: options.turnId ?? null,
         agentState: state,
         attentionKind: attention,
       },
@@ -115,6 +124,9 @@ export function record(
     parentSessionId?: string | null
     state?: AdeAgentState
     attention?: AdeAttentionKind | null
+    workspaceRoot?: string | null
+    subagentId?: number | null
+    turnId?: number | null
     payload?: Record<string, unknown>
   } = {},
 ): AdeRecord {
@@ -126,8 +138,11 @@ export function record(
     instanceId: options.instanceId ?? "0123456789abcdef0123456789abcdef",
     context: {
       agentRole: options.role ?? "main",
+      workspaceRoot: options.workspaceRoot ?? null,
       sessionId: options.sessionId ?? null,
       parentSessionId: options.parentSessionId ?? null,
+      subagentId: options.subagentId ?? null,
+      turnId: options.turnId ?? null,
       agentState: state,
       attentionKind: state === "blocked" ? (options.attention ?? null) : null,
     },

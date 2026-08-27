@@ -6,9 +6,8 @@ import {
   type KittyKeyboardOptions,
   type OptimizedBuffer,
   type Selection,
-  type TerminalColors,
 } from "@opentui/core"
-import { buildHostPaletteSequence } from "./host-palette.ts"
+import { buildEmbeddedThemeSequence, type FxnkThemeResolution } from "./host-palette.ts"
 
 type FxTerminalOptions = Omit<EmbeddedTerminalOptions, "selectable">
 
@@ -86,11 +85,8 @@ export class FxTerminalRenderable extends EmbeddedTerminalRenderable {
     return super.onSelectionChanged(selection)
   }
 
-  public applyHostPalette(colors: TerminalColors): boolean {
-    const sequence = buildHostPaletteSequence(colors)
-    if (!sequence) return false
-    this.write(sequence)
-    return true
+  public applyHostTheme(resolution: FxnkThemeResolution): void {
+    this.write(buildEmbeddedThemeSequence(resolution))
   }
 
   protected override renderSelf(buffer: OptimizedBuffer): void {

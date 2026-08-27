@@ -11,12 +11,10 @@ in a companion daemon, so they keep running when fmx is not.
 curl -fsSL https://c1g42cnmuvvspilo.public.blob.vercel-storage.com/setup.sh | bash
 ```
 
-This installs `fmx` and its companion `fmx-zmx` to `~/.local/bin`. The two are
-a pair — fmx refuses to start against any other build — so reinstall both
-together. `fx` must be on `PATH` as well, built from the
-[fxnk](https://github.com/possibilities/fxnk) workshop: fmx reads an agent's
-lifecycle over an interface that fork adds, and refuses an `fx` without it.
-`fmx doctor` reports what an installation has.
+This installs `fmx`, its companion `fmx-zmx`, and its pinned Fx fork as
+`fmx-fx` to `~/.local/bin`. The installer keeps that private copy separate
+from any `fx` installed for direct use, and fmx resolves it once when a Runtime
+starts. `fmx doctor` reports what an installation has.
 
 ## Usage
 
@@ -24,8 +22,9 @@ lifecycle over an interface that fork adds, and refuses an `fx` without it.
 
 | | |
 |---|---|
-| `ctrl-b l` | launch dialog: prompt, project, worktree, model, effort |
 | `ctrl-b d` | detach this terminal, leaving every agent running |
+| `ctrl-b p` / `ctrl-b n` | switch to the previous / next agent |
+| `ctrl-b b` | toggle the tray |
 
 Configuration is `~/.config/fmx/config.toml`. At least one project root is
 required; everything else has a default:
@@ -43,8 +42,9 @@ at a terminal. `fmx-zmx list`, `attach`, and `kill` reach one by hand.
 
 ## Agents
 
-An agent running inside fmx can drive the surface and read what a hand can
-see. `fmx control <command>` prints one JSON object.
+`fmx control <command>` drives a running Runtime and prints one JSON object.
+Run `fmx control launch` from another terminal to create the first Agent;
+inside an Agent, the same command defaults to that Agent's Project.
 
 ```sh
 fmx control orient                      # where you are and what the interface shows
@@ -55,6 +55,49 @@ fmx control keys                        # every binding and its command
 ```
 
 `fmx control` with no arguments prints the rest.
+
+## Bus
+
+The Runtime Bus is the local machine interface for sidecars, alternate views,
+notification tools, and commands. `fmx bus` subscribes to its newline-delimited
+JSON events, beginning with a complete snapshot of the active Agent and every
+Agent's stable identity, display number, session metadata, Git context,
+lifecycle state, and subagents. Later state records are also complete, so a
+consumer can replace its local projection rather than patching it:
+
+```sh
+fmx bus                                  # snapshots and state changes
+fmx bus --activity                       # plus every accepted ADE event
+fmx bus --activity | jq -c 'select(.event == "activity")'
+```
+
+Activity is attributed to its stable Agent, main or subagent session, parent
+session, turn, and workspace when Fx supplied them. `ade_sequence` is
+process-local and `gap_before: true` says fmx did not observe the immediately
+preceding sequence. Activity is live-only, never replayed; reconnect for a
+fresh state snapshot. Summary mode excludes tool arguments and assistant text.
+`--raw-payloads` includes complete ADE payloads, may expose secrets, and
+implies `--activity`.
+
+The Bus is private to the local user, but even ordinary state includes
+workspace paths, terminal labels, and prompt-derived session names. Consumers
+that store or forward records own that exposure.
+
+Direct Bus peers connect to the mode-0600 socket reported as `fmx.socket` by
+`fmx control orient`. A peer can subscribe, send correlated control requests,
+or do both on one connection:
+
+```jsonl
+{"schema_version":1,"type":"subscribe","topics":["state","activity"],"activity_payload":"summary"}
+{"schema_version":1,"type":"request","id":"focus-1","method":"focus","params":{"target":"next"}}
+```
+
+The Runtime answers with typed `event`, `response`, and `error` records.
+Responses carry the authoritative `state_revision` and take priority over
+queued events; queues stay bounded, so a slow Bus peer is disconnected instead
+of delaying fmx or Fx. Bus peers are not terminal Clients and do not keep the
+Runtime alive. `fmx control` uses this same Bus. The complete wire contract is
+in [Runtime Bus schema 1](docs/runtime-bus.md).
 
 ## Development
 

@@ -53,7 +53,7 @@ test("doctor reports a paired installation and requires a compatible Fx", async 
     const withoutFx = await doctor({ ...env, FMX_FX_PATH: undefined })
     expect(withoutFx.ok).toBe(false)
     expect(withoutFx.lines.find((line) => line.startsWith("fx "))).toContain(
-      "fx executable not found: fx (set FMX_FX_PATH); install it through the fxnk workshop",
+      "Fx executable not found: no fmx-fx or fx on PATH (reinstall fmx, or set FMX_FX_PATH)",
     )
   } finally {
     await rm(root, { recursive: true, force: true })

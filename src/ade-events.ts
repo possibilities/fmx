@@ -23,8 +23,11 @@ export type AdeRecord = {
   instanceId: string
   context: {
     agentRole: AdeAgentRole
+    workspaceRoot: string | null
     sessionId: string | null
     parentSessionId: string | null
+    subagentId: number | null
+    turnId: number | null
     agentState: AdeAgentState
     attentionKind: AdeAttentionKind | null
   }
@@ -223,10 +226,13 @@ export function decodeAdeRecord(line: string): AdeRecord | null {
   if (!isRecord(value.context) || !isRecord(value.payload)) return null
   const role = value.context.agent_role
   if (role !== "main" && role !== "subagent") return null
+  const workspaceRoot = typeof value.context.workspace_root === "string" ? value.context.workspace_root : null
   const sessionId = value.context.session_id
   if (sessionId !== null && typeof sessionId !== "string") return null
   const parentSessionId = value.context.parent_session_id
   if (parentSessionId !== null && typeof parentSessionId !== "string") return null
+  const subagentId = nullableSafeInteger(value.context.subagent_id)
+  const turnId = nullableSafeInteger(value.context.turn_id)
   const agentState = value.context.agent_state
   if (agentState !== "idle" && agentState !== "working" && agentState !== "blocked") return null
   const attentionKind = value.context.attention_kind
@@ -245,8 +251,11 @@ export function decodeAdeRecord(line: string): AdeRecord | null {
     instanceId: value.instance_id,
     context: {
       agentRole: role,
+      workspaceRoot,
       sessionId,
       parentSessionId,
+      subagentId,
+      turnId,
       agentState,
       attentionKind,
     },
@@ -256,6 +265,10 @@ export function decodeAdeRecord(line: string): AdeRecord | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function nullableSafeInteger(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : null
 }
 
 async function waitForSingletonHandoff(path: string): Promise<HeldLock | null | undefined> {

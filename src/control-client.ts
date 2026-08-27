@@ -1,23 +1,25 @@
 import { readdirSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
+import {
+  BUS_SOCKET_ENV_VAR,
+  busSocketPathFor,
+  decodeBusResponse,
+  encodeBusRequest,
+} from "./bus-protocol.ts"
 import type { Command, LaunchFieldArgs, TextSource } from "./cli.ts"
 import {
-  CONTROL_SOCKET_ENV_VAR,
   type ControlError,
   type ControlMethod,
   type ControlReply,
-  decodeReply,
-  encodeRequest,
 } from "./control-protocol.ts"
 import { LineAssembler } from "./line-assembler.ts"
 import { listenerAnswers } from "./unix-socket.ts"
 import { privateRootDirectory } from "./zmx-environment.ts"
 
 /**
- * The client side of the control socket: `fmx control <command>` resolved to one or
- * two requests, sent to the fmx the caller is running inside, and answered
- * as one JSON object on stdout.
+ * The control client over the Runtime Bus: `fmx control <command>` resolves
+ * the Home Bus, sends a typed request, and prints the result.
  *
  * Exit status is the agent's first reading of what happened, so it is fixed:
  * 0 ok · 1 refused · 2 usage · 3 no fmx reachable · 4 timed out.
@@ -48,9 +50,9 @@ export type ClientEnvironment = {
   env: NodeJS.ProcessEnv
   cwd: string
   readStdin: () => Promise<string>
-  /** Where live control sockets are looked for when nothing names one. */
+  /** Where live Runtime buses are looked for when nothing names one. */
   socketDirectory?: string
-  /** Whether an fmx answers at a control socket path; a connect probe unless a test says otherwise. */
+  /** Whether an fmx answers at a Bus path; a connect probe unless a test says otherwise. */
   isSocketLive?: (path: string) => Promise<boolean>
 }
 
@@ -68,7 +70,7 @@ export async function runCommand(
 ): Promise<ClientOutcome> {
   let socketPath: string
   try {
-    socketPath = await resolveSocketPath(explicitSocket, environment)
+    socketPath = await resolveBusPath(explicitSocket, environment)
   } catch (error) {
     return {
       exitCode: EXIT_UNREACHABLE,
@@ -80,8 +82,7 @@ export async function runCommand(
   const plan = await planRequests(command, environment, caller)
   let result: unknown = null
   for (const step of plan) {
-    const params = typeof step.params === "function" ? step.params(result) : step.params
-    const reply = await exchange(socketPath, step.method, params, step.timeoutMs)
+    const reply = await exchange(socketPath, step.method, step.params, step.timeoutMs)
     if (!reply.ok) return { exitCode: exitCodeFor(reply.error), error: reply.error }
     result = reply.result
   }
@@ -90,8 +91,7 @@ export async function runCommand(
 
 type Step = {
   method: ControlMethod
-  /** A function reads the previous step's result, for a step that needs it. */
-  params: Record<string, unknown> | ((previous: unknown) => Record<string, unknown>)
+  params: Record<string, unknown>
   /** null waits as long as the server does. */
   timeoutMs: number | null
 }
@@ -129,69 +129,15 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
       }
     case "launch": {
       const fields = await launchFieldParams(command.fields, environment)
-      if (!command.editable) {
-        return [
-          {
-            method: "launch",
-            params: withCaller({
-              ...fields,
-              focus: command.focus,
-            }),
-            // Cutting a worktree and spawning fx both happen before the answer.
-            timeoutMs: 30_000,
-          },
-        ]
-      }
-      const steps: Step[] = [
-        { method: "draft.open", params: withCaller({ kind: "launch", fields }), timeoutMs: REPLY_TIMEOUT_MS },
+      return [
+        {
+          method: "launch",
+          params: withCaller({ ...fields, focus: command.focus }),
+          // Cutting a worktree and spawning fx both happen before the answer.
+          timeoutMs: 30_000,
+        },
       ]
-      if (command.wait) {
-        // The wait names the draft the open step answered with.
-        steps.push({
-          method: "draft.wait",
-          params: (previous) => ({
-            ...(isRecord(previous) && typeof previous.draft === "string" ? { draft: previous.draft } : {}),
-            ...(command.timeoutMs === undefined ? {} : { timeout_ms: command.timeoutMs }),
-          }),
-          timeoutMs: waitTimeout(command.timeoutMs),
-        })
-      }
-      return steps
     }
-    case "draft":
-      switch (command.verb) {
-        case "show":
-          return [
-            {
-              method: "draft.show",
-              params: command.draft === undefined ? {} : { draft: command.draft },
-              timeoutMs: REPLY_TIMEOUT_MS,
-            },
-          ]
-        case "set":
-          return [
-            {
-              method: "draft.set",
-              params: { draft: command.draft, fields: await launchFieldParams(command.fields, environment) },
-              timeoutMs: REPLY_TIMEOUT_MS,
-            },
-          ]
-        case "submit":
-          return [{ method: "draft.submit", params: { draft: command.draft }, timeoutMs: 30_000 }]
-        case "cancel":
-          return [{ method: "draft.cancel", params: { draft: command.draft }, timeoutMs: REPLY_TIMEOUT_MS }]
-        case "wait":
-          return [
-            {
-              method: "draft.wait",
-              params: {
-                ...(command.draft === undefined ? {} : { draft: command.draft }),
-                ...(command.timeoutMs === undefined ? {} : { timeout_ms: command.timeoutMs }),
-              },
-              timeoutMs: waitTimeout(command.timeoutMs),
-            },
-          ]
-      }
     case "focus":
       return [{ method: "focus", params: withCaller({ target: command.target }), timeoutMs: REPLY_TIMEOUT_MS }]
     case "tray":
@@ -249,14 +195,17 @@ function callerAgent(env: NodeJS.ProcessEnv): number | null {
  * Which fmx to talk to: the one named, the one the caller runs inside, or —
  * for a human testing from outside — the only one alive on this machine.
  */
-export async function resolveSocketPath(explicit: string | null, environment: ClientEnvironment): Promise<string> {
-  if (explicit) return isAbsolute(explicit) ? explicit : resolve(environment.cwd, explicit)
-  const fromEnv = environment.env[CONTROL_SOCKET_ENV_VAR]
-  if (fromEnv) return fromEnv
-  const candidates = await liveControlSockets(environment)
+export async function resolveBusPath(explicit: string | null, environment: ClientEnvironment): Promise<string> {
+  if (explicit) {
+    const path = isAbsolute(explicit) ? explicit : resolve(environment.cwd, explicit)
+    return busSocketPathFor(path)
+  }
+  const fromEnv = environment.env[BUS_SOCKET_ENV_VAR]
+  if (fromEnv) return busSocketPathFor(fromEnv)
+  const candidates = await liveBusSockets(environment)
   if (candidates.length === 1) return candidates[0]!
   if (candidates.length === 0) {
-    throw new UnreachableError(`not running inside fmx (${CONTROL_SOCKET_ENV_VAR} is unset and no fmx is running)`)
+    throw new UnreachableError(`not running inside fmx (${BUS_SOCKET_ENV_VAR} is unset and no fmx is running)`)
   }
   throw new UnreachableError(
     `not running inside fmx, and more than one Runtime is running; pass --socket with one of: ${candidates.join(", ")}`,
@@ -264,11 +213,11 @@ export async function resolveSocketPath(explicit: string | null, environment: Cl
 }
 
 /**
- * Control sockets are named for a Home, not a process, so a file proves
+ * Runtime Buses are named for a Home, not a process, so a file proves
  * nothing about whether an fmx is behind it: the ones that answer are the
  * ones that count.
  */
-async function liveControlSockets(environment: ClientEnvironment): Promise<string[]> {
+async function liveBusSockets(environment: ClientEnvironment): Promise<string[]> {
   const directory = environment.socketDirectory ?? privateRootDirectory()
   const alive = environment.isSocketLive ?? listenerAnswers
   let names: string[]
@@ -279,14 +228,14 @@ async function liveControlSockets(environment: ClientEnvironment): Promise<strin
   }
   const sockets: string[] = []
   for (const name of names.sort()) {
-    if (!/^[0-9a-f]+\.ctl$/u.test(name)) continue
+    if (!/^[0-9a-f]+\.bus$/u.test(name)) continue
     const path = `${directory}/${name}`
     if (await alive(path)) sockets.push(path)
   }
   return sockets
 }
 
-/** One request, one reply, one connection. */
+/** One request and its correlated response on a bus connection. */
 export async function exchange(
   socketPath: string,
   method: ControlMethod,
@@ -295,6 +244,7 @@ export async function exchange(
 ): Promise<ControlReply> {
   const id = `${process.pid}-${Date.now().toString(36)}`
   const assembler = new LineAssembler()
+  const decoder = new TextDecoder()
   const { promise, resolve: settle, reject } = Promise.withResolvers<ControlReply>()
   let timer: ReturnType<typeof setTimeout> | null = null
   if (timeoutMs !== null) {
@@ -310,16 +260,24 @@ export async function exchange(
       unix: socketPath,
       socket: {
         open: (socket) => {
-          socket.write(encodeRequest({ id, method, params }))
+          socket.write(encodeBusRequest({ id, method, params }))
         },
         data: (_socket, data) => {
-          const [line] = assembler.push(new TextDecoder().decode(data))
-          if (line !== undefined) settle(decodeReply(line))
+          for (const line of assembler.push(decoder.decode(data, { stream: true }))) {
+            const reply = decodeBusResponse(line)
+            if (reply && (reply.id === id || reply.id === null)) settle(reply)
+          }
         },
         close: () => {
-          const [line] = assembler.flush()
-          if (line !== undefined) settle(decodeReply(line))
-          else settle({ id, ok: false, error: { code: "failed", message: "fmx closed the connection without answering" } })
+          const trailing = [...assembler.push(decoder.decode()), ...assembler.flush()]
+          for (const line of trailing) {
+            const reply = decodeBusResponse(line)
+            if (reply && (reply.id === id || reply.id === null)) {
+              settle(reply)
+              return
+            }
+          }
+          settle({ id, ok: false, error: { code: "failed", message: "fmx closed the connection without answering" } })
         },
         error: (_socket, error) => reject(error),
       },
@@ -348,8 +306,4 @@ export function exitCodeFor(error: ControlError): number {
     default:
       return EXIT_REFUSED
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

@@ -3,25 +3,18 @@ import {
   BoxRenderable,
   type CliRenderer,
   fg,
-  RGBA,
   StyledText,
-  type TerminalColors,
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
-import { hasDetectedDefaults, hostRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
+import { type FxnkTheme, fxnkRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
 import { indentFor, type TreeRow } from "./session-tree.ts"
 
 /** Inset the text; the row's shading still spans the full tray width. */
 const ROW_PADDING_LEFT = 1
 const ICON_COLUMN = 2
 const MISSING_SESSION = "—"
-/** Agent names before the host palette answers: the terminal's own ANSI gray,
- * which reads as dim text on a light theme and a dark one alike. Once the
- * host has answered they take the ramp's dim step. */
-const SESSION_COLOR = RGBA.fromIndex(8)
-
 /**
  * The icon carries the whole status. A blocked Agent varies its glyph by the
  * attention kind Fx carries in its ADE lifecycle snapshot.
@@ -99,11 +92,7 @@ type RenderedRow = {
   binding: RowBinding
 }
 
-/**
- * A row's identity across renders. An Agent keeps its row through any change
- * to it; every other row is identified by where it sits, which is what makes
- * a project or branch that moved a different row.
- */
+/** An Agent keeps its row; structural rows are identified by their position. */
 function rowKey(row: TreeRow, index: number): string {
   return row.agentId !== null ? `agent-${row.agentId}` : `${row.kind}-${index}`
 }
@@ -117,14 +106,9 @@ function rowKey(row: TreeRow, index: number): string {
 export class SessionList {
   readonly root: BoxRenderable
   private ramp: Ramp = RAMP_FALLBACK
-  /** The ramp the active row's fill was chosen from. Under the startup lock
-   * it lags `ramp`, and everything drawn on that fill is drawn from it, so a
-   * fallback-dark fill never carries a light host's dark glyph. */
-  private fillRamp: Ramp = RAMP_FALLBACK
-  private sessionColor: RGBA | string = SESSION_COLOR
   private rows: RenderedRow[] = []
-  /** Bumped whenever a palette change makes every drawn row stale. */
-  private paletteGeneration = 0
+  /** Bumped whenever a theme change makes every drawn row stale. */
+  private themeGeneration = 0
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -138,35 +122,20 @@ export class SessionList {
     })
   }
 
-  /**
-   * Draw `rows`, reusing what is already on screen. The tray is refreshed
-   * from every ADE record, and Fx reports before each tool call, so a
-   * rebuild-per-call would churn every renderable many times a second for a
-   * tray that usually has not changed. A render that changes nothing touches
-   * nothing and does not ask for a frame.
-   */
   render(rows: TreeRow[], width: number): void {
     const keys = rows.map((row, index) => rowKey(row, index))
-    let changed = keys.length !== this.rows.length
-    if (!changed) {
-      for (const [index, key] of keys.entries()) {
-        if (this.rows[index]!.key !== key) {
-          changed = true
-          break
-        }
-      }
-    }
+    const shapeChanged =
+      keys.length !== this.rows.length || keys.some((key, index) => this.rows[index]!.key !== key)
 
-    if (!changed) {
-      // Same rows in the same order: only their contents can differ.
+    if (!shapeChanged) {
       let repainted = false
-      for (const [index, row] of rows.entries()) repainted = this.paint(this.rows[index]!, row, width) || repainted
+      for (const [index, row] of rows.entries()) {
+        repainted = this.paint(this.rows[index]!, row, width) || repainted
+      }
       if (repainted) this.renderer.requestRender()
       return
     }
 
-    // The shape moved. Keep every row whose key survives — a reused row keeps
-    // its native renderables — and build only what is genuinely new.
     const reusable = new Map(this.rows.map((rendered) => [rendered.key, rendered]))
     const next: RenderedRow[] = []
     for (const [index, row] of rows.entries()) {
@@ -176,9 +145,9 @@ export class SessionList {
         reusable.delete(key)
         this.paint(existing, row, width)
         next.push(existing)
-        continue
+      } else {
+        next.push(this.buildRow(row, key, width))
       }
-      next.push(this.buildRow(row, key, width))
     }
     for (const rendered of this.rows) this.root.remove(rendered.container)
     for (const orphan of reusable.values()) orphan.container.destroyRecursively()
@@ -187,25 +156,26 @@ export class SessionList {
     this.renderer.requestRender()
   }
 
+  applyTheme(theme: FxnkTheme): void {
+    this.ramp = fxnkRamp(theme)
+    this.themeGeneration += 1
+  }
+
   /** Bring one already-built row up to date, in place. */
   private paint(rendered: RenderedRow, row: TreeRow, width: number): boolean {
     const signature = this.signatureOf(row, width)
     if (rendered.signature === signature) return false
     rendered.signature = signature
     rendered.binding.agentId = row.agentId
-    rendered.container.backgroundColor = row.active ? this.fillRamp.surface : undefined
+    rendered.container.backgroundColor = row.active ? this.ramp.surface : undefined
     rendered.text.content = this.styleRow(row, width)
     return true
   }
 
-  /**
-   * Everything `styleRow` and the row's fill are drawn from. The palette
-   * generation stands in for the three ramps, which change together.
-   */
   private signatureOf(row: TreeRow, width: number): string {
     return [
       width,
-      this.paletteGeneration,
+      this.themeGeneration,
       row.kind,
       row.depth,
       row.state,
@@ -216,31 +186,7 @@ export class SessionList {
     ].join("\u0000")
   }
 
-  /**
-   * The selected-row fill and the agent names are on screen from the first
-   * frame; while the startup chrome is locked, a late initial palette answer
-   * themes everything else and leaves those two as they were drawn — the
-   * fill together with the ramp it came from, which is what the active row's
-   * glyph is painted in. Names take the dim step only once both host
-   * defaults have answered; until then they are the terminal's own gray.
-   */
-  applyPalette(colors: TerminalColors | null, preserveStartupChrome = false): void {
-    const fillRamp = this.fillRamp
-    const sessionColor = this.sessionColor
-    this.ramp = hostRamp(colors)
-    this.fillRamp = this.ramp
-    this.sessionColor = hasDetectedDefaults(colors) ? this.ramp.dim : SESSION_COLOR
-    if (preserveStartupChrome) {
-      this.fillRamp = fillRamp
-      this.sessionColor = sessionColor
-    }
-    // Every row on screen was drawn from the old ramps.
-    this.paletteGeneration += 1
-  }
-
   private buildRow(row: TreeRow, key: string, width: number): RenderedRow {
-    // The click target outlives any one TreeRow, so the handler reads the
-    // agent from a binding this row keeps rather than from a captured row.
     const binding: RowBinding = { agentId: row.agentId }
     const container = new BoxRenderable(this.renderer, {
       id: `fmx-session-row-${key}`,
@@ -250,7 +196,7 @@ export class SessionList {
       paddingLeft: ROW_PADDING_LEFT,
       // Only the active row is filled. Its ancestors are marked by weight, so
       // two faint backgrounds never have to be told apart.
-      backgroundColor: row.active ? this.fillRamp.surface : undefined,
+      backgroundColor: row.active ? this.ramp.surface : undefined,
       onMouseDown: (event) => {
         // Navigation is a press action, like a keybinding: waiting for release
         // makes a fast switch feel delayed by the human's click duration.
@@ -275,8 +221,7 @@ export class SessionList {
   }
 
   private styleRow(row: TreeRow, width: number): StyledText {
-    // What sits on the active row's fill is painted from the fill's own ramp.
-    const ramp = row.active ? this.fillRamp : this.ramp
+    const ramp = this.ramp
     const chunks: TextChunk[] = [fg(ramp.foreground)(indentFor(row.depth))]
     if (isAgentRow(row)) {
       const glyph = fg(ramp[stateRole(row.state)])(`${stateIcon(row.state, row.attention)} `)
@@ -284,7 +229,7 @@ export class SessionList {
       // The selected row's name steps up to the ramp's primary: dim text on
       // the raised fill is the one place the tray asks a name to be read
       // against something other than the background it was measured from.
-      chunks.push(fg(row.active ? ramp.foreground : this.sessionColor)(rowText(row, width)))
+      chunks.push(fg(row.active ? ramp.foreground : ramp.dim)(rowText(row, width)))
       return new StyledText(chunks)
     }
     // An ancestor of the active agent is marked by weight: the path reads

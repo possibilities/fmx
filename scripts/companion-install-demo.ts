@@ -7,9 +7,11 @@
  * The release archives for this host are built (`scripts/build-release.sh`)
  * unless `dist/release` already holds them — `DEMO_REBUILD=1` builds them
  * again — and served over a local HTTP server the way the public store
- * serves them. The published installer is run against that server into a
- * temporary directory, with a PATH that has no zmx, no fmx-zmx, and no
- * FMX_ZMX_PATH in the environment. `fmx doctor` shows the installed pair;
+ * serves them. The server also exposes a fixture implementation of the
+ * separately published fmx-fx installer, installing the same fake Fx the
+ * Runtime half of this demo exercises. The published installer is run against
+ * that server into a temporary directory, with a PATH that has no zmx, no
+ * fmx-zmx, and no FMX_ZMX_PATH in the environment. `fmx doctor` shows the installed trio;
  * the same fmx next to a companion that is not the pinned build is refused.
  * Then the installed fmx runs for real, under a private Home, with the test
  * fixture's fake fx as its agent: one agent is started, fmx is SIGKILLed,
@@ -20,7 +22,10 @@
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import companionPin from "../companion.json" with { type: "json" }
+import fxPin from "../fx.json" with { type: "json" }
 import packageMetadata from "../package.json" with { type: "json" }
+import { defaultAdeSocketPath } from "../src/ade-events.ts"
+import { BusSocket } from "../src/bus-socket.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { homeIdFor } from "../src/zmx-environment.ts"
 
@@ -72,6 +77,7 @@ const temp = await mkdtemp("/tmp/fmx-install-demo-")
 const installDirectory = join(temp, "bin")
 const companionDirectory = `/tmp/fmxz-demo-${basename(temp).slice(-6)}`
 const home = homeIdFor(join(temp, "config", "fmx"))
+const busSocketPath = BusSocket.pathFor(defaultAdeSocketPath(home))
 const lifecycleLog = join(temp, "lifecycle.log")
 await writeFile(join(temp, "config.toml"), `project_roots = [${JSON.stringify(ROOT)}]\n`)
 const fmxEnvironment: Record<string, string> = {
@@ -94,17 +100,23 @@ const visibleText = (output: string) =>
 const banners = (output: string) => visibleText(output).match(/fake\s+fx\s+ready/g)?.length ?? 0
 const CTRL = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
-/** ctrl-b l opens the launch dialog; the returns commit the empty prompt and
- * launch into the project it opened on. */
-const launch = async (fmx: Fmx) => {
-  const drawn = fmx.output().split(LAUNCH_PROMPT_ROW).length
-  fmx.key(CTRL("b"), "l".charCodeAt(0))
-  await until(() => fmx.output().split(LAUNCH_PROMPT_ROW).length > drawn, "the launch dialog")
-  fmx.key(13)
-  await sleep(50)
-  fmx.key(13)
-}
-const LAUNCH_PROMPT_ROW = "what should the agent do?"
+/** The Fx repository owns its checksum-verifying public installer. This local
+ * demo needs only its contract boundary: install the exact requested pin as
+ * `fmx-fx`, then let fmx's own doctor verify the compatibility probe. */
+const fixtureFxSetup = (origin: string) => `#!/usr/bin/env bash
+set -euo pipefail
+install_dir="\${FMX_FX_INSTALL_DIR:?}"
+requested="\${FMX_FX_VERSION:?}"
+[[ "$requested" == ${JSON.stringify(fxPin.commit)} ]] || { echo 'fixture fmx-fx pin mismatch' >&2; exit 1; }
+mkdir -p "$install_dir"
+temporary="$(mktemp "$install_dir/.fmx-fx.XXXXXX")"
+trap 'rm -f "$temporary"' EXIT
+curl --fail --silent --show-error --location ${JSON.stringify(`${origin}/fx/fmx-fx`)} -o "$temporary"
+chmod 0755 "$temporary"
+mv -f "$temporary" "$install_dir/fmx-fx"
+trap - EXIT
+"$install_dir/fmx-fx" --fxnk-version
+`
 
 type Fmx = { process: ReturnType<typeof Bun.spawn>; output: () => string; key: (...bytes: number[]) => void }
 const startFmx = (executable: string): Fmx => {
@@ -148,8 +160,11 @@ try {
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
-      const path = new URL(request.url).pathname
+      const url = new URL(request.url)
+      const path = url.pathname
       if (path === "/latest.txt") return new Response(`v${VERSION}`)
+      if (path === "/fx/setup.sh") return new Response(fixtureFxSetup(url.origin))
+      if (path === "/fx/fmx-fx") return new Response(Bun.file(FAKE_FX))
       const match = /^\/releases\/v([^/]+)\/([^/]+)$/.exec(path)
       if (match && match[1] === VERSION) return new Response(Bun.file(join(releaseDirectory, match[2]!)))
       return new Response("not found", { status: 404 })
@@ -157,7 +172,12 @@ try {
   })
   const baseUrl = `http://127.0.0.1:${server.port}`
   const publishedSetup = join(temp, "setup.sh")
-  await writeFile(publishedSetup, (await readFile(join(ROOT, "setup.sh"), "utf8")).replaceAll("__FMX_RELEASE_BASE_URL__", baseUrl))
+  await writeFile(
+    publishedSetup,
+    (await readFile(join(ROOT, "setup.sh"), "utf8"))
+      .replaceAll("__FMX_RELEASE_BASE_URL__", baseUrl)
+      .replaceAll("__FMX_FX_SETUP_URL__", `${baseUrl}/fx/setup.sh`),
+  )
   note(`${baseUrl}/latest.txt → v${VERSION}; ${baseUrl}/releases/v${VERSION}/${archive}`)
 
   await step(`run the installer into ${installDirectory} with PATH=${scrubbedPath}`)
@@ -189,11 +209,16 @@ try {
   await step(`start the installed fmx under a private Home (${home}); the companion keeps sessions in ${companionDirectory}`)
   companion = new CompanionCommand(companionDirectory, baseEnvironment, join(installDirectory, "fmx-zmx"))
   first = startFmx(join(installDirectory, "fmx"))
-  await until(() => first!.output().includes("prefix+l"), "the empty state")
+  await until(() => first!.output().includes("no agents"), "the empty state")
   note(`fmx is pid ${first.process.pid}, showing its empty state`)
 
-  await step("ctrl-b l: one agent, created by the bundled companion")
-  await launch(first)
+  await step("launch from the CLI: one agent, created by the bundled companion")
+  const launched = await run(
+    [join(installDirectory, "fmx"), "control", "launch", "--socket", busSocketPath, "--project", ROOT],
+    fmxEnvironment,
+    temp,
+  )
+  if (launched.code !== 0) throw new Error(`launch failed: ${(launched.stderr || launched.stdout).trim()}`)
   await until(async () => (await lifecycle()).includes("ready 1"), "agent 1")
   await until(async () => (await companion!.list()).some((s) => s.state === "live"), "the companion to hold it")
   for (const session of await companion.list()) note(`companion: ${session.name} ${session.state} pid ${session.pid}`)
@@ -220,7 +245,7 @@ try {
   await step("ctrl-c ctrl-c inside the agent, then ctrl-c twice in the empty state: fmx exits")
   second.key(CTRL("c"), CTRL("c"))
   await until(async () => (await lifecycle()).includes("graceful 1"), "the agent to exit")
-  await until(() => second!.output().includes("prefix+l to launch agent"), "the empty state")
+  await until(() => second!.output().includes("no agents"), "the empty state")
   await sleep(300)
   second.key(CTRL("c"))
   await until(() => second!.output().includes("press ctrl+c again to exit"), "the exit confirmation")
