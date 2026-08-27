@@ -155,15 +155,9 @@ _Avoid_: selection, breadcrumb.
 offered as Projects, along with the root itself. Roots are scanned one level
 deep and never recursively; a root that is not on this machine, or not inside
 a repository, contributes nothing. A Home must configure at least one before
-its TUI can start; its first root is fmx's working directory and what the
-launch dialog opens on when no agent is active.
+its TUI can start. Its first root is fmx's working directory; a CLI launch
+that names no Project uses it when the root is itself a repository.
 _Avoid_: workspace root, search path, scan directory.
-
-**Launch dialog** — the modal that gathers what an agent is started with
-before fx runs: a prompt, a project, whether to cut a worktree, and the launch
-level, one row each. `tab` moves between rows; a chooser row answers a letter
-by cycling to the next value starting with it, and space opens its picker.
-_Avoid_: new tab modal, launcher, form.
 
 **Launch level** — the Codex model and reasoning effort a new agent starts
 with, passed to that fx alone through `FX_MODEL` and `FX_EFFORT`. Its allowed
@@ -177,20 +171,11 @@ has published that Agent's first ADE record. An agent launched with one is
 therefore already working when it is first looked at.
 _Avoid_: intent, initial message, seed.
 
-**Prompt editor** — the launch dialog's prompt row: OpenTUI's textarea, which
-is a real line editor. Everything readline-shaped is the widget's; fmx owns
-only the kill ring it yanks from and the handoff to `$EDITOR`. It takes keys
-through the renderer's dispatch to the focused renderable, so the dialog lets
-its keys through rather than swallowing them, and a blurred field is what
-leaves a letter on another row free to cycle.
-_Avoid_: input, textarea, prompt field.
-
 **Worktree** — a checkout fmx cuts for a launch, branched from what the chosen
 project has checked out. Its branch and its directory share one name,
 `<project>-<ordinal>`, and the ordinal counts against the main repository, so
 launching from inside `fmx-1` produces `fmx-2` rather than `fmx-1-1`. A
-Project with no commit to branch from cannot offer one, which is the only
-thing the launch dialog's Worktree row has left to ask.
+Project with no commit to branch from cannot produce one.
 _Avoid_: branch, checkout, clone.
 
 **Project** — a directory an agent can be started in, which is to say a
@@ -201,17 +186,6 @@ unborn HEAD still names the branch the Session list draws — that simply cannot
 offer a Worktree. A HEAD naming neither a ref nor a commit names no branch,
 so it is not a Project at all.
 _Avoid_: workspace, folder, tracked directory.
-
-**Project picker** — the filterable list the launch dialog opens on space.
-Typing filters by subsequence, so `agl` finds `agentlaunch`; enter applies the
-highlighted project to the row rather than starting anything. Dismissing it
-changes nothing.
-_Avoid_: overlay, palette, fuzzy finder.
-
-**Launch count** — how many agents have been started in a directory, kept
-in `state.json` and incremented by every start whichever key opened it. It
-orders the project picker and is never drawn in it.
-_Avoid_: frecency, history, usage.
 
 **Git context** — the worktree root and branch fmx reads from the launch
 directory it owns rather than treating lifecycle context as repository
@@ -255,13 +229,6 @@ _Avoid_: command socket, API socket, RPC.
 `you`, every agent, the tray's rows as drawn, and whatever surface is
 open. A read, which never marks anything seen.
 _Avoid_: status, state dump, introspection.
-
-**Draft** — one opening of the launch dialog, addressable by id from the
-moment it opens until it is submitted or cancelled, and readable after. Every
-opening is one, whether a key or an agent opened it, so an agent can finish a
-dialog the human started and a human can finish one an agent prefilled. Ids
-exist so an agent can never submit a draft it did not mean to.
-_Avoid_: pending launch, form state, staged launch.
 
 **Target** — how a command names an agent: its id, `current` for the
 caller's own, `active` for the one on screen, `next` or `previous` relative to

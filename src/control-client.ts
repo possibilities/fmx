@@ -79,8 +79,7 @@ export async function runCommand(
   const plan = await planRequests(command, environment, caller)
   let result: unknown = null
   for (const step of plan) {
-    const params = typeof step.params === "function" ? step.params(result) : step.params
-    const reply = await exchange(socketPath, step.method, params, step.timeoutMs)
+    const reply = await exchange(socketPath, step.method, step.params, step.timeoutMs)
     if (!reply.ok) return { exitCode: exitCodeFor(reply.error), error: reply.error }
     result = reply.result
   }
@@ -89,8 +88,7 @@ export async function runCommand(
 
 type Step = {
   method: ControlMethod
-  /** A function reads the previous step's result, for a step that needs it. */
-  params: Record<string, unknown> | ((previous: unknown) => Record<string, unknown>)
+  params: Record<string, unknown>
   /** null waits as long as the server does. */
   timeoutMs: number | null
 }
@@ -128,69 +126,15 @@ async function planRequests(command: Command, environment: ClientEnvironment, ca
       }
     case "launch": {
       const fields = await launchFieldParams(command.fields, environment)
-      if (!command.editable) {
-        return [
-          {
-            method: "launch",
-            params: withCaller({
-              ...fields,
-              focus: command.focus,
-            }),
-            // Cutting a worktree and spawning fx both happen before the answer.
-            timeoutMs: 30_000,
-          },
-        ]
-      }
-      const steps: Step[] = [
-        { method: "draft.open", params: withCaller({ kind: "launch", fields }), timeoutMs: REPLY_TIMEOUT_MS },
+      return [
+        {
+          method: "launch",
+          params: withCaller({ ...fields, focus: command.focus }),
+          // Cutting a worktree and spawning fx both happen before the answer.
+          timeoutMs: 30_000,
+        },
       ]
-      if (command.wait) {
-        // The wait names the draft the open step answered with.
-        steps.push({
-          method: "draft.wait",
-          params: (previous) => ({
-            ...(isRecord(previous) && typeof previous.draft === "string" ? { draft: previous.draft } : {}),
-            ...(command.timeoutMs === undefined ? {} : { timeout_ms: command.timeoutMs }),
-          }),
-          timeoutMs: waitTimeout(command.timeoutMs),
-        })
-      }
-      return steps
     }
-    case "draft":
-      switch (command.verb) {
-        case "show":
-          return [
-            {
-              method: "draft.show",
-              params: command.draft === undefined ? {} : { draft: command.draft },
-              timeoutMs: REPLY_TIMEOUT_MS,
-            },
-          ]
-        case "set":
-          return [
-            {
-              method: "draft.set",
-              params: { draft: command.draft, fields: await launchFieldParams(command.fields, environment) },
-              timeoutMs: REPLY_TIMEOUT_MS,
-            },
-          ]
-        case "submit":
-          return [{ method: "draft.submit", params: { draft: command.draft }, timeoutMs: 30_000 }]
-        case "cancel":
-          return [{ method: "draft.cancel", params: { draft: command.draft }, timeoutMs: REPLY_TIMEOUT_MS }]
-        case "wait":
-          return [
-            {
-              method: "draft.wait",
-              params: {
-                ...(command.draft === undefined ? {} : { draft: command.draft }),
-                ...(command.timeoutMs === undefined ? {} : { timeout_ms: command.timeoutMs }),
-              },
-              timeoutMs: waitTimeout(command.timeoutMs),
-            },
-          ]
-      }
     case "focus":
       return [{ method: "focus", params: withCaller({ target: command.target }), timeoutMs: REPLY_TIMEOUT_MS }]
     case "tray":
@@ -347,8 +291,4 @@ export function exitCodeFor(error: ControlError): number {
     default:
       return EXIT_REFUSED
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

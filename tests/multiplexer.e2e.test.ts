@@ -26,31 +26,16 @@ const configWithRoot = (extra = "") => `project_roots = [${JSON.stringify(ROOT)}
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
-type Child = { terminal?: { write(bytes: Uint8Array): void } | null }
-
-/** The launch dialog's empty prompt row: what says it is on screen. */
-const LAUNCH_PROMPT_ROW = "what should the agent do?"
-
-/**
- * Start an agent from the keyboard: ctrl+b l opens the launch dialog, the
- * first return commits the empty prompt, and the second launches into the
- * project the dialog opened on. The returns wait for the dialog to be drawn
- * rather than for a fixed beat, because one sent before it is on screen
- * reaches nothing.
- */
-async function launchAgent(
-  child: Child,
-  readOutput: () => string,
-  prefixByte = control("b"),
-): Promise<void> {
-  // A test that launches twice has the row in its output already, so what is
-  // waited for is another painting of it, not the first.
-  const drawn = countOccurrences(readOutput(), LAUNCH_PROMPT_ROW)
-  child.terminal?.write(Uint8Array.of(prefixByte, "l".charCodeAt(0)))
-  await waitUntil(() => countOccurrences(readOutput(), LAUNCH_PROMPT_ROW) > drawn, 8_000, readOutput)
-  child.terminal?.write(Uint8Array.of(13))
-  await Bun.sleep(50)
-  child.terminal?.write(Uint8Array.of(13))
+/** Start an Agent through the control socket, as `fmx control launch` does. */
+async function launchAgent(tempDirectory: string): Promise<void> {
+  await waitUntil(() => orientation(tempDirectory, process.env).then(Boolean), 8_000, () => "")
+  const socket = ControlSocket.pathFor(defaultAdeSocketPath(homeOf(tempDirectory)))
+  const outcome = await runCommand(
+    { name: "launch", fields: {}, focus: true },
+    socket,
+    { env: process.env, cwd: ROOT, readStdin: async () => "" },
+  )
+  if (outcome.exitCode !== 0) throw new Error(outcome.error?.message ?? "launch failed")
 }
 
 const RESTORED_SESSION_A = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
@@ -150,8 +135,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
         async () => (await loadManifest(join(tempDirectory, "agents.json"), homeOf(tempDirectory))).agents[0]?.phase === "running",
@@ -224,7 +209,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
     const first = spawnClient(firstOutput, 100, 24)
     let second: ReturnType<typeof spawnClient> | null = null
     try {
-      await waitUntil(() => firstOutput.output.includes("prefix+l"), 8_000, () => firstOutput.output)
+      await waitUntil(() => firstOutput.output.includes("no agents"), 8_000, () => firstOutput.output)
       const initial = await orientation(tempDirectory, env)
       expect(initial?.fmx).toMatchObject({ cols: 100, rows: 24 })
       const runtimePid = initial!.fmx.pid
@@ -375,7 +360,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 )
 
 test.skipIf(!PTY_TEST_ENABLED)(
-  "the launch dialog opens on the first configured project root",
+  "a CLI launch defaults to the first configured project root",
   async () => {
     await chmod(FAKE_FX, 0o755)
     const tempDirectory = await mkdtemp(join(tmpdir(), "fmx-first-root-e2e-"))
@@ -417,8 +402,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
       await waitUntil(
         async () =>
@@ -432,7 +417,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
-      await waitUntil(() => output.includes("prefix+l to launch agent"), 5_000, () => output)
+      await waitUntil(() => output.includes("no agents"), 5_000, () => output)
       await Bun.sleep(250)
       child.terminal?.write(Uint8Array.of(control("c")))
       await waitUntil(() => output.includes("press ctrl+c again to exit"), 5_000, () => output)
@@ -505,8 +490,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     const first = spawnFmx(firstOutput)
     let replacement: ReturnType<typeof spawnFmx> | null = null
     try {
-      await waitUntil(() => firstOutput.output.includes("prefix+l"), 8_000, () => firstOutput.output)
-      await launchAgent(first, () => firstOutput.output)
+      await waitUntil(() => firstOutput.output.includes("no agents"), 8_000, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
       const firstEntry = (await manifest()).agents[0]!
       await sendAdeRecord(
@@ -518,7 +503,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         mainAdeRecord(2, firstEntry.paneId, "AttentionRequired", RESTORED_SESSION_A, "blocked", "question"),
       )
 
-      await launchAgent(first, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
       const secondEntry = (await manifest()).agents[1]!
       await sendAdeRecord(
@@ -673,10 +658,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
     const first = spawnFmx(firstOutput)
     let replacement: ReturnType<typeof spawnFmx> | null = null
     try {
-      await waitUntil(() => firstOutput.output.includes("prefix+l"), 8_000, () => firstOutput.output)
-      await launchAgent(first, () => firstOutput.output)
+      await waitUntil(() => firstOutput.output.includes("no agents"), 8_000, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => firstOutput.output)
-      await launchAgent(first, () => firstOutput.output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => firstOutput.output)
 
       // Exercise an actual selection change, ending on agent 2.
@@ -789,8 +774,8 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output, 0)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("start 1"), 8_000, () => output)
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("private-terminal-response 1"),
@@ -829,7 +814,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(await readLifecycle(lifecycleLog)).not.toContain("start 2")
 
       const activeFakeTitleCount = countOccurrences(output, "\u001b]0;fmx · fake session\u0007")
-      await launchAgent(child, () => output, 0)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
       await waitUntil(
         () => countOccurrences(output, "\u001b]0;fmx · fake session\u0007") > activeFakeTitleCount,
@@ -864,10 +849,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(child.exitCode).toBeNull()
       expect(await readLifecycle(lifecycleLog)).not.toContain("graceful 2")
 
-      // Counted with the agent on screen: the empty state is drawn behind
-      // the launch dialog too, so a count taken before the launch grows
-      // before anything has exited.
-      const emptyStateBeforeExit = countOccurrences(output, "prefix+l")
+      const emptyStateBeforeExit = countOccurrences(output, "no agents")
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("terminal-response 2"),
@@ -875,7 +857,7 @@ test.skipIf(!PTY_TEST_ENABLED)(
         () => output,
       )
       await waitUntil(
-        () => countOccurrences(output, "prefix+l") > emptyStateBeforeExit,
+        () => countOccurrences(output, "no agents") > emptyStateBeforeExit,
         5_000,
         () => output,
       )
@@ -937,10 +919,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
     })
 
     try {
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 5_000, () => output)
 
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
@@ -955,14 +937,11 @@ test.skipIf(!PTY_TEST_ENABLED)(
       )
       expect(child.exitCode).toBeNull()
 
-      // Counted with the agent on screen: the empty state is drawn behind
-      // the launch dialog too, so a count taken before the launch grows
-      // before anything has exited.
-      const emptyStateBeforeExit = countOccurrences(output, "prefix+l")
+      const emptyStateBeforeExit = countOccurrences(output, "no agents")
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 1"), 5_000, () => output)
       await waitUntil(
-        () => countOccurrences(output, "prefix+l") > emptyStateBeforeExit,
+        () => countOccurrences(output, "no agents") > emptyStateBeforeExit,
         5_000,
         () => output,
       )
@@ -1056,13 +1035,13 @@ test.skipIf(!PTY_TEST_ENABLED)(
 
     try {
       await withTimeout(firstPaletteReply.promise, 2_000, "fmx did not query the host palette")
-      expect(outputBeforePaletteReply).toContain("prefix+l")
+      expect(outputBeforePaletteReply).toContain("no agents")
       expect(outputBeforePaletteReply).toContain(paintSizingOwnerDefaultBackground(100, 24))
       expect(hasRgbSgr(outputBeforePaletteReply, "background", [28, 28, 28])).toBe(false)
       const paletteTransitionOffset = outputBeforePaletteReply.length
 
-      await waitUntil(() => output.includes("prefix+l"), 8_000, () => output)
-      await launchAgent(child, () => output)
+      await waitUntil(() => output.includes("no agents"), 8_000, () => output)
+      await launchAgent(tempDirectory)
       await waitUntil(
         async () => (await readLifecycle(lifecycleLog)).includes("background-response 1"),
         8_000,
@@ -1083,13 +1062,10 @@ test.skipIf(!PTY_TEST_ENABLED)(
       expect(updatedLifecycle).toContain("theme-notification 1")
       expect(updatedLifecycle).toContain("rgb:eeee/eeee/eeee")
 
-      // Counted with the agent on screen: the empty state is drawn behind
-      // the launch dialog too, so a count taken before the launch grows
-      // before anything has exited.
-      const emptyStateBeforeExit = countOccurrences(output, "prefix+l")
+      const emptyStateBeforeExit = countOccurrences(output, "no agents")
       child.terminal?.write(Uint8Array.of(control("c"), control("c")))
       await waitUntil(
-        () => countOccurrences(output, "prefix+l") > emptyStateBeforeExit,
+        () => countOccurrences(output, "no agents") > emptyStateBeforeExit,
         5_000,
         () => output,
       )
@@ -1152,10 +1128,10 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
       const one = spawnFmx(first)
       let two: ReturnType<typeof spawnFmx> | null = null
       try {
-        await waitUntil(() => first.output.includes("prefix+l"), 8_000, () => first.output)
-        await launchAgent(one, () => first.output)
+        await waitUntil(() => first.output.includes("no agents"), 8_000, () => first.output)
+        await launchAgent(tempDirectory)
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 1"), 8_000, () => first.output)
-        await launchAgent(one, () => first.output)
+        await launchAgent(tempDirectory)
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("ready 2"), 8_000, () => first.output)
         // Both claims are acknowledged before fmx is taken down.
         await waitUntil(
@@ -1213,7 +1189,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
         await Bun.sleep(300)
         // The restored Agent is the first surface the renderer exposes:
         // the empty state belongs only to a Home the join found empty.
-        expect(second.output).not.toContain("prefix+l to launch agent")
+        expect(second.output).not.toContain("no agents")
         expect(await readLifecycle(lifecycleLog)).not.toContain("start 3")
         expect(countOccurrences(await readLifecycle(lifecycleLog), "start ")).toBe(2)
 
@@ -1228,7 +1204,7 @@ for (const signal of ["SIGHUP", "SIGQUIT", "SIGKILL"] as const) {
 
         two.terminal?.write(Uint8Array.of(control("c"), control("c")))
         await waitUntil(async () => (await readLifecycle(lifecycleLog)).includes("graceful 2"), 5_000, () => second.output)
-        await waitUntil(() => second.output.includes("prefix+l to launch agent"), 5_000, () => second.output)
+        await waitUntil(() => second.output.includes("no agents"), 5_000, () => second.output)
         expect(two.exitCode).toBeNull()
         await Bun.sleep(250)
         two.terminal?.write(Uint8Array.of(control("c")))

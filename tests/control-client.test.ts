@@ -130,28 +130,6 @@ test("resolves prompt text from a file or stdin before sending", async () => {
   }
 })
 
-test("an editable launch that waits opens the draft, then waits on the id it was given", async () => {
-  const { socket, calls } = await server(
-    async ({ method }) =>
-      method === "draft.open" ? { draft: "d3", status: "open" } : { draft: "d3", status: "submitted" },
-    "editable",
-  )
-  try {
-    const outcome = await runCommand(
-      parseArgs(["control", "launch", "--editable", "--wait", "--timeout", "900", "--worktree"]).command!,
-      socket.path,
-      environment(),
-    )
-    expect(outcome.result).toEqual({ draft: "d3", status: "submitted" })
-    expect(calls).toEqual([
-      { method: "draft.open", params: { kind: "launch", fields: { worktree: true } } },
-      { method: "draft.wait", params: { draft: "d3", timeout_ms: 900 } },
-    ])
-  } finally {
-    socket.close()
-  }
-})
-
 test("maps error codes to exit statuses", async () => {
   let code: "busy" | "invalid_params" | "timeout" = "busy"
   const { socket } = await server(async () => {
@@ -193,7 +171,7 @@ test("the fmx binary itself is the client: JSON out, exit status in", async () =
 
     const usage = cli("control", "draft")
     expect(await usage.exited).toBe(EXIT_USAGE)
-    expect(await new Response(usage.stderr).text()).toContain("Usage: fmx control draft")
+    expect(await new Response(usage.stderr).text()).toContain("unknown control command: draft")
     const group = cli("control")
     expect(await group.exited).toBe(EXIT_USAGE)
     expect(await new Response(group.stderr).text()).toContain("Usage: fmx control <command>")

@@ -31,18 +31,15 @@ import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
-  type DraftInfo,
   type AgentInfo,
   type CatalogInfo,
   type KeysInfo,
-  type LaunchChoices,
   optionalBoolean,
   optionalInteger,
   optionalString,
   optionalStringList,
   parseTarget,
   requiredString,
-  isRecord,
   type TrayRow,
   type Snapshot,
   type SubagentInfo,
@@ -67,7 +64,6 @@ import {
   type TerminalSize,
 } from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
-import { LaunchDialog, type LaunchDialogOutcome, type LaunchPrefill, type LaunchRequest } from "./launch-dialog.ts"
 import { hasDetectedBackground, hostRamp, RAMP_FALLBACK, type Ramp, themeModeReport } from "./host-palette.ts"
 import {
   actionForKey,
@@ -87,12 +83,11 @@ import {
   treeNameFor,
 } from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
-import { expandTilde, orderProjects, type ProjectChoice, scanProjectRoots } from "./projects.ts"
+import { expandTilde, scanProjectRoots } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
 import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
-import { bracketedPaste } from "./prompt-editor.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { Toast, type ToastTone } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
@@ -136,6 +131,14 @@ const MODIFIER_ONLY_KEYS = new Set([
 const PROMPT_SETTLE_MS = 250
 /** How long after the paste the send follows, so fx sees them apart. */
 const PROMPT_SUBMIT_MS = 120
+const PASTE_START = "\u001b[200~"
+const PASTE_END = "\u001b[201~"
+
+/** Preserve newlines while typing a CLI Launch prompt into Fx. The submit is
+ * always a later write because Fx discards a paste followed in the same one. */
+function bracketedPaste(text: string): string {
+  return `${PASTE_START}${text}${PASTE_END}`
+}
 /** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
@@ -162,14 +165,11 @@ type MultiplexerOptions = {
   /** Stable identity to focus before the first restored frame. */
   initialActiveAgentId?: string
   onActiveAgentChange?: (agentId: string | null) => void
-  /** Directories the launch dialog scans one level deep for projects. */
+  /** Directories scanned one level deep for a CLI launch's default project. */
   projectRoots?: string[]
   /** Where a launch's new worktree is checked out. */
   worktreeRoot?: string
   home?: string
-  /** Agents started per directory so far, which orders the picker. */
-  initialProjectLaunches?: Record<string, number>
-  onProjectLaunch?: (launches: Record<string, number>) => void
   /** Where `fmx control <command>` reaches this fmx; handed to every agent. */
   controlSocketPath?: string
   /** How long each lifecycle Toast remains; overridden only by renderer tests. */
@@ -182,12 +182,20 @@ type MultiplexerOptions = {
 /** Default states `agent wait` waits for: any that needs someone. */
 const WAIT_DEFAULT_STATES: readonly DisplayState[] = ["idle", "done", "blocked"]
 const DISPLAY_STATES: readonly string[] = ["blocked", "working", "done", "idle", "unknown"]
-/** How many resolved drafts stay readable after they close. */
-const DRAFT_HISTORY = 32
+type LaunchRequest = {
+  directory: string
+  prompt: string
+  worktree: boolean
+  model: string
+  effort: string
+}
 
-type Draft = {
-  info: DraftInfo
-  waiters: Set<(info: DraftInfo) => void>
+type LaunchOverrides = {
+  directory?: string
+  prompt?: string
+  worktree?: boolean
+  model?: string
+  effort?: string
 }
 
 type AgentWaiter = {
@@ -496,8 +504,6 @@ export class Multiplexer {
   private trayHidden = false
   private dividerDragging = false
   private dragStartWidth = TRAY_DEFAULT_WIDTH
-  private readonly launchDialog: LaunchDialog
-  private readonly projectLaunches: Map<string, number>
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
@@ -521,12 +527,6 @@ export class Multiplexer {
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
   private readonly swallowedReleases = new Set<string>()
-  /** Every launch dialog opening, by id, the open one included. */
-  private readonly drafts = new Map<string, Draft>()
-  private openDraft: Draft | null = null
-  /** Handed from the dialog's close to the launch that follows it. */
-  private submittedDraft: Draft | null = null
-  private nextDraftId = 1
   private readonly agentWaiters = new Set<AgentWaiter>()
   /** What `fmx control <command>` drives. */
   readonly control: ControlSurface = {
@@ -538,7 +538,6 @@ export class Multiplexer {
   private readonly keyreleaseHandler = (key: KeyEvent) => this.onKeyRelease(key)
   private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
   private readonly paletteHandler = (colors: TerminalColors) => this.onPalette(colors)
-  private readonly pasteHandler = () => this.launchDialog.handlePaste()
   private readonly resizeHandler = () => this.applyLayout()
   private readonly adeHandler = (record: AdeRecord) => this.acceptAdeRecord(record)
 
@@ -609,7 +608,7 @@ export class Multiplexer {
     })
     this.emptyState = new TextRenderable(renderer, {
       id: "fmx-empty-state",
-      content: emptyStateContent(this.keybindings),
+      content: emptyStateContent(),
       fg: RAMP_FALLBACK.dim,
       selectable: false,
     })
@@ -668,23 +667,11 @@ export class Multiplexer {
 
     this.toast = new Toast(renderer, { durationMs: options.toastDurationMs })
 
-    this.projectLaunches = new Map(Object.entries(options.initialProjectLaunches ?? {}))
-    this.launchDialog = new LaunchDialog(renderer, {
-      onLaunch: (request) => void this.startLaunch(request),
-      onClose: (outcome) => {
-        if (!this.shuttingDown) this.restoreFocus()
-        this.closeDraft(outcome)
-      },
-      onProjectChange: (directory) => this.answerWorktreeAvailability(directory),
-    })
-
     this.renderer.root.add(this.stage)
     this.renderer.root.add(this.toast.root)
     this.renderer.root.add(this.modalBackdrop)
-    this.renderer.root.add(this.launchDialog.root)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
-    this.renderer.keyInput.on("paste", this.pasteHandler)
     this.renderer.on(CliRenderEvents.SELECTION, this.selectionHandler)
     this.renderer.on(CliRenderEvents.PALETTE, this.paletteHandler)
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
@@ -768,7 +755,6 @@ export class Multiplexer {
     if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
     this.exitConfirmationTimer = null
     this.exitConfirmationKey = null
-    this.launchDialog.close()
     this.hideModal()
     this.subagents.stop()
     for (const waiter of this.agentWaiters) waiter.settle(null)
@@ -780,7 +766,6 @@ export class Multiplexer {
       for (const agent of this.agents) agent.detach()
       this.renderer.keyInput.off("keypress", this.keypressHandler)
       this.renderer.keyInput.off("keyrelease", this.keyreleaseHandler)
-      this.renderer.keyInput.off("paste", this.pasteHandler)
       this.renderer.off(CliRenderEvents.SELECTION, this.selectionHandler)
       this.renderer.off(CliRenderEvents.PALETTE, this.paletteHandler)
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
@@ -823,7 +808,6 @@ export class Multiplexer {
     })
     const agent = this.addAgent(entry, cwd, focus)
     agent.setPendingPrompt(prompt)
-    this.countLaunch(cwd)
     // "started" means fx is running, whether or not it could be reached. The
     // notice waits on the attempt itself rather than reading a flag when it
     // happens to run: everything it needs may already be in hand.
@@ -1077,7 +1061,7 @@ export class Multiplexer {
     active.terminal.setHostSelectionEnabled(true)
     // A surface drawn over fx keeps the keys; it hands them back when it
     // closes, so an agent shown behind it must not take them now.
-    if (!this.launchDialog.isOpen() && !this.modalKind) this.restoreFocus()
+    if (!this.modalKind) this.restoreFocus()
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
@@ -1110,7 +1094,7 @@ export class Multiplexer {
   }
 
   private restoreFocus(): void {
-    if (this.launchDialog.isOpen() || this.modalKind) return
+    if (this.modalKind) return
     this.activeAgent()?.terminal.focus()
   }
 
@@ -1129,7 +1113,7 @@ export class Multiplexer {
     const palette = hostRamp(this.hostPalette)
     this.emptyState.content = confirmingExit
       ? `press ${this.exitConfirmationKey ?? "ctrl+c"} again to exit`
-      : emptyStateContent(this.keybindings)
+      : emptyStateContent()
     this.emptyState.fg = confirmingExit ? palette.foreground : palette.dim
   }
 
@@ -1381,7 +1365,6 @@ export class Multiplexer {
 
   private applyLayout(requestedTrayWidth = this.trayWidth): void {
     this.applyTrayWidth(requestedTrayWidth)
-    this.launchDialog.layout()
     this.toast.layout()
   }
 
@@ -1412,7 +1395,6 @@ export class Multiplexer {
       this.divider.borderColor = color
       this.divider.focusedBorderColor = color
     }
-    this.launchDialog.applyPalette(colors)
     this.sessionList.applyPalette(colors, this.startupChromeLocked)
     this.refreshSessionList()
   }
@@ -1462,19 +1444,6 @@ export class Multiplexer {
     if (this.renderer.hasSelection) this.renderer.clearSelection()
     if (this.shuttingDown) {
       this.swallow(key)
-      return
-    }
-
-    if (this.launchDialog.isOpen()) {
-      if (MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) {
-        this.swallow(key)
-        return
-      }
-      // A key the dialog declines belongs to its focused prompt field, which
-      // the renderer feeds through its own dispatch — swallowing it here
-      // would stop it ever arriving. fx is blurred, so nothing else can take
-      // it either.
-      if (this.launchDialog.handleKey(key)) this.swallow(key)
       return
     }
 
@@ -1535,13 +1504,6 @@ export class Multiplexer {
         // Runtime. Treat a leaked or stale binding as inert: terminal input
         // must never turn one Client's Detach into a shared shutdown.
         return
-      case "launch":
-        try {
-          this.showLaunchDialog()
-        } catch (error) {
-          if (!(error instanceof ControlFailure)) throw error
-        }
-        return
       case "previous_tab":
         this.switchTo(this.activeIndex - 1)
         return
@@ -1561,104 +1523,17 @@ export class Multiplexer {
     this.prefixArmed = false
   }
 
-  /**
-   * The projects on offer, freshly scanned so a repository made a minute ago
-   * is already there. fmx's own workspace joins the list when it is one too,
-   * which keeps the dialog useful before any root is configured.
-   */
-  private projectChoices(): ProjectChoice[] {
+  /** The configured Projects, freshly scanned so a repository made a minute
+   * ago is already available to a CLI launch that names no directory. */
+  private projectDirectories(): string[] {
     const home = this.options.home ?? homedir()
-    const scanned = scanProjectRoots(this.options.projectRoots ?? [], home)
-    const directories =
-      scanned.includes(this.options.cwd) || !isRepositoryDirectory(this.options.cwd)
-        ? scanned
-        : [...scanned, this.options.cwd]
-    return orderProjects(directories, this.projectLaunches, home)
-  }
-
-  private showLaunchDialog(openedBy: "keys" | "agent" = "keys", prefill: LaunchPrefill = {}): Draft {
-    if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    if (this.modalKind || this.launchDialog.isOpen()) {
-      throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
-    }
-    const active = this.activeAgent()
-    this.launchDialog.applyPalette(this.hostPalette)
-    const projects = this.projectChoices()
-    if (prefill.directory !== undefined) {
-      projects.push(...orderProjects([prefill.directory], this.projectLaunches, this.home()))
-    }
-    const draft: Draft = {
-      info: {
-        draft: `d${this.nextDraftId++}`,
-        kind: "launch",
-        status: "open",
-        opened_by: openedBy,
-        fields: {
-          prompt: "",
-          directory: "",
-          worktree: false,
-          worktree_available: null,
-          model: DEFAULT_CODEX_MODEL.id,
-          effort: DEFAULT_CODEX_MODEL.defaultEffort,
-        },
-        outcome: null,
-      },
-      waiters: new Set(),
-    }
-    this.drafts.set(draft.info.draft, draft)
-    this.openDraft = draft
-    this.forgetOldDrafts()
-    this.launchDialog.show(projects, prefill.directory ?? active?.cwd ?? this.options.cwd, prefill)
-    active?.terminal.blur()
-    return draft
-  }
-
-  /** The dialog has left the screen. A submitted draft stays open until its
-   * launch has answered; a cancelled one is resolved here. */
-  private closeDraft(outcome: LaunchDialogOutcome): void {
-    const draft = this.openDraft
-    if (!draft) return
-    draft.info.fields = this.launchDialog.fields()
-    this.openDraft = null
-    if (outcome === "cancelled") this.resolveDraft(draft, "cancelled", null)
-    else this.submittedDraft = draft
-  }
-
-  private resolveDraft(draft: Draft, status: DraftInfo["status"], outcome: DraftInfo["outcome"]): void {
-    draft.info.status = status
-    draft.info.outcome = outcome
-    for (const waiter of draft.waiters) waiter(draft.info)
-    draft.waiters.clear()
-  }
-
-  private forgetOldDrafts(): void {
-    for (const [id, draft] of this.drafts) {
-      if (this.drafts.size <= DRAFT_HISTORY) return
-      if (draft.info.status === "open") continue
-      this.drafts.delete(id)
-    }
-  }
-
-  /** The dialog's path: what goes wrong is shown, since there is no caller
-   * to answer. */
-  private async startLaunch(request: LaunchRequest): Promise<void> {
-    const draft = this.submittedDraft
-    this.submittedDraft = null
-    try {
-      const agent = await this.performLaunch(request, true)
-      if (draft) this.resolveDraft(draft, "submitted", { agent: agent.id })
-    } catch (error) {
-      if (draft) this.resolveDraft(draft, "failed", { error: errorMessage(error) })
-      if (error instanceof ControlFailure && error.code === "shutting_down") return
-      this.showError(launchErrorHeading(error), error)
-    }
+    return scanProjectRoots(this.options.projectRoots ?? [], home)
   }
 
   /**
-   * Check the repository, cut the worktree if asked, then start fx; throws
-   * with the reason. Every launch passes here, by key or by command, which is
-   * what makes the repository a condition of running an agent rather than a
-   * rule each caller has to remember. The context git answers with is kept,
+   * Check the repository, cut the worktree if asked, then start fx. Every CLI
+   * launch passes here, making the repository a condition of running an Agent
+   * rather than a rule the client has to remember. The context git answers with is kept,
    * so the row this launch adds is drawn under its branch from the first
    * frame rather than a beat later.
    */
@@ -1695,29 +1570,6 @@ export class Multiplexer {
     const plan = planWorktree(context, root)
     await createWorktree(context, plan, base)
     return plan.checkout
-  }
-
-  /**
-   * Whether a worktree can be cut in `directory`. Every project on the row is
-   * a repository, so the only thing left to ask is whether it has a commit to
-   * branch from — a repository with nothing committed yet cannot offer one.
-   */
-  private answerWorktreeAvailability(directory: string): void {
-    const answer = (available: boolean) => {
-      if (this.shuttingDown) return
-      this.launchDialog.setWorktreeAvailability(directory, available)
-    }
-    void readHeadCommit(directory).then(
-      () => answer(true),
-      () => answer(false),
-    )
-  }
-
-  /** Every start counts, whichever key opened it, so the picker's order
-   * reflects where work actually happens. */
-  private countLaunch(cwd: string): void {
-    this.projectLaunches.set(cwd, (this.projectLaunches.get(cwd) ?? 0) + 1)
-    this.options.onProjectLaunch?.(Object.fromEntries(this.projectLaunches))
   }
 
   private showHelp(): void {
@@ -1822,47 +1674,6 @@ export class Multiplexer {
         this.selectAgent(agent.id)
         return { agent: this.agentInfo(agent) }
       }
-      case "draft.open": {
-        const kind = optionalString(params, "kind") ?? "launch"
-        if (kind !== "launch") throw new ControlFailure("invalid_params", `unknown draft kind: ${kind}`)
-        const fields = isRecord(params.fields) ? params.fields : {}
-        const draft = this.showLaunchDialog("agent", this.prefillFrom(fields))
-        return this.draftInfo(draft)
-      }
-      case "draft.show":
-        return this.draftInfo(this.draftFor(optionalString(params, "draft")))
-      case "draft.set": {
-        const draft = this.openDraftFor(requiredString(params, "draft"))
-        const fields = isRecord(params.fields) ? params.fields : {}
-        const prefill = this.prefillFrom(fields, this.launchDialog.fields().model)
-        if (prefill.directory !== undefined) {
-          const [choice] = orderProjects([prefill.directory], this.projectLaunches, this.home())
-          if (choice) this.launchDialog.offerProject(choice)
-        }
-        this.launchDialog.apply(prefill)
-        return this.draftInfo(draft)
-      }
-      case "draft.submit": {
-        const draft = this.openDraftFor(requiredString(params, "draft"))
-        const resolved = this.waitForDraft(draft, null, signal)
-        this.launchDialog.submit()
-        const info = await resolved
-        if (info.status === "failed") {
-          throw new ControlFailure("failed", info.outcome && "error" in info.outcome ? info.outcome.error : "launch failed")
-        }
-        return info
-      }
-      case "draft.cancel": {
-        const draft = this.openDraftFor(requiredString(params, "draft"))
-        this.launchDialog.close()
-        return this.draftInfo(draft)
-      }
-      case "draft.wait":
-        return this.waitForDraft(
-          this.draftFor(optionalString(params, "draft")),
-          optionalInteger(params, "timeout_ms") ?? null,
-          signal,
-        )
       case "catalog":
         return catalogInfo()
       case "tray": {
@@ -1890,7 +1701,7 @@ export class Multiplexer {
   /** Something drawn over fx takes the keys; a command that would fight it
    * for the screen is refused rather than silently stealing focus. */
   private refuseIfBusy(): void {
-    if (this.modalKind || this.launchDialog.isOpen()) {
+    if (this.modalKind) {
       throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
     }
   }
@@ -1938,10 +1749,8 @@ export class Multiplexer {
 
   /**
    * Where a launch that names no project and comes from no agent starts: fmx's
-   * own workspace when it is a repository, and otherwise the first project on
-   * offer — the same fallback the dialog's project row makes when the
-   * workspace is not among its choices. A command and a key land in the same
-   * place, which is the whole point of routing both through `performLaunch`.
+   * own workspace when it is a repository, and otherwise the first configured
+   * Project on offer.
    * The first configured root is commonly a directory of repositories rather
    * than one itself, and `~/code` is the very line startup tells a human to
    * add, so this is the ordinary case and not an edge.
@@ -1949,9 +1758,9 @@ export class Multiplexer {
   private defaultLaunchDirectory(): string {
     const workspace = this.options.cwd
     if (isRepositoryDirectory(workspace)) return workspace
-    const [first] = this.projectChoices()
+    const [first] = this.projectDirectories()
     if (!first) throw new NotARepositoryError(workspace)
-    return first.directory
+    return first
   }
 
   private agentById(id: number): FxAgent {
@@ -1961,20 +1770,20 @@ export class Multiplexer {
   }
 
   private launchRequestFrom(params: Record<string, unknown>, caller: number | null): LaunchRequest {
-    const prefill = this.prefillFrom(params)
+    const overrides = this.launchOverridesFrom(params)
     const callerAgent = caller === null ? null : (this.agents.find((agent) => agent.id === caller) ?? null)
     return {
-      directory: prefill.directory ?? callerAgent?.cwd ?? this.defaultLaunchDirectory(),
-      prompt: prefill.prompt ?? "",
-      worktree: prefill.worktree ?? false,
-      model: prefill.model ?? DEFAULT_CODEX_MODEL.id,
-      effort: prefill.effort ?? DEFAULT_CODEX_MODEL.defaultEffort,
+      directory: overrides.directory ?? callerAgent?.cwd ?? this.defaultLaunchDirectory(),
+      prompt: overrides.prompt ?? "",
+      worktree: overrides.worktree ?? false,
+      model: overrides.model ?? DEFAULT_CODEX_MODEL.id,
+      effort: overrides.effort ?? DEFAULT_CODEX_MODEL.defaultEffort,
     }
   }
 
-  /** Fields an agent gave, checked; a directory must exist to be offered. */
-  private prefillFrom(fields: Record<string, unknown>, currentModel = DEFAULT_CODEX_MODEL.id): LaunchPrefill {
-    const prefill: LaunchPrefill = {}
+  /** Validate the optional fields supplied by `fmx control launch`. */
+  private launchOverridesFrom(fields: Record<string, unknown>): LaunchOverrides {
+    const overrides: LaunchOverrides = {}
     const directory = optionalString(fields, "directory")
     if (directory !== undefined) {
       let resolved: string
@@ -1984,19 +1793,17 @@ export class Multiplexer {
       } catch {
         throw new ControlFailure("invalid_params", `${directory} is not a directory`)
       }
-      // Refused here rather than at the launch so a draft can never be left
-      // holding a directory no agent could ever be started in.
       if (!isRepositoryDirectory(resolved)) throw new NotARepositoryError(directory)
-      prefill.directory = resolved
+      overrides.directory = resolved
     }
     const prompt = optionalString(fields, "prompt")
-    if (prompt !== undefined) prefill.prompt = prompt
+    if (prompt !== undefined) overrides.prompt = prompt
     const worktree = optionalBoolean(fields, "worktree")
-    if (worktree !== undefined) prefill.worktree = worktree
+    if (worktree !== undefined) overrides.worktree = worktree
     const modelId = optionalString(fields, "model")
-    const model = codexModel(modelId ?? currentModel)
-    if (!model) throw new ControlFailure("invalid_params", `unknown Codex model: ${modelId ?? currentModel}`)
-    if (modelId !== undefined) prefill.model = modelId
+    const model = codexModel(modelId ?? DEFAULT_CODEX_MODEL.id)
+    if (!model) throw new ControlFailure("invalid_params", `unknown Codex model: ${modelId}`)
+    if (modelId !== undefined) overrides.model = modelId
     const effort = optionalString(fields, "effort")
     if (effort !== undefined) {
       if (!codexEffort(model, effort)) {
@@ -2005,57 +1812,9 @@ export class Multiplexer {
           efforts: model.efforts,
         })
       }
-      prefill.effort = effort
+      overrides.effort = effort
     }
-    return prefill
-  }
-
-  private draftFor(id: string | undefined): Draft {
-    if (id === undefined) {
-      if (!this.openDraft) throw new ControlFailure("not_found", "no draft is open")
-      return this.openDraft
-    }
-    const draft = this.drafts.get(id)
-    if (!draft) throw new ControlFailure("not_found", `no draft ${id}`)
-    return draft
-  }
-
-  /** A draft a command may change: the one on screen, named by its own id. */
-  private openDraftFor(id: string): Draft {
-    const draft = this.draftFor(id)
-    if (draft !== this.openDraft || !this.launchDialog.isOpen()) {
-      throw new ControlFailure("busy", `draft ${id} is ${draft.info.status}`, { draft: this.draftInfo(draft) })
-    }
-    return draft
-  }
-
-  private draftInfo(draft: Draft): DraftInfo {
-    if (draft === this.openDraft && this.launchDialog.isOpen()) draft.info.fields = this.launchDialog.fields()
-    return { ...draft.info, fields: { ...draft.info.fields }, choices: launchChoices(draft.info.fields.model) }
-  }
-
-  private waitForDraft(draft: Draft, timeoutMs: number | null, signal: AbortSignal): Promise<DraftInfo> {
-    if (draft.info.status !== "open") return Promise.resolve(this.draftInfo(draft))
-    return new Promise((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | null = null
-      const waiter = (info: DraftInfo) => {
-        cleanup()
-        resolve({ ...info, fields: { ...info.fields } })
-      }
-      const cleanup = () => {
-        draft.waiters.delete(waiter)
-        if (timer) clearTimeout(timer)
-        signal.removeEventListener("abort", cleanup)
-      }
-      draft.waiters.add(waiter)
-      signal.addEventListener("abort", cleanup)
-      if (timeoutMs !== null) {
-        timer = setTimeout(() => {
-          cleanup()
-          reject(new ControlFailure("timeout", `draft ${draft.info.draft} is still open after ${timeoutMs}ms`))
-        }, timeoutMs)
-      }
-    })
+    return overrides
   }
 
   private waitForAgent(
@@ -2148,7 +1907,6 @@ export class Multiplexer {
   }
 
   private surface(): Surface {
-    if (this.launchDialog.isOpen() && this.openDraft) return { kind: "launch", draft: this.draftInfo(this.openDraft) }
     if (this.modalKind === "help") return { kind: "help" }
     if (this.modalKind === "spawn-error") {
       return { kind: "error", heading: this.spawnErrorHeading, message: this.spawnErrorLines.join("") }
@@ -2195,7 +1953,6 @@ export class Multiplexer {
     const commands: Record<string, string | null> = {
       help: "fmx control keys --show",
       detach: null,
-      launch: "fmx control launch --editable",
       previous_tab: "fmx control focus previous",
       next_tab: "fmx control focus next",
       toggle_tray: "fmx control tray --toggle",
@@ -2204,7 +1961,6 @@ export class Multiplexer {
     for (const action of [
       "help",
       "detach",
-      "launch",
       "previous_tab",
       "next_tab",
       "toggle_tray",
@@ -2232,7 +1988,6 @@ function helpEntries(keybindings: Keybindings): HelpEntry[] {
     [keybindings.prefixLabel, "prefix mode"],
     [bindingLabel(keybindings.help), "keybinds"],
     [bindingLabel(keybindings.detach), "detach client"],
-    [bindingLabel(keybindings.launch), "launch agent"],
     [bindingLabel(keybindings.previous_tab), "prev agent"],
     [bindingLabel(keybindings.next_tab), "next agent"],
     [bindingLabel(keybindings.toggle_tray), "toggle tray"],
@@ -2270,17 +2025,8 @@ function helpKeyColumn(entries: HelpEntry[]): number {
   return Math.max(...entries.map(([key]) => key.length)) + 2
 }
 
-/**
- * The one thing an empty Home offers. The key is named from the binding, not
- * from a literal, because the launch dialog is the only way a key starts an
- * agent: a rebound `keys.launch` that still read `prefix+l` here would name a
- * key that does nothing. `prefix` stays the word it is — the help modal spells
- * the prefix out on its own row, and this line is not the place to repeat it.
- * A binding the config disabled says so rather than naming nothing.
- */
-function emptyStateContent(keybindings: Keybindings): string {
-  if (keybindings.launch.length === 0) return "set keys.launch in the config to launch an agent"
-  return `${bindingLabel(keybindings.launch)} to launch agent`
+function emptyStateContent(): string {
+  return "no agents"
 }
 
 function bindingLabel(bindings: ResolvedBinding[]): string {
@@ -2327,11 +2073,6 @@ function subagentInfos(entries: SubagentEntry[]): SubagentInfo[] {
   }))
 }
 
-function launchChoices(modelId: string): LaunchChoices {
-  const model = codexModel(modelId) ?? DEFAULT_CODEX_MODEL
-  return { models: CODEX_MODELS.map((candidate) => candidate.id), efforts: [...model.efforts] }
-}
-
 function catalogInfo(): CatalogInfo {
   return {
     default: { model: DEFAULT_CODEX_MODEL.id, effort: DEFAULT_CODEX_MODEL.defaultEffort },
@@ -2353,8 +2094,7 @@ function waitStates(raw: string[] | undefined): readonly DisplayState[] {
   return raw as DisplayState[]
 }
 
-/** A launch that failed before fx ran: the error modal names the worktree
- * rather than fx, and a caller sees it as a plain failure. */
+/** A launch that failed before Fx ran, reported to the CLI caller. */
 class WorktreeError extends ControlFailure {
   constructor(message: string) {
     super("failed", message)
@@ -2368,10 +2108,4 @@ class NotARepositoryError extends ControlFailure {
     super("invalid_params", `${directory} is not a git repository`)
     this.name = "NotARepositoryError"
   }
-}
-
-function launchErrorHeading(error: unknown): string {
-  if (error instanceof WorktreeError) return "worktree not created"
-  if (error instanceof NotARepositoryError) return "agent not started"
-  return "fx did not start"
 }

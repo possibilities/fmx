@@ -48,12 +48,6 @@ export const CONTROL_METHODS = [
   "agent.send",
   "launch",
   "focus",
-  "draft.open",
-  "draft.show",
-  "draft.set",
-  "draft.submit",
-  "draft.cancel",
-  "draft.wait",
   "tray",
   "keys",
   "catalog",
@@ -119,40 +113,8 @@ export type TrayRow = {
   active: boolean
 }
 
-export type LaunchFields = {
-  prompt: string
-  directory: string
-  worktree: boolean
-  /** null while the check for a commit to branch from is still running. */
-  worktree_available: boolean | null
-  model: string
-  effort: string
-}
-
-export type DraftStatus = "open" | "submitted" | "cancelled" | "failed"
-
-/** What the model and effort pickers offer: every model, and the efforts of
- * the one selected, so an agent amending a draft sees what the rows show. */
-export type LaunchChoices = {
-  models: string[]
-  efforts: string[]
-}
-
-export type DraftInfo = {
-  draft: string
-  kind: "launch"
-  status: DraftStatus
-  opened_by: "keys" | "agent"
-  fields: LaunchFields
-  /** Added when the draft is read; what the model and effort rows offer. */
-  choices?: LaunchChoices
-  /** The agent a submitted draft started, or why a failed one did not. */
-  outcome: { agent: number } | { error: string } | null
-}
-
 export type Surface =
   | { kind: "none" }
-  | { kind: "launch"; draft: DraftInfo }
   | { kind: "help" }
   | { kind: "error"; heading: string; message: string }
 
@@ -173,7 +135,7 @@ export type Snapshot = {
   surface: Surface
 }
 
-/** The model catalog the launch dialog offers, in picker order. */
+/** The model catalog accepted by `fmx control launch`, in display order. */
 export type CatalogInfo = {
   default: { model: string; effort: string }
   models: { id: string; efforts: string[]; default_effort: string }[]

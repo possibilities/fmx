@@ -13,7 +13,6 @@ test(
     expect(UI_GALLERY_COMPONENTS).toEqual([
       "Multiplexer",
       "Session list",
-      "Launch dialog",
       "Toast",
     ])
     const toastStates = UI_STORIES.filter((story) => story.component === "Toast")
@@ -36,7 +35,7 @@ test(
           .filter((story) => story.component === "Multiplexer")
           .map((story) => [story.id, story.text.split("\n")]),
       )
-      expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("prefix+l to launch agent")
+      expect(multiplexer.get("multiplexer-empty")?.[11]).toContain("no agents")
       expect(multiplexer.get("multiplexer-working")?.[0]).toContain("Working on the UI gallery")
       expect(multiplexer.get("multiplexer-working")?.[23]).toContain("│")
       expect(multiplexer.get("multiplexer-larger-observer")?.[0]).toContain("Working on the UI gallery")
@@ -57,7 +56,7 @@ test(
     try {
       await setup.renderOnce()
       expect(setup.captureCharFrame()).toContain("UI GALLERY")
-      expect(setup.captureCharFrame()).toContain("4 components · 13 states")
+      expect(setup.captureCharFrame()).toContain("3 components · 8 states")
       expect(app.activeComponent).toBe("Multiplexer")
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
 
@@ -92,9 +91,9 @@ test(
       expect(app.activeStoryId).toBe(built.stories.light[3]!.id)
       expect(setup.captureCharFrame()).toContain("state 1/3")
 
-      setup.mockInput.pressArrow("down")
+      setup.mockInput.pressArrow("up")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Launch dialog")
+      expect(app.activeComponent).toBe("Multiplexer")
       expect(setup.captureCharFrame()).toContain("ENTER TO INTERACT")
 
       setup.mockInput.pressEnter()
@@ -102,11 +101,6 @@ test(
       await setup.renderOnce()
       expect(app.isInteracting).toBe(true)
       expect(setup.captureCharFrame()).toContain("INTERACTING")
-
-      await setup.mockInput.typeText("Audit")
-      await app.waitForInteraction()
-      await setup.renderOnce()
-      expect(setup.captureCharFrame()).toContain("Audit")
 
       setup.mockInput.pressEscape()
       await app.waitForInteraction()
@@ -134,13 +128,13 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("slide 1/13 · playing")
+      expect(setup.captureCharFrame()).toContain("slide 1/8 · playing")
 
       setup.mockInput.pressArrow("left")
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Toast")
       expect(app.activeStoryId).toBe(built.stories.dark.at(-1)!.id)
-      expect(setup.captureCharFrame()).toContain("slide 13/13")
+      expect(setup.captureCharFrame()).toContain("slide 8/8")
 
       setup.mockInput.pressArrow("right")
       setup.mockInput.pressKey("t")
@@ -163,12 +157,12 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.light[1]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/13")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/8")
 
       setup.mockInput.pressEscape()
       await setup.renderOnce()
       expect(app.isSlideshow).toBe(false)
-      expect(setup.captureCharFrame()).toContain("4 components · 13 states")
+      expect(setup.captureCharFrame()).toContain("3 components · 8 states")
       const stoppedStory = app.activeStoryId
       await new Promise((resolve) => setTimeout(resolve, 70))
       expect(app.activeStoryId).toBe(stoppedStory)

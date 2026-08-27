@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
-import { launchAgent, launchAgentQuietly, pressLaunch } from "./fixtures/launch-keys.ts"
+import { launchAgent, launchAgentQuietly, startAgent } from "./fixtures/agent-launch.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -26,14 +26,14 @@ async function createMultiplexer(width: number, height: number) {
     toastDurationMs: 1,
   })
   await multiplexer.start()
-  await launchAgentQuietly(setup)
+  await launchAgentQuietly(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
   return { setup, multiplexer, tray, divider, content }
 }
 
-test("starts without an fx, hiding the tray and centering dimmed prefix actions", async () => {
+test("starts without an Fx, hiding the tray and centering the empty state", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, kittyKeyboard: true })
   const { keybindings } = resolveKeybindings({ prefix: "ctrl+space" })
   const multiplexer = new Multiplexer(setup.renderer, {
@@ -58,16 +58,11 @@ test("starts without an fx, hiding the tray and centering dimmed prefix actions"
     expect(divider.visible).toBe(false)
     expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 80, 24])
     expect(emptyState).toBeInstanceOf(TextRenderable)
-    expect([emptyState.x, emptyState.y, emptyState.width, emptyState.height]).toEqual([28, 11, 24, 1])
+    expect([emptyState.x, emptyState.y, emptyState.width, emptyState.height]).toEqual([35, 11, 9, 1])
     expect(rgb(emptyState.fg)).toEqual([80, 80, 80])
-    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
-    expect(setup.captureCharFrame()).not.toContain("ctrl+space+l")
+    expect(setup.captureCharFrame()).toContain("no agents")
 
-    // The configured prefix drives the dialog the default one would.
-    setup.mockInput.pressKey(" ", { ctrl: true })
-    setup.mockInput.pressKey("l")
-    setup.mockInput.pressEnter()
-    setup.mockInput.pressEnter()
+    void startAgent(multiplexer)
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined)
     await setup.renderOnce()
 
@@ -78,39 +73,6 @@ test("starts without an fx, hiding the tray and centering dimmed prefix actions"
   } finally {
     await multiplexer.shutdown()
   }
-})
-
-test("names the launch key from its binding, and says so when there is none", async () => {
-  const label = async (keys: Record<string, unknown>) => {
-    const setup = await createTestRenderer({ width: 80, height: 24 })
-    const multiplexer = new Multiplexer(setup.renderer, {
-      ...agentOptions(),
-      fxPath: FAKE_FX,
-      cwd: process.cwd(),
-      keybindings: resolveKeybindings(keys).keybindings,
-    })
-    try {
-      await multiplexer.start()
-      await setup.renderOnce()
-      return setup.captureCharFrame()
-    } finally {
-      await multiplexer.shutdown()
-    }
-  }
-
-  expect(await label({})).toContain("prefix+l to launch agent")
-  // The launch dialog is the only way a key starts an agent, so a rebound
-  // key has to be the one the empty state names.
-  const rebound = await label({ launch: "prefix+g" })
-  expect(rebound).toContain("prefix+g to launch agent")
-  expect(rebound).not.toContain("prefix+l to launch agent")
-  // A direct chord is its own whole label, with no "prefix+" in front of it.
-  expect(await label({ launch: "alt+n" })).toContain("alt+n to launch agent")
-  // The prefix stays the word it is: the help modal spells it out on its own
-  // row, and this line does not repeat it.
-  expect(await label({ prefix: "ctrl+space" })).not.toContain("ctrl+space+l")
-  // Nothing is bound, so nothing is named.
-  expect(await label({ launch: [] })).toContain("set keys.launch in the config")
 })
 
 test("paints the full owner frame when empty before and after the last Agent", async () => {
@@ -139,7 +101,7 @@ test("paints the full owner frame when empty before and after the last Agent", a
     await setup.renderOnce()
     expectOwnerBackground([0, 0, 0, 255])
 
-    pressLaunch(setup)
+    void startAgent(multiplexer)
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined)
     await waitForText(setup, "fake fx ready")
     const terminal = setup.renderer.root.findDescendantById("fx-1")
@@ -179,12 +141,12 @@ test("requires a second ctrl+c before the empty-state exit timeout", async () =>
 
     expect(done).toBe(false)
     expect(setup.captureCharFrame()).toContain("press ctrl+c again to exit")
-    expect(setup.captureCharFrame()).not.toContain("prefix+l to launch agent")
+    expect(setup.captureCharFrame()).not.toContain("no agents")
 
     await Bun.sleep(EXIT_CONFIRMATION_TIMEOUT_MS + 50)
     await setup.renderOnce()
     expect(done).toBe(false)
-    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
+    expect(setup.captureCharFrame()).toContain("no agents")
 
     setup.mockInput.pressKey("c", { ctrl: true })
     await setup.renderOnce()
@@ -270,7 +232,7 @@ test("toggles the tray with prefix+b and keeps it hidden across a new agent", as
     expect([content.x, content.width]).toEqual([0, 90])
 
     // A second agent does not bring the tray back on its own.
-    await launchAgent(setup, 2)
+    await launchAgent(setup, multiplexer, 2)
     await setup.renderOnce()
     expect(setup.renderer.root.findDescendantById("fx-2")).toBeDefined()
     expect(tray.visible).toBe(false)
@@ -298,7 +260,7 @@ test("restores a persisted hidden tray and reports each toggle", async () => {
     onTrayHiddenChange: (hidden) => hiddenChanges.push(hidden),
   })
   await multiplexer.start()
-  await launchAgent(setup)
+  await launchAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -434,7 +396,7 @@ test("restores a persisted width and reports changes on drag end", async () => {
     onTrayWidthChange: (width) => widthChanges.push(width),
   })
   await multiplexer.start()
-  await launchAgent(setup)
+  await launchAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -463,7 +425,7 @@ test("clamps a stale persisted width to the current screen", async () => {
     initialTrayWidth: 70,
   })
   await multiplexer.start()
-  await launchAgent(setup)
+  await launchAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()

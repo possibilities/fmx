@@ -5,7 +5,6 @@ import { RAMP_FALLBACK } from "../src/host-palette.ts"
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
   "Session list",
-  "Launch dialog",
   "Toast",
 ] as const
 

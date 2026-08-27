@@ -90,8 +90,6 @@ describe("commands", () => {
         effort: "max",
       },
       focus: true,
-      editable: false,
-      wait: false,
     })
     expect(parseArgs(["control", "launch", "--prompt-file", "brief.md"]).command).toMatchObject({
       fields: { prompt: { file: "brief.md" } },
@@ -104,39 +102,9 @@ describe("commands", () => {
     expect(() => parseArgs(["control", "orient", "--", "--record"])).toThrow("unexpected argument: --")
   })
 
-  test("an editable launch may wait; a plain one may not", () => {
-    expect(parseArgs(["control", "launch", "--editable", "--wait", "--timeout", "500"]).command).toMatchObject({
-      editable: true,
-      wait: true,
-      timeoutMs: 500,
-    })
-    expect(() => parseArgs(["control", "launch", "--wait"])).toThrow("--wait only applies with --editable")
-  })
-
-  test("draft verbs take an id where they change something", () => {
-    expect(parseArgs(["control", "draft", "show"]).command).toEqual({ name: "draft", verb: "show" })
-    expect(parseArgs([
-      "control",
-      "draft",
-      "set",
-      "d1",
-      "--no-worktree",
-      "--prompt",
-      "x",
-      "--model",
-      "gpt-5.5",
-      "--effort",
-      "xhigh",
-    ]).command).toEqual({
-      name: "draft",
-      verb: "set",
-      draft: "d1",
-      fields: { worktree: false, prompt: { inline: "x" }, model: "gpt-5.5", effort: "xhigh" },
-    })
-    expect(parseArgs(["control", "draft", "submit", "d1"]).command).toEqual({ name: "draft", verb: "submit", draft: "d1" })
-    expect(() => parseArgs(["control", "draft", "submit"])).toThrow("needs a draft id")
-    expect(() => parseArgs(["control", "draft", "set", "d1"])).toThrow("needs a field")
-    expect(() => parseArgs(["control", "draft", "set", "d1", "--worktree", "--no-worktree"])).toThrow("contradict")
+  test("has no editable or draft launch surface", () => {
+    expect(() => parseArgs(["control", "launch", "--editable"])).toThrow("unknown option: --editable")
+    expect(() => parseArgs(["control", "draft"])).toThrow("unknown control command: draft")
   })
 
   test("agent wait defaults to the caller and splits states on commas", () => {
@@ -172,13 +140,12 @@ describe("commands", () => {
 
   test("a usage error names its topic", () => {
     try {
-      parseArgs(["control", "draft", "fold"])
+      parseArgs(["control", "focus"])
       throw new Error("expected a usage error")
     } catch (error) {
       expect(error).toBeInstanceOf(UsageError)
-      expect((error as UsageError).topic).toBe("draft")
+      expect((error as UsageError).topic).toBe("focus")
     }
-    expect(usage("draft")).toContain("submit <id>")
     expect(usage("control")).toContain("orient")
     expect(usage()).toContain("fmx control")
   })

@@ -1,14 +1,12 @@
 import { strict as assert } from "node:assert"
 import { resolve } from "node:path"
-import { BoxRenderable, type KeyEvent } from "@opentui/core"
+import { BoxRenderable } from "@opentui/core"
 import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
 import type { AdeEventListener, AdeRecord } from "../src/ade-events.ts"
 import { RAMP_FALLBACK } from "../src/host-palette.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
-import { LaunchDialog } from "../src/launch-dialog.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import type { ProjectChoice } from "../src/projects.ts"
 import { SessionList } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
 import { Toast, type ToastTone } from "../src/toast.ts"
@@ -30,23 +28,15 @@ const AGENT_SCREEN =
   "  ◐ Review the gallery in a terminal\r\n\r\n" +
   "\x1b[90mDeterministic state.\x1b[0m\r\n"
 
-const PROJECTS: ProjectChoice[] = [
-  { directory: "/Users/demo/code/fmx", display: "~/code/fmx", launches: 8 },
-  { directory: "/Users/demo/code/agent-api", display: "~/code/agent-api", launches: 3 },
-  { directory: "/Users/demo/code/agentbrain", display: "~/code/agentbrain", launches: 1 },
-  { directory: "/Users/demo/code/fx", display: "~/code/fx", launches: 0 },
-  { directory: "/Users/demo/code/zmax", display: "~/code/zmax", launches: 0 },
-]
-
 export const UI_STORIES: readonly UiStory[] = [
   {
     id: "multiplexer-empty",
     component: "Multiplexer",
     title: "No Agents",
-    description: "An empty Home keeps the full work surface quiet and centers the one way to begin.",
+    description: "An empty Home keeps the full work surface quiet.",
     viewport: { cols: 86, rows: 24 },
-    expectedText: ["prefix+l to launch agent"],
-    interaction: "Use ctrl+b l to launch an Agent, or ctrl+b ? to open the key reference.",
+    expectedText: ["no agents"],
+    interaction: "Use ctrl+b ? to open the key reference.",
     arrange: mountMultiplexer({ screen: AGENT_SCREEN }),
   },
   {
@@ -153,81 +143,6 @@ export const UI_STORIES: readonly UiStory[] = [
       )
     },
   },
-  {
-    id: "launch-dialog-default",
-    component: "Launch dialog",
-    title: "New launch",
-    description: "The default launch dialog opens on its prompt field and the most-used project.",
-    viewport: { cols: 86, rows: 26 },
-    expectedText: ["launch", "what should the agent do?", "~/code/fmx", "worktree  no", "gpt-5.6-sol", "effort    high"],
-    interaction: "Type a prompt; Tab moves through rows and Space opens the focused picker.",
-    arrange(context) {
-      mountLaunchDialog(context)
-    },
-  },
-  {
-    id: "launch-dialog-filled",
-    component: "Launch dialog",
-    title: "Multiline Worktree launch",
-    description: "A prepared draft with a multiline Launch prompt, Worktree enabled, and an explicit launch level.",
-    viewport: { cols: 86, rows: 26 },
-    expectedText: ["Build the gallery", "Keep every state deterministic", "worktree  yes", "gpt-5.6-terra", "effort    xhigh"],
-    interaction: "Edit the prompt or use Tab and Space to change any launch choice.",
-    arrange(context) {
-      const dialog = mountLaunchDialog(context, {
-        prompt: "Build the gallery\nKeep every state deterministic",
-        directory: PROJECTS[0]!.directory,
-        model: "gpt-5.6-terra",
-        effort: "xhigh",
-      })
-      dialog.setWorktreeAvailability(PROJECTS[0]!.directory, true)
-      dialog.apply({ worktree: true })
-    },
-  },
-  {
-    id: "launch-dialog-unavailable-worktree",
-    component: "Launch dialog",
-    title: "Unavailable Worktree",
-    description: "The Worktree row explains why it cannot be enabled for a Project with nothing committed yet.",
-    viewport: { cols: 84, rows: 24 },
-    expectedText: ["~/code/zmax", "unavailable — no commit to branch from"],
-    interaction: "Move between rows to inspect which choices remain available.",
-    arrange(context) {
-      const dialog = mountLaunchDialog(context, { directory: PROJECTS[4]!.directory })
-      dialog.setWorktreeAvailability(PROJECTS[4]!.directory, false)
-    },
-  },
-  {
-    id: "launch-dialog-project-picker",
-    component: "Launch dialog",
-    title: "Filtered project picker",
-    description: "The project chooser filters by subsequence and keeps the best match highlighted.",
-    viewport: { cols: 86, rows: 26 },
-    expectedText: ["project", "> api", "~/code/agent-api"],
-    interaction: "Type to filter, use arrows to move, Enter applies, and Escape cancels.",
-    async arrange(context) {
-      mountLaunchDialog(context)
-      context.setup.mockInput.pressTab()
-      context.setup.mockInput.pressKey(" ")
-      await context.setup.mockInput.typeText("api")
-    },
-  },
-  {
-    id: "launch-dialog-model-picker",
-    component: "Launch dialog",
-    title: "Model catalog",
-    description: "The model picker presents each local model with the efforts it supports.",
-    viewport: { cols: 86, rows: 26 },
-    expectedText: ["model", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "low/medium/high/xhigh"],
-    interaction: "Use arrows to choose a model; Enter applies and Escape cancels.",
-    arrange(context) {
-      mountLaunchDialog(context)
-      context.setup.mockInput.pressTab()
-      context.setup.mockInput.pressTab()
-      context.setup.mockInput.pressTab()
-      context.setup.mockInput.pressKey(" ")
-    },
-  },
   ...(["neutral", "error"] as const).map((tone): UiStory => toastStory(tone)),
 ]
 
@@ -252,34 +167,6 @@ function mountSessionList(context: UiStoryContext, entries: SessionEntry[], widt
   list.applyPalette(context.palette)
   list.render(buildTree(entries), width)
   context.defer(() => list.root.destroyRecursively())
-}
-
-function mountLaunchDialog(
-  context: UiStoryContext,
-  prefill: Parameters<LaunchDialog["show"]>[2] = {},
-): LaunchDialog {
-  let dialog: LaunchDialog
-  dialog = new LaunchDialog(context.setup.renderer, {
-    onLaunch: () => {},
-    onClose: () => {},
-    onProjectChange: (directory) => {
-      dialog.setWorktreeAvailability(directory, directory !== PROJECTS[4]!.directory)
-    },
-  })
-  const onKey = (key: KeyEvent) => {
-    if (!dialog.handleKey(key)) return
-    key.preventDefault()
-    key.stopPropagation()
-  }
-  context.setup.renderer.keyInput.on("keypress", onKey)
-  context.canvas.add(dialog.root)
-  dialog.applyPalette(context.palette)
-  dialog.show(PROJECTS, prefill.directory ?? PROJECTS[0]!.directory, prefill)
-  context.defer(() => {
-    context.setup.renderer.keyInput.off("keypress", onKey)
-    dialog.root.destroyRecursively()
-  })
-  return dialog
 }
 
 function toastStory(tone: ToastTone): UiStory {

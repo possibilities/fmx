@@ -52,24 +52,6 @@ describe("loadState", () => {
 
   })
 
-  test("round-trips launch counts and drops the ones it cannot use", async () => {
-    const path = join(await mkdtemp(join(tmpdir(), "fmx-state-")), "state.json")
-    await saveState({ projectLaunches: { "/home/me/code/fmx": 3 } }, path)
-    expect(await loadState(path)).toEqual({ projectLaunches: { "/home/me/code/fmx": 3 } })
-
-    await writeFile(
-      path,
-      JSON.stringify({
-        projectLaunches: { "/keep": 2, "~/relative": 5, "/zero": 0, "/fractional": 1.5, "/text": "4" },
-      }),
-      "utf8",
-    )
-    expect(await loadState(path)).toEqual({ projectLaunches: { "/keep": 2 } })
-
-    await writeFile(path, JSON.stringify({ projectLaunches: [] }), "utf8")
-    expect(await loadState(path)).toEqual({})
-  })
-
   test("ignores unknown fields", async () => {
     const path = join(await mkdtemp(join(tmpdir(), "fmx-state-")), "state.json")
     await writeFile(path, JSON.stringify({ trayWidth: 24, future: true }), "utf8")

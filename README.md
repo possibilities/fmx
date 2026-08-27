@@ -22,9 +22,9 @@ together. `fx` must be on `PATH` as well; install it from [fx.sh](https://fx.sh/
 
 | | |
 |---|---|
-| `ctrl-b c` | start an agent in the first project root |
-| `ctrl-b l` | launch dialog: prompt, project, worktree, model, effort |
 | `ctrl-b d` | detach this terminal, leaving every agent running |
+| `ctrl-b p` / `ctrl-b n` | switch to the previous / next agent |
+| `ctrl-b b` | toggle the tray |
 
 Configuration is `~/.config/fmx/config.toml`. At least one project root is
 required; everything else has a default:
@@ -42,8 +42,9 @@ at a terminal. `fmx-zmx list`, `attach`, and `kill` reach one by hand.
 
 ## Agents
 
-An agent running inside fmx can drive the surface and read what a hand can
-see. `fmx control <command>` prints one JSON object.
+`fmx control <command>` drives a running Runtime and prints one JSON object.
+Run `fmx control launch` from another terminal to create the first Agent;
+inside an Agent, the same command defaults to that Agent's Project.
 
 ```sh
 fmx control orient                      # where you are and what the interface shows

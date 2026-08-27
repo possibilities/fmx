@@ -30,17 +30,15 @@ describe("keybindings", () => {
     expect(diagnostics).toEqual([])
     expect(keybindings.prefixLabel).toBe("ctrl+b")
     expect(keybindings.detach.map((binding) => binding.label)).toEqual(["prefix+d"])
-    expect(keybindings.launch.map((binding) => binding.label)).toEqual(["prefix+l"])
     expect(keybindings.toggle_tray.map((binding) => binding.label)).toEqual(["prefix+b"])
     expect(actionForKey(keybindings, key({ name: "d" }), "prefix")).toEqual({ name: "detach" })
     expect(actionForKey(keybindings, key({ name: "b" }), "prefix")).toEqual({ name: "toggle_tray" })
   })
 
-  test("resolves the launch action from its own binding", () => {
+  test("reports the retired launch binding as unknown", () => {
     const { keybindings, diagnostics } = resolveKeybindings({ launch: "prefix+o" })
-    expect(diagnostics).toEqual([])
-    expect(actionForKey(keybindings, key({ name: "o" }), "prefix")).toEqual({ name: "launch" })
-    expect(actionForKey(keybindings, key({ name: "l" }), "prefix")).toBeNull()
+    expect(diagnostics).toEqual(["unknown config key keys.launch; ignoring key"])
+    expect(actionForKey(keybindings, key({ name: "o" }), "prefix")).toBeNull()
   })
 
   test("supports a Ctrl-Space prefix without changing action bindings", () => {
@@ -49,7 +47,6 @@ describe("keybindings", () => {
     expect(keyMatchesCombo(key({ name: "space", sequence: "\0", raw: "\0", ctrl: true }), keybindings.prefix)).toBe(
       true,
     )
-    expect(actionForKey(keybindings, key({ name: "l" }), "prefix")).toEqual({ name: "launch" })
     expect(keybindings.help.map((binding) => binding.label)).toEqual(["prefix+?"])
   })
 
@@ -68,19 +65,19 @@ describe("keybindings", () => {
   })
 
   test("lets user bindings displace conflicting defaults", () => {
-    const { keybindings, diagnostics } = resolveKeybindings({ help: "prefix+l" })
+    const { keybindings, diagnostics } = resolveKeybindings({ help: "prefix+n" })
     expect(diagnostics).toEqual([])
-    expect(actionForKey(keybindings, key({ name: "l" }), "prefix")).toEqual({ name: "help" })
-    expect(keybindings.launch).toEqual([])
+    expect(actionForKey(keybindings, key({ name: "n" }), "prefix")).toEqual({ name: "help" })
+    expect(keybindings.next_tab).toEqual([])
   })
 
   test("rejects unsafe direct typing bindings", () => {
-    const printable = resolveKeybindings({ launch: "c" })
-    expect(printable.keybindings.launch).toEqual([])
+    const printable = resolveKeybindings({ help: "c" })
+    expect(printable.keybindings.help).toEqual([])
     expect(printable.diagnostics.join("\n")).toContain("unsafe direct keybinding")
 
-    const space = resolveKeybindings({ launch: "space" })
-    expect(space.keybindings.launch).toEqual([])
+    const space = resolveKeybindings({ help: "space" })
+    expect(space.keybindings.help).toEqual([])
     expect(space.diagnostics.join("\n")).toContain("unsafe direct keybinding")
   })
 

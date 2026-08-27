@@ -109,7 +109,7 @@ test("aborts a waiting handler when the client hangs up", async () => {
   )
   socket.start()
   try {
-    const reply = await exchange(socket.path, "draft.wait", {}, 50)
+    const reply = await exchange(socket.path, "agent.wait", {}, 50)
     expect(reply.ok).toBe(false)
     if (!reply.ok) expect(reply.error.code).toBe("timeout")
     await aborted.promise

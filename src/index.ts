@@ -117,7 +117,6 @@ async function main(): Promise<void> {
   let stateSave: Promise<void> = Promise.resolve()
   const persistState = () => {
     const snapshot: PersistedState = { ...persistedState }
-    if (persistedState.projectLaunches) snapshot.projectLaunches = { ...persistedState.projectLaunches }
     stateSave = stateSave.then(() => saveState(snapshot)).catch(() => {})
   }
   const home = homeId()
@@ -235,12 +234,7 @@ async function main(): Promise<void> {
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
       initialActiveAgentId: persistedState.activeAgentId,
-      initialProjectLaunches: persistedState.projectLaunches,
       initialPalettePending: firstPalette.kind === "pending",
-      onProjectLaunch: (launches) => {
-        persistedState.projectLaunches = launches
-        persistState()
-      },
       onTrayWidthChange: (width) => {
         persistedState.trayWidth = width
         // State persistence is an enhancement; a failed write must never

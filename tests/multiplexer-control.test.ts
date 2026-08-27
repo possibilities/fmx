@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { AdeAgentState, AdeAttentionKind, AdeRecord } from "../src/ade-events.ts"
-import { type CatalogInfo, ControlFailure, type DraftInfo, type Snapshot } from "../src/control-protocol.ts"
+import { type CatalogInfo, ControlFailure, type Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
@@ -484,102 +484,6 @@ test("accepts a new process-local sequence after an orderly Fx relaunch", async 
   }
 })
 
-test("opens a draft prefilled, lets it be read, changed, and cancelled", async () => {
-  const h = await harness("draft")
-  try {
-    await h.launch()
-    const opened = (await h.control("draft.open", {
-      caller: 1,
-      fields: { prompt: "fix the flaky test", model: "gpt-5.6-luna", effort: "max" },
-    })) as DraftInfo
-    expect(opened).toMatchObject({
-      draft: "d1",
-      kind: "launch",
-      status: "open",
-      opened_by: "agent",
-      fields: {
-        prompt: "fix the flaky test",
-        directory: join(h.code, "alpha"),
-        worktree: false,
-        model: "gpt-5.6-luna",
-        effort: "max",
-      },
-    })
-    await h.setup.renderOnce()
-    const frame = h.setup.captureCharFrame()
-    expect(frame).toContain("prompt    fix the flaky test")
-    expect(frame).toContain("project   ~/code/alpha")
-    expect(frame).toContain("model     gpt-5.6-luna")
-    expect(frame).toContain("effort    max")
-
-    const snapshot = (await h.control("orient")) as Snapshot
-    expect(snapshot.surface).toMatchObject({ kind: "launch", draft: { draft: "d1" } })
-    expect((await failure(h.control("draft.open"))).code).toBe("busy")
-
-    // The human's keys still reach the prompt while the draft is open.
-    await h.setup.mockInput.typeText(" now")
-    await h.setup.renderOnce()
-    expect(((await h.control("draft.show")) as DraftInfo).fields.prompt).toBe("fix the flaky test now")
-
-    const changed = (await h.control("draft.set", {
-      draft: "d1",
-      fields: { directory: join(h.code, "beta"), prompt: "write tests" },
-    })) as DraftInfo
-    expect(changed.fields).toMatchObject({ directory: join(h.code, "beta"), prompt: "write tests" })
-    await h.setup.renderOnce()
-    expect(h.setup.captureCharFrame()).toContain("project   ~/code/beta")
-
-    const narrowed = (await h.control("draft.set", {
-      draft: "d1",
-      fields: { model: "gpt-5.4" },
-    })) as DraftInfo
-    expect(narrowed.fields).toMatchObject({ model: "gpt-5.4", effort: "high" })
-    const invalid = await failure(h.control("draft.set", { draft: "d1", fields: { effort: "max" } }))
-    expect(invalid.code).toBe("invalid_params")
-
-    const cancelled = (await h.control("draft.cancel", { draft: "d1" })) as DraftInfo
-    expect(cancelled.status).toBe("cancelled")
-    expect(((await h.control("orient")) as Snapshot).surface).toEqual({ kind: "none" })
-    expect(((await h.control("draft.wait", { draft: "d1" })) as DraftInfo).status).toBe("cancelled")
-    expect((await failure(h.control("draft.set", { draft: "d1", fields: {} }))).code).toBe("busy")
-    expect((await failure(h.control("draft.show"))).code).toBe("not_found")
-  } finally {
-    await h.close()
-  }
-})
-
-test("submits a draft and answers with the agent it started; escape resolves a waiter", async () => {
-  const h = await harness("submit")
-  try {
-    const opened = (await h.control("draft.open", { fields: { prompt: "go" } })) as DraftInfo
-    const submitted = (await h.control("draft.submit", { draft: opened.draft })) as DraftInfo
-    expect(submitted.status).toBe("submitted")
-    expect(submitted.outcome).toEqual({ agent: 1 })
-    await h.setup.renderOnce()
-    expect(terminal(h.setup, 1).visible).toBe(true)
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(true)
-
-    const second = (await h.control("draft.open")) as DraftInfo
-    expect(second.draft).toBe("d2")
-    const waiting = h.control("draft.wait", { draft: "d2" }) as Promise<DraftInfo>
-    h.setup.mockInput.pressEscape()
-    await h.setup.renderOnce()
-    expect((await waiting).status).toBe("cancelled")
-
-    // A dialog the human opens is a draft too, so an agent can finish it.
-    h.setup.mockInput.pressKey("b", { ctrl: true })
-    h.setup.mockInput.pressKey("l")
-    await h.setup.renderOnce()
-    const byKeys = (await h.control("draft.show")) as DraftInfo
-    expect(byKeys).toMatchObject({ draft: "d3", opened_by: "keys" })
-    const timedOut = await failure(h.control("draft.wait", { draft: "d3", timeout_ms: 20 }))
-    expect(timedOut.code).toBe("timeout")
-    expect((await h.control("draft.cancel", { draft: "d3" }) as DraftInfo).status).toBe("cancelled")
-  } finally {
-    await h.close()
-  }
-})
-
 test("waits for an agent through the prompt it was launched with", async () => {
   const h = await harness("wait")
   try {
@@ -690,7 +594,7 @@ test("does not treat an unrelated sequence gap as prompt admission", async () =>
   }
 })
 
-test("offers the catalog the pickers draw from, and a draft's choices follow its model", async () => {
+test("offers the catalog accepted by CLI launches", async () => {
   const h = await harness("catalog")
   try {
     const catalog = (await h.control("catalog")) as CatalogInfo
@@ -702,18 +606,6 @@ test("offers the catalog the pickers draw from, and a draft's choices follow its
     })
     expect(catalog.models.map((model) => model.id)).toContain("gpt-5.4-mini")
 
-    const opened = (await h.control("draft.open", { fields: { model: "gpt-5.4-mini" } })) as DraftInfo
-    expect(opened.choices).toEqual({
-      models: catalog.models.map((model) => model.id),
-      efforts: ["low", "medium", "high", "xhigh"],
-    })
-    const changed = (await h.control("draft.set", { draft: opened.draft, fields: { model: "gpt-5.6-sol" } })) as DraftInfo
-    expect(changed.choices?.efforts).toContain("ultra")
-    expect(((await h.control("orient")) as Snapshot).surface).toMatchObject({
-      kind: "launch",
-      draft: { choices: { efforts: expect.arrayContaining(["ultra"]) } },
-    })
-    await h.control("draft.cancel", { draft: opened.draft })
   } finally {
     await h.close()
   }
@@ -727,7 +619,6 @@ test("lists the keys with their command equivalents, and resizes the tray", asyn
       bindings: {
         help: { keys: ["prefix+?"], command: "fmx control keys --show" },
         detach: { keys: ["prefix+d"], command: null },
-        launch: { keys: ["prefix+l"], command: "fmx control launch --editable" },
         previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
         next_tab: { keys: ["prefix+n"], command: "fmx control focus next" },
         toggle_tray: { keys: ["prefix+b"], command: "fmx control tray --toggle" },

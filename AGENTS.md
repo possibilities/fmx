@@ -10,19 +10,17 @@
 - The `[keys]` table in `~/.config/fmx/config.toml` intentionally shares
   Herdr's binding grammar: binding strings, string arrays, `prefix+` trigger
   syntax, and direct modified chords work in both programs. Common action
-  fields keep the same spelling and meaning. `keys.launch` and
-  `keys.toggle_tray` are fmx-owned: Herdr has no launch counterpart and calls
-  its own left surface a Sidebar, not a Tray. Herdr ignores fields it does not
-  know with a diagnostic. Do not mention Herdr in user-facing text (README,
-  `--help`, diagnostics) — only here.
+  fields keep the same spelling and meaning. `keys.toggle_tray` is fmx-owned;
+  Herdr calls its own left surface a Sidebar, not a Tray. Herdr ignores fields
+  it does not know with a diagnostic. Do not mention Herdr in user-facing text
+  (README, `--help`, diagnostics) — only here.
 - `project_roots` is deliberately empty by default. Personal roots belong in
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.
-  The first configured root is fmx's working directory, and the launch
-  dialog opens on it when no agent is active. Only the roots and children
-  that are inside a git repository are offered: an Agent runs in a repository
-  or it does not run, which `performLaunch` enforces for every launch — a key
-  or a command — with `readGitContext`, while the scan and the control
+  The first configured root is fmx's working directory. Only roots and children
+  inside a git repository are offered: an Agent runs in a repository
+  or it does not run, which `performLaunch` enforces for every CLI launch
+  with `readGitContext`, while the scan and the control
   socket's parameter checks use the synchronous `isRepositoryDirectory` walk
   because neither can wait for git. A repository with nothing committed yet is
   a project — its unborn HEAD still names the branch the tray draws, which is
@@ -32,12 +30,11 @@
   that only looks like a checkout. A HEAD that names neither a ref nor a
   commit names no branch, so `readGitContext` answers null and it is no
   project.
-  The empty state names the launch key from `keys.launch` rather than a
-  literal: the launch dialog is the only way a key starts an agent, so a
-  rebound key that still read `prefix+l` would name a dead one.
+  The empty state is deliberately only `no agents`; Agent creation belongs to
+  `fmx control launch`, not to the TUI.
   That first root is commonly a directory of repositories rather than one
   itself, so a launch naming no project and coming from no agent falls back
-  to the first project on offer, exactly as the dialog's project row does; a
+  to the first project on offer; a
   Home whose roots hold no repository has nowhere to send it and is refused.
   TUI startup refuses an empty resolved list with exit 1 and the exact config
   line to add; control commands, `--help`, `--version`, and `doctor` do not
@@ -49,11 +46,6 @@
   paste so newlines survive, and the carriage return that sends it is a
   separate write a beat later — fx discards a paste when anything follows its
   end marker in the same write.
-- The launch dialog's prompt is OpenTUI's textarea, fed by the renderer's own
-  dispatch to the focused renderable. That is why `Multiplexer.onKeyPress`
-  swallows a key only when `LaunchDialog.handleKey` says it kept it: a
-  swallowed key never reaches the widget. fx is blurred while the dialog is
-  open, so a key let through can reach nothing else.
 - fx executable resolution: `FMX_FX_PATH` env var, else `fx` on `PATH`. There
   is deliberately no `--fx` flag. The resolved executable must answer the
   exact `--fxnk-version` probe with fxnk 0.5.0 or newer; that is the first fork
@@ -196,7 +188,7 @@
   the outer pane. Fx keeps that integration independently for hosts that opt in;
   fmx's lifecycle source is ADE alone.
 - fx takes per-process launch overrides from `FX_MODEL` and `FX_EFFORT`; the
-  launch dialog passes both to the one agent it starts. fx rejects both
+  CLI launch passes both to the one agent it starts. fx rejects both
   `effort` and `codex_model` from a workspace's own `.fx.json` as user-only
   settings. Native session naming is also fx profile configuration; fmx does
   not manage it or write `~/.fx/settings.json`.
@@ -232,17 +224,14 @@
   under the ADE feed's singleton, which is what makes unlinking a stale
   one safe. `fmx control` from outside any agent finds a live fmx by
   probing the sockets, not by pid.
-- Every `fmx control <command>` goes through `Multiplexer.handleControl`, and every
-  write there takes the path the keys take (`showLaunchDialog`, `switchTo`,
-  `applyTrayWidth`, the dialog's own `apply`/`submit`/`close`). Do not add a
-  command that does something a hand cannot; add the key first. Detach is the
-  intentional exception in the other direction: it is Client-local and must
-  never acquire a control method.
+- Every `fmx control <command>` goes through `Multiplexer.handleControl`, and
+  UI writes there take the paths the keys take (`switchTo`, `applyTrayWidth`).
+  Launch is the intentional CLI-only exception: the TUI has no creation action.
+  Detach is the intentional exception in the other direction: it is Client-local
+  and must never acquire a control method.
 - A launch from the CLI is background by default: `createAgent` only
   switches when asked or when nothing is on screen. `switchTo` never focuses a
-  terminal while the launch dialog or a modal is up — those hand focus back
-  when they close — which is what lets a background launch land under an open
-  draft without stealing its keys.
+  terminal while a modal is up; the modal hands focus back when it closes.
 - `awaiting_work` is why `agent wait` is trustworthy right after `launch`
   or `send`: fx reports idle at startup before the pasted prompt reaches it.
   The flag is set when a prompt is queued and cleared by `PromptQueued`. If

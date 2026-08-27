@@ -38,7 +38,7 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect([stage.x, stage.y, stage.width, stage.height]).toEqual([0, 0, 80, 24])
     expect(modalBackdrop.visible).toBe(false)
     expect(modal.visible).toBe(false)
-    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
+    expect(setup.captureCharFrame()).toContain("no agents")
     // dim: halfway from the host background to its foreground.
     expect(rgb(emptyState.fg)).toEqual([129, 137, 146])
 
@@ -54,7 +54,7 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect(modal.title).toBe(" keys ")
     expect(rgb(modal.titleColor)).toEqual([16, 32, 48])
     expect(helpFrame).toContain("keybinds")
-    expect(helpFrame).toContain("prefix+l")
+    expect(helpFrame).toContain("prefix+p")
     expect([modalText.x - modal.x, modalText.y - modal.y]).toEqual([2, 1])
     expect([
       modal.width - (modalText.x - modal.x) - modalText.width,
@@ -66,7 +66,7 @@ test("themes the empty state and keyboard-opened help", async () => {
     expect(rgb(modalText.fg)).toEqual([16, 32, 48])
     expect(rgb(modalText.bg)).toEqual([241, 242, 243])
     const keyChunk = modalText.chunks.find((chunk) => chunk.text.startsWith("ctrl+b"))
-    const labelChunk = modalText.chunks.find((chunk) => chunk.text === "launch agent")
+    const labelChunk = modalText.chunks.find((chunk) => chunk.text === "prev agent")
     // Keys are labels: bold, one step down the ramp (secondary, 75%).
     expect(rgb(keyChunk?.fg)).toEqual([72, 85, 97])
     expect((keyChunk?.attributes ?? 0) & TextAttributes.BOLD).toBe(TextAttributes.BOLD)
@@ -90,7 +90,7 @@ test("themes the empty state and keyboard-opened help", async () => {
     await setup.renderOnce()
     expect(modalBackdrop.visible).toBe(false)
     expect(modal.visible).toBe(false)
-    expect(setup.captureCharFrame()).toContain("prefix+l to launch agent")
+    expect(setup.captureCharFrame()).toContain("no agents")
   } finally {
     await multiplexer.shutdown()
   }

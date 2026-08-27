@@ -81,7 +81,7 @@ export function detectedTerminalColor(color: string | null | undefined): string 
 
 /**
  * The ramp: every color fmx paints on a surface of its own — the tray, the
- * help and error modals, the launch dialog, the toast, and the unused field
+ * help and error modals, the toast, and the unused field
  * around a smaller sizing owner.
  *
  * fx draws with five fixed grays. fmx reproduces the relationships between

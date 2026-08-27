@@ -7,7 +7,7 @@ const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
 
 type LoadedConfig = {
   keybindings: Keybindings
-  /** Directories whose children the launch dialog offers as projects. */
+  /** Directories whose repository children a CLI launch may default to. */
   projectRoots: string[]
   /** Where a launch's new worktree is checked out. */
   worktreeRoot: string

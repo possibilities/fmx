@@ -14,7 +14,9 @@
  */
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
+import { defaultAdeSocketPath } from "../src/ade-events.ts"
 import { loadManifest } from "../src/agent-manifest.ts"
+import { ControlSocket } from "../src/control-socket.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { homeIdFor } from "../src/zmx-environment.ts"
 
@@ -30,6 +32,7 @@ const FAKE_FX = join(ROOT, "tests/fixtures/fake-fx.ts")
 const temp = await mkdtemp("/tmp/fmx-restart-demo-")
 const companionDirectory = `/tmp/fmxz-demo-${basename(temp).slice(-6)}`
 const home = homeIdFor(join(temp, "config", "fmx"))
+const controlSocketPath = ControlSocket.pathFor(defaultAdeSocketPath(home))
 const lifecycleLog = join(temp, "lifecycle.log")
 const manifestPath = join(temp, "agents.json")
 const configFile = join(temp, "config.toml")
@@ -86,17 +89,17 @@ const showCompanion = async () => {
 }
 const CTRL = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
-/** ctrl-b l opens the launch dialog; the returns commit the empty prompt and
- * launch into the project it opened on. */
-const launch = async (fmx: Fmx) => {
-  const drawn = fmx.output().split(LAUNCH_PROMPT_ROW).length
-  fmx.key(CTRL("b"), "l".charCodeAt(0))
-  await until(() => fmx.output().split(LAUNCH_PROMPT_ROW).length > drawn, "the launch dialog")
-  fmx.key(13)
-  await sleep(50)
-  fmx.key(13)
+const launch = async () => {
+  const process_ = Bun.spawn(
+    [process.execPath, "src/index.ts", "control", "launch", "--socket", controlSocketPath, "--project", ROOT],
+    { cwd: ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+  )
+  const [stdout, stderr] = await Promise.all([
+    new Response(process_.stdout).text(),
+    new Response(process_.stderr).text(),
+  ])
+  if ((await process_.exited) !== 0) throw new Error(`launch failed: ${(stderr || stdout).trim()}`)
 }
-const LAUNCH_PROMPT_ROW = "what should the agent do?"
 
 type Fmx = { process: ReturnType<typeof Bun.spawn>; output: () => string; key: (...bytes: number[]) => void }
 const startFmx = (): Fmx => {
@@ -124,13 +127,13 @@ let second: Fmx | null = null
 try {
   await step(`start fmx under a private Home (${home}); its Companion keeps sessions in ${companionDirectory}`)
   first = startFmx()
-  await until(() => first!.output().includes("prefix+l"), "the empty state")
+  await until(() => first!.output().includes("no agents"), "the empty state")
   note(`fmx is pid ${first.process.pid}, showing its empty state`)
 
-  await step("ctrl-b l twice: two agents, each created in the Companion, not spawned by fmx")
-  await launch(first)
+  await step("launch twice from the CLI: two agents, each created in the Companion, not spawned by fmx")
+  await launch()
   await until(async () => (await lifecycle()).includes("ready 1"), "agent 1")
-  await launch(first)
+  await launch()
   await until(async () => (await lifecycle()).includes("ready 2"), "agent 2")
   await until(async () => (await loadManifest(manifestPath, home)).agents.every((e) => e.phase === "running"), "both claims acknowledged")
   await showManifest()
@@ -182,7 +185,7 @@ try {
   await step("ctrl-c ctrl-c inside agent 1: the last exit leaves the empty state, and ctrl-c twice closes fmx")
   second.key(CTRL("c"), CTRL("c"))
   await until(async () => (await lifecycle()).includes("graceful 1"), "agent 1 to exit")
-  await until(() => second!.output().includes("prefix+l to launch agent"), "the empty state")
+  await until(() => second!.output().includes("no agents"), "the empty state")
   await sleep(300)
   second.key(CTRL("c"))
   await until(() => second!.output().includes("press ctrl+c again to exit"), "the exit confirmation")
