@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
-import { launchAgent, launchAgentQuietly, startAgent } from "./fixtures/agent-launch.ts"
+import { launchAgent, startAgent } from "./fixtures/agent-launch.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -21,10 +21,9 @@ async function createMultiplexer(width: number, height: number) {
     fxPath: FAKE_FX,
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
-    toastDurationMs: 1,
   })
   await multiplexer.start()
-  await launchAgentQuietly(setup, multiplexer)
+  await launchAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable

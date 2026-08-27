@@ -4,7 +4,6 @@ import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testin
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
   "Session list",
-  "Toast",
 ] as const
 
 export type UiGalleryComponent = (typeof UI_GALLERY_COMPONENTS)[number]
@@ -54,8 +53,8 @@ export type UiStorySnapshot = {
 /**
  * A story kept alive in its exact-size test renderer. The gallery paints its
  * captured spans, then forwards input back here while interaction mode is on.
- * That keeps components which measure against their renderer (notably the
- * Multiplexer and Toast) honest without making production renderables aware of
+ * That keeps renderer-measured components (notably the Multiplexer) honest
+ * without making production renderables aware of
  * the gallery's surrounding chrome.
  */
 export class UiStorySession {
@@ -159,7 +158,7 @@ export class UiStorySession {
     this.ensureOpen()
     // Several component actions deliberately finish through microtasks. Two
     // passes make those immediate transitions visible without waiting on the
-    // long timers used by Toasts and launch prompting.
+    // long timers used by launch prompting.
     await Promise.resolve()
     await new Promise<void>((resolve) => setImmediate(resolve))
     await this.setup.renderOnce()

@@ -8,7 +8,6 @@ import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { SessionList } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
-import { Toast, type ToastTone } from "../src/toast.ts"
 import { unusedSpaceBackground } from "../src/unused-space.ts"
 import { GalleryAgentTransportFactory } from "./fakes.ts"
 import type { UiStory, UiStoryContext } from "./story.ts"
@@ -142,7 +141,6 @@ export const UI_STORIES: readonly UiStory[] = [
       )
     },
   },
-  ...(["neutral", "error"] as const).map((tone): UiStory => toastStory(tone)),
 ]
 
 function entry(overrides: Partial<SessionEntry> = {}): SessionEntry {
@@ -166,37 +164,6 @@ function mountSessionList(context: UiStoryContext, entries: SessionEntry[], widt
   list.applyTheme(context.themeMode)
   list.render(buildTree(entries), width)
   context.defer(() => list.root.destroyRecursively())
-}
-
-function toastStory(tone: ToastTone): UiStory {
-  const content = {
-    neutral: "fmx / main / steady-moon started",
-    error: "fmx / main / agent 5 exited / code 7",
-  }[tone]
-  const description = {
-    neutral: "A lifecycle notice on a raised surface: the words carry the event, the dim hairline carries nothing.",
-    error: "A failure is the one notice that spends a hue — the host's red, on the border alone.",
-  }[tone]
-  return {
-    id: `toast-${tone}`,
-    component: "Toast",
-    title: `${tone[0]!.toUpperCase()}${tone.slice(1)} notice`,
-    description,
-    viewport: { cols: 62, rows: 12 },
-    expectedText: [content],
-    arrange(context) {
-      mountToast(context, content, tone, tone === "neutral" ? ["steady-moon"] : [])
-    },
-  }
-}
-
-function mountToast(context: UiStoryContext, text: string, tone: ToastTone, italic: readonly string[] = []): void {
-  const toast = new Toast(context.setup.renderer, { durationMs: 60_000 })
-  context.canvas.add(toast.root)
-  toast.applyTheme(context.themeMode)
-  toast.show(text, tone, { italic })
-  toast.layout()
-  context.defer(() => toast.destroy())
 }
 
 type MultiplexerStoryOptions = {
@@ -286,7 +253,6 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       adeSocket,
       projectRoots: [],
       home: ROOT,
-      toastDurationMs: 60_000,
       initialTheme: {
         theme: context.themeMode,
         background: context.palette?.defaultBackground ?? null,

@@ -118,12 +118,6 @@ Focus and error are direct ANSI slots `4` and `1`, each with one job and never
 sampled from the host. A state is a glyph and a weight, never a hue.
 _Avoid_: host ramp, derived palette, modal colors.
 
-**Toast** — a transient, bottom-center notice drawn over the active surface:
-foreground text on the Ramp's surface fill inside a dim hairline, which only
-a notice reporting a failure colors, in the error hue. Toasts appear one at a
-time in arrival order and do not take focus.
-_Avoid_: status bar, modal, success toast.
-
 **Tray** — the collapsible left column that carries the Session list: hidden
 while no agent runs or when toggled away, resizable by its divider, its width
 and visibility remembered across runs.

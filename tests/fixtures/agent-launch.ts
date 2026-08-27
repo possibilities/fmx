@@ -26,18 +26,3 @@ export async function launchAgent(
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
 }
-
-/** Wait until the lifecycle notice clears before measuring the UI beneath. */
-export async function launchAgentQuietly(
-  setup: Setup,
-  multiplexer: Multiplexer,
-  id = 1,
-  timeoutMs = 4_000,
-): Promise<void> {
-  await launchAgent(setup, multiplexer, id, timeoutMs)
-  const deadline = Date.now() + timeoutMs
-  while (setup.renderer.root.findDescendantById("fmx-toast")?.visible !== false) {
-    if (Date.now() >= deadline) throw new Error("the start notice never cleared")
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-}

@@ -83,7 +83,6 @@ import {
   readGitContext,
   projectNameFor,
   type GitContext,
-  treeNameFor,
 } from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
 import { expandTilde, scanProjectRoots } from "./projects.ts"
@@ -92,7 +91,6 @@ import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
-import { Toast, type ToastTone } from "./toast.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
 import type { BusState } from "./bus-protocol.ts"
 import type { BusPublisher } from "./runtime-bus.ts"
@@ -174,8 +172,6 @@ type MultiplexerOptions = {
   busSocketPath?: string
   /** State and activity the Multiplexer publishes onto the Runtime Bus. */
   bus?: BusPublisher | null
-  /** How long each lifecycle Toast remains; overridden only by renderer tests. */
-  toastDurationMs?: number
   /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
   initialTheme?: FxnkThemeResolution
 }
@@ -519,10 +515,6 @@ export class Multiplexer {
   private readonly modalBackdrop: BoxRenderable
   private readonly modal: BoxRenderable
   private readonly modalText: TextRenderable
-  private readonly toast: Toast
-  /** Per-Agent tails keep a fast exit behind its start notice even when
-   * both are waiting for Git context. */
-  private readonly lifecycleNoticeTails = new Map<number, Promise<void>>()
   private readonly keybindings: Keybindings
   private readonly agents: FxAgent[] = []
   private activeIndex = -1
@@ -674,11 +666,7 @@ export class Multiplexer {
     this.modalBackdrop.add(this.modal)
     this.applyModalTheme()
 
-    this.toast = new Toast(renderer, { durationMs: options.toastDurationMs })
-    this.toast.applyTheme(this.theme.theme)
-
     this.renderer.root.add(this.stage)
-    this.renderer.root.add(this.toast.root)
     this.renderer.root.add(this.modalBackdrop)
     this.renderer.keyInput.on("keypress", this.keypressHandler)
     this.renderer.keyInput.on("keyrelease", this.keyreleaseHandler)
@@ -744,7 +732,6 @@ export class Multiplexer {
     this.renderer.setBackgroundColor(ramp.background)
     this.applyModalTheme()
     this.applyDividerTheme()
-    this.toast.applyTheme(resolution.theme)
     this.refreshEmptyState()
     for (const agent of this.agents) agent.updateHostTheme(resolution)
     this.renderer.requestRender()
@@ -776,7 +763,6 @@ export class Multiplexer {
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const agent of this.agents) agent.destroy()
-      this.toast.destroy()
     } finally {
       this.agents.length = 0
       this.renderer.destroy()
@@ -814,14 +800,6 @@ export class Multiplexer {
     const agent = this.addAgent(entry, cwd, focus)
     agent.setPendingPrompt(prompt)
     this.publishBusState("awaiting_work_changed")
-    // "started" means fx is running, whether or not it could be reached. The
-    // notice waits on the attempt itself rather than reading a flag when it
-    // happens to run: everything it needs may already be in hand.
-    let markStarted: (started: boolean) => void = () => {}
-    const startAttempt = new Promise<boolean>((resolve) => {
-      markStarted = resolve
-    })
-    this.queueLifecycleNotice(agent, `agent ${agent.id}`, "started", "neutral", null, () => startAttempt)
     let transport: AgentTransport
     try {
       await saved
@@ -847,12 +825,10 @@ export class Multiplexer {
       if (error instanceof AgentUnreachableError) {
         // fx is running; only the way to it failed. It is recovered like a
         // lost transport, never removed — the Manifest says so first.
-        markStarted(true)
         await this.options.manifest.markRunning(entry.agentId).catch(() => {})
         void this.recoverAgent(agent, error)
         return agent
       }
-      markStarted(false)
       this.removeAgent(agent)
       // A write that fails here is the same disk that failed above; the
       // reason the start failed is the one to show.
@@ -862,7 +838,6 @@ export class Multiplexer {
     // fx is running whatever happens from here; the record says so before
     // anything else, because this is the acknowledgement a crash loses. A
     // write that fails leaves `creating` on disk, which the join resolves.
-    markStarted(true)
     await this.options.manifest.markRunning(entry.agentId).catch(() => {})
     if (this.shuttingDown || !this.agents.includes(agent)) {
       transport.detach()
@@ -927,7 +902,7 @@ export class Multiplexer {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
         this.publishBusState("agent_label_changed")
       },
-      onExit: (candidate, exit) => this.handleAgentExit(candidate, exit),
+      onExit: (candidate) => this.handleAgentExit(candidate),
       onLost: (candidate, error) => void this.recoverAgent(candidate, error),
     })
     this.agents.push(agent)
@@ -942,18 +917,14 @@ export class Multiplexer {
 
   /**
    * fx ended: the Agent, its claim, and whatever the Companion recorded
-   * all go. `exit` is null when the end was observed but its status was not.
+   * all go.
    */
-  private handleAgentExit(agent: FxAgent, exit: AgentExit | null): void {
+  private handleAgentExit(agent: FxAgent): void {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
     void this.options.manifest.remove(agent.entry.agentId).catch(() => {})
     if (this.shuttingDown) return
-    const identity = this.nameOf(agent) ?? `agent ${agent.id}`
-    // The shell's number for a signal, so a notice reads the way `$?` would.
-    const exitCode = exit === null ? 0 : exit.signal ? 128 + exit.signal : exit.code
-    this.queueLifecycleNotice(agent, identity, "exited", exitCode === 0 ? "neutral" : "error", exitCode)
     this.removeAgent(agent)
   }
 
@@ -979,7 +950,7 @@ export class Multiplexer {
         return
       } catch (caught) {
         if (caught instanceof AgentEndedError) {
-          this.handleAgentExit(agent, caught.exit)
+          this.handleAgentExit(agent)
           return
         }
         error = caught
@@ -987,31 +958,6 @@ export class Multiplexer {
     }
     if (this.shuttingDown || !this.removeAgent(agent)) return
     this.showError(`lost agent ${agent.id}`, error)
-  }
-
-  private queueLifecycleNotice(
-    agent: FxAgent,
-    identity: string,
-    event: "started" | "exited",
-    tone: ToastTone,
-    exitCode: number | null,
-    shouldShow: () => boolean | Promise<boolean> = () => true,
-  ): void {
-    const context = this.loadGitContext(agent.cwd)
-    const previous = this.lifecycleNoticeTails.get(agent.id) ?? Promise.resolve()
-    const queued = previous.then(async () => {
-      const git = await context
-      if (this.shuttingDown || !(await shouldShow())) return
-      const project = projectNameFor(git, agent.cwd)
-      const tree = treeNameFor(git)
-      const location = tree === null ? project : `${project} / ${tree}`
-      const code = event === "exited" && exitCode !== null && exitCode !== 0 ? ` / code ${exitCode}` : ""
-      this.toast.show(`${location} / ${identity} ${event}${code}`, tone)
-    })
-    this.lifecycleNoticeTails.set(agent.id, queued)
-    void queued.finally(() => {
-      if (this.lifecycleNoticeTails.get(agent.id) === queued) this.lifecycleNoticeTails.delete(agent.id)
-    })
   }
 
   private removeAgent(agent: FxAgent): boolean {
@@ -1380,7 +1326,6 @@ export class Multiplexer {
 
   private applyLayout(requestedTrayWidth = this.trayWidth): void {
     this.applyTrayWidth(requestedTrayWidth)
-    this.toast.layout()
   }
 
   private applyTrayWidth(requested = this.trayWidth): void {
