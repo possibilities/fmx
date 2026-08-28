@@ -14,9 +14,9 @@ export const COMPANION_DIRECTORY_ENV_VAR = "FMX_ZMX_DIR"
 export const COMPANION_BINARY_NAME = "fmx-zmx"
 
 /**
- * The Companion pin: the fork commit this fmx was released with, and the
+ * The Companion pin: the exact fork commit this fmx installs from source, and the
  * build string a Companion built from it reports (`fmx-zmx version`, first
- * line). A release ships the pair; fmx refuses any other Companion it finds
+ * line). Fmx refuses any other Companion it finds
  * beside itself or on PATH, because the protocol is the pair's and a build
  * that is not the pinned one has nothing to promise.
  */
@@ -257,7 +257,7 @@ export function parseCompanionVersion(output: string): string | null {
  */
 export function companionMismatch(companion: ResolvedCompanion, build: string, protocolVersion: number): string {
   const where = companion.origin === "override" ? ` (${COMPANION_PATH_ENV_VAR})` : companion.origin === "sibling" ? " (beside fmx)" : " (on PATH)"
-  const facts = `Companion ${companion.path}${where} is build ${build}; this fmx was released with ${COMPANION_PIN.build} (protocol ${protocolVersion})`
+  const facts = `Companion ${companion.path}${where} is build ${build}; this fmx pins ${COMPANION_PIN.build} (protocol ${protocolVersion})`
   if (companion.origin === "override") return `${facts}; running under the override`
   return `${facts}. Reinstall fmx to restore the pair, or set ${COMPANION_PATH_ENV_VAR} to a matching build`
 }

@@ -43,7 +43,7 @@ test("doctor reports a paired installation and requires a compatible Fx", async 
     expect(report.lines[0]).toBe(`fmx        ${VERSION}`)
     expect(report.lines).toContain(`companion  ${companion} (on PATH)`)
     expect(report.lines).toContain(`directory  ${directory} (private)`)
-    expect(report.lines).toContain(`build      ${COMPANION_PIN.build} (the build this fmx was released with)`)
+    expect(report.lines).toContain(`build      ${COMPANION_PIN.build} (the build pinned by this fmx checkout)`)
     expect(report.lines).toContain(`protocol   ${PROTOCOL_VERSION}`)
     expect(report.lines).toContain(`home       ${homeIdFor(join(root, "config", "fmx"))} (${join(root, "config", "fmx")})`)
     expect(report.lines).toContain(`fx         ${fx} (fxnk ${MIN_FXNK_VERSION})`)
@@ -73,7 +73,7 @@ test("doctor fails on a missing Companion or one that is not the pinned build, e
     const mismatched = await doctor({ ...env, PATH: root })
     expect(mismatched.ok).toBe(false)
     expect(mismatched.lines.find((line) => line.startsWith("build "))).toContain(
-      `${companion} (on PATH) is build 0.7.0; this fmx was released with ${COMPANION_PIN.build} (protocol ${PROTOCOL_VERSION}). Reinstall fmx`,
+      `${companion} (on PATH) is build 0.7.0; this fmx pins ${COMPANION_PIN.build} (protocol ${PROTOCOL_VERSION}). Reinstall fmx`,
     )
 
     const overridden = await doctor({ ...env, FMX_ZMX_PATH: companion })

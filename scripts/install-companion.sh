@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-# Install the Companion an editable fmx needs. A release ships fmx-zmx beside
-# fmx; a checkout run through `bun link` has no beside, so it finds fmx-zmx on
-# PATH — this builds the pinned one and places it there. Rerun after the pin
+# Install the Companion an editable fmx needs. A checkout run through `bun
+# link` finds fmx-zmx on PATH, so this builds the pinned one and places it
+# there. Rerun after the pin
 # moves; a Companion already reporting the pinned build is left alone.
 #
 #   scripts/install-companion.sh [--check] [--rebuild]

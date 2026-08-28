@@ -9,12 +9,19 @@ import {
   treeNameFor,
 } from "../src/git-context.ts"
 
+const worktreeList = Bun.spawn(["git", "-C", process.cwd(), "worktree", "list", "--porcelain"], {
+  stdout: "pipe",
+  stderr: "ignore",
+})
+const mainRoot = (await new Response(worktreeList.stdout).text())
+  .match(/^worktree (.+)$/mu)?.[1]
+expect(mainRoot).toBeTruthy()
+
 test("reads the worktree root and branch of a repository", async () => {
   const context = await readGitContext(process.cwd())
   expect(context?.branch).toBeTruthy()
   expect(context?.root).toBe(process.cwd())
-  // In the main worktree the two roots are the same directory.
-  expect(context?.mainRoot).toBe(process.cwd())
+  expect(context?.mainRoot).toBe(mainRoot)
 })
 
 test("reports a linked worktree's own root and the repository behind it", async () => {
@@ -27,7 +34,7 @@ test("reports a linked worktree's own root and the repository behind it", async 
   try {
     const context = await readGitContext(checkout)
     expect(context?.root).toBe(await realpath(checkout))
-    expect(context?.mainRoot).toBe(process.cwd())
+    expect(context?.mainRoot).toBe(mainRoot)
     // Detached, so the branch falls back to the sha rather than "HEAD".
     expect(context?.branch).toMatch(/^[0-9a-f]{4,}$/u)
     expect(projectNameFor(context ?? null, checkout)).toBe("fmx")

@@ -328,20 +328,18 @@
   Companion checks (found, pinned build, private directory) and Fx's fxnk
   compatibility probe. An overridden Companion build remains the developer's
   and is reported rather than judged. Keep `--version` one line — the
-  installer and the release script compare it whole.
-- Moving the pin is a release act: land the fork change on `integration`,
-  push, put the commit and `<fork version>+fmx.<12 hex>` in
-  `companion.json`, re-check the Companion notices, release the pair. The
-  pinned build is always made by `scripts/build-companion.sh` — the release
-  script, `scripts/install-companion.sh` (the editable checkout's
-  `~/.local/bin/fmx-zmx`, which agentstart installs and zmax's pin step
-  refreshes), and nothing else; one build path, one set of flags. 
-- Blob retains only the current fmx version. The release workflow uploads and
-  publicly byte-verifies the complete replacement plus `setup.sh` and
-  `latest.txt` before it deletes any older `releases/v<version>/` path. Never
-  prune the current release to make room for its replacement; prune older
-  releases first when capacity is needed, then remove the former current
-  release only after the new one is public.
+  installer compares it whole.
+- Moving the pin is a source-installation act: land the fork change on
+  `integration`, push, put the commit and `<fork version>+fmx.<12 hex>` in
+  `companion.json`, and re-check the Companion notices. The pinned build is
+  always made by `scripts/build-companion.sh`, reached by `scripts/install.sh`
+  and `scripts/install-companion.sh`; one build path, one set of flags.
+- Fmx publishes no binaries, archives, installer payload, latest pointer, or
+  release tag. `scripts/install.sh` is the consumer and operator path. The
+  tested systems are macOS and Linux on arm64 and x86_64; every other system
+  is unsupported. Only `scripts/local-gate.sh` on the current Mac architecture
+  blocks a merge. The four-platform Full CI workflow runs after `main` pushes,
+  records binary pass/fail results, and is nonblocking observability.
 - Bumping `PROTOCOL_VERSION` (`src/zmx-protocol.ts`, mirrored by the fork's
   `src/ipc.zig`) is a pair-wide event with survivors: daemons started by the
   previous Companion keep running the old protocol, the new fmx's `Hello`

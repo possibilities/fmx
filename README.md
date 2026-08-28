@@ -8,17 +8,16 @@ in a companion daemon, so they keep running when fmx is not.
 ## Install
 
 ```sh
-curl -fsSL https://c1g42cnmuvvspilo.public.blob.vercel-storage.com/setup.sh | bash
+git clone https://github.com/possibilities/fmx.git
+cd fmx
+scripts/install.sh --install
 ```
 
-This installs `fmx`, its companion `fmx-zmx`, and its pinned Fx fork as
-`fmx-fx` to `~/.local/bin`. The installer keeps that private copy separate
-from any `fx` installed for direct use, and fmx resolves it once when a Runtime
-starts. `fmx doctor` reports what an installation has.
-
-The public store retains only the current fmx and Fx-fork releases. Exact
-version overrides are supported for the current release, not as a historical
-archive.
+This links `fmx` from the checkout and builds its exact pinned Companion and
+Fx fork sources as `fmx-zmx` and `fmx-fx`. Fmx publishes no binaries. See the
+[source installation guide](docs/source-install.md) for requirements,
+automation inputs, and the tested platform boundary. `fmx doctor` reports
+what an installation has.
 
 ## Usage
 
@@ -111,6 +110,7 @@ bun link                      # ~/.bun/bin/fmx runs this checkout
 bun test && bun run typecheck
 bun run gallery               # browse UI components and their states
 scripts/install-companion.sh  # the pinned companion, into ~/.local/bin
+scripts/local-gate.sh         # the only merge gate: this Mac architecture
 ```
 
 `AGENTS.md` is the working contract, `docs/adr/` the decisions behind it.

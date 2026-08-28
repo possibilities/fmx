@@ -10,8 +10,8 @@
   "scripts": {
     "gallery": "bun ui-gallery/cli.ts",
     "gallery:check": "bun ui-gallery/cli.ts --check",
-    "release:build": "scripts/build-release.sh",
-    "demo:install": "bun scripts/companion-install-demo.ts",
+    "install:source": "scripts/install.sh --install",
+    "gate:local": "scripts/local-gate.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:pty": "FMX_RUN_PTY_TESTS=1 bun test tests/multiplexer.e2e.test.ts"

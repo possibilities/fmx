@@ -69,7 +69,7 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Doct
     try {
       const build = await companionBuild(companion.path, env)
       if (build === COMPANION_PIN.build) {
-        rows.push(["build", `${build} (the build this fmx was released with)`])
+        rows.push(["build", `${build} (the build pinned by this fmx checkout)`])
       } else if (companion.origin === "override") {
         rows.push(["build", companionMismatch(companion, build, PROTOCOL_VERSION)])
       } else {

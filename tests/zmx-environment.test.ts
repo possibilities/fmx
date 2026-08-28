@@ -128,7 +128,7 @@ test("a Companion that is not the pinned build is refused unless the override na
   const pinned = COMPANION_PIN.build
   const sibling = companionMismatch({ path: "/opt/fmx/fmx-zmx", origin: "sibling" }, "0.7.0", 1)
   expect(sibling).toContain("/opt/fmx/fmx-zmx (beside fmx) is build 0.7.0")
-  expect(sibling).toContain(`released with ${pinned} (protocol 1)`)
+  expect(sibling).toContain(`pins ${pinned} (protocol 1)`)
   expect(sibling).toContain("Reinstall fmx to restore the pair, or set FMX_ZMX_PATH")
   expect(companionMismatch({ path: "/usr/local/bin/fmx-zmx", origin: "path" }, "0.8.0+fmx.000000000000", 1)).toContain("(on PATH)")
   const override = companionMismatch({ path: "/src/zmx/zig-out/bin/zmx", origin: "override" }, "0.7.0", 1)

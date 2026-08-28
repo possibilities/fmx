@@ -342,8 +342,8 @@ Options:
 Commands:
   control        shared UI actions for agents; see fmx control
   bus            state snapshots, attributed activity, and the Runtime command wire
-  doctor         versions, the companion and whether it is the one this fmx
-                 was released with, its directory, and fx; exits 1 when the
+  doctor         versions, the companion and whether it matches this fmx's
+                 source pin, its directory, and fx; exits 1 when the
                  companion is missing, not that build, or its directory is
                  not fmx's own; fx, and a build FMX_ZMX_PATH named, are
                  reported, never judged

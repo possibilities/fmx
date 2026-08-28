@@ -44,25 +44,29 @@ _Avoid_: backend, host, server, zmx for the thing itself — though zmx is
 still the right word for the wire protocol it speaks and the environment
 variables that protocol defines.
 
-**Companion pin** — `companion.json`: the fork commit an fmx release is built
-with and the build string a Companion built from it reports. The pair is the
-unit of release; fmx refuses a Companion beside it or on `PATH` that reports
+**Companion pin** — `companion.json`: the exact fork commit the source
+installer builds and the build string that Companion reports. The pin is an
+installation unit; fmx refuses a Companion beside it or on `PATH` that reports
 any other build, and runs one named by `FMX_ZMX_PATH` with a word about it,
 because that override is how a checkout develops the two together.
 _Avoid_: lock file, version file, dependency.
 
 **Fx pin** — `fx.json`: the exact approved Fx Integration commit an fmx
-release's installer obtains from the public fork installer, plus the minimum
-fxnk contract fmx accepts. It lands beside fmx as the real native executable
+source installation builds, plus the minimum fxnk contract fmx accepts. It
+lands beside fmx as the real native executable
 `fmx-fx`, separate from the `fx` AgentStart installs for direct use; a Runtime
 resolves and probes it once, then every new Agent reuses that absolute path.
 _Avoid_: bundled Fx, wrapper, AgentStart pin, moving latest.
 
-**Current release retention** — The shared Blob store keeps one public fmx
-version and one public Fx Integration commit. A publisher writes and publicly
-verifies the complete replacement and its mutable pointers before removing the
-older exact-version or exact-commit tree.
-_Avoid_: release archive, historical mirror.
+**Local development gate** — `scripts/local-gate.sh` on the architecture of
+the Mac running it. It is the only blocking merge authority; the hosted
+four-platform Full CI result is later binary observability.
+_Avoid_: release gate, partial verdict, best effort.
+
+**Source installation** — `scripts/install.sh`, the shared consumer and
+operator path that links fmx and builds both native pins from exact source.
+Fmx has no binary release or publication path.
+_Avoid_: release, bucket installer, artifact channel.
 
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
