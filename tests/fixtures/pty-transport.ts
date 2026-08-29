@@ -2,7 +2,7 @@ import { AgentManifest, type ManifestEntry } from "../../src/agent-manifest.ts"
 import {
   HandlerRelay,
   AgentEndedError,
-  type AgentLaunch,
+  type AgentStart,
   type AgentTransport,
   type AgentTransportFactory,
   type TerminalSize,
@@ -30,8 +30,8 @@ export class PtyTransportFactory implements AgentTransportFactory {
   /** Holds every `start` until released; for tests of what happens before `adopt`. */
   gate: Promise<void> | null = null
 
-  async start(launch: AgentLaunch): Promise<AgentTransport> {
-    const transport = new PtyTransport(launch)
+  async start(request: AgentStart): Promise<AgentTransport> {
+    const transport = new PtyTransport(request)
     this.started.push(transport)
     if (this.gate) await this.gate
     return transport
@@ -64,13 +64,13 @@ export class PtyTransport implements AgentTransport {
     this.relay.stop()
   }
 
-  constructor(launch: AgentLaunch) {
-    this.process = Bun.spawn(launch.command, {
-      cwd: launch.cwd,
-      env: launch.env,
+  constructor(request: AgentStart) {
+    this.process = Bun.spawn(request.command, {
+      cwd: request.cwd,
+      env: request.env,
       terminal: {
-        cols: launch.size.cols,
-        rows: launch.size.rows,
+        cols: request.size.cols,
+        rows: request.size.rows,
         data: (_pty, data) => this.relay.emit((handlers) => handlers.output(data)),
       },
     })

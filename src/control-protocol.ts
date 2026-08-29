@@ -1,9 +1,9 @@
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
+import { isAgentId } from "./agent-manifest.ts"
 
 /**
- * The typed command surface behind `fmx control`. Transport-independent: the
- * Runtime Bus owns framing, multiplexing, and delivery while Multiplexer owns
- * what every method means.
+ * The typed Runtime surface behind fmx-mcp. Transport-independent: the Runtime
+ * Bus owns framing and delivery while Multiplexer owns what every method means.
  */
 
 export type ControlRequest = {
@@ -34,8 +34,7 @@ export type ControlReply =
   | { id: string | null; ok: true; result: unknown }
   | { id: string | null; ok: false; error: ControlError }
 
-/** What the Runtime Bus drives. A disconnect aborts every request still held
- * by that connection, so waiting methods can release their resources. */
+/** What the Runtime Bus drives. */
 export type ControlSurface = {
   handle(method: ControlMethod, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
 }
@@ -55,14 +54,8 @@ export function afterControlReply(result: unknown, run: () => void): AfterContro
 
 export const CONTROL_METHODS = [
   "orient",
-  "agent.list",
-  "agent.wait",
-  "agent.send",
-  "launch",
   "focus",
   "tray",
-  "keys",
-  "catalog",
 ] as const
 
 export type ControlMethod = (typeof CONTROL_METHODS)[number]
@@ -82,11 +75,11 @@ export class ControlFailure extends Error {
 
 /* ---------------------------------------------------------------- results */
 
-/** One agent as the CLI sees it: the tray's model, not its drawing. */
+/** One Agent as MCP sees it: the Session list's model, not its drawing. */
 export type AgentInfo = {
   /** Stable 128-bit Manifest identity; use this across Runtime restarts. */
   agent_id: string
-  /** Human-facing number, retained as `id` for control targets. */
+  /** Human-facing number, retained as `id` for Target compatibility. */
   id: number
   display_id: number
   pane_id: string
@@ -96,7 +89,7 @@ export type AgentInfo = {
   git_root: string | null
   main_git_root: string | null
   /** null while git has not answered for the directory, and again whenever it
-   * cannot: an agent is launched into a repository, so this is never a report
+   * cannot: an Agent is started in a repository, so this is never a report
    * that the directory was untracked. */
   branch: string | null
   /** Whether the directory is a linked worktree rather than the main checkout. */
@@ -107,9 +100,6 @@ export type AgentInfo = {
   state: DisplayState
   attention: AgentAttention | null
   active: boolean
-  /** A prompt has been typed in — by launch or by `agent send` — and fx
-   * has not yet reported working on it. `agent wait` holds through it. */
-  awaiting_work: boolean
   /** The fx subagents whose control records name this agent's session as
    * their parent, nested as the tray nests them. Not targets: the tray
    * cannot select one either. */
@@ -142,7 +132,6 @@ export type Snapshot = {
     pid: number
     version: string
     cwd: string
-    socket: string
     cols: number
     rows: number
   }
@@ -154,27 +143,18 @@ export type Snapshot = {
   surface: Surface
 }
 
-/** The model catalog accepted by `fmx control launch`, in display order. */
-export type CatalogInfo = {
-  default: { model: string; effort: string }
-  models: { id: string; efforts: string[]; default_effort: string }[]
-}
-
-export type KeysInfo = {
-  prefix: string
-  /** Client-local actions deliberately have no agent-callable command. */
-  bindings: Record<string, { keys: string[]; command: string | null }>
-}
-
 /* ---------------------------------------------------------------- targets */
 
 /**
- * How a command names an agent. Numbers are agent ids; `current` is the
- * caller's own; `next` and `previous` are relative to the active one; a bare
- * word is an exact session name first and a session-id prefix second.
+ * How an MCP tool names an Agent. Stable Agent and Pane ids take precedence,
+ * numbers are display ids, `current` is the caller's own, and relative words
+ * use the Agent currently on screen. Other text is an exact Session name first
+ * and a Session-id prefix second.
  */
 export type Target =
-  | { kind: "id"; id: number }
+  | { kind: "agent_id"; agentId: string }
+  | { kind: "pane_id"; paneId: string }
+  | { kind: "display_id"; displayId: number }
   | { kind: "current" }
   | { kind: "active" }
   | { kind: "next" }
@@ -183,9 +163,11 @@ export type Target =
 
 export function parseTarget(raw: string): Target {
   const trimmed = raw.trim()
-  if (/^\d+$/u.test(trimmed)) return { kind: "id", id: Number(trimmed) }
-  const paneId = /^p_(\d+)$/u.exec(trimmed)
-  if (paneId) return { kind: "id", id: Number(paneId[1]) }
+  if (validAgentId(trimmed)) return { kind: "agent_id", agentId: trimmed }
+  if (trimmed.startsWith("p_") && validAgentId(trimmed.slice(2))) {
+    return { kind: "pane_id", paneId: trimmed }
+  }
+  if (/^\d+$/u.test(trimmed)) return { kind: "display_id", displayId: Number(trimmed) }
   switch (trimmed) {
     case "current":
     case "active":
@@ -195,6 +177,10 @@ export function parseTarget(raw: string): Target {
   }
   if (trimmed === "") throw new ControlFailure("invalid_params", "target is empty")
   return { kind: "name", name: trimmed }
+}
+
+function validAgentId(value: string): boolean {
+  return isAgentId(value)
 }
 
 /* --------------------------------------------------------------- responses */
@@ -243,15 +229,6 @@ export function optionalInteger(params: Record<string, unknown>, key: string): n
   if (value === undefined || value === null) return undefined
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new ControlFailure("invalid_params", `${key} must be an integer`)
-  }
-  return value
-}
-
-export function optionalStringList(params: Record<string, unknown>, key: string): string[] | undefined {
-  const value = params[key]
-  if (value === undefined || value === null) return undefined
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-    throw new ControlFailure("invalid_params", `${key} must be a list of strings`)
   }
   return value
 }

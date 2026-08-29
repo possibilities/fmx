@@ -8,12 +8,12 @@ import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { TestAdeSocket } from "./fixtures/ade-feed.ts"
-import { startAgent } from "./fixtures/agent-launch.ts"
+import { startAgent } from "./fixtures/agent-start.ts"
 import { agentOptions, type PtyTransport } from "./fixtures/pty-transport.ts"
 
 /**
- * The multiplexer against the transport seam: what it does with the size,
- * the prompt, and a transport that goes away — through the PTY fixture, so
+ * The multiplexer against the transport seam: what it does with the size and
+ * a transport that goes away — through the PTY fixture, so
  * every path is a table here rather than a race against a daemon.
  */
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -345,31 +345,6 @@ test("reapplies the resolved OSC 11 background after RestoreBegin", async () => 
   }
 })
 
-test("a launch prompt armed before the transport arrives goes in once it has", async () => {
-  const h = await harness("prompt")
-  try {
-    let release!: () => void
-    h.options.transport.gate = new Promise((resolve) => {
-      release = resolve
-    })
-    const launched = h.control("launch", { prompt: "hello there", directory: process.cwd(), focus: true })
-    await waitFor(() => h.options.transport.started.length === 1)
-    // fx reports before fmx has adopted the transport, and the settle passes.
-    await h.report(1, "idle")
-    await Bun.sleep(400)
-    expect((await h.snapshot()).agents[0]?.awaiting_work).toBe(true)
-    release()
-    await launched
-    // The prompt reaches the fake fx, which echoes what it is sent.
-    await waitFor(async () => {
-      await h.setup.renderOnce()
-      return h.setup.captureCharFrame().includes("hello there")
-    })
-  } finally {
-    await h.close()
-  }
-})
-
 test("a lost transport whose Agent has ended is removed like an exit", async () => {
   const h = await harness("ended")
   try {
@@ -382,26 +357,6 @@ test("a lost transport whose Agent has ended is removed like an exit", async () 
     expect(h.options.manifest.get(entry.agentId)).toBeNull()
     expect(h.options.transport.attaches.get(entry.agentId)).toBe(1)
     expect(h.modal.visible).toBe(false)
-  } finally {
-    await h.close()
-  }
-})
-
-test("refuses agent.send while a lost transport is reconnecting", async () => {
-  const h = await harness("send-reconnecting")
-  try {
-    void startAgent(h.multiplexer)
-    await waitFor(() => h.options.transport.started.length === 1)
-    const entry = h.options.manifest.entries[0]!
-    const reconnect = Promise.withResolvers<AgentTransport>()
-    h.options.transport.attachBehavior = () => reconnect.promise
-    ;(h.options.transport.started[0] as PtyTransport).lose()
-    await waitFor(() => h.options.transport.attaches.get(entry.agentId) === 1)
-
-    const refusal = await h.control("agent.send", { target: "1", text: "not yet" }).catch((error) => error)
-    expect(refusal).toMatchObject({ code: "busy", message: "the agent is reconnecting" })
-    reconnect.resolve({ bind() {}, write() {}, resize() {}, detach() {} })
-    await Bun.sleep(10)
   } finally {
     await h.close()
   }
@@ -436,7 +391,7 @@ test("a lost transport that can be reached again is adopted and the Agent stays"
     // A second fx behind the seam stands in for the same one re-attached.
     let second: PtyTransport | null = null
     h.options.transport.attachBehavior = () => {
-      second = new (first.constructor as new (launch: unknown) => PtyTransport)({
+      second = new (first.constructor as new (request: unknown) => PtyTransport)({
         entry,
         command: [FAKE_FX],
         cwd: process.cwd(),
@@ -452,62 +407,6 @@ test("a lost transport that can be reached again is adopted and the Agent stays"
     expect(h.options.manifest.get(entry.agentId)?.phase).toBe("running")
     expect(h.modal.visible).toBe(false)
     expect((await h.snapshot()).agents.map((i) => i.id)).toEqual([1])
-  } finally {
-    await h.close()
-  }
-})
-
-test("keeps a launch prompt whose transport drops before it is typed", async () => {
-  const h = await harness("prompt-reconnect")
-  try {
-    await h.control("launch", { prompt: "write the tests", directory: process.cwd() })
-    await waitFor(() => h.options.transport.started.length === 1)
-
-    const written: string[] = []
-    const decoder = new TextDecoder()
-    const reconnect = Promise.withResolvers<AgentTransport>()
-    h.options.transport.attachBehavior = () => reconnect.promise
-
-    await h.report(1, "idle")
-    ;(h.options.transport.started[0] as PtyTransport).lose()
-    await Bun.sleep(400)
-    expect(written).toEqual([])
-
-    reconnect.resolve({
-      bind() {},
-      resize() {},
-      detach() {},
-      write: (bytes: Uint8Array) => written.push(decoder.decode(bytes)),
-    })
-    await waitFor(() => written.join("").includes("\r"))
-    expect(written.join("")).toContain("write the tests")
-  } finally {
-    await h.close()
-  }
-})
-
-test("submits a pasted prompt after its transport reconnects", async () => {
-  const h = await harness("submit-reconnect")
-  try {
-    void startAgent(h.multiplexer)
-    await waitFor(() => h.options.transport.started.length === 1)
-
-    const written: string[] = []
-    const reconnect = Promise.withResolvers<AgentTransport>()
-    h.options.transport.attachBehavior = () => reconnect.promise
-
-    await h.control("agent.send", { target: "1", text: "finish the review" })
-    ;(h.options.transport.started[0] as PtyTransport).lose()
-    await Bun.sleep(200)
-    expect(written).toEqual([])
-
-    reconnect.resolve({
-      bind() {},
-      resize() {},
-      detach() {},
-      write: (bytes: Uint8Array) => written.push(new TextDecoder().decode(bytes)),
-    })
-    await waitFor(() => written.includes("\r"))
   } finally {
     await h.close()
   }

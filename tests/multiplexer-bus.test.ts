@@ -4,7 +4,6 @@ import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { AgentInfo } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { RuntimeBus, type BusUpdate } from "../src/runtime-bus.ts"
@@ -29,7 +28,6 @@ test("projects active Agent metadata and folds ADE state before attributed activ
     fxPath: FAKE_FX,
     cwd: project,
     keybindings: resolveKeybindings().keybindings,
-    projectRoots: [project],
     home,
     adeSocket,
     bus,
@@ -40,8 +38,8 @@ test("projects active Agent metadata and folds ADE state before attributed activ
 
   await multiplexer.start()
   try {
-    const first = (await control("launch")) as { agent: AgentInfo }
-    const second = (await control("launch")) as { agent: AgentInfo }
+    const first = { agent: await multiplexer.startAgent({ directory: project }) }
+    const second = { agent: await multiplexer.startAgent({ directory: project, focus: false }) }
     const initial = bus.snapshot().state
     expect(initial.active_agent_id).toBe(first.agent.agent_id)
     expect(initial.agents).toHaveLength(2)
@@ -147,8 +145,8 @@ test("projects active Agent metadata and folds ADE state before attributed activ
     expect(completed.active_agent_id).toBe(second.agent.agent_id)
     expect(completed.agents[0]).toMatchObject({ agent_id: first.agent.agent_id, state: "done" })
 
-    const orientation = await control("orient") as { fmx: { socket: string } }
-    expect(orientation.fmx.socket).toBe("/tmp/fmx-home.bus")
+    const orientation = await control("orient") as { fmx: Record<string, unknown> }
+    expect(orientation.fmx).not.toHaveProperty("socket")
   } finally {
     await multiplexer.shutdown()
     await rm(home, { recursive: true, force: true })

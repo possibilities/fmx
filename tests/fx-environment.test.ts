@@ -108,7 +108,7 @@ test("hands fx the passive ADE socket with the stable Manifest identity", () => 
   expect(env.FX_ADE_INSTANCE_ID).toBe("0123456789abcdef0123456789abcdef")
 })
 
-test("applies model and effort to one agent without changing unrelated launches", () => {
+test("applies model and effort to one Agent without changing unrelated starts", () => {
   const ambient = { FX_MODEL: "ambient-model", FX_EFFORT: "medium" }
   expect(createFxEnvironment(ambient, 3, "/work")).toMatchObject(ambient)
 

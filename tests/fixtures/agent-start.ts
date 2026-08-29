@@ -2,18 +2,17 @@ import type { createTestRenderer } from "@opentui/core/testing"
 import type { Multiplexer } from "../../src/multiplexer.ts"
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
-const NEVER = new AbortController().signal
 
-/** Start an Agent through the same control method the CLI drives. */
+/** Exercise fmx's internal creation engine without adding a public driver. */
 export function startAgent(
   multiplexer: Multiplexer,
   directory = process.cwd(),
   focus = true,
 ): Promise<unknown> {
-  return multiplexer.control.handle("launch", { directory, focus }, NEVER)
+  return multiplexer.startAgent({ directory, focus })
 }
 
-export async function launchAgent(
+export async function startVisibleAgent(
   setup: Setup,
   multiplexer: Multiplexer,
   id = 1,

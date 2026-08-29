@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  isRepositoryDirectory,
   projectNameFor,
   readGitContext,
   treeNameFor,
@@ -88,25 +87,6 @@ test("answers null for a repository whose HEAD names no branch", async () => {
       await Bun.write(join(directory, ".git", "HEAD"), head!)
       expect(await readGitContext(directory)).toBeNull()
     }
-  } finally {
-    await rm(scratch, { recursive: true, force: true })
-  }
-})
-
-test("recognizes a repository directory without spawning git", async () => {
-  const scratch = await realpath(await mkdtemp(join(tmpdir(), "fmx-git-walk-")))
-  try {
-    expect(isRepositoryDirectory(scratch)).toBe(false)
-    await Bun.spawn(["git", "-C", scratch, "init", "--quiet"], {
-      stdout: "ignore",
-      stderr: "ignore",
-    }).exited
-    expect(isRepositoryDirectory(scratch)).toBe(true)
-    // The walk climbs the way git's own discovery does, so a directory deep
-    // inside a checkout answers as readily as its root.
-    const nested = join(scratch, "src", "deep")
-    await mkdir(nested, { recursive: true })
-    expect(isRepositoryDirectory(nested)).toBe(true)
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }

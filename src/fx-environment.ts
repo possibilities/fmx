@@ -43,7 +43,7 @@ export type FxAdeBinding = {
 }
 
 /** Model settings applied to one fx process without changing the profile. */
-export type FxLaunchLevel = {
+export type FxStartLevel = {
   model: string
   effort: string
 }
@@ -61,7 +61,7 @@ export function createFxEnvironment(
   agentId: number,
   cwd: string,
   busSocketPath: string | null = null,
-  launchLevel: FxLaunchLevel | null = null,
+  startLevel: FxStartLevel | null = null,
   ade: FxAdeBinding | null = null,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -88,9 +88,9 @@ export function createFxEnvironment(
     env.FX_ADE_SOCKET_PATH = ade.socketPath
     env.FX_ADE_INSTANCE_ID = ade.instanceId
   }
-  if (launchLevel) {
-    env.FX_MODEL = launchLevel.model
-    env.FX_EFFORT = launchLevel.effort
+  if (startLevel) {
+    env.FX_MODEL = startLevel.model
+    env.FX_EFFORT = startLevel.effort
   }
   return env
 }

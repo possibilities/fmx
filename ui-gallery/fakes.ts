@@ -1,6 +1,6 @@
 import {
   HandlerRelay,
-  type AgentLaunch,
+  type AgentStart,
   type AgentTransport,
   type AgentTransportFactory,
   type TerminalSize,
@@ -59,11 +59,11 @@ export class GalleryAgentTransportFactory implements AgentTransportFactory {
 
   constructor(
     private readonly screen: string,
-    private readonly onStart?: (launch: AgentLaunch) => void,
+    private readonly onStart?: (request: AgentStart) => void,
   ) {}
 
-  start(launch: AgentLaunch): Promise<AgentTransport> {
-    this.onStart?.(launch)
+  start(request: AgentStart): Promise<AgentTransport> {
+    this.onStart?.(request)
     return Promise.resolve(this.transport())
   }
 
@@ -82,7 +82,7 @@ export class GalleryAgentTransportFactory implements AgentTransportFactory {
 }
 
 export class RejectingAgentTransportFactory implements AgentTransportFactory {
-  start(_launch: AgentLaunch): Promise<AgentTransport> {
+  start(_request: AgentStart): Promise<AgentTransport> {
     return Promise.reject(new Error("ENOENT: fx executable was not found"))
   }
 

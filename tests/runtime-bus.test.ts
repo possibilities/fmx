@@ -22,7 +22,6 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
     state: "idle",
     attention: null,
     active: true,
-    awaiting_work: false,
     subagents: [],
     ...overrides,
   }

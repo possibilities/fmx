@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { launchAgent, startAgent } from "./fixtures/agent-launch.ts"
+import { startAgent, startVisibleAgent } from "./fixtures/agent-start.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -48,7 +48,7 @@ test("rolls back a later spawn failure without stopping the active Fx", async ()
   const multiplexer = new Multiplexer(setup.renderer, options)
   try {
     await multiplexer.start()
-    await launchAgent(setup, multiplexer)
+    await startVisibleAgent(setup, multiplexer)
     options.fxPath = "/definitely/missing/fx"
     await expect(startAgent(multiplexer)).rejects.toThrow("ENOENT")
 
@@ -81,7 +81,7 @@ test("rolls back a later spawn failure without stopping the active Fx", async ()
   }
 })
 
-test("refuses a CLI launch outside a repository", async () => {
+test("refuses an Agent start outside a repository", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, exitOnCtrlC: false })
   const cwd = await mkdtemp(join(tmpdir(), "fmx-no-repository-"))
   const multiplexer = new Multiplexer(setup.renderer, {

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
-import { launchAgent, startAgent } from "./fixtures/agent-launch.ts"
+import { startAgent, startVisibleAgent } from "./fixtures/agent-start.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -23,7 +23,7 @@ async function createMultiplexer(width: number, height: number) {
     keybindings: resolveKeybindings().keybindings,
   })
   await multiplexer.start()
-  await launchAgent(setup, multiplexer)
+  await startVisibleAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   const divider = setup.renderer.root.findDescendantById("fmx-divider") as BoxRenderable
   const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
@@ -222,7 +222,7 @@ test("toggles the tray with prefix+b and keeps it hidden across a new agent", as
     expect([content.x, content.width]).toEqual([0, 90])
 
     // A second agent does not bring the tray back on its own.
-    await launchAgent(setup, multiplexer, 2)
+    await startVisibleAgent(setup, multiplexer, 2)
     await setup.renderOnce()
     expect(setup.renderer.root.findDescendantById("fx-2")).toBeDefined()
     expect(tray.visible).toBe(false)
@@ -250,7 +250,7 @@ test("restores a persisted hidden tray and reports each toggle", async () => {
     onTrayHiddenChange: (hidden) => hiddenChanges.push(hidden),
   })
   await multiplexer.start()
-  await launchAgent(setup, multiplexer)
+  await startVisibleAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -359,7 +359,7 @@ test("restores a persisted width and reports changes on drag end", async () => {
     onTrayWidthChange: (width) => widthChanges.push(width),
   })
   await multiplexer.start()
-  await launchAgent(setup, multiplexer)
+  await startVisibleAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()
@@ -388,7 +388,7 @@ test("clamps a stale persisted width to the current screen", async () => {
     initialTrayWidth: 70,
   })
   await multiplexer.start()
-  await launchAgent(setup, multiplexer)
+  await startVisibleAgent(setup, multiplexer)
   const tray = setup.renderer.root.findDescendantById("fmx-tray") as BoxRenderable
   try {
     await setup.renderOnce()

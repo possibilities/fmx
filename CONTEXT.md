@@ -17,11 +17,11 @@ attached to the Home's Runtime. It relays terminal bytes and size, and alone
 owns Detach; several Clients may watch and interact with the same shared UI.
 _Avoid_: viewer, frontend, session, fmx instance.
 
-**Bus peer** — an external process connected to a Runtime's Bus. It may
-subscribe to machine state and attributed Agent activity, issue control
-requests, or do both on one connection; it is not a terminal Client and does
-not keep the Runtime alive.
-_Avoid_: Client, Observer, viewer, frontend, Agent.
+**Bus peer** — an implementation process connected to a Runtime's Bus,
+principally the MCP server's one-call connection. The wire can also carry
+internal state/activity subscriptions; a peer is not a terminal Client and
+does not keep the Runtime alive.
+_Avoid_: public integration, Client, Observer, frontend, Agent.
 
 **Sizing owner** — the Client that most recently connected or interacted by
 focus, keyboard, mouse, paste, or resize. The Runtime renders once at its
@@ -33,7 +33,7 @@ _Avoid_: leader, primary, active Client, controller.
 Agent. `keys.detach` is Client-local; closing its terminal has the same result.
 The final Detach ends the Runtime, while the Companion continues to hold every
 Agent.
-_Avoid_: exit or close for an Agent, control command, quit.
+_Avoid_: exit or close for an Agent, MCP tool, quit.
 
 **Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns a
 terminal process and its PTY — an fx Agent or the Runtime. fmx drives one over a
@@ -74,7 +74,7 @@ of the directory's path, which labels every Companion session the Home creates
 and keys its stable ADE-feed and Bus sockets. One Home has at most
 one Runtime, may have several Clients, and owns the Agents its Companion holds
 between Runtime lifetimes.
-_Avoid_: profile (that is a launch level's rejected synonym, and `fx-profile`
+_Avoid_: profile (that is a start level's rejected synonym, and `fx-profile`
 is fx's own settings), installation, workspace.
 
 **Manifest** — `~/.config/fmx/agents.json`, the Home's own record of the
@@ -162,30 +162,21 @@ Ramp's surface fill and its ancestors are set in bold; nothing else marks
 them, so two faint backgrounds never have to be told apart.
 _Avoid_: selection, breadcrumb.
 
-**Project root** — a directory named by `project_roots` whose children are
-offered as Projects, along with the root itself. Roots are scanned one level
-deep and never recursively; a root that is not on this machine, or not inside
-a repository, contributes nothing. A Home must configure at least one before
-its TUI can start. Its first root is fmx's working directory; a CLI launch
-that names no Project uses it when the root is itself a repository.
-_Avoid_: workspace root, search path, scan directory.
+**Project root** — a directory named by `project_roots`. A Home must configure
+at least one before its TUI can start, and the first is the Runtime's working
+directory. Personal roots belong in the Home's configuration, never in a
+shipped default.
+_Avoid_: workspace root, start default, scan directory.
 
-**Launch level** — the Codex model and reasoning effort a new agent starts
-with, passed to that fx alone through `FX_MODEL` and `FX_EFFORT`. Its allowed
-pairs come from fmx's small local catalog because fx does not expose the effort
-metadata from its provider catalog through `fx models --json`.
+**Agent start level** — the model and reasoning effort a new Agent starts
+with, passed to that Fx alone through `FX_MODEL` and `FX_EFFORT`. Fmx retains
+the internal environment seam but no longer owns or exposes a model catalog.
 _Avoid_: profile, preset, provider setting.
 
-**Launch prompt** — the text an agent starts working on. fx takes no prompt
-on its command line, so fmx pastes it into the terminal and sends it once fx
-has published that Agent's first ADE record. An agent launched with one is
-therefore already working when it is first looked at.
-_Avoid_: intent, initial message, seed.
-
-**Worktree** — a checkout fmx cuts for a launch, branched from what the chosen
-project has checked out. Its branch and its directory share one name,
+**Worktree** — a checkout fmx cuts for an Agent start, branched from what the
+chosen Project has checked out. Its branch and its directory share one name,
 `<project>-<ordinal>`, and the ordinal counts against the main repository, so
-launching from inside `fmx-1` produces `fmx-2` rather than `fmx-1-1`. A
+starting from inside `fmx-1` produces `fmx-2` rather than `fmx-1-1`. A
 Project with no commit to branch from cannot produce one.
 _Avoid_: branch, checkout, clone.
 
@@ -198,9 +189,9 @@ offer a Worktree. A HEAD naming neither a ref nor a commit names no branch,
 so it is not a Project at all.
 _Avoid_: workspace, folder, tracked directory.
 
-**Git context** — the worktree root and branch fmx reads from the launch
+**Git context** — the Worktree root and branch fmx reads from the Agent
 directory it owns rather than treating lifecycle context as repository
-authority. Every launch is held to one, so an agent without a context is a
+authority. Every Agent start is held to one, so an Agent without a context is a
 checkout that went away under a running one: its Session list row hangs
 straight off its project, with no rung standing in for the branch that is not
 there.
@@ -228,33 +219,34 @@ Duplicate names remain ambiguous. The Fx storage and event schema call the
 field `title`.
 _Avoid_: fmx name, label.
 
-**Bus** — the duplex, mode-0600, stable-per-Home Unix socket at
+**MCP server** — the separate `fmx-mcp` stdio executable and sole supported
+agent automation interface. It resolves the caller's Runtime for each tool
+call and currently exposes Orientation, Agent focus, and Tray configuration;
+it neither owns a Runtime nor keeps one alive.
+_Avoid_: CLI, daemon, Runtime, direct Bus client.
+
+**Bus** — the implementation-private duplex, mode-0600, stable-per-Home Unix socket at
 `/tmp/fmx-<uid>/<home id>.bus` over which a running Runtime serves typed NDJSON
 events and multiplexed control requests. It is handed to every Agent as
-`FMX_SOCKET_PATH`; `fmx bus` subscribes and `fmx control` sends requests. A
+`FMX_SOCKET_PATH`, and the MCP server opens a fresh request connection per tool call. A
 subscription begins with complete authoritative Agent state; later state is
 complete and deduplicated, while optional ADE activity is attributed,
 live-only, gap-aware, and payload-redacted unless raw payloads are explicitly
 requested. Per-peer output is bounded, responses take priority over queued
 events, and Bus peers neither count as terminal Clients nor keep the Runtime
 alive.
-_Avoid_: Observation stream, control socket, ADE feed, replay log, notification API.
+_Avoid_: public API, MCP server, control socket, ADE feed, replay log.
 
-**Orientation** — what `fmx control orient` answers: the caller's own agent as
-`you`, every agent, the tray's rows as drawn, and whatever surface is
-open. A read, which never marks anything seen.
+**Orientation** — what the MCP server's `get_orientation` tool answers: the
+caller's own Agent as `you`, every Agent, the Tray's rows as drawn, and whatever
+surface is open. A read, which never marks anything Seen.
 _Avoid_: status, state dump, introspection.
 
-**Target** — how a command names an agent: its id, `current` for the
-caller's own, `active` for the one on screen, `next` or `previous` relative to
-it, or an exact session name, with a session-id prefix as the fallback.
+**Target** — how an MCP tool names an Agent: its stable Agent id or Pane id,
+its display id, `current` for the caller's own, `active` for the one on screen,
+`next` or `previous` relative to it, or an exact Session name, with a Session-id
+prefix as the fallback.
 _Avoid_: selector, handle, address.
-
-**Awaiting work** — an agent whose prompt has gone in, by launch or by
-`agent send`, and for which fmx has not yet observed Fx admit that prompt. A
-wait holds through it: the idle snapshot at startup is not the idle that means
-finished, and unrelated work already in flight is not the new prompt.
-_Avoid_: busy, pending, queued.
 
 **UI gallery** — the developer-only TUI that browses fmx-owned OpenTUI
 components and blocks. Each component has executable states that mount the real

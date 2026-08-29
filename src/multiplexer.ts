@@ -12,31 +12,24 @@ import {
   type TextChunk,
   TextRenderable,
 } from "@opentui/core"
-import { realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename } from "node:path"
 import {
   AgentRegistry,
-  type AgentState,
   type DisplayState,
   displayStateFor,
   shortSessionId,
 } from "./agent-registry.ts"
 import type { AdeEventSource, AdeRecord } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
-import { CODEX_MODELS, codexEffort, codexModel, DEFAULT_CODEX_MODEL } from "./codex-catalog.ts"
 import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
   type AgentInfo,
-  type CatalogInfo,
   type ControlSurface,
-  type KeysInfo,
   optionalBoolean,
   optionalInteger,
-  optionalString,
-  optionalStringList,
   parseTarget,
   requiredString,
   type TrayRow,
@@ -49,7 +42,7 @@ import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import {
   createFxEnvironment,
   type FxAdeBinding,
-  type FxLaunchLevel,
+  type FxStartLevel,
 } from "./fx-environment.ts"
 import type { AgentManifest, ManifestEntry } from "./agent-manifest.ts"
 import {
@@ -80,14 +73,9 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
-import {
-  isRepositoryDirectory,
-  readGitContext,
-  projectNameFor,
-  type GitContext,
-} from "./git-context.ts"
+import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
-import { expandTilde, scanProjectRoots } from "./projects.ts"
+import { expandTilde } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
 import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
@@ -127,20 +115,8 @@ const MODIFIER_ONLY_KEYS = new Set([
   "iso_level3_shift",
   "iso_level5_shift",
 ])
-/** How long after fx first reports itself the launch prompt is pasted in. */
-const PROMPT_SETTLE_MS = 250
-/** How long after the paste the send follows, so fx sees them apart. */
-const PROMPT_SUBMIT_MS = 120
 /** A run beneath a stored mark proves the mark is wrong; one bad record does not. */
 const STALE_SEQUENCE_LIMIT = 3
-const PASTE_START = "\u001b[200~"
-const PASTE_END = "\u001b[201~"
-
-/** Preserve newlines while typing a CLI Launch prompt into Fx. The submit is
- * always a later write because Fx discards a paste followed in the same one. */
-function bracketedPaste(text: string): string {
-  return `${PASTE_START}${text}${PASTE_END}`
-}
 /** How many times, and how far apart, a lost transport is reached for before the Agent is let go of. */
 const RECOVERY_ATTEMPTS = 3
 const RECOVERY_INTERVAL_MS = 250
@@ -167,12 +143,10 @@ type MultiplexerOptions = {
   /** Stable identity to focus before the first restored frame. */
   initialActiveAgentId?: string
   onActiveAgentChange?: (agentId: string | null) => void
-  /** Directories scanned one level deep for a CLI launch's default project. */
-  projectRoots?: string[]
-  /** Where a launch's new worktree is checked out. */
+  /** Where a requested new worktree is checked out. */
   worktreeRoot?: string
   home?: string
-  /** Where every Bus peer, including `fmx control`, reaches this Runtime. */
+  /** Where fmx-mcp reaches this Runtime. */
   busSocketPath?: string
   /** State and activity the Multiplexer publishes onto the Runtime Bus. */
   bus?: BusPublisher | null
@@ -180,23 +154,11 @@ type MultiplexerOptions = {
   initialTheme?: FxnkThemeResolution
 }
 
-/** Default states `agent wait` waits for: any that needs someone. */
-const WAIT_DEFAULT_STATES: readonly DisplayState[] = ["idle", "done", "blocked"]
-const DISPLAY_STATES: readonly string[] = ["blocked", "working", "done", "idle", "unknown"]
-type LaunchRequest = {
+export type AgentStartRequest = {
   directory: string
-  prompt: string
-  worktree: boolean
-  model: string
-  effort: string
-}
-
-type LaunchOverrides = {
-  directory?: string
-  prompt?: string
   worktree?: boolean
-  model?: string
-  effort?: string
+  focus?: boolean
+  startLevel?: FxStartLevel | null
 }
 
 const DEFAULT_THEME: FxnkThemeResolution = {
@@ -204,12 +166,6 @@ const DEFAULT_THEME: FxnkThemeResolution = {
   background: null,
   source: "default",
   explicit: false,
-}
-
-type AgentWaiter = {
-  agentId: number
-  states: readonly DisplayState[]
-  settle: (state: DisplayState | null) => void
 }
 
 type AgentStatus = "starting" | "running" | "exited"
@@ -226,10 +182,9 @@ type AgentEvents = {
 const TERMINAL_RESET = new Uint8Array([0x1b, 0x63])
 
 /**
- * One Agent as fmx shows it: the visible terminal, what fx has said its
- * title is, and the prompt it was launched with. The process and its PTY
- * are the transport's; this owns only the rendering side and the bytes
- * between the two.
+ * One Agent as fmx shows it: the visible terminal and what fx has said its
+ * title is. The process and its PTY are the transport's; this owns only the
+ * rendering side and the bytes between the two.
  */
 class FxAgent {
   readonly terminal: FxTerminalRenderable
@@ -245,20 +200,6 @@ class FxAgent {
   private detached = false
   /** The terminal's size as last laid out, for a transport attached later. */
   private size: TerminalSize = { cols: 80, rows: 24 }
-  /** The prompt this agent was launched with, kept past the typing so
-   * naming can use it without waiting for fx to write it down. */
-  launchPrompt: string | null = null
-  /** A launch prompt waiting for fx to be ready to be typed into. */
-  private pendingPrompt: string | null = null
-  /** fx reported before the transport arrived; the prompt is armed again at `adopt`. */
-  private promptWaitingForTransport = false
-  /** The paste went in and its send did not; retry the send at `adopt`. */
-  private submitWaitingForTransport = false
-  /** A prompt has gone in and fx has not yet said it is working on it. */
-  awaitingWork = false
-  /** A trustworthy idle boundary observed after `awaitingWork` was armed. */
-  private awaitingWorkSawIdle = false
-  private promptTimer: ReturnType<typeof setTimeout> | null = null
   private cursorReportAdapter = new CursorReportAdapter()
   private readonly titleParser: OscTitleParser
 
@@ -293,89 +234,6 @@ class FxAgent {
       onTerminalResize: (cols, rows) => this.resizePty(cols, rows),
     })
     this.terminal.applyHostTheme(hostTheme)
-  }
-
-  /** fx takes no prompt on its command line, so a launch prompt is typed in
-   * once fx is running — see `armPrompt`. */
-  setPendingPrompt(prompt: string): void {
-    if (prompt === "") return
-    this.pendingPrompt = prompt
-    this.launchPrompt = prompt
-    this.awaitingWork = true
-    this.awaitingWorkSawIdle = false
-  }
-
-  /** Whether a launch prompt is still waiting for fx to be ready. */
-  get promptPending(): boolean {
-    return this.pendingPrompt !== null
-  }
-
-  /** Paste `text` into a running fx and send it, the way a launch prompt
-   * goes in — the two writes a beat apart, for the same reason. */
-  send(text: string, lifecycleState: AgentState): void {
-    if (this.status !== "running") throw new ControlFailure("busy", "the agent is not running")
-    if (!this.transport) throw new ControlFailure("busy", "the agent is reconnecting")
-    if (this.pendingPrompt !== null || this.promptTimer !== null) {
-      throw new ControlFailure("busy", "the launch prompt has not been sent yet")
-    }
-    this.awaitingWork = true
-    this.awaitingWorkSawIdle = lifecycleState === "idle"
-    this.pasteAndSubmit(text)
-  }
-
-  /** Observe admission without confusing an already-running turn for the
-   * prompt whose latch was just armed. */
-  observeWorkAdmission(event: string, state: AgentState): void {
-    if (!this.awaitingWork) return
-    if (event === "PromptQueued" || (this.awaitingWorkSawIdle && state !== "idle" && state !== "unknown")) {
-      this.awaitingWork = false
-      this.awaitingWorkSawIdle = false
-      return
-    }
-    if (state === "idle") this.awaitingWorkSawIdle = true
-  }
-
-  /**
-   * Type the launch prompt and send it. The first ADE record says fx's
-   * lifecycle observer is up, but its input is drawn a beat later, so the
-   * text goes in after a short settle rather than the instant fx speaks.
-   */
-  armPrompt(): void {
-    if (this.pendingPrompt === null || this.promptTimer !== null) return
-    this.promptTimer = setTimeout(() => {
-      this.promptTimer = null
-      // fx can report before the transport is adopted — `create` returns
-      // once fx is running, and fx speaks first. The prompt waits for the
-      // transport rather than being dropped on the floor.
-      if (this.status === "starting" || !this.transport) {
-        this.promptWaitingForTransport = true
-        return
-      }
-      const prompt = this.pendingPrompt
-      this.pendingPrompt = null
-      if (prompt === null || this.status !== "running") return
-      this.pasteAndSubmit(prompt)
-    }, PROMPT_SETTLE_MS)
-  }
-
-  /** Paste first, then submit in a separate write so Fx preserves newlines. */
-  private pasteAndSubmit(text: string): void {
-    this.writeInput(new TextEncoder().encode(bracketedPaste(text)), "input")
-    this.promptTimer = setTimeout(() => {
-      this.promptTimer = null
-      this.submitPrompt()
-    }, PROMPT_SUBMIT_MS)
-  }
-
-  /** A paste and its submit are one act; reconnect finishes an interrupted one. */
-  private submitPrompt(): void {
-    if (this.status !== "running") return
-    if (!this.transport) {
-      this.submitWaitingForTransport = true
-      return
-    }
-    this.submitWaitingForTransport = false
-    this.writeInput(new TextEncoder().encode("\r"), "input")
   }
 
   /** What a transport should be opened at: the terminal's size once it has one. */
@@ -416,16 +274,6 @@ class FxAgent {
     // at the PTY.
     transport.resize(this.currentSize())
     if (this.status === "starting") this.status = "running"
-    if (this.promptWaitingForTransport) {
-      this.promptWaitingForTransport = false
-      this.armPrompt()
-    } else if (this.submitWaitingForTransport) {
-      this.submitWaitingForTransport = false
-      this.promptTimer = setTimeout(() => {
-        this.promptTimer = null
-        this.submitPrompt()
-      }, PROMPT_SUBMIT_MS)
-    }
   }
 
   /** Whether a transport is carrying this agent right now. */
@@ -452,8 +300,6 @@ class FxAgent {
 
   /** Stop watching fx. It keeps running; the Companion holds it. */
   detach(): void {
-    if (this.promptTimer !== null) clearTimeout(this.promptTimer)
-    this.promptTimer = null
     this.detached = true
     this.transport?.detach()
     this.transport = null
@@ -547,8 +393,7 @@ export class Multiplexer {
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
   private readonly swallowedReleases = new Set<string>()
-  private readonly agentWaiters = new Set<AgentWaiter>()
-  /** What `fmx control <command>` drives. */
+  /** The small Runtime surface fmx-mcp drives. */
   readonly control: ControlSurface = {
     handle: (method, params, signal) => this.handleControl(method, params, signal),
   }
@@ -767,8 +612,6 @@ export class Multiplexer {
     this.exitConfirmationKey = null
     this.hideModal()
     this.subagents.stop()
-    for (const waiter of this.agentWaiters) waiter.settle(null)
-    this.agentWaiters.clear()
 
     try {
       // Let go, never end: fx and its terminal are the Companion's, and the
@@ -789,22 +632,44 @@ export class Multiplexer {
   }
 
   /**
-   * Start an fx. `focus` false leaves the screen where it is — an agent
-   * starting workers should not keep taking the human's view — unless nothing
-   * is on it yet, when the new agent is the only thing to show.
-   *
-   * The Manifest is written first and the Companion asked second, so a crash
-   * anywhere between leaves a claim the next start's join resolves against
-   * what the Companion actually holds. The Agent is on screen from the
-   * claim: a start that fails takes it down again with the reason.
+   * Internal Agent creation engine. It is deliberately not a phase-one MCP
+   * tool: phase 2 will decide the native Fx-facing creation contract. Keeping
+   * this primitive is necessary because the Fx control socket does not exist
+   * until fmx has created the process through the Manifest and Companion.
+   */
+  async startAgent(request: AgentStartRequest): Promise<AgentInfo> {
+    const origin = await readGitContext(request.directory)
+    if (!origin) throw new NotARepositoryError(request.directory)
+    this.gitContexts.set(request.directory, origin)
+    let directory = request.directory
+    if (request.worktree) {
+      try {
+        directory = await this.cutWorktree(request.directory)
+      } catch (error) {
+        throw new WorktreeError(errorMessage(error))
+      }
+      const cut = await readGitContext(directory)
+      if (cut) this.gitContexts.set(directory, cut)
+    }
+    if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
+    const agent = await this.createAgent(
+      directory,
+      request.focus ?? true,
+      request.startLevel ?? null,
+    )
+    if (!agent) throw new ControlFailure("shutting_down", "fmx is shutting down")
+    return this.agentInfo(agent)
+  }
+
+  /**
+   * Start an fx. `focus` false leaves the screen where it is unless nothing is
+   * on it yet. The Manifest is written first and the Companion asked second,
+   * so a crash in between leaves a claim the next start can reconcile.
    */
   private async createAgent(
-    // Named, never defaulted: `performLaunch` is the only caller and it has
-    // already held this directory to a Git context.
     cwd: string,
-    prompt = "",
     focus = true,
-    launchLevel: FxLaunchLevel | null = null,
+    startLevel: FxStartLevel | null = null,
   ): Promise<FxAgent | null> {
     if (this.shuttingDown) return null
     this.cancelExitConfirmation()
@@ -815,8 +680,6 @@ export class Multiplexer {
       createdAt: Date.now(),
     })
     const agent = this.addAgent(entry, cwd, focus)
-    agent.setPendingPrompt(prompt)
-    this.publishBusState("awaiting_work_changed")
     let transport: AgentTransport
     try {
       await saved
@@ -832,7 +695,7 @@ export class Multiplexer {
             entry.displayId,
             cwd,
             this.options.busSocketPath ?? null,
-            launchLevel,
+            startLevel,
             this.adeBinding(entry.agentId),
           ),
         ),
@@ -867,8 +730,7 @@ export class Multiplexer {
   /**
    * Attach to an Agent the Companion held between runs. The last ADE
    * truth is seeded before the renderer can expose this row; it stays true
-   * until fx reports something newer. A launch prompt is not replayed —
-   * there is none.
+   * until fx reports something newer.
    */
   private prepareRestoredAgent(entry: ManifestEntry): FxAgent {
     const agent = this.addAgent(entry, entry.cwd, false, false)
@@ -990,12 +852,6 @@ export class Multiplexer {
     this.adeStaleRecords.delete(agent.entry.agentId)
     this.seenSeq.delete(agent.id)
     this.refreshAgentChrome()
-    for (const waiter of this.agentWaiters) {
-      if (waiter.agentId !== agent.id) continue
-      this.agentWaiters.delete(waiter)
-      waiter.settle(null)
-    }
-
     if (this.agents.length === 0) {
       this.activeIndex = -1
       this.options.onActiveAgentChange?.(null)
@@ -1137,7 +993,7 @@ export class Multiplexer {
 
   /**
    * fx never reports where it is working, so fmx reads it from the directory
-   * it spawned the agent in. A live launch renders without a branch rung
+   * it spawned the agent in. A live start renders without a branch rung
    * until the answer arrives, which is why this refreshes rather than
    * blocking. Restored Agents await these reads behind the first-paint
    * preparation barrier.
@@ -1173,8 +1029,6 @@ export class Multiplexer {
     const record = this.registry.get(agent.paneId)
     this.seenSeq.set(agent.id, record?.stateSeq ?? 0)
     this.checkpointAgent(agent)
-    // Acknowledging `done` produces idle without another ADE record.
-    this.settleAgentWaiters()
   }
 
   /** Keep the last trustworthy ADE snapshot and its acknowledgement relation. */
@@ -1223,10 +1077,6 @@ export class Multiplexer {
     this.adeStaleRecords.delete(record.instanceId)
     const gap = previousSequence === undefined ? record.sequence !== 1 : record.sequence !== previousSequence + 1
     this.adeSequences.set(record.instanceId, record.sequence)
-    // The first record observed is the only lifecycle-owned signal that fx is
-    // ready for the delayed launch-prompt paste. A dropped FxStarted can be
-    // repaired by any later record.
-    agent.armPrompt()
 
     let changed = false
     // Identity and lifecycle are envelope context, not event payload. Main
@@ -1253,8 +1103,7 @@ export class Multiplexer {
       return
     }
 
-    const folded = this.registry.apply(agent.paneId, record)
-    agent.observeWorkAdmission(record.event, folded.state)
+    this.registry.apply(agent.paneId, record)
     if (record.event === "FxStopped") this.adeStoppedInstances.add(record.instanceId)
 
     switch (record.event) {
@@ -1279,7 +1128,6 @@ export class Multiplexer {
     if (this.activeAgent() === agent) this.markSeen(agent)
     else this.checkpointAgent(agent)
     this.refreshSessionList()
-    this.settleAgentWaiters()
     this.publishBusState("lifecycle")
     this.options.bus?.publishActivity(record, agent.entry.agentId, agent.id, gap)
   }
@@ -1496,44 +1344,7 @@ export class Multiplexer {
     this.prefixArmed = false
   }
 
-  /** The configured Projects, freshly scanned so a repository made a minute
-   * ago is already available to a CLI launch that names no directory. */
-  private projectDirectories(): string[] {
-    const home = this.options.home ?? homedir()
-    return scanProjectRoots(this.options.projectRoots ?? [], home)
-  }
-
-  /**
-   * Check the repository, cut the worktree if asked, then start fx. Every CLI
-   * launch passes here, making the repository a condition of running an Agent
-   * rather than a rule the client has to remember. The context git answers with is kept,
-   * so the row this launch adds is drawn under its branch from the first
-   * frame rather than a beat later.
-   */
-  private async performLaunch(request: LaunchRequest, focus: boolean): Promise<FxAgent> {
-    const origin = await readGitContext(request.directory)
-    if (!origin) throw new NotARepositoryError(request.directory)
-    this.gitContexts.set(request.directory, origin)
-    let directory = request.directory
-    if (request.worktree) {
-      try {
-        directory = await this.cutWorktree(request.directory)
-      } catch (error) {
-        throw new WorktreeError(errorMessage(error))
-      }
-      const cut = await readGitContext(directory)
-      if (cut) this.gitContexts.set(directory, cut)
-    }
-    if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    const agent = await this.createAgent(directory, request.prompt, focus, {
-      model: request.model,
-      effort: request.effort,
-    })
-    if (!agent) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    return agent
-  }
-
-  /** Branch from what the launch was looking at and check it out under the
+  /** Branch from what the Agent start was looking at and check it out under the
    * worktree root, returning where the agent should start. */
   private async cutWorktree(directory: string): Promise<string> {
     const context = await readWorktreeContext(directory)
@@ -1598,54 +1409,23 @@ export class Multiplexer {
 
   /* ------------------------------------------------------------ control */
 
-  /**
-   * One method per `fmx control <command>`. Reads answer from what the screen already
-   * knows; writes go through the same paths the keys and mouse take, so an
-   * agent can do nothing a hand could not.
-   */
+  /** MCP reads answer from current UI state; writes use the key/mouse paths. */
   private async handleControl(
     method: ControlMethod,
     params: Record<string, unknown>,
-    signal: AbortSignal,
+    _signal: AbortSignal,
   ): Promise<unknown> {
     if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
     const caller = optionalInteger(params, "caller") ?? null
     switch (method) {
       case "orient":
         return this.snapshot(caller)
-      case "agent.list":
-        return { agents: this.agents.map((agent) => this.agentInfo(agent)) }
-      case "agent.wait":
-        return this.waitForAgent(
-          this.resolveTarget(parseTarget(optionalString(params, "target") ?? "current"), caller),
-          waitStates(optionalStringList(params, "states")),
-          optionalInteger(params, "timeout_ms") ?? null,
-          signal,
-        )
-      case "agent.send": {
-        const agent = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
-        const text = requiredString(params, "text").trim()
-        if (text === "") throw new ControlFailure("invalid_params", "text is empty")
-        const lifecycleState = this.registry.get(agent.paneId)?.state ?? "unknown"
-        agent.send(text, lifecycleState)
-        this.publishBusState("awaiting_work_changed")
-        return { agent: this.agentInfo(agent) }
-      }
-      case "launch": {
-        const request = this.launchRequestFrom(params, caller)
-        const focus = optionalBoolean(params, "focus") ?? false
-        if (focus) this.refuseIfBusy()
-        const agent = await this.performLaunch(request, focus)
-        return { agent: this.agentInfo(agent) }
-      }
       case "focus": {
         const agent = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
         this.refuseIfBusy()
         this.selectAgent(agent.id)
         return { agent: this.agentInfo(agent) }
       }
-      case "catalog":
-        return catalogInfo()
       case "tray": {
         const width = optionalInteger(params, "width")
         if (width !== undefined) {
@@ -1657,13 +1437,6 @@ export class Multiplexer {
         if (hidden !== undefined) this.setTrayHidden(hidden)
         else if (optionalBoolean(params, "toggle")) this.setTrayHidden(!this.trayHidden)
         return this.trayInfo()
-      }
-      case "keys": {
-        if (optionalBoolean(params, "show")) {
-          this.refuseIfBusy()
-          this.showHelp()
-        }
-        return this.keysInfo()
       }
     }
   }
@@ -1678,8 +1451,12 @@ export class Multiplexer {
 
   private resolveTarget(target: Target, caller: number | null): FxAgent {
     switch (target.kind) {
-      case "id":
-        return this.agentById(target.id)
+      case "agent_id":
+        return this.agentByStableId(target.agentId)
+      case "pane_id":
+        return this.agentByPaneId(target.paneId)
+      case "display_id":
+        return this.agentById(target.displayId)
       case "current":
         if (caller === null) {
           throw new ControlFailure("invalid_params", "current needs a caller inside an agent (FMX_AGENT_ID)")
@@ -1717,140 +1494,22 @@ export class Multiplexer {
     }
   }
 
-  /**
-   * Where a launch that names no project and comes from no agent starts: fmx's
-   * own workspace when it is a repository, and otherwise the first configured
-   * Project on offer.
-   * The first configured root is commonly a directory of repositories rather
-   * than one itself, and `~/code` is the very line startup tells a human to
-   * add, so this is the ordinary case and not an edge.
-   */
-  private defaultLaunchDirectory(): string {
-    const workspace = this.options.cwd
-    if (isRepositoryDirectory(workspace)) return workspace
-    const [first] = this.projectDirectories()
-    if (!first) throw new NotARepositoryError(workspace)
-    return first
-  }
-
   private agentById(id: number): FxAgent {
     const agent = this.agents.find((candidate) => candidate.id === id)
     if (!agent) throw new ControlFailure("not_found", `no agent ${id}`)
     return agent
   }
 
-  private launchRequestFrom(params: Record<string, unknown>, caller: number | null): LaunchRequest {
-    const overrides = this.launchOverridesFrom(params)
-    const callerAgent = caller === null ? null : (this.agents.find((agent) => agent.id === caller) ?? null)
-    return {
-      directory: overrides.directory ?? callerAgent?.cwd ?? this.defaultLaunchDirectory(),
-      prompt: overrides.prompt ?? "",
-      worktree: overrides.worktree ?? false,
-      model: overrides.model ?? DEFAULT_CODEX_MODEL.id,
-      effort: overrides.effort ?? DEFAULT_CODEX_MODEL.defaultEffort,
-    }
+  private agentByStableId(agentId: string): FxAgent {
+    const agent = this.agents.find((candidate) => candidate.entry.agentId === agentId)
+    if (!agent) throw new ControlFailure("not_found", `no agent ${agentId}`)
+    return agent
   }
 
-  /** Validate the optional fields supplied by `fmx control launch`. */
-  private launchOverridesFrom(fields: Record<string, unknown>): LaunchOverrides {
-    const overrides: LaunchOverrides = {}
-    const directory = optionalString(fields, "directory")
-    if (directory !== undefined) {
-      let resolved: string
-      try {
-        resolved = realpathSync(expandTilde(directory, this.home()))
-        if (!statSync(resolved).isDirectory()) throw new Error("not a directory")
-      } catch {
-        throw new ControlFailure("invalid_params", `${directory} is not a directory`)
-      }
-      if (!isRepositoryDirectory(resolved)) throw new NotARepositoryError(directory)
-      overrides.directory = resolved
-    }
-    const prompt = optionalString(fields, "prompt")
-    if (prompt !== undefined) overrides.prompt = prompt
-    const worktree = optionalBoolean(fields, "worktree")
-    if (worktree !== undefined) overrides.worktree = worktree
-    const modelId = optionalString(fields, "model")
-    const model = codexModel(modelId ?? DEFAULT_CODEX_MODEL.id)
-    if (!model) throw new ControlFailure("invalid_params", `unknown Codex model: ${modelId}`)
-    if (modelId !== undefined) overrides.model = modelId
-    const effort = optionalString(fields, "effort")
-    if (effort !== undefined) {
-      if (!codexEffort(model, effort)) {
-        throw new ControlFailure("invalid_params", `${model.id} does not support effort ${effort}`, {
-          model: model.id,
-          efforts: model.efforts,
-        })
-      }
-      overrides.effort = effort
-    }
-    return overrides
-  }
-
-  private waitForAgent(
-    agent: FxAgent,
-    states: readonly DisplayState[],
-    timeoutMs: number | null,
-    signal: AbortSignal,
-  ): Promise<{ agent: AgentInfo; state: DisplayState }> {
-    const settled = this.waitedState(agent, states)
-    if (settled) return Promise.resolve({ agent: this.agentInfo(agent), state: settled })
-    return new Promise((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | null = null
-      const waiter: AgentWaiter = {
-        agentId: agent.id,
-        states,
-        settle: (state) => {
-          cleanup()
-          if (state === null) reject(new ControlFailure("not_found", `agent ${agent.id} exited`))
-          else resolve({ agent: this.agentInfo(agent), state })
-        },
-      }
-      const abort = () => {
-        cleanup()
-        reject(new ControlFailure("cancelled", `waiting for agent ${agent.id} was cancelled`))
-      }
-      const cleanup = () => {
-        this.agentWaiters.delete(waiter)
-        if (timer) clearTimeout(timer)
-        signal.removeEventListener("abort", abort)
-      }
-      this.agentWaiters.add(waiter)
-      signal.addEventListener("abort", abort, { once: true })
-      if (signal.aborted) {
-        abort()
-        return
-      }
-      if (timeoutMs !== null) {
-        timer = setTimeout(() => {
-          cleanup()
-          reject(
-            new ControlFailure("timeout", `agent ${agent.id} is ${this.displayStateOf(agent)} after ${timeoutMs}ms`),
-          )
-        }, timeoutMs)
-      }
-    })
-  }
-
-  /** The state a wait resolves on, or null while it should keep waiting. A
-   * prompt that has gone in but not yet been picked up holds the wait: the
-   * idle fx reports at startup is not the idle that means it has finished. */
-  private waitedState(agent: FxAgent, states: readonly DisplayState[]): DisplayState | null {
-    if (agent.awaitingWork) return null
-    const state = this.displayStateOf(agent)
-    return states.includes(state) ? state : null
-  }
-
-  private settleAgentWaiters(): void {
-    for (const waiter of this.agentWaiters) {
-      const agent = this.agents.find((candidate) => candidate.id === waiter.agentId)
-      if (!agent) {
-        waiter.settle(null)
-        continue
-      }
-      const state = this.waitedState(agent, waiter.states)
-      if (state) waiter.settle(state)
-    }
+  private agentByPaneId(paneId: string): FxAgent {
+    const agent = this.agents.find((candidate) => candidate.paneId === paneId)
+    if (!agent) throw new ControlFailure("not_found", `no agent ${paneId}`)
+    return agent
   }
 
   private displayStateOf(agent: FxAgent): DisplayState {
@@ -1884,7 +1543,6 @@ export class Multiplexer {
       state: this.displayStateOf(agent),
       attention: record?.attention ?? null,
       active: this.activeAgent() === agent,
-      awaiting_work: agent.awaitingWork,
       subagents: sessionId ? subagentInfos(this.subagents.childrenOf(sessionId)) : [],
     }
   }
@@ -1925,7 +1583,6 @@ export class Multiplexer {
         pid: process.pid,
         version: VERSION,
         cwd: this.options.cwd,
-        socket: this.options.busSocketPath ?? "",
         cols: this.renderer.width,
         rows: this.renderer.height,
       },
@@ -1943,17 +1600,6 @@ export class Multiplexer {
     return { visible: this.tray.visible, hidden: this.trayHidden, width: this.trayWidth }
   }
 
-  private keysInfo(): KeysInfo {
-    const bindings: KeysInfo["bindings"] = {}
-    for (const action of ACTION_FIELDS) {
-      bindings[action] = {
-        keys: this.keybindings[action].map((binding) => binding.label),
-        command: ACTIONS[action].command,
-      }
-    }
-    return { prefix: this.keybindings.prefixLabel, bindings }
-  }
-
   private refreshTerminalTitle(): void {
     if (this.shuttingDown && this.renderer.isDestroyed) return
     const active = this.activeAgent()
@@ -1963,12 +1609,12 @@ export class Multiplexer {
 
 type HelpEntry = readonly [key: string, description: string]
 
-const ACTIONS: Record<KeyActionName, { help: string; command: string | null }> = {
-  help: { help: "keybinds", command: "fmx control keys --show" },
-  detach: { help: "detach client", command: null },
-  previous_tab: { help: "prev agent", command: "fmx control focus previous" },
-  next_tab: { help: "next agent", command: "fmx control focus next" },
-  toggle_tray: { help: "toggle tray", command: "fmx control tray --toggle" },
+const ACTIONS: Record<KeyActionName, { help: string }> = {
+  help: { help: "keybinds" },
+  detach: { help: "detach client" },
+  previous_tab: { help: "prev agent" },
+  next_tab: { help: "next agent" },
+  toggle_tray: { help: "toggle tray" },
 }
 
 function helpEntries(keybindings: Keybindings): HelpEntry[] {
@@ -2064,28 +1710,7 @@ function subagentInfos(entries: SubagentEntry[]): SubagentInfo[] {
   }))
 }
 
-function catalogInfo(): CatalogInfo {
-  return {
-    default: { model: DEFAULT_CODEX_MODEL.id, effort: DEFAULT_CODEX_MODEL.defaultEffort },
-    models: CODEX_MODELS.map((model) => ({
-      id: model.id,
-      efforts: [...model.efforts],
-      default_effort: model.defaultEffort,
-    })),
-  }
-}
-
-function waitStates(raw: string[] | undefined): readonly DisplayState[] {
-  if (!raw || raw.length === 0) return WAIT_DEFAULT_STATES
-  for (const state of raw) {
-    if (!DISPLAY_STATES.includes(state)) {
-      throw new ControlFailure("invalid_params", `unknown state: ${state}`, { states: DISPLAY_STATES })
-    }
-  }
-  return raw as DisplayState[]
-}
-
-/** A launch that failed before Fx ran, reported to the CLI caller. */
+/** An Agent start that failed while creating its requested Worktree. */
 class WorktreeError extends ControlFailure {
   constructor(message: string) {
     super("failed", message)

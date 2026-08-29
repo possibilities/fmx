@@ -4,10 +4,8 @@ import { CliRenderer } from "@opentui/core"
 import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { AdeSocket, HomeActiveError } from "./ade-events.ts"
-import { parseArgs, UsageError, usage, VERSION } from "./cli.ts"
+import { parseArgs, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
-import { EXIT_USAGE, runCommand } from "./control-client.ts"
-import { runBus } from "./bus-client.ts"
 import { BusSocket } from "./bus-socket.ts"
 import { doctor } from "./doctor.ts"
 import { resolveFx } from "./executable.ts"
@@ -58,14 +56,13 @@ async function main(): Promise<void> {
   try {
     options = parseArgs(Bun.argv.slice(2))
   } catch (error) {
-    const topic = error instanceof UsageError ? error.topic : null
-    process.stderr.write(`fmx: ${errorMessage(error)}\n\n${usage(topic)}`)
-    process.exitCode = EXIT_USAGE
+    process.stderr.write(`fmx: ${errorMessage(error)}\n\n${usage()}`)
+    process.exitCode = 2
     return
   }
 
   if (options.help) {
-    process.stdout.write(usage(options.command ? "control" : null))
+    process.stdout.write(usage())
     return
   }
   if (options.version) {
@@ -76,30 +73,6 @@ async function main(): Promise<void> {
     const report = await doctor()
     process.stdout.write(`${report.lines.join("\n")}\n`)
     process.exitCode = report.ok ? 0 : 1
-    return
-  }
-  if (options.command) {
-    const outcome = await runCommand(options.command, options.socket, {
-      env: process.env,
-      cwd: process.cwd(),
-      readStdin: () => Bun.stdin.text(),
-    })
-    if (outcome.error) process.stderr.write(`${JSON.stringify({ error: outcome.error })}\n`)
-    else process.stdout.write(`${JSON.stringify(outcome.result ?? null, null, 2)}\n`)
-    process.exitCode = outcome.exitCode
-    return
-  }
-  if (options.bus) {
-    const outcome = await runBus(options.bus, options.socket, {
-      env: process.env,
-      cwd: process.cwd(),
-      write: (data) => {
-        if (process.stdout.write(data)) return
-        return new Promise<void>((resolve) => process.stdout.once("drain", resolve))
-      },
-    })
-    if (outcome.error) process.stderr.write(`${JSON.stringify({ error: outcome.error })}\n`)
-    process.exitCode = outcome.exitCode
     return
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -252,7 +225,6 @@ async function main(): Promise<void> {
       survivors,
       adeSocket,
       bus: runtimeBus,
-      projectRoots: loadedConfig.projectRoots,
       worktreeRoot: loadedConfig.worktreeRoot,
       busSocketPath,
       initialTrayWidth: persistedState.trayWidth,
@@ -300,7 +272,7 @@ async function main(): Promise<void> {
     renderer.start()
     await startup
 
-    // The public Runtime Bus lives beside the ADE feed under its Home
+    // The implementation-private Runtime Bus lives beside the ADE feed under its Home
     // singleton. Do not accept subscriptions or control requests until
     // restored Agents, their metadata, and the selected terminal are ready.
     busSocket = new BusSocket(runtimeBus, app.control, busSocketPath)

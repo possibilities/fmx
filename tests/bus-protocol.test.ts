@@ -85,7 +85,7 @@ describe("bus client messages", () => {
     const unknown = decodeBusClientMessage('{"schema_version":1,"type":"request","id":"9","method":"agent.kill"}')
     if (!("reply" in unknown) || unknown.reply.ok) throw new Error("expected a command error")
     expect(unknown.reply).toMatchObject({ id: "9", error: { code: "unknown_method" } })
-    expect(unknown.reply.error.data).toEqual({ methods: expect.arrayContaining(["orient", "launch"]) })
+    expect(unknown.reply.error.data).toEqual({ methods: ["orient", "focus", "tray"] })
   })
 })
 

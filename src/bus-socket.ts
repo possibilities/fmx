@@ -73,7 +73,7 @@ type Connection = {
 }
 
 /**
- * The Home's one public Runtime bus. Connections may subscribe to retained
+ * The Home's implementation-private Runtime Bus. Connections may subscribe to retained
  * state and live activity, issue any typed control request, or do both.
  *
  * Every input and output record is versioned NDJSON. Event queues are bounded

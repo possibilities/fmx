@@ -53,7 +53,7 @@ export type AgentExit = {
 export type TerminalSize = { cols: number; rows: number }
 
 /** Everything needed to start fx for an Agent the Manifest has already claimed. */
-export type AgentLaunch = {
+export type AgentStart = {
   entry: ManifestEntry
   /** argv, the executable first. */
   command: string[]
@@ -74,7 +74,7 @@ export interface AgentTransportFactory {
    * attached to — it is running, and the Agent is to be recovered, not
    * removed — and with anything else when fx was not started at all.
    */
-  start(launch: AgentLaunch): Promise<AgentTransport>
+  start(request: AgentStart): Promise<AgentTransport>
   /**
    * Attach to a running Agent. Rejects with `AgentEndedError` when
    * fx has ended — with its status, when that is known — and with anything

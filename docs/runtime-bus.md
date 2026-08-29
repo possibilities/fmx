@@ -1,16 +1,17 @@
 # Runtime Bus schema 1
 
-The Bus is fmx's public local interface to a running Runtime. One duplex NDJSON
-connection may subscribe to state and activity events, send control requests,
-or do both. It is independent of Fx's inbound ADE feed.
+The Bus is fmx's implementation-private bridge to a running Runtime. The
+agent-facing automation contract is the stdio `fmx-mcp` server; direct Bus
+clients are not a supported integration surface. One duplex NDJSON connection
+may subscribe to state and activity events, send the Runtime requests used by
+MCP, or do both. It is independent of Fx's inbound ADE feed.
 
 ## Connect
 
 One Runtime binds one mode-0600 Unix socket for its Home at
-`/tmp/fmx-<uid>/<home id>.bus`. `fmx control orient` reports the exact path as
-`fmx.socket`; every Agent receives it as `FMX_SOCKET_PATH`. `fmx bus
-[--socket PATH]` connects and subscribes, while `fmx control ...` uses the same
-socket for request/reply traffic.
+`/tmp/fmx-<uid>/<home id>.bus`. Every Agent receives it as `FMX_SOCKET_PATH`.
+For each tool call, `fmx-mcp` uses that path or discovers the sole live Runtime,
+opens one request/reply connection, and closes it after the response.
 
 Both directions contain one JSON object per newline. Every object carries
 `schema_version: 1` and a `type` that selects its envelope. Unknown additive
@@ -47,13 +48,13 @@ snapshot to establish identity.
 `id` is a non-empty caller-chosen string used to correlate the response.
 Pending ids must be unique on a connection. `params` defaults to `{}`. A peer
 may have up to 32 requests pending on one connection; extra requests receive a
-`busy` response. The methods and parameter semantics are the same ones exposed
-by `fmx control`; run `fmx control` for the command catalog.
+`busy` response. Schema 1 accepts only `orient`, `focus`, and `tray`; fmx-mcp
+maps those methods to `get_orientation`, `focus_agent`, and `configure_tray`.
 
 Requests may complete out of order. A peer may send them before or after a
 subscription and does not need a dedicated command connection. Closing the
-connection cancels its unfinished requests, including an `agent.wait`; there
-is no separate schema-1 cancellation message.
+connection cancels its unfinished requests; there is no separate schema-1
+cancellation message.
 
 ## Server messages
 
@@ -101,10 +102,10 @@ The `agents` array remains in creation order. Each Agent contains:
 | Field | Meaning |
 |---|---|
 | `agent_id` | stable 128-bit Manifest identity; use across Runtime restarts |
-| `id`, `display_id` | retained human-facing Agent number; `id` is its control-target spelling |
-| `pane_id` | retained opaque `p_<agent_id>` control and Companion identity |
+| `id`, `display_id` | retained human-facing Agent number; either spelling is accepted as a Target |
+| `pane_id` | retained opaque `p_<agent_id>` Target and Companion identity |
 | `created_at` | Unix epoch milliseconds from the Manifest claim |
-| `cwd`, `project` | launch directory and display project |
+| `cwd`, `project` | Agent directory and display Project |
 | `git_root`, `main_git_root`, `branch` | fmx's Git context, nullable until or when unavailable |
 | `worktree` | whether `git_root` is a linked worktree, or null with no Git answer |
 | `session_id`, `name` | mutable Fx session identity and native session name |
@@ -112,7 +113,6 @@ The `agents` array remains in creation order. Each Agent contains:
 | `state` | `blocked`, `working`, `done`, `idle`, or `unknown` |
 | `attention` | `permission`, `question`, `route_recovery`, or null |
 | `active` | whether this is the selected Agent |
-| `awaiting_work` | a sent prompt has not yet been admitted by Fx |
 | `subagents` | recursively nested `{session_id,label,state,attention,children}` records |
 
 `cause` is a diagnostic hint, not a patch instruction. Values may grow within

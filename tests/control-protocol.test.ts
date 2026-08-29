@@ -17,9 +17,11 @@ describe("failures", () => {
 })
 
 describe("targets", () => {
-  test("read ids, pane ids, relative words, and names", () => {
-    expect(parseTarget("3")).toEqual({ kind: "id", id: 3 })
-    expect(parseTarget("p_3")).toEqual({ kind: "id", id: 3 })
+  test("reads stable ids, display ids, relative words, and names", () => {
+    const agentId = "0123456789abcdef0123456789abcdef"
+    expect(parseTarget("3")).toEqual({ kind: "display_id", displayId: 3 })
+    expect(parseTarget(agentId)).toEqual({ kind: "agent_id", agentId })
+    expect(parseTarget(`p_${agentId}`)).toEqual({ kind: "pane_id", paneId: `p_${agentId}` })
     expect(parseTarget("next")).toEqual({ kind: "next" })
     expect(parseTarget("current")).toEqual({ kind: "current" })
     expect(parseTarget("fix-flaky-test")).toEqual({ kind: "name", name: "fix-flaky-test" })

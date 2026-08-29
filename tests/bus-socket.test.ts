@@ -8,7 +8,6 @@ import {
   type BusServerMessage,
 } from "../src/bus-protocol.ts"
 import { BusSocket } from "../src/bus-socket.ts"
-import { exchange, UnreachableError } from "../src/control-client.ts"
 import {
   afterControlReply,
   ControlFailure,
@@ -16,6 +15,7 @@ import {
   type ControlSurface,
 } from "../src/control-protocol.ts"
 import { RuntimeBus } from "../src/runtime-bus.ts"
+import { RuntimeClient, RuntimeRequestError } from "../src/runtime-client.ts"
 import { record } from "./fixtures/ade-feed.ts"
 
 function socketPath(name: string): string {
@@ -41,7 +41,6 @@ function agent() {
     state: "idle" as const,
     attention: null,
     active: true,
-    awaiting_work: false,
     subagents: [],
   }
 }
@@ -306,8 +305,9 @@ test("runs an after-response action once the response is delivered", async () =>
   )
   socket.start()
   try {
-    const reply = await exchange(socket.path, "orient", {}, 1_000)
-    expect(reply).toEqual({ id: expect.any(String), ok: true, result: { delivered: true } })
+    const result = await new RuntimeClient({ env: { FMX_SOCKET_PATH: socket.path } })
+      .request("orient", {}, new AbortController().signal)
+    expect(result).toEqual({ delivered: true })
     await waitFor(() => deliveries === 1, "after-response action did not run")
   } finally {
     socket.close()
@@ -324,8 +324,8 @@ test("aborts every pending request when its connection closes", async () => {
   const socket = new BusSocket(runtimeBus(), fake, socketPath("abort"))
   socket.start()
   const connection = await peer(socket.path)
-  connection.send(encodeBusRequest({ id: "one", method: "agent.wait", params: { name: "one" } }))
-  connection.send(encodeBusRequest({ id: "two", method: "agent.wait", params: { name: "two" } }))
+  connection.send(encodeBusRequest({ id: "one", method: "orient", params: { name: "one" } }))
+  connection.send(encodeBusRequest({ id: "two", method: "orient", params: { name: "two" } }))
   await waitFor(() => fake.calls.length === 2, "requests did not start")
   connection.connection.end()
   await waitFor(() => aborted.length === 2, "requests were not aborted")
@@ -345,7 +345,7 @@ test("bounds pending requests per connection without blocking the accepted one",
   socket.start()
   const connection = await peer(socket.path)
   try {
-    connection.send(encodeBusRequest({ id: "held", method: "agent.wait", params: {} }))
+    connection.send(encodeBusRequest({ id: "held", method: "orient", params: {} }))
     await waitFor(() => fake.calls.length === 1, "first request did not start")
     connection.send(encodeBusRequest({ id: "extra", method: "orient", params: {} }))
     await waitFor(() => connection.messages.length === 1, "pending-request refusal did not arrive")
@@ -525,7 +525,7 @@ test("a protocol error aborts pending requests and sends no later responses", as
   socket.start()
   const connection = await peer(
     socket.path,
-    encodeBusRequest({ id: "pending", method: "agent.wait", params: {} }),
+    encodeBusRequest({ id: "pending", method: "orient", params: {} }),
   )
   try {
     await waitFor(() => fake.calls.length === 1, "pending request did not start")
@@ -555,5 +555,8 @@ test("removes retired socket residue when binding and is unreachable after close
   expect(existsSync(`${stem}.ctl`)).toBe(false)
   expect(existsSync(`${stem}.obs`)).toBe(false)
   socket.close()
-  await expect(exchange(path, "orient", {}, 1_000)).rejects.toBeInstanceOf(UnreachableError)
+  await expect(
+    new RuntimeClient({ env: { FMX_SOCKET_PATH: path } })
+      .request("orient", {}, new AbortController().signal),
+  ).rejects.toBeInstanceOf(RuntimeRequestError)
 })

@@ -11,7 +11,7 @@ export type SessionEntry = {
   agentId: number
   project: string
   /** null while git has not answered for the agent's directory, and again
-   * whenever it cannot. A launch requires a repository, so this is never a
+   * whenever it cannot. An Agent start requires a repository, so this is never a
    * report that the directory was untracked. */
   branch: string | null
   sessionId: string | null

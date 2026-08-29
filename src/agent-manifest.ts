@@ -13,9 +13,7 @@ export const MANIFEST_VERSION = 1
  * restart can find them. It is a claim, not the truth — the Companion's
  * sessions are the truth, and `agent-reconcile.ts` joins the two.
  *
- * Nothing sensitive is kept: no prompt text, no environment. A crash before a
- * launch prompt is delivered leaves an unprompted fx, which is safer than a
- * replayed secret.
+ * Nothing sensitive is kept: no prompt text and no environment.
  */
 
 /** The three names one Agent is known by; all three carry the same token. */
