@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  isRepositoryDirectory,
   projectNameFor,
   readGitContext,
   treeNameFor,
@@ -47,6 +48,7 @@ test("answers null outside a repository", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-git-"))
   try {
     expect(await readGitContext(directory)).toBeNull()
+    expect(isRepositoryDirectory(directory)).toBe(false)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -62,6 +64,7 @@ test("answers for a repository with nothing committed yet", async () => {
     // The branch is what the tray draws for it, so an unborn repository is a
     // project exactly because this comes back with a name.
     const context = await readGitContext(directory)
+    expect(isRepositoryDirectory(directory)).toBe(true)
     expect(context?.root).toBe(directory)
     expect(context?.mainRoot).toBe(directory)
     expect(context?.branch).toBe("trunk")

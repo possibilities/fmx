@@ -1,4 +1,5 @@
-import { basename, dirname } from "node:path"
+import { existsSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
 
 /**
  * Where an fx Agent is working, as far as git is concerned. fmx reads this
@@ -70,6 +71,19 @@ async function readUnbornContext(cwd: string): Promise<GitContext | null> {
   const branch = symbolic?.[0]
   if (!branch) return null
   return { root, mainRoot: dirname(commonDir), branch }
+}
+
+/** Whether a directory is inside a checkout, answered synchronously for MCP
+ * parameter validation and configured-project discovery. `readGitContext`
+ * remains the authority before an Agent is actually created. */
+export function isRepositoryDirectory(directory: string): boolean {
+  let at = directory
+  for (;;) {
+    if (existsSync(join(at, ".git"))) return true
+    const parent = dirname(at)
+    if (parent === at) return false
+    at = parent
+  }
 }
 
 /** The name a project is known by: the repository's own directory, shared by

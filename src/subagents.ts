@@ -405,6 +405,11 @@ export class SubagentObserver {
         this.rootWatcher?.close()
         this.rootWatcher = null
       })
+      // `watch()` may return before the kernel watch is fully armed. One slow
+      // post-install probe closes the create-between-scan-and-watch race and
+      // covers a lost first notification without turning the lock tick into a
+      // store-wide polling loop.
+      this.scheduleDiscovery(750)
     } catch {
       this.rootWatcher = null
     }

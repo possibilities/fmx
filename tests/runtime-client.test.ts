@@ -2,9 +2,8 @@ import { expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { BusSocket } from "../src/bus-socket.ts"
+import { RuntimeBridge } from "../src/runtime-bridge.ts"
 import { ControlFailure, type ControlMethod } from "../src/control-protocol.ts"
-import { RuntimeBus } from "../src/runtime-bus.ts"
 import {
   resolveRuntimePath,
   RuntimeClient,
@@ -40,8 +39,7 @@ test("resolves the Agent's Runtime or the sole live Runtime outside one", async 
 
 test("adds caller context and opens a working short-lived request connection", async () => {
   const calls: { method: ControlMethod; params: Record<string, unknown> }[] = []
-  const socket = new BusSocket(
-    new RuntimeBus({ homeId: "home", version: "test" }),
+  const socket = new RuntimeBridge(
     {
       handle: async (method, params) => {
         calls.push({ method, params })
@@ -63,11 +61,36 @@ test("adds caller context and opens a working short-lived request connection", a
   }
 })
 
+test("carries MCP-sized requests and responses beyond the small event-line bound", async () => {
+  // The raw work remains beneath Fx's 1 MiB limit while its JSON request is
+  // larger than the bridge's retired 2 MiB event-oriented bound.
+  const text = "\0".repeat(400 * 1024)
+  const returned = "x".repeat(128 * 1024)
+  const socket = new RuntimeBridge(
+    {
+      handle: async (method, params) => ({
+        method,
+        received_length: typeof params.text === "string" ? params.text.length : null,
+        returned,
+      }),
+    },
+    `/tmp/fmx-runtime-client-large-${process.pid}.bus`,
+  )
+  socket.start()
+
+  try {
+    const result = await new RuntimeClient({ env: { FMX_SOCKET_PATH: socket.path } })
+      .request("work.queue", { text }, new AbortController().signal)
+    expect(result).toEqual({ method: "work.queue", received_length: text.length, returned })
+  } finally {
+    socket.close()
+  }
+})
+
 test("cancels both sides of a pending Runtime request", async () => {
   let serverSignal: AbortSignal | null = null
   const started = Promise.withResolvers<void>()
-  const socket = new BusSocket(
-    new RuntimeBus({ homeId: "home", version: "test" }),
+  const socket = new RuntimeBridge(
     {
       handle: (_method, _params, signal) => {
         serverSignal = signal

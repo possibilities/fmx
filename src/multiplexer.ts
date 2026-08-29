@@ -13,7 +13,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import { homedir } from "node:os"
-import { basename } from "node:path"
+import { basename, resolve } from "node:path"
 import {
   AgentRegistry,
   type DisplayState,
@@ -30,6 +30,7 @@ import {
   type ControlSurface,
   optionalBoolean,
   optionalInteger,
+  optionalString,
   parseTarget,
   requiredString,
   type TrayRow,
@@ -44,7 +45,16 @@ import {
   type FxAdeBinding,
   type FxStartLevel,
 } from "./fx-environment.ts"
-import type { AgentManifest, ManifestEntry } from "./agent-manifest.ts"
+import { mintIdentity, type AgentManifest, type ManifestEntry } from "./agent-manifest.ts"
+import {
+  FxWorkControlClient,
+  FxWorkControlError,
+  mintFxWorkControlBinding,
+  removeFxWorkControlResidue,
+  type FxWorkControlMethod,
+  type FxWorkControlRequester,
+  type FxWorkControlResult,
+} from "./fx-work-control.ts"
 import {
   AgentEndedError,
   AgentUnreachableError,
@@ -73,17 +83,20 @@ import {
   type Keybindings,
   type ResolvedBinding,
 } from "./keybindings.ts"
-import { readGitContext, projectNameFor, type GitContext } from "./git-context.ts"
+import {
+  isRepositoryDirectory,
+  readGitContext,
+  projectNameFor,
+  type GitContext,
+} from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
-import { expandTilde } from "./projects.ts"
+import { expandTilde, scanProjectRoots } from "./projects.ts"
 import { SessionList, stateIcon } from "./session-list.ts"
 import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
 import { OscTitleParser, sanitizeTitle } from "./title-parser.ts"
 import { createWorktree, planWorktree, readHeadCommit, readWorktreeContext } from "./worktree.ts"
-import type { BusState } from "./bus-protocol.ts"
-import type { BusPublisher } from "./runtime-bus.ts"
 
 /** The tray the embedded terminal sits beside; exported so tests can
  * address the terminal by its real screen column rather than a guess. */
@@ -147,14 +160,16 @@ type MultiplexerOptions = {
   worktreeRoot?: string
   home?: string
   /** Where fmx-mcp reaches this Runtime. */
-  busSocketPath?: string
-  /** State and activity the Multiplexer publishes onto the Runtime Bus. */
-  bus?: BusPublisher | null
+  runtimeSocketPath?: string
+  /** Configured discovery roots used when MCP creation has no caller or directory. */
+  projectRoots?: readonly string[]
+  /** The per-Fx semantic work requester; replaceable only for deterministic tests. */
+  fxWorkControl?: FxWorkControlRequester
   /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
   initialTheme?: FxnkThemeResolution
 }
 
-export type AgentStartRequest = {
+export type AgentCreateRequest = {
   directory: string
   worktree?: boolean
   focus?: boolean
@@ -393,6 +408,8 @@ export class Multiplexer {
   private exitConfirmationTimer: ReturnType<typeof setTimeout> | null = null
   private exitConfirmationKey: "ctrl+c" | "ctrl+d" | null = null
   private readonly swallowedReleases = new Set<string>()
+  private readonly fxWorkControl: FxWorkControlRequester
+  private creationTail: Promise<void> = Promise.resolve()
   /** The small Runtime surface fmx-mcp drives. */
   readonly control: ControlSurface = {
     handle: (method, params, signal) => this.handleControl(method, params, signal),
@@ -412,6 +429,7 @@ export class Multiplexer {
     this.donePromise = new Promise((resolveDone) => {
       this.resolveDone = resolveDone
     })
+    this.fxWorkControl = options.fxWorkControl ?? new FxWorkControlClient()
     this.theme = options.initialTheme ?? DEFAULT_THEME
     const initialRamp = fxnkRamp(this.theme.theme)
     // The physical Client is cleared to the unused-field color before each
@@ -428,7 +446,6 @@ export class Multiplexer {
       home: options.home,
       onChange: () => {
         this.refreshSessionList()
-        this.publishBusState("subagents_changed")
       },
     })
     const [helpWidth, helpHeight] = helpModalSize(this.keybindings)
@@ -536,7 +553,6 @@ export class Multiplexer {
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
     this.applyLayout()
     this.refreshTerminalTitle()
-    this.publishBusState("initialized")
   }
 
   /**
@@ -584,7 +600,6 @@ export class Multiplexer {
     this.sessionListPublicationHeld = false
     this.sessionList.root.visible = true
     this.refreshSessionList()
-    this.publishBusState("restored")
   }
 
   setTheme(resolution: FxnkThemeResolution): void {
@@ -631,13 +646,8 @@ export class Multiplexer {
     }
   }
 
-  /**
-   * Internal Agent creation engine. It is deliberately not a phase-one MCP
-   * tool: phase 2 will decide the native Fx-facing creation contract. Keeping
-   * this primitive is necessary because the Fx control socket does not exist
-   * until fmx has created the process through the Manifest and Companion.
-   */
-  async startAgent(request: AgentStartRequest): Promise<AgentInfo> {
+  /** Create one Agent through the Manifest and Companion lifecycle. */
+  async createAgent(request: AgentCreateRequest): Promise<AgentInfo> {
     const origin = await readGitContext(request.directory)
     if (!origin) throw new NotARepositoryError(request.directory)
     this.gitContexts.set(request.directory, origin)
@@ -652,9 +662,9 @@ export class Multiplexer {
       if (cut) this.gitContexts.set(directory, cut)
     }
     if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
-    const agent = await this.createAgent(
+    const agent = await this.createFxAgent(
       directory,
-      request.focus ?? true,
+      request.focus ?? false,
       request.startLevel ?? null,
     )
     if (!agent) throw new ControlFailure("shutting_down", "fmx is shutting down")
@@ -666,18 +676,24 @@ export class Multiplexer {
    * on it yet. The Manifest is written first and the Companion asked second,
    * so a crash in between leaves a claim the next start can reconcile.
    */
-  private async createAgent(
+  private async createFxAgent(
     cwd: string,
     focus = true,
     startLevel: FxStartLevel | null = null,
   ): Promise<FxAgent | null> {
     if (this.shuttingDown) return null
     this.cancelExitConfirmation()
+    const identity = mintIdentity()
+    const workControl = this.options.runtimeSocketPath
+      ? mintFxWorkControlBinding(this.options.runtimeSocketPath, identity.agentId)
+      : null
     const { result: entry, saved } = this.options.manifest.claim({
       cwd,
       fxPath: this.options.fxPath,
       fxArgs: [],
       createdAt: Date.now(),
+      identity,
+      workControl,
     })
     const agent = this.addAgent(entry, cwd, focus)
     let transport: AgentTransport
@@ -694,9 +710,10 @@ export class Multiplexer {
             process.env,
             entry.displayId,
             cwd,
-            this.options.busSocketPath ?? null,
+            this.options.runtimeSocketPath ?? null,
             startLevel,
             this.adeBinding(entry.agentId),
+            entry.workControl,
           ),
         ),
         size: agent.currentSize(),
@@ -712,7 +729,7 @@ export class Multiplexer {
       this.removeAgent(agent)
       // A write that fails here is the same disk that failed above; the
       // reason the start failed is the one to show.
-      await this.options.manifest.remove(entry.agentId).catch(() => {})
+      await this.forgetAgent(entry).catch(() => {})
       throw error
     }
     // fx is running whatever happens from here; the record says so before
@@ -761,7 +778,7 @@ export class Multiplexer {
     } catch (error) {
       this.removeAgent(agent)
       if (error instanceof AgentEndedError) {
-        await this.options.manifest.remove(entry.agentId).catch(() => {})
+        await this.forgetAgent(entry).catch(() => {})
         return
       }
       // Unreachable is not ended: the claim stays for the next start.
@@ -779,7 +796,6 @@ export class Multiplexer {
     const agent = new FxAgent(this.renderer, entry, cwd, this.theme, {
       onTitleChange: (candidate) => {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
-        this.publishBusState("agent_label_changed")
       },
       onExit: (candidate) => this.handleAgentExit(candidate),
       onLost: (candidate, error) => void this.recoverAgent(candidate, error),
@@ -790,7 +806,6 @@ export class Multiplexer {
     if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
     this.loadGitContext(cwd)
     this.refreshSessionList()
-    this.publishBusState("agent_added")
     return agent
   }
 
@@ -802,7 +817,7 @@ export class Multiplexer {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
-    void this.options.manifest.remove(agent.entry.agentId).catch(() => {})
+    void this.forgetAgent(agent.entry).catch(() => {})
     if (this.shuttingDown) return
     this.removeAgent(agent)
   }
@@ -863,8 +878,12 @@ export class Multiplexer {
     } else if (index < this.activeIndex) {
       this.activeIndex -= 1
     }
-    this.publishBusState("agent_removed")
     return true
+  }
+
+  private async forgetAgent(entry: ManifestEntry): Promise<void> {
+    await removeFxWorkControlResidue(entry.workControl, this.options.runtimeSocketPath ?? null)
+    await this.options.manifest.remove(entry.agentId)
   }
 
   private switchTo(index: number): void {
@@ -894,7 +913,6 @@ export class Multiplexer {
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshSessionList()
-    this.publishBusState("active_agent_changed")
   }
 
   private activeAgent(): FxAgent | null {
@@ -1011,7 +1029,6 @@ export class Multiplexer {
       if (!this.shuttingDown && context) {
         this.gitContexts.set(cwd, context)
         this.refreshSessionList()
-        this.publishBusState("git_context_changed")
       }
       return context
     }).finally(() => {
@@ -1098,8 +1115,6 @@ export class Multiplexer {
     if (record.context.agentRole !== "main") {
       changed = this.subagents.applyAdeRecord(record) || changed
       if (changed) this.refreshSessionList()
-      this.publishBusState("lifecycle")
-      this.options.bus?.publishActivity(record, agent.entry.agentId, agent.id, gap)
       return
     }
 
@@ -1128,8 +1143,6 @@ export class Multiplexer {
     if (this.activeAgent() === agent) this.markSeen(agent)
     else this.checkpointAgent(agent)
     this.refreshSessionList()
-    this.publishBusState("lifecycle")
-    this.options.bus?.publishActivity(record, agent.entry.agentId, agent.id, gap)
   }
 
   private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
@@ -1413,13 +1426,27 @@ export class Multiplexer {
   private async handleControl(
     method: ControlMethod,
     params: Record<string, unknown>,
-    _signal: AbortSignal,
+    signal: AbortSignal,
   ): Promise<unknown> {
     if (this.shuttingDown) throw new ControlFailure("shutting_down", "fmx is shutting down")
     const caller = optionalInteger(params, "caller") ?? null
     switch (method) {
       case "orient":
         return this.snapshot(caller)
+      case "agent.create":
+        return this.serializeCreation(async () => {
+          if (signal.aborted) throw new ControlFailure("cancelled", "Agent creation was cancelled")
+          const directory = this.creationDirectory(params, caller)
+          const model = optionalCreationSetting(params, "model")
+          const effort = optionalCreationSetting(params, "effort")
+          const agent = await this.createAgent({
+            directory,
+            worktree: optionalBoolean(params, "worktree") ?? false,
+            focus: false,
+            startLevel: model === undefined && effort === undefined ? null : { model, effort },
+          })
+          return { agent }
+        })
       case "focus": {
         const agent = this.resolveTarget(parseTarget(requiredString(params, "target")), caller)
         this.refuseIfBusy()
@@ -1438,6 +1465,110 @@ export class Multiplexer {
         else if (optionalBoolean(params, "toggle")) this.setTrayHidden(!this.trayHidden)
         return this.trayInfo()
       }
+      case "work.snapshot":
+        return this.agentWork(this.resolveWorkTarget(params, caller), "work.snapshot", {}, signal)
+      case "work.queue":
+      case "work.steer": {
+        const agent = this.resolveWorkTarget(params, caller)
+        const result = await this.requestAgentWork(agent, method, { text: requiredWorkText(params) }, signal)
+        if (!result.turn_id || !result.disposition) {
+          throw new ControlFailure("failed", "Fx returned no work admission identity")
+        }
+        return {
+          agent: this.agentInfo(agent),
+          turn_id: result.turn_id,
+          disposition: result.disposition,
+          work: result.snapshot,
+        }
+      }
+      case "work.interrupt":
+        return this.agentWork(this.resolveWorkTarget(params, caller), "work.interrupt", {}, signal)
+      case "queue.update":
+        return this.agentWork(
+          this.resolveWorkTarget(params, caller),
+          "queue.update",
+          { turn_id: requiredTurnId(params), text: requiredWorkText(params) },
+          signal,
+        )
+      case "queue.delete":
+        return this.agentWork(
+          this.resolveWorkTarget(params, caller),
+          "queue.delete",
+          { turn_id: requiredTurnId(params) },
+          signal,
+        )
+      case "queue.resume":
+        return this.agentWork(this.resolveWorkTarget(params, caller), "queue.resume", {}, signal)
+    }
+  }
+
+  private creationDirectory(params: Record<string, unknown>, caller: number | null): string {
+    const requested = optionalString(params, "directory")
+    if (requested !== undefined) {
+      if (requested.trim() === "") throw new ControlFailure("invalid_params", "directory must not be empty")
+      const directory = resolve(this.options.cwd, expandTilde(requested, this.home()))
+      if (!isRepositoryDirectory(directory)) throw new NotARepositoryError(directory)
+      return directory
+    }
+
+    const callerAgent = caller === null
+      ? null
+      : (this.agents.find((agent) => agent.id === caller) ?? null)
+    if (callerAgent) return callerAgent.cwd
+    const [project] = scanProjectRoots(this.options.projectRoots ?? [], this.home())
+    if (!project) {
+      throw new ControlFailure(
+        "invalid_params",
+        "no project is available; pass directory or configure project_roots",
+      )
+    }
+    return project
+  }
+
+  private serializeCreation<T>(create: () => Promise<T>): Promise<T> {
+    const result = this.creationTail.then(create, create)
+    this.creationTail = result.then(() => {}, () => {})
+    return result
+  }
+
+  private resolveWorkTarget(params: Record<string, unknown>, caller: number | null): FxAgent {
+    return this.resolveTarget(parseTarget(optionalString(params, "target") ?? "current"), caller)
+  }
+
+  private async agentWork(
+    agent: FxAgent,
+    method: FxWorkControlMethod,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<{ agent: AgentInfo; work: FxWorkControlResult["snapshot"] }> {
+    const result = await this.requestAgentWork(agent, method, params, signal)
+    return { agent: this.agentInfo(agent), work: result.snapshot }
+  }
+
+  private async requestAgentWork(
+    agent: FxAgent,
+    method: FxWorkControlMethod,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<FxWorkControlResult> {
+    const binding = agent.entry.workControl
+    if (!binding) {
+      throw new ControlFailure("failed", `Agent ${agent.id} was created without semantic Fx work control`)
+    }
+    try {
+      return await this.fxWorkControl.request(binding, method, params, signal)
+    } catch (error) {
+      if (!(error instanceof FxWorkControlError)) throw error
+      const code = error.code === "cancelled"
+        ? "cancelled"
+        : error.code === "timeout"
+          ? "timeout"
+          : error.code === "busy" || error.code === "queue_editor_visible"
+            ? "busy"
+            : error.code === "queued_work_not_found" || error.code === "no_active_work"
+              ? "not_found"
+              : "failed"
+      throw new ControlFailure(code, error.message, { fx_code: error.code })
     }
   }
 
@@ -1545,17 +1676,6 @@ export class Multiplexer {
       active: this.activeAgent() === agent,
       subagents: sessionId ? subagentInfos(this.subagents.childrenOf(sessionId)) : [],
     }
-  }
-
-  private busState(): BusState {
-    return {
-      active_agent_id: this.activeAgent()?.entry.agentId ?? null,
-      agents: this.agents.map((agent) => this.agentInfo(agent)),
-    }
-  }
-
-  private publishBusState(cause: string): void {
-    this.options.bus?.updateState(this.busState(), cause)
   }
 
   private surface(): Surface {
@@ -1710,12 +1830,37 @@ function subagentInfos(entries: SubagentEntry[]): SubagentInfo[] {
   }))
 }
 
-/** An Agent start that failed while creating its requested Worktree. */
+/** Agent creation failed while making its requested Worktree. */
 class WorktreeError extends ControlFailure {
   constructor(message: string) {
     super("failed", message)
     this.name = "WorktreeError"
   }
+}
+
+function optionalCreationSetting(
+  params: Record<string, unknown>,
+  key: "model" | "effort",
+): string | undefined {
+  const value = optionalString(params, key)
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  if (trimmed === "") throw new ControlFailure("invalid_params", `${key} must not be empty`)
+  return trimmed
+}
+
+function requiredWorkText(params: Record<string, unknown>): string {
+  const text = requiredString(params, "text")
+  if (text.length === 0) throw new ControlFailure("invalid_params", "text must not be empty")
+  return text
+}
+
+function requiredTurnId(params: Record<string, unknown>): string {
+  const turnId = requiredString(params, "turn_id")
+  if (!/^[1-9]\d*$/u.test(turnId)) {
+    throw new ControlFailure("invalid_params", "turn_id must be a positive decimal string")
+  }
+  return turnId
 }
 
 /** An agent runs in a repository or it does not run. */

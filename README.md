@@ -53,15 +53,26 @@ live.
 | Tool | Purpose |
 |---|---|
 | `get_orientation` | Read the caller, active Agent, all Agents and subagents, Tray tree, terminal size, and open fmx surface |
+| `create_agent` | Create an Agent in a repository, optionally in a new Worktree and with per-process model or effort overrides |
 | `focus_agent` | Focus an Agent by stable `agent_id`, `pane_id`, display id, relative Target, Session name, or Session-id prefix |
 | `configure_tray` | Read or change the Tray's width and visibility |
+| `get_agent_work` | Read Fx's authoritative active turn, paused state, and queued work |
+| `queue_agent_work` | Append plain-text work to Fx's native queue |
+| `steer_agent` | Steer the active Fx turn, or queue the work when no turn is active |
+| `interrupt_agent` | Interrupt active work and pause remaining queued work for inspection |
+| `update_queued_work` | Replace the plain text of one queued Turn |
+| `delete_queued_work` | Delete one queued Turn |
+| `resume_agent_queue` | Resume Fx's paused queue unchanged |
 
-The phase-one server deliberately has no Agent creation, prompt injection,
-wait, event-stream, or model-catalog surface. Work control will mirror Fx's
-native control-socket operations instead of typing into its terminal. The
-mode-0600 Runtime Bus remains an implementation bridge between `fmx-mcp` and
-the Runtime, not a supported automation interface; its engineering contract is
-documented in [Runtime Bus schema 1](docs/runtime-bus.md).
+Creation with no directory uses the caller's repository, then the first
+configured Project. Work tools default to the caller's Agent and use Fx's
+native semantic queue, steer, and interrupt operations—never terminal paste.
+There is deliberately no prompt-send, wait, event-stream, permission-answer,
+or Runtime-lifecycle surface. See the [agent integration guide](docs/agent-integration.md)
+for exact targeting, queue semantics, results, errors, and integration advice.
+
+The mode-0600 [Runtime bridge](docs/runtime-bridge.md) between `fmx-mcp` and a
+running Runtime is an implementation detail, not a supported automation API.
 
 ## Development
 

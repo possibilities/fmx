@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { EXIT_CONFIRMATION_TIMEOUT_MS, Multiplexer } from "../src/multiplexer.ts"
-import { startAgent, startVisibleAgent } from "./fixtures/agent-start.ts"
+import { createAgent, startVisibleAgent } from "./fixtures/agent-start.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -56,7 +56,7 @@ test("starts without an Fx, hiding the tray and centering the empty state", asyn
     expect(emptyState.fg.slot).toBe(245)
     expect(setup.captureCharFrame()).toContain("no agents")
 
-    void startAgent(multiplexer)
+    void createAgent(multiplexer)
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined)
     await setup.renderOnce()
 
@@ -93,7 +93,7 @@ test("paints the full owner frame when empty before and after the last Agent", a
     await setup.renderOnce()
     expectOwnerBackground([0, 0, 0, 255])
 
-    void startAgent(multiplexer)
+    void createAgent(multiplexer)
     await waitFor(() => setup.renderer.root.findDescendantById("fx-1") !== undefined)
     await waitForText(setup, "fake fx ready")
     const terminal = setup.renderer.root.findDescendantById("fx-1")

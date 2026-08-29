@@ -52,6 +52,9 @@ test("an inherited Herdr integration never reaches fx", () => {
       HERDR_BIN_PATH: "/usr/local/bin/other",
       FX_ADE_SOCKET_PATH: "/tmp/outer.ade.sock",
       FX_ADE_INSTANCE_ID: "outer-agent",
+      FX_WORK_CONTROL_SOCKET_PATH: "/tmp/outer.fx",
+      FX_WORK_CONTROL_INSTANCE_ID: "outer-agent",
+      FX_WORK_CONTROL_TOKEN: "outer-token",
       FMX_RUNTIME_PROCESS: "1",
       FMX_RUNTIME_BOOTSTRAP_PATH: "/tmp/runtime-ready",
     },
@@ -68,6 +71,9 @@ test("an inherited Herdr integration never reaches fx", () => {
   expect(env.HERDR_BIN_PATH).toBeUndefined()
   expect(env.FX_ADE_SOCKET_PATH).toBeUndefined()
   expect(env.FX_ADE_INSTANCE_ID).toBeUndefined()
+  expect(env.FX_WORK_CONTROL_SOCKET_PATH).toBeUndefined()
+  expect(env.FX_WORK_CONTROL_INSTANCE_ID).toBeUndefined()
+  expect(env.FX_WORK_CONTROL_TOKEN).toBeUndefined()
   expect(env.FMX_RUNTIME_PROCESS).toBeUndefined()
   expect(env.FMX_RUNTIME_BOOTSTRAP_PATH).toBeUndefined()
 })
@@ -88,7 +94,7 @@ test("fmx never enables Herdr while installing its ADE feed", () => {
   expect(env.FX_ADE_SOCKET_PATH).toBe("/tmp/fmx-home.ade.sock")
 })
 
-test("hands every Agent the Bus path, and clears one inherited from another fmx", () => {
+test("hands every Agent the Runtime bridge path, and clears one inherited from another fmx", () => {
   const env = createFxEnvironment({ FMX_SOCKET_PATH: "/tmp/fmx-1.bus" }, 3, "/work", "/tmp/fmx-42.bus")
   expect(env.FMX_SOCKET_PATH).toBe("/tmp/fmx-42.bus")
   expect(env.FMX_AGENT_ID).toBe("3")
@@ -108,6 +114,32 @@ test("hands fx the passive ADE socket with the stable Manifest identity", () => 
   expect(env.FX_ADE_INSTANCE_ID).toBe("0123456789abcdef0123456789abcdef")
 })
 
+test("hands Fx exactly one semantic work-control authority", () => {
+  const binding = {
+    socketPath: "/tmp/fmx-home.agent.fx",
+    instanceId: "0123456789abcdef0123456789abcdef",
+    token: "ab".repeat(32),
+  }
+  const env = createFxEnvironment(
+    {
+      FX_WORK_CONTROL_SOCKET_PATH: "/tmp/outer.fx",
+      FX_WORK_CONTROL_INSTANCE_ID: "outer-agent",
+      FX_WORK_CONTROL_TOKEN: "outer-token",
+    },
+    3,
+    "/work",
+    null,
+    null,
+    null,
+    binding,
+  )
+  expect(env).toMatchObject({
+    FX_WORK_CONTROL_SOCKET_PATH: binding.socketPath,
+    FX_WORK_CONTROL_INSTANCE_ID: binding.instanceId,
+    FX_WORK_CONTROL_TOKEN: binding.token,
+  })
+})
+
 test("applies model and effort to one Agent without changing unrelated starts", () => {
   const ambient = { FX_MODEL: "ambient-model", FX_EFFORT: "medium" }
   expect(createFxEnvironment(ambient, 3, "/work")).toMatchObject(ambient)
@@ -118,6 +150,10 @@ test("applies model and effort to one Agent without changing unrelated starts", 
   })
   expect(selected.FX_MODEL).toBe("gpt-5.6-luna")
   expect(selected.FX_EFFORT).toBe("max")
+
+  const modelOnly = createFxEnvironment(ambient, 5, "/work", null, { model: "gpt-5.6-sol" })
+  expect(modelOnly.FX_MODEL).toBe("gpt-5.6-sol")
+  expect(modelOnly.FX_EFFORT).toBe("medium")
 })
 
 test("the fmx-owned Fx binary cannot inherit or enable upstream auto-upgrade", () => {

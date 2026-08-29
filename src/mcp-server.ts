@@ -73,15 +73,70 @@ const orientationSchema = z.object({
   ]),
 })
 
+const queuedWorkSchema = z.object({
+  turn_id: z.string(),
+  kind: z.enum(["queued", "steering"]),
+  text: z.string(),
+  has_images: z.boolean(),
+  has_skill_bindings: z.boolean(),
+  has_review_draft: z.boolean(),
+})
+
+const workSchema = z.object({
+  active_turn_id: z.string().nullable(),
+  queue_paused: z.boolean(),
+  queue: z.array(queuedWorkSchema),
+})
+
+const agentWorkSchema = z.object({
+  agent: agentSchema,
+  work: workSchema,
+})
+
+const agentWorkAdmissionSchema = agentWorkSchema.extend({
+  turn_id: z.string(),
+  disposition: z.enum(["queued", "steering"]),
+})
+
+const toolErrorSchema = z.object({
+  code: z.enum([
+    "invalid_request",
+    "unknown_method",
+    "invalid_params",
+    "not_found",
+    "ambiguous",
+    "busy",
+    "failed",
+    "timeout",
+    "cancelled",
+    "shutting_down",
+  ]),
+  message: z.string(),
+  data: z.unknown().optional(),
+})
+
+/** The high-level MCP SDK requires an object output schema. Keep the success
+ * fields typed, make them optional only at the advertised envelope, then
+ * enforce either the complete success object or one structured error. */
+const toolResultSchema = <T extends z.ZodRawShape>(success: z.ZodObject<T>) =>
+  success.partial().extend({ error: toolErrorSchema.optional() }).refine(
+    (result) => ("error" in result && result.error !== undefined) || success.safeParse(result).success,
+    { message: "fmx tool result is neither a complete success nor an error" },
+  )
+
 const targetDescription =
   "Stable agent_id (preferred), display id, pane_id, current, active, next, previous, exact session name, or unique session-id prefix."
+
+const targetInput = z.string().min(1).optional().describe(`${targetDescription} Defaults to current.`)
+const workTextInput = z.string().min(1).describe("Plain-text work for Fx to admit through its native worker queue.")
+const turnIdInput = z.string().regex(/^[1-9]\d*$/u).describe("Opaque decimal turn_id returned by Fx.")
 
 export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClient()): McpServer {
   const server = new McpServer(
     { name: "fmx", version: VERSION },
     {
       instructions:
-        "Inspect and control the running fmx Runtime. Agent creation and Fx work control are intentionally not part of this phase-one surface.",
+        "Inspect and control the running fmx Runtime. Create Agents and interact with their work only through Fx-native queue, steer, interrupt, and queued-work operations.",
     },
   )
 
@@ -91,7 +146,7 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
       title: "Get fmx orientation",
       description:
         "Read the caller, active Agent, every Agent and subagent, Tray tree, terminal dimensions, and open fmx surface.",
-      outputSchema: orientationSchema,
+      outputSchema: toolResultSchema(orientationSchema),
       annotations: {
         readOnlyHint: true,
         idempotentHint: true,
@@ -102,6 +157,35 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
   )
 
   server.registerTool(
+    "create_agent",
+    {
+      title: "Create an fmx Agent",
+      description:
+        "Create an Fx Agent in a repository. With no directory, use the caller's repository, then the first configured project. Creation stays in the background unless it is the first Agent.",
+      inputSchema: {
+        directory: z.string().min(1).optional().describe("Repository directory. Absolute, relative to the Runtime, or ~/..."),
+        worktree: z.boolean().optional().describe("Create a new fmx-managed git Worktree before starting Fx."),
+        model: z.string().min(1).optional().describe("FX_MODEL override for this Agent only."),
+        effort: z.string().min(1).optional().describe("FX_EFFORT override for this Agent only."),
+      },
+      outputSchema: toolResultSchema(z.object({ agent: agentSchema })),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ directory, worktree, model, effort }, extra) =>
+      runTool(() => requester.request("agent.create", {
+        ...(directory === undefined ? {} : { directory }),
+        ...(worktree === undefined ? {} : { worktree }),
+        ...(model === undefined ? {} : { model }),
+        ...(effort === undefined ? {} : { effort }),
+      }, extra.signal)),
+  )
+
+  server.registerTool(
     "focus_agent",
     {
       title: "Focus an fmx Agent",
@@ -109,9 +193,9 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
       inputSchema: {
         target: z.string().min(1).describe(targetDescription),
       },
-      outputSchema: {
+      outputSchema: toolResultSchema(z.object({
         agent: agentSchema,
-      },
+      })),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -135,7 +219,7 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
         ({ hidden, toggle }) => hidden === undefined || toggle !== true,
         { message: "hidden and toggle cannot be combined" },
       ),
-      outputSchema: traySchema,
+      outputSchema: toolResultSchema(traySchema),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -149,6 +233,156 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
         ...(hidden === undefined ? {} : { hidden }),
         ...(toggle === undefined ? {} : { toggle }),
       }, extra.signal)),
+  )
+
+  server.registerTool(
+    "get_agent_work",
+    {
+      title: "Get an Agent's work",
+      description:
+        "Read Fx's authoritative active turn, paused state, and native FIFO of queued and steering work.",
+      inputSchema: { target: targetInput },
+      outputSchema: toolResultSchema(agentWorkSchema),
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ target }, extra) => runTool(() => requester.request(
+      "work.snapshot",
+      target === undefined ? {} : { target },
+      extra.signal,
+    )),
+  )
+
+  server.registerTool(
+    "queue_agent_work",
+    {
+      title: "Queue work for an Agent",
+      description: "Append plain-text work to the Agent's native Fx queue without steering the active turn.",
+      inputSchema: { target: targetInput, text: workTextInput },
+      outputSchema: toolResultSchema(agentWorkAdmissionSchema),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ target, text }, extra) => runTool(() => requester.request(
+      "work.queue",
+      { ...(target === undefined ? {} : { target }), text },
+      extra.signal,
+    )),
+  )
+
+  server.registerTool(
+    "steer_agent",
+    {
+      title: "Steer an Agent",
+      description:
+        "Admit plain-text work through Fx's native steering path. Fx reports whether it steered an active turn or queued the work because no turn was active.",
+      inputSchema: { target: targetInput, text: workTextInput },
+      outputSchema: toolResultSchema(agentWorkAdmissionSchema),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ target, text }, extra) => runTool(() => requester.request(
+      "work.steer",
+      { ...(target === undefined ? {} : { target }), text },
+      extra.signal,
+    )),
+  )
+
+  server.registerTool(
+    "interrupt_agent",
+    {
+      title: "Interrupt an Agent",
+      description:
+        "Interrupt the Agent's active main work through Fx. Any queued work is paused for inspection and remains available to update, delete, or resume.",
+      inputSchema: { target: targetInput },
+      outputSchema: toolResultSchema(agentWorkSchema),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ target }, extra) => runTool(() => requester.request(
+      "work.interrupt",
+      target === undefined ? {} : { target },
+      extra.signal,
+    )),
+  )
+
+  server.registerTool(
+    "update_queued_work",
+    {
+      title: "Update queued Agent work",
+      description:
+        "Replace the plain text of one queued Fx turn. Fx refuses entries that carry images, skill bindings, or a native review draft.",
+      inputSchema: { target: targetInput, turn_id: turnIdInput, text: workTextInput },
+      outputSchema: toolResultSchema(agentWorkSchema),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ target, turn_id, text }, extra) => runTool(() => requester.request(
+      "queue.update",
+      { ...(target === undefined ? {} : { target }), turn_id, text },
+      extra.signal,
+    )),
+  )
+
+  server.registerTool(
+    "delete_queued_work",
+    {
+      title: "Delete queued Agent work",
+      description: "Delete one queued Fx turn by its opaque turn_id.",
+      inputSchema: { target: targetInput, turn_id: turnIdInput },
+      outputSchema: toolResultSchema(agentWorkSchema),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ target, turn_id }, extra) => runTool(() => requester.request(
+      "queue.delete",
+      { ...(target === undefined ? {} : { target }), turn_id },
+      extra.signal,
+    )),
+  )
+
+  server.registerTool(
+    "resume_agent_queue",
+    {
+      title: "Resume an Agent's queue",
+      description: "Resume Fx's paused native queue unchanged after interruption or queue review.",
+      inputSchema: { target: targetInput },
+      outputSchema: toolResultSchema(agentWorkSchema),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ target }, extra) => runTool(() => requester.request(
+      "queue.resume",
+      target === undefined ? {} : { target },
+      extra.signal,
+    )),
   )
 
   return server
@@ -169,6 +403,7 @@ async function runTool(call: () => Promise<unknown>): Promise<CallToolResult> {
     return {
       isError: true,
       content: [{ type: "text", text: JSON.stringify({ error: failure }) }],
+      structuredContent: { error: failure },
     }
   }
 }

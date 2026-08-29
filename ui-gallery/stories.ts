@@ -277,7 +277,7 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
 async function startGalleryAgent(
   multiplexer: Multiplexer,
 ): Promise<void> {
-  await multiplexer.startAgent({ directory: GALLERY_CWD, focus: true })
+  await multiplexer.createAgent({ directory: GALLERY_CWD, focus: true })
   await settlePromises()
 }
 

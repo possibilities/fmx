@@ -64,7 +64,7 @@ export class PtyTransport implements AgentTransport {
     this.relay.stop()
   }
 
-  constructor(request: AgentStart) {
+  constructor(readonly request: AgentStart) {
     this.process = Bun.spawn(request.command, {
       cwd: request.cwd,
       env: request.env,

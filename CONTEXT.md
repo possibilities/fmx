@@ -17,12 +17,6 @@ attached to the Home's Runtime. It relays terminal bytes and size, and alone
 owns Detach; several Clients may watch and interact with the same shared UI.
 _Avoid_: viewer, frontend, session, fmx instance.
 
-**Bus peer** — an implementation process connected to a Runtime's Bus,
-principally the MCP server's one-call connection. The wire can also carry
-internal state/activity subscriptions; a peer is not a terminal Client and
-does not keep the Runtime alive.
-_Avoid_: public integration, Client, Observer, frontend, Agent.
-
 **Sizing owner** — the Client that most recently connected or interacted by
 focus, keyboard, mouse, paste, or resize. The Runtime renders once at its
 dimensions; larger Clients have flat, fxnk-theme unused space and smaller
@@ -71,7 +65,7 @@ _Avoid_: release, bucket installer, artifact channel.
 **Home** — one fmx configuration directory (`~/.config/fmx`, or
 `$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
 of the directory's path, which labels every Companion session the Home creates
-and keys its stable ADE-feed and Bus sockets. One Home has at most
+and keys its stable ADE-feed and Runtime-bridge sockets. One Home has at most
 one Runtime, may have several Clients, and owns the Agents its Companion holds
 between Runtime lifetimes.
 _Avoid_: profile (that is a start level's rejected synonym, and `fx-profile`
@@ -221,21 +215,32 @@ _Avoid_: fmx name, label.
 
 **MCP server** — the separate `fmx-mcp` stdio executable and sole supported
 agent automation interface. It resolves the caller's Runtime for each tool
-call and currently exposes Orientation, Agent focus, and Tray configuration;
-it neither owns a Runtime nor keeps one alive.
-_Avoid_: CLI, daemon, Runtime, direct Bus client.
-
-**Bus** — the implementation-private duplex, mode-0600, stable-per-Home Unix socket at
-`/tmp/fmx-<uid>/<home id>.bus` over which a running Runtime serves typed NDJSON
-events and multiplexed control requests. It is handed to every Agent as
-`FMX_SOCKET_PATH`, and the MCP server opens a fresh request connection per tool call. A
-subscription begins with complete authoritative Agent state; later state is
-complete and deduplicated, while optional ADE activity is attributed,
-live-only, gap-aware, and payload-redacted unless raw payloads are explicitly
-requested. Per-peer output is bounded, responses take priority over queued
-events, and Bus peers neither count as terminal Clients nor keep the Runtime
+call and exposes Orientation, Agent creation and focus, Tray configuration,
+and Fx-native semantic work control; it neither owns a Runtime nor keeps one
 alive.
-_Avoid_: public API, MCP server, control socket, ADE feed, replay log.
+_Avoid_: CLI, daemon, Runtime, direct Runtime-bridge client.
+
+**Runtime bridge** — the implementation-private, mode-0600, stable-per-Home
+Unix socket at `/tmp/fmx-<uid>/<home id>.bus` over which the MCP server sends
+one correlated request to a running Runtime and receives one response. Each
+tool call opens a fresh bounded connection; the bridge carries no observation
+stream, subscription, history, or public integration contract, and it neither
+counts as a terminal Client nor keeps the Runtime alive.
+_Avoid_: Bus, public API, MCP server, control socket, ADE feed, event stream.
+
+**Work control** — the authenticated per-Agent Fx socket through which fmx asks
+Fx to snapshot, queue, steer, interrupt, update, delete, or resume semantic
+work. Fx owns admission, ordering, pause state, and every returned snapshot;
+fmx transports those operations and never types prompts into the Agent's
+terminal. Fx normally removes the endpoint it bound; when definitive Agent
+death prevents that, fmx removes only the exact socket derived from the
+Runtime and stable Agent identity before forgetting the Manifest claim.
+_Avoid_: prompt injection, send, terminal paste, fmx queue.
+
+**Turn id** — Fx's opaque positive decimal-string identity for one active or
+queued unit of work. MCP returns and accepts it as a string so its native
+unsigned 64-bit value is never rounded by JSON tooling.
+_Avoid_: queue index, display id, integer position.
 
 **Orientation** — what the MCP server's `get_orientation` tool answers: the
 caller's own Agent as `you`, every Agent, the Tray's rows as drawn, and whatever

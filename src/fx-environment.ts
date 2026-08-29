@@ -1,4 +1,10 @@
-import { BUS_SOCKET_ENV_VAR } from "./bus-protocol.ts"
+import { RUNTIME_SOCKET_ENV_VAR } from "./runtime-bridge-protocol.ts"
+import {
+  FX_WORK_CONTROL_INSTANCE_ID,
+  FX_WORK_CONTROL_SOCKET_PATH,
+  FX_WORK_CONTROL_TOKEN,
+  type FxWorkControlBinding,
+} from "./fx-work-control.ts"
 import { INHERITED_COMPANION_VARIABLES } from "./zmx-environment.ts"
 
 /**
@@ -25,6 +31,9 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   ...INHERITED_HERDR_VARIABLES,
   "FX_ADE_SOCKET_PATH",
   "FX_ADE_INSTANCE_ID",
+  FX_WORK_CONTROL_SOCKET_PATH,
+  FX_WORK_CONTROL_INSTANCE_ID,
+  FX_WORK_CONTROL_TOKEN,
   // These identify fmx's own Companion-held Runtime process. An Agent may
   // launch fmx itself and must become an ordinary Client, not inherit the
   // hidden Runtime role or its one-use bootstrap marker.
@@ -44,8 +53,8 @@ export type FxAdeBinding = {
 
 /** Model settings applied to one fx process without changing the profile. */
 export type FxStartLevel = {
-  model: string
-  effort: string
+  model?: string
+  effort?: string
 }
 
 /**
@@ -60,9 +69,10 @@ export function createFxEnvironment(
   parent: NodeJS.ProcessEnv,
   agentId: number,
   cwd: string,
-  busSocketPath: string | null = null,
+  runtimeSocketPath: string | null = null,
   startLevel: FxStartLevel | null = null,
   ade: FxAdeBinding | null = null,
+  workControl: FxWorkControlBinding | null = null,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...parent,
@@ -80,17 +90,22 @@ export function createFxEnvironment(
   delete env.TERM_PROGRAM_VERSION
   env.FMX_AGENT_ID = String(agentId)
 
-  // The Runtime Bus is fmx's own: a command inside the Agent drives this fmx
-  // through it, and `FMX_AGENT_ID` says which Agent issued the request.
-  if (busSocketPath) env[BUS_SOCKET_ENV_VAR] = busSocketPath
-  else delete env[BUS_SOCKET_ENV_VAR]
+  // The Runtime bridge is fmx's own: an MCP call inside the Agent drives this
+  // Runtime through it, and `FMX_AGENT_ID` says which Agent issued the request.
+  if (runtimeSocketPath) env[RUNTIME_SOCKET_ENV_VAR] = runtimeSocketPath
+  else delete env[RUNTIME_SOCKET_ENV_VAR]
   if (ade) {
     env.FX_ADE_SOCKET_PATH = ade.socketPath
     env.FX_ADE_INSTANCE_ID = ade.instanceId
   }
+  if (workControl) {
+    env[FX_WORK_CONTROL_SOCKET_PATH] = workControl.socketPath
+    env[FX_WORK_CONTROL_INSTANCE_ID] = workControl.instanceId
+    env[FX_WORK_CONTROL_TOKEN] = workControl.token
+  }
   if (startLevel) {
-    env.FX_MODEL = startLevel.model
-    env.FX_EFFORT = startLevel.effort
+    if (startLevel.model !== undefined) env.FX_MODEL = startLevel.model
+    if (startLevel.effort !== undefined) env.FX_EFFORT = startLevel.effort
   }
   return env
 }

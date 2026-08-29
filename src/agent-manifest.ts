@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { AgentAttention, AgentState } from "./agent-registry.ts"
+import type { FxWorkControlBinding } from "./fx-work-control.ts"
 import { fmxDirectory } from "./state.ts"
 
 const MANIFEST_PATH_ENV_VAR = "FMX_MANIFEST_PATH"
@@ -13,7 +14,9 @@ export const MANIFEST_VERSION = 1
  * restart can find them. It is a claim, not the truth — the Companion's
  * sessions are the truth, and `agent-reconcile.ts` joins the two.
  *
- * Nothing sensitive is kept: no prompt text and no environment.
+ * No prompt text or general environment is kept. Each new Agent does retain
+ * the bearer authority fmx needs to reach that exact Fx work endpoint, so the
+ * file is always written mode 0600.
  */
 
 /** The three names one Agent is known by; all three carry the same token. */
@@ -47,6 +50,8 @@ export type ManifestEntry = AgentIdentity & {
   fxSessionId: string | null
   /** Null until fx has reported a state, including for older Manifests. */
   agentStatus: AgentStatusCheckpoint | null
+  /** Null for an Agent started before semantic work control existed. */
+  workControl: FxWorkControlBinding | null
   /**
    * `creating` from the moment the entry is written until the Companion
    * acknowledges the start. An entry still `creating` after a restart is a
@@ -150,8 +155,20 @@ function readEntry(raw: unknown): ManifestEntry | null {
     createdAt,
     fxSessionId: typeof fxSessionId === "string" && fxSessionId.length > 0 ? fxSessionId : null,
     agentStatus: readAgentStatus(raw.agentStatus),
+    workControl: readWorkControl(raw.workControl, agentId),
     phase,
   }
+}
+
+function readWorkControl(raw: unknown, agentId: string): FxWorkControlBinding | null {
+  if (!isRecord(raw)) return null
+  if (typeof raw.socketPath !== "string" || !raw.socketPath.startsWith("/") || raw.socketPath.includes("\0")) {
+    return null
+  }
+  if (raw.instanceId !== agentId || typeof raw.token !== "string" || !/^[0-9a-f]{64}$/u.test(raw.token)) {
+    return null
+  }
+  return { socketPath: raw.socketPath, instanceId: raw.instanceId, token: raw.token }
 }
 
 function readAgentStatus(raw: unknown): AgentStatusCheckpoint | null {
@@ -186,7 +203,7 @@ export async function loadManifest(path: string, homeId: string): Promise<Manife
 export async function saveManifest(manifest: Manifest, path: string): Promise<void> {
   const temporaryPath = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+  await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
   await rename(temporaryPath, path)
 }
 
@@ -197,6 +214,7 @@ export type CreateParams = {
   fxArgs: string[] | null
   createdAt: number
   identity?: AgentIdentity
+  workControl?: FxWorkControlBinding | null
 }
 
 /**
@@ -264,6 +282,7 @@ export class AgentManifest {
       createdAt: params.createdAt,
       fxSessionId: null,
       agentStatus: null,
+      workControl: params.workControl ? { ...params.workControl } : null,
       phase: "creating",
     }
     manifest.agents.push(entry)
@@ -293,6 +312,7 @@ export class AgentManifest {
         createdAt: params.createdAt,
         fxSessionId: params.fxSessionId ?? null,
         agentStatus: null,
+        workControl: params.workControl ? { ...params.workControl } : null,
         phase: "running",
       }
       manifest.agents.push(entry)
@@ -367,6 +387,7 @@ function copy(entry: ManifestEntry): ManifestEntry {
     ...entry,
     fxArgs: entry.fxArgs && [...entry.fxArgs],
     agentStatus: entry.agentStatus && { ...entry.agentStatus },
+    workControl: entry.workControl && { ...entry.workControl },
   }
 }
 

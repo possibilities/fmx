@@ -5,8 +5,10 @@ const MAX_PENDING_CHARS = 64 * 1024
 export class LineAssembler {
   private pending = ""
 
+  constructor(private readonly maxPendingChars = MAX_PENDING_CHARS) {}
+
   push(chunk: string): string[] {
-    if (this.pending.length + chunk.length > MAX_PENDING_CHARS) {
+    if (this.pending.length + chunk.length > this.maxPendingChars) {
       this.pending = ""
       return []
     }

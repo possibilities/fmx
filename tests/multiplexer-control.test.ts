@@ -7,6 +7,13 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { AdeAgentState, AdeAttentionKind, AdeRecord } from "../src/ade-events.ts"
 import { ControlFailure, type Snapshot } from "../src/control-protocol.ts"
+import {
+  FxWorkControlError,
+  type FxWorkControlBinding,
+  type FxWorkControlMethod,
+  type FxWorkControlRequester,
+  type FxWorkControlResult,
+} from "../src/fx-work-control.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { instanceIdForPane, record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
@@ -14,10 +21,48 @@ import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
-const BUS_PATH = `/tmp/fmx-control-test-${process.pid}.bus`
+const RUNTIME_PATH = `/tmp/fmx-control-test-${process.pid}.bus`
 const NEVER = new AbortController().signal
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
+
+const WORK_SNAPSHOT = {
+  active_turn_id: "41",
+  queue_paused: false,
+  queue: [{
+    turn_id: "42",
+    kind: "steering" as const,
+    text: "next",
+    has_images: false,
+    has_skill_bindings: false,
+    has_review_draft: false,
+  }],
+}
+
+type WorkCall = {
+  binding: FxWorkControlBinding
+  method: FxWorkControlMethod
+  params: Record<string, unknown>
+  signal: AbortSignal
+}
+
+class FakeWorkControl implements FxWorkControlRequester {
+  readonly calls: WorkCall[] = []
+  failure: FxWorkControlError | null = null
+
+  async request(
+    binding: FxWorkControlBinding,
+    method: FxWorkControlMethod,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<FxWorkControlResult> {
+    this.calls.push({ binding, method, params, signal })
+    if (this.failure) throw this.failure
+    return method === "work.queue" || method === "work.steer"
+      ? { snapshot: WORK_SNAPSHOT, turn_id: "42", disposition: method === "work.steer" ? "steering" : "queued" }
+      : { snapshot: WORK_SNAPSHOT }
+  }
+}
 
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-control-")))
@@ -33,6 +78,7 @@ async function harness(name: string) {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const adeSocket = new TestAdeSocket(`/tmp/fmx-control-test-${name}-${process.pid}.ade.sock`)
   const options = agentOptions()
+  const fxWorkControl = new FakeWorkControl()
   const multiplexer = new Multiplexer(setup.renderer, {
     ...options,
     fxPath: FAKE_FX,
@@ -40,7 +86,9 @@ async function harness(name: string) {
     keybindings: resolveKeybindings().keybindings,
     home,
     adeSocket,
-    busSocketPath: BUS_PATH,
+    runtimeSocketPath: RUNTIME_PATH,
+    projectRoots: [code],
+    fxWorkControl,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -77,14 +125,14 @@ async function harness(name: string) {
     worktree?: boolean
     focus?: boolean
   } = {}) => ({
-    agent: await multiplexer.startAgent({
+    agent: await multiplexer.createAgent({
       directory: params.directory ?? join(code, "alpha"),
       worktree: params.worktree,
       focus: params.focus,
     }),
   })
   await multiplexer.start()
-  return { setup, multiplexer, control, close, report, session, start, home, code, adeSocket, options }
+  return { setup, multiplexer, control, close, report, session, start, home, code, adeSocket, options, fxWorkControl }
 }
 
 async function sendAde(socket: TestAdeSocket, record: AdeRecord): Promise<void> {
@@ -147,15 +195,20 @@ test("orients an empty fmx", async () => {
   }
 })
 
-test("starts Agents internally and orients the caller without exposing creation on the Runtime surface", async () => {
-  const h = await harness("start")
+test("creates background Agents from explicit, caller, and configured projects", async () => {
+  const h = await harness("create")
   try {
-    const first = await h.start()
+    const first = await h.control("agent.create") as { agent: Snapshot["agents"][number] }
     expect(first.agent.id).toBe(1)
+    expect(first.agent.cwd).toBe(join(h.code, "alpha"))
     await h.setup.renderOnce()
     expect(terminal(h.setup, 1).visible).toBe(true)
 
-    const second = await h.start({ directory: join(h.code, "beta"), focus: false })
+    const second = await h.control("agent.create", {
+      directory: join(h.code, "beta"),
+      model: "gpt-test",
+      effort: "high",
+    }) as { agent: Snapshot["agents"][number] }
     await h.setup.renderOnce()
     expect(second.agent.id).toBe(2)
     expect(terminal(h.setup, 2).visible).toBe(false)
@@ -178,11 +231,66 @@ test("starts Agents internally and orients the caller without exposing creation 
       ["agent", 2, "· —", 1],
     ])
 
-    const focused = await h.start({ focus: true })
+    const third = await h.control("agent.create", { caller: 1 }) as { agent: Snapshot["agents"][number] }
     await h.setup.renderOnce()
-    expect(focused.agent.id).toBe(3)
-    expect(terminal(h.setup, 3).visible).toBe(true)
-    expect(terminal(h.setup, 1).visible).toBe(false)
+    expect(third.agent).toMatchObject({ id: 3, cwd: join(h.code, "alpha"), active: false })
+    expect(terminal(h.setup, 3).visible).toBe(false)
+    expect(terminal(h.setup, 1).visible).toBe(true)
+
+    expect(h.options.transport.started[1]?.request.env).toMatchObject({
+      FX_MODEL: "gpt-test",
+      FX_EFFORT: "high",
+    })
+    for (const entry of h.options.manifest.entries) {
+      expect(entry.workControl).toMatchObject({ instanceId: entry.agentId })
+      expect(entry.workControl?.socketPath).toBe(RUNTIME_PATH.replace(/\.bus$/u, `.${entry.agentId}.fx`))
+      expect(entry.workControl?.token).toMatch(/^[0-9a-f]{64}$/u)
+    }
+    expect(first.agent).not.toHaveProperty("workControl")
+  } finally {
+    await h.close()
+  }
+})
+
+test("routes every semantic work operation to the targeted Fx authority", async () => {
+  const h = await harness("work")
+  try {
+    const first = await h.control("agent.create") as { agent: Snapshot["agents"][number] }
+    await h.control("agent.create", { directory: join(h.code, "beta") })
+
+    expect(await h.control("work.snapshot", { caller: 1 })).toMatchObject({
+      agent: { id: 1 },
+      work: WORK_SNAPSHOT,
+    })
+    expect(await h.control("work.queue", { target: "2", text: "after this" })).toMatchObject({
+      agent: { id: 2 },
+      turn_id: "42",
+      disposition: "queued",
+      work: WORK_SNAPSHOT,
+    })
+    expect(await h.control("work.steer", { target: first.agent.agent_id, text: "change course" })).toMatchObject({
+      agent: { id: 1 },
+      disposition: "steering",
+    })
+    await h.control("work.interrupt", { target: "active" })
+    await h.control("queue.update", { target: "1", turn_id: "42", text: "replacement" })
+    await h.control("queue.delete", { target: "1", turn_id: "42" })
+    await h.control("queue.resume", { target: "1" })
+
+    expect(h.fxWorkControl.calls.map(({ binding, method, params }) => [binding.instanceId, method, params])).toEqual([
+      [first.agent.agent_id, "work.snapshot", {}],
+      [h.options.manifest.entries[1]!.agentId, "work.queue", { text: "after this" }],
+      [first.agent.agent_id, "work.steer", { text: "change course" }],
+      [first.agent.agent_id, "work.interrupt", {}],
+      [first.agent.agent_id, "queue.update", { turn_id: "42", text: "replacement" }],
+      [first.agent.agent_id, "queue.delete", { turn_id: "42" }],
+      [first.agent.agent_id, "queue.resume", {}],
+    ])
+
+    h.fxWorkControl.failure = new FxWorkControlError("queue_editor_visible", "the human editor is open")
+    const busy = await failure(h.control("work.interrupt", { target: "1" }))
+    expect(busy).toMatchObject({ code: "busy", data: { fx_code: "queue_editor_visible" } })
+    expect((await failure(h.control("queue.delete", { target: "1", turn_id: "0" }))).code).toBe("invalid_params")
   } finally {
     await h.close()
   }

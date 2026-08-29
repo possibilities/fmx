@@ -3,7 +3,8 @@ import { isAgentId } from "./agent-manifest.ts"
 
 /**
  * The typed Runtime surface behind fmx-mcp. Transport-independent: the Runtime
- * Bus owns framing and delivery while Multiplexer owns what every method means.
+ * bridge owns framing and delivery while Multiplexer owns what every method
+ * means.
  */
 
 export type ControlRequest = {
@@ -34,28 +35,23 @@ export type ControlReply =
   | { id: string | null; ok: true; result: unknown }
   | { id: string | null; ok: false; error: ControlError }
 
-/** What the Runtime Bus drives. */
+/** What the Runtime bridge drives. */
 export type ControlSurface = {
   handle(method: ControlMethod, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
 }
 
-/** A successful result whose action must wait until its response is written
- * or the requesting connection has gone away. */
-export class AfterControlReply {
-  constructor(
-    readonly result: unknown,
-    readonly run: () => void,
-  ) {}
-}
-
-export function afterControlReply(result: unknown, run: () => void): AfterControlReply {
-  return new AfterControlReply(result, run)
-}
-
 export const CONTROL_METHODS = [
   "orient",
+  "agent.create",
   "focus",
   "tray",
+  "work.snapshot",
+  "work.queue",
+  "work.steer",
+  "work.interrupt",
+  "queue.update",
+  "queue.delete",
+  "queue.resume",
 ] as const
 
 export type ControlMethod = (typeof CONTROL_METHODS)[number]

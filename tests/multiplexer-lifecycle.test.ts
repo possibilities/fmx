@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import { FxTerminalRenderable } from "../src/fx-terminal.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
-import { startAgent, startVisibleAgent } from "./fixtures/agent-start.ts"
+import { createAgent, startVisibleAgent } from "./fixtures/agent-start.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
@@ -23,7 +23,7 @@ test("reports an Fx spawn failure to the caller after removing its provisional A
 
   try {
     await multiplexer.start()
-    await expect(startAgent(multiplexer)).rejects.toThrow("ENOENT")
+    await expect(createAgent(multiplexer)).rejects.toThrow("ENOENT")
     expect(setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
     await setup.renderOnce()
     expect(setup.captureCharFrame()).toContain("no agents")
@@ -50,7 +50,7 @@ test("rolls back a later spawn failure without stopping the active Fx", async ()
     await multiplexer.start()
     await startVisibleAgent(setup, multiplexer)
     options.fxPath = "/definitely/missing/fx"
-    await expect(startAgent(multiplexer)).rejects.toThrow("ENOENT")
+    await expect(createAgent(multiplexer)).rejects.toThrow("ENOENT")
 
     expect(setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
     expect(setup.renderer.root.findDescendantById("fx-2")).toBeUndefined()
@@ -93,7 +93,7 @@ test("refuses an Agent start outside a repository", async () => {
 
   try {
     await multiplexer.start()
-    await expect(startAgent(multiplexer, cwd)).rejects.toThrow("not a git repository")
+    await expect(createAgent(multiplexer, cwd)).rejects.toThrow("not a git repository")
     await setup.renderOnce()
 
     expect(setup.captureCharFrame()).toContain("no agents")

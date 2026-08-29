@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto"
 import { readdirSync } from "node:fs"
 import {
-  BUS_SOCKET_ENV_VAR,
-  busSocketPathFor,
-  decodeBusResponse,
-  encodeBusRequest,
-} from "./bus-protocol.ts"
+  decodeRuntimeBridgeResponse,
+  encodeRuntimeBridgeRequest,
+  RUNTIME_BRIDGE_MAX_RESPONSE_BYTES,
+  RUNTIME_SOCKET_ENV_VAR,
+  runtimeSocketPathFor,
+} from "./runtime-bridge-protocol.ts"
 import {
   type ControlError,
   type ControlMethod,
@@ -18,11 +19,16 @@ import { privateRootDirectory } from "./zmx-environment.ts"
 
 const REPLY_TIMEOUT_MS = 5_000
 
+type RuntimeSocket = {
+  write(data: Uint8Array | string): number
+  end(): void
+}
+
 export type RuntimeClientEnvironment = {
   env: NodeJS.ProcessEnv
-  /** Where live Runtime buses are looked for when the caller is outside an Agent. */
+  /** Where live Runtime bridges are looked for when the caller is outside an Agent. */
   socketDirectory?: string
-  /** Whether a Runtime answers at a Bus path; a connect probe unless a test supplies one. */
+  /** Whether a Runtime answers at a bridge path; a connect probe unless a test supplies one. */
   isSocketLive?: (path: string) => Promise<boolean>
 }
 
@@ -75,15 +81,15 @@ export class RuntimeClient implements RuntimeRequester {
  * when an MCP host starts fmx-mcp outside an Agent.
  */
 export async function resolveRuntimePath(environment: RuntimeClientEnvironment): Promise<string> {
-  const fromEnv = environment.env[BUS_SOCKET_ENV_VAR]
-  if (fromEnv) return busSocketPathFor(fromEnv)
+  const fromEnv = environment.env[RUNTIME_SOCKET_ENV_VAR]
+  if (fromEnv) return runtimeSocketPathFor(fromEnv)
 
   const candidates = await liveRuntimeSockets(environment)
   if (candidates.length === 1) return candidates[0]!
   if (candidates.length === 0) {
     throw new RuntimeRequestError({
       code: "failed",
-      message: `not running inside fmx (${BUS_SOCKET_ENV_VAR} is unset and no fmx is running)`,
+      message: `not running inside fmx (${RUNTIME_SOCKET_ENV_VAR} is unset and no fmx is running)`,
     })
   }
   throw new RuntimeRequestError({
@@ -117,7 +123,7 @@ async function liveRuntimeSockets(environment: RuntimeClientEnvironment): Promis
   return sockets
 }
 
-/** One correlated request over a short-lived Runtime Bus connection. */
+/** One correlated request over a short-lived Runtime bridge connection. */
 async function exchange(
   socketPath: string,
   method: ControlMethod,
@@ -125,11 +131,13 @@ async function exchange(
   signal: AbortSignal,
 ): Promise<ControlReply> {
   const id = randomUUID()
-  const assembler = new LineAssembler()
+  const assembler = new LineAssembler(RUNTIME_BRIDGE_MAX_RESPONSE_BYTES)
   const decoder = new TextDecoder()
   const completion = Promise.withResolvers<ControlReply>()
   let settled = false
   let connection: Awaited<ReturnType<typeof Bun.connect>> | null = null
+  let requestBytes: Uint8Array | null = null
+  let requestOffset = 0
   const finish = (reply: ControlReply): void => {
     if (settled) return
     settled = true
@@ -144,6 +152,14 @@ async function exchange(
     () => finish(errorReply(id, { code: "timeout", message: `fmx did not answer within ${REPLY_TIMEOUT_MS}ms` })),
     REPLY_TIMEOUT_MS,
   )
+  const flushRequest = (socket: RuntimeSocket): void => {
+    if (!requestBytes) return
+    const remaining = requestBytes.subarray(requestOffset)
+    const written = socket.write(remaining)
+    if (written <= 0) return
+    requestOffset += Math.min(written, remaining.byteLength)
+    if (requestOffset >= requestBytes.byteLength) requestBytes = null
+  }
 
   try {
     try {
@@ -155,22 +171,20 @@ async function exchange(
               socket.end()
               return
             }
-            const request = encodeBusRequest({ id, method, params })
-            if (socket.write(request) < Buffer.byteLength(request)) {
-              finish(errorReply(id, { code: "failed", message: "could not send fmx MCP request" }))
-              socket.end()
-            }
+            requestBytes = new TextEncoder().encode(encodeRuntimeBridgeRequest({ id, method, params }))
+            flushRequest(socket)
           },
+          drain: (socket) => flushRequest(socket),
           data: (_socket, data) => {
             for (const line of assembler.push(decoder.decode(data, { stream: true }))) {
-              const reply = decodeBusResponse(line)
+              const reply = decodeRuntimeBridgeResponse(line)
               if (reply && (reply.id === id || reply.id === null)) finish(reply)
             }
           },
           close: () => {
             const trailing = [...assembler.push(decoder.decode()), ...assembler.flush()]
             for (const line of trailing) {
-              const reply = decodeBusResponse(line)
+              const reply = decodeRuntimeBridgeResponse(line)
               if (reply && (reply.id === id || reply.id === null)) {
                 finish(reply)
                 return

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { defaultAdeSocketPath } from "../src/ade-events.ts"
-import { BusSocket } from "../src/bus-socket.ts"
+import { RuntimeBridge } from "../src/runtime-bridge.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { RuntimeClient } from "../src/runtime-client.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
@@ -136,7 +136,7 @@ async function orientation(
   temporaryDirectory: string,
   env: NodeJS.ProcessEnv,
 ): Promise<Snapshot | null> {
-  const socketPath = BusSocket.pathFor(defaultAdeSocketPath(homeOf(temporaryDirectory)))
+  const socketPath = RuntimeBridge.pathFor(defaultAdeSocketPath(homeOf(temporaryDirectory)))
   try {
     return await new RuntimeClient({ env: { ...env, FMX_SOCKET_PATH: socketPath } })
       .request("orient", {}, new AbortController().signal) as Snapshot

@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { lstat, mkdtemp, rm } from "node:fs/promises"
+import { createServer } from "node:net"
 import { join } from "node:path"
 import { identityFor, AgentManifest, type ManifestEntry } from "../src/agent-manifest.ts"
 import { ownedAgentId, ownershipLabels, reconcile, reconcileAgents } from "../src/agent-reconcile.ts"
+import { mintFxWorkControlBinding } from "../src/fx-work-control.ts"
 import type { CompanionCommand, SessionEntry } from "../src/zmx-command.ts"
 
 const HOME = "1234567890ab"
@@ -19,6 +21,7 @@ const entry = (agentId: string, phase: ManifestEntry["phase"] = "running"): Mani
   createdAt: 0,
   fxSessionId: null,
   agentStatus: null,
+  workControl: null,
   phase,
 })
 
@@ -146,6 +149,70 @@ test("reconcileAgents applies the join: adopts, removes, consumes exit records, 
   }
 })
 
+test("reconciliation clears a dead Agent's exact work-control socket before forgetting it", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  const runtimeSocketPath = join(dir, "home.bus")
+  const binding = mintFxWorkControlBinding(runtimeSocketPath, ID_A)
+  const server = createServer()
+  try {
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({
+      cwd: "/work",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 0,
+      identity: identityFor(ID_A),
+      workControl: binding,
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(binding.socketPath, resolve)
+    })
+    const { companion } = fakeCompanion([[session(ID_A, "exited")]])
+
+    const outcome = await reconcileAgents(manifest, companion, { runtimeSocketPath })
+    expect(outcome.removed.map((item) => item.entry.agentId)).toEqual([ID_A])
+    expect(manifest.entries).toEqual([])
+    expect(await unixSocketExists(binding.socketPath)).toBe(false)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("reconciliation never unlinks an endpoint beside a live foreign session", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  const runtimeSocketPath = join(dir, "home.bus")
+  const binding = mintFxWorkControlBinding(runtimeSocketPath, ID_A)
+  const server = createServer()
+  try {
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({
+      cwd: "/work",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 0,
+      identity: identityFor(ID_A),
+      workControl: binding,
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(binding.socketPath, resolve)
+    })
+    const foreign = session(ID_A, "live", { labels: ownershipLabels("other", ID_A) })
+    const { companion } = fakeCompanion([[foreign]])
+
+    const outcome = await reconcileAgents(manifest, companion, { runtimeSocketPath })
+    expect(outcome.removed.map((item) => item.entry.agentId)).toEqual([ID_A])
+    expect(outcome.ignored).toEqual([foreign])
+    expect(manifest.entries).toEqual([])
+    expect(await unixSocketExists(binding.socketPath)).toBe(true)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("reconcileAgents waits for a refused session to settle, then decides", async () => {
   const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
   try {
@@ -230,3 +297,12 @@ test("a Companion that cannot list is an error, never an empty Companion", async
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+async function unixSocketExists(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isSocket()
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return false
+    throw error
+  }
+}

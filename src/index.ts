@@ -6,7 +6,7 @@ import { homedir } from "node:os"
 import { AdeSocket, HomeActiveError } from "./ade-events.ts"
 import { parseArgs, usage, VERSION } from "./cli.ts"
 import { configPath, loadConfig } from "./config.ts"
-import { BusSocket } from "./bus-socket.ts"
+import { RuntimeBridge } from "./runtime-bridge.ts"
 import { doctor } from "./doctor.ts"
 import { resolveFx } from "./executable.ts"
 import { AgentManifest, manifestPath } from "./agent-manifest.ts"
@@ -19,7 +19,6 @@ import {
   resolveFxnkTheme,
 } from "./host-palette.ts"
 import { Multiplexer } from "./multiplexer.ts"
-import { RuntimeBus } from "./runtime-bus.ts"
 import { expandTilde } from "./projects.ts"
 import { loadState, saveState, type PersistedState } from "./state.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
@@ -117,14 +116,13 @@ async function main(): Promise<void> {
     stateSave = stateSave.then(() => saveState(snapshot)).catch(() => {})
   }
   const home = homeId()
-  const runtimeBus = new RuntimeBus({ homeId: home, version: VERSION })
 
   let renderer: CliRenderer | null = null
   let themeMonitor: FxnkThemeMonitor | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const adeSocket = new AdeSocket({ homeId: home })
-  let busSocket: BusSocket | null = null
+  let runtimeBridge: RuntimeBridge | null = null
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
@@ -179,12 +177,12 @@ async function main(): Promise<void> {
     }
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
     manifest = await AgentManifest.open(manifestPath(), home)
-    const restored = await reconcileAtStartup(manifest, companion)
+    const runtimeSocketPath = RuntimeBridge.pathFor(adeSocket.path)
+    const restored = await reconcileAtStartup(manifest, companion, runtimeSocketPath)
     transport = new CompanionTransportFactory(companion, home, {
       attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
     })
     const survivors = restored.map(({ entry }) => entry)
-    const busSocketPath = BusSocket.pathFor(adeSocket.path)
     runtimeTheme = await themeDetection
     themeMonitor = new FxnkThemeMonitor(themePort, runtimeTheme, (next) => {
       runtimeTheme = next
@@ -224,9 +222,9 @@ async function main(): Promise<void> {
       transport,
       survivors,
       adeSocket,
-      bus: runtimeBus,
       worktreeRoot: loadedConfig.worktreeRoot,
-      busSocketPath,
+      projectRoots: loadedConfig.projectRoots,
+      runtimeSocketPath,
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
       initialActiveAgentId: persistedState.activeAgentId,
@@ -272,11 +270,11 @@ async function main(): Promise<void> {
     renderer.start()
     await startup
 
-    // The implementation-private Runtime Bus lives beside the ADE feed under its Home
-    // singleton. Do not accept subscriptions or control requests until
+    // The implementation-private MCP bridge lives beside the ADE feed under
+    // its Home singleton. Do not accept control requests until
     // restored Agents, their metadata, and the selected terminal are ready.
-    busSocket = new BusSocket(runtimeBus, app.control, busSocketPath)
-    busSocket.start()
+    runtimeBridge = new RuntimeBridge(app.control, runtimeSocketPath)
+    runtimeBridge.start()
 
     await app.waitUntilDone()
   } catch (error) {
@@ -294,7 +292,7 @@ async function main(): Promise<void> {
     transport?.close()
     await manifest?.settled()
     await stateSave
-    busSocket?.close()
+    runtimeBridge?.close()
     adeSocket.close()
     themeMonitor?.dispose()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)
@@ -366,10 +364,14 @@ function installClientStartupSignalGuard(): () => void {
  * empty Companion — and fmx starts with nothing attached, the Agents
  * left where they are for the next start.
  */
-async function reconcileAtStartup(manifest: AgentManifest, companion: CompanionCommand): Promise<ReconciledAgent[]> {
+async function reconcileAtStartup(
+  manifest: AgentManifest,
+  companion: CompanionCommand,
+  runtimeSocketPath: string,
+): Promise<ReconciledAgent[]> {
   let outcome: ReconcileOutcome
   try {
-    outcome = await reconcileAgents(manifest, companion)
+    outcome = await reconcileAgents(manifest, companion, { runtimeSocketPath })
   } catch (error) {
     process.stderr.write(`fmx: could not reconcile agents: ${errorMessage(error)}\n`)
     return []

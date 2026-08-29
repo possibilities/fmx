@@ -18,17 +18,18 @@
   `~/.config/fmx/config.toml`, never in a shipped default: a guess at
   someone's directory layout is wrong everywhere it is not exactly right.
   The first configured root is fmx's working directory. An Agent runs in a
-  repository or it does not run: the internal `Multiplexer.startAgent` engine
-  requires an explicit directory and holds it to `readGitContext`. A repository
-  with nothing committed yet is a Project — its unborn HEAD still names the
-  branch the Tray draws — it just cannot produce a Worktree, and
-  `readHeadCommit` is what answers that: it keeps git's own words for every
-  other failure. A HEAD that names neither a ref nor a commit names no branch,
-  so `readGitContext` answers null and it is no Project.
-  The empty state is deliberately only `no agents`; neither the TUI nor the
-  phase-one MCP surface exposes Agent creation. Keep the internal engine: fmx
-  must establish the Manifest claim, Companion session, environment, and
-  Transport before Fx has a control socket for phase 2 to mirror.
+  repository or it does not run: `create_agent` validates explicit directories
+  synchronously, and `Multiplexer.createAgent` holds every final choice to
+  `readGitContext`. With no directory, creation uses the caller Agent's
+  repository, then the first repository found at or one directory beneath the
+  configured roots. A repository with nothing committed yet is a Project — its
+  unborn HEAD still names the branch the Tray draws — it just cannot produce a
+  Worktree, and `readHeadCommit` is what answers that: it keeps git's own words
+  for every other failure. A HEAD that names neither a ref nor a commit names no
+  branch, so `readGitContext` answers null and it is no Project.
+  The empty state is deliberately only `no agents`; Agent creation belongs to
+  MCP, not to the TUI. MCP creation stays in the background unless it creates
+  the first Agent.
   TUI startup refuses an empty resolved list with exit 1 and the exact config
   line to add; `--help`, `--version`, `doctor`, and `fmx-mcp` do not need
   Project roots because they never open the TUI.
@@ -198,21 +199,18 @@
   captured attribution and may legitimately lag after `/new`. The socket keeps
   a bounded startup backlog until survivor identities exist and the Multiplexer
   subscribes.
-- The Bus is fmx's implementation-private duplex Runtime contract, on one mode-0600 Home socket at
-  `/tmp/fmx-<uid>/<home id>.bus`, independent of the one-way ADE feed. Bind it
-  under the ADE singleton only after restored Agents and metadata are ready;
-  only that holder may remove crash residue, including the retired `.ctl` and
-  `.obs` paths. Every subscription gets a complete state snapshot first, later
-  state is complete and deduplicated, and accepted ADE activity is attributed
-  and published live-only after its state fold, with sequence gaps explicit.
-  Summary payloads are allowlisted; raw ADE payloads require an explicit
-  subscription. A connection may subscribe, issue multiple correlated control
-  requests, or do both; responses carry the current state revision, take
-  priority over queued events, and may evict whole events not yet written.
-  Bound silent peers, total connections, subscriptions, pending requests, and
-  each outbound queue, and disconnect a slow Bus peer: it must never delay the
-  Runtime, another peer, an MCP request, or Fx. Bus peers are not terminal Clients,
-  do not affect sizing, and do not keep the Runtime alive.
+- The Runtime bridge is fmx's implementation-private MCP-to-Runtime request
+  path, on one mode-0600 Home socket at `/tmp/fmx-<uid>/<home id>.bus`,
+  independent of the one-way ADE feed. Bind it under the ADE singleton only
+  after restored Agents and metadata are ready; only that holder may remove
+  crash residue, including the retired `.ctl` and `.obs` paths. Each bounded,
+  short-lived connection accepts exactly one correlated request, writes exactly
+  one response, and closes. Reject observation subscriptions, second requests,
+  oversized messages, excess connections, and silent peers; abandoning a
+  connection signals cancellation to its pending Runtime operation. Agent
+  creation is the exception once its Manifest/Companion transaction begins: it
+  finishes rather than stranding half a lifecycle. A bridge connection is not a
+  terminal Client, does not affect sizing, and does not keep the Runtime alive.
 - Session names belong to fx. fmx applies `SessionMetadataChanged` only to the
   session named by its ADE context and reads
   `~/.fx/sessions/<id>/display.json` on attach, identity change, or recovery.
@@ -220,28 +218,41 @@
   normalizes the title, or makes names unique. An exact duplicate is an
   ambiguous Target; `/rename` and generated names follow the same
   path because fx is the sole persistence authority.
-- Keep the Bus's `FMX_SOCKET_PATH` beside `FMX_AGENT_ID` in
+- Keep the Runtime bridge's `FMX_SOCKET_PATH` beside `FMX_AGENT_ID` in
   `src/fx-environment.ts`: fmx-mcp reads both, and `current` as a Target is
-  meaningless without the id. The Bus path is per Home, not per pid, so the
+  meaningless without the id. The bridge path is per Home, not per pid, so the
   value an Fx received outlives the fmx that gave it. An Fx surviving the
   cutover may retain a `.ctl` value; client resolution normalizes `.ctl`,
   `.obs`, and `.sock` suffixes to `.bus` rather than keeping a retired listener.
-  fmx-mcp from outside any Agent finds a live Runtime only when exactly one Bus
+  fmx-mcp from outside any Agent finds a live Runtime only when exactly one bridge
   socket answers, never by pid.
-- `fmx-mcp` is the sole supported agent automation surface. Its phase-one
-  methods are exactly `orient`, `focus`, and `tray`, exposed as
-  `get_orientation`, `focus_agent`, and `configure_tray`; do not retain CLI
-  compatibility methods or add provisional creation, prompting, waiting,
-  catalog, key, or observation tools. UI writes take the same paths as keys and
-  mouse (`selectAgent`, `applyTrayWidth`). `switchTo` never focuses a terminal
-  while a modal is up; the modal hands focus back when it closes. Detach is
-  Client-local and must never acquire an MCP or Runtime method.
-- Phase two inventories the Fx fork's native control socket before adding MCP
-  work controls: steering, queueing, interruption, and every other useful
-  operation are mirrored from that authority rather than emulated with terminal
-  input. Phase three is mandatory: audit both fmx and the Fx fork, then remove
-  every interface and code path not needed by the approved MCP surface, the
-  human TUI, or their lifecycle foundations.
+- `fmx-mcp` is the sole supported agent automation surface. Its tools are
+  exactly `get_orientation`, `create_agent`, `focus_agent`, `configure_tray`,
+  `get_agent_work`, `queue_agent_work`, `steer_agent`, `interrupt_agent`,
+  `update_queued_work`, `delete_queued_work`, and `resume_agent_queue`. Do not
+  add CLI compatibility methods, terminal-paste prompting, waiting, catalog,
+  key, observation, permission-answer, question-answer, subagent, Session, or
+  Runtime-lifecycle tools. UI writes take the same paths as keys and mouse
+  (`selectAgent`, `applyTrayWidth`). `switchTo` never focuses a terminal while a
+  modal is up; the modal hands focus back when it closes. Detach is Client-local
+  and must never acquire an MCP or Runtime method.
+- Semantic work control is Fx's authority, never terminal input. Before the
+  Manifest claim is saved, fmx mints and persists one per-Agent socket path,
+  stable instance id, and random token, then gives those values only to that Fx
+  through `FX_WORK_CONTROL_SOCKET_PATH`, `FX_WORK_CONTROL_INSTANCE_ID`, and
+  `FX_WORK_CONTROL_TOKEN`. Each MCP work tool opens one authenticated framed
+  request and accepts only a correlated authoritative snapshot. Queue and steer
+  return Fx's decimal-string Turn id and actual admission disposition; update
+  refuses queued entries with images, skill bindings, or a review draft;
+  interruption pauses remaining queued work for explicit update, deletion, or
+  resume. Do not emulate queue reorder, arbitrary-start, or clear-all operations.
+  Fx normally removes its own endpoint. Once an Exit or Companion reconciliation
+  proves that exact Agent dead, remove only the socket path derived again from
+  the Runtime path and stable Agent identity, before removing the Manifest
+  claim; an unresolved Agent keeps both, and a mismatched path or non-socket is
+  never unlinked. A live session whose ownership labels mismatch is foreign;
+  remove the stale Manifest claim but leave both that process and the path it
+  may have taken alone.
 - The ADE socket's path is stable per Home, so an Fx that outlives the fmx that
   started it reports to the next Runtime. `AdeSocket.start` takes a flock on
   `/tmp/fmx-<uid>/<home id>.lock`. It holds that lock for the life of the
@@ -284,7 +295,7 @@
   world-writable directory is one another user can take the moment the
   Runtime that held it exits and unlinks it, and the Fx processes that
   outlive it would report to whoever took it. fmx-mcp scans that directory for
-  the sole live Runtime when it has no inherited Bus path, so a name inside it
+  the sole live Runtime when it has no inherited bridge path, so a name inside it
   is a Home id and nothing else.
 - The Companion's directory is under `/tmp/fmx-<uid>/zmx`, not the config
   directory: macOS caps a socket path near 104 bytes, and sessions do not
