@@ -1,3 +1,5 @@
-# Runtime Bus events expose complete state and attributed activity
+# Runtime observation events are removed
 
-fmx exposes Runtime state and optional attributed ADE activity as Bus events. Each subscription begins with a complete authoritative state snapshot, subsequent state is complete and deduplicated, and Home-wide activity remains self-attributed, live-only, and gap-aware rather than server-scoped or replayed; per-peer queues are bounded and raw ADE payloads require an explicit subscription. The Bus exists only with the Runtime, starts after restored metadata is ready, and Bus peers neither count as terminal Clients nor keep the Runtime alive.
+[ADR 0013](0013-mcp-only-agent-automation.md) supersedes this decision. The
+state/activity subscriptions, raw ADE exposure, event projection, revisions,
+and per-peer queues were deleted; MCP offers on-demand Orientation instead.

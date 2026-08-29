@@ -13,8 +13,8 @@ cd fmx
 scripts/install.sh --install
 ```
 
-This links `fmx` from the checkout and builds its exact pinned Companion and
-Fx fork sources as `fmx-zmx` and `fmx-fx`. Fmx publishes no binaries. See the
+This links `fmx` and `fmx-mcp` from the checkout and builds its exact pinned
+Companion and Fx fork sources as `fmx-zmx` and `fmx-fx`. Fmx publishes no binaries. See the
 [source installation guide](docs/source-install.md) for requirements,
 automation inputs, and the tested platform boundary. `fmx doctor` reports
 what an installation has.
@@ -43,64 +43,36 @@ same UI. The last one to interact sets the layout size.
 An agent disappears only when it exits — end it from inside, the way you would
 at a terminal. `fmx-zmx list`, `attach`, and `kill` reach one by hand.
 
-## Agents
+## MCP
 
-`fmx control <command>` drives a running Runtime and prints one JSON object.
-Run `fmx control launch` from another terminal to create the first Agent;
-inside an Agent, the same command defaults to that Agent's Project.
+`fmx-mcp` is the stdio MCP server for agent automation. Configure an MCP host
+to run that executable; when started inside an Agent it uses that Agent as the
+`current` Target, and outside one it connects only when exactly one Runtime is
+live.
 
-```sh
-fmx control orient                      # where you are and what the interface shows
-fmx control launch "write the tests"    # start an agent here, in the background
-fmx control agent wait 3 --state done,blocked
-fmx control agent send 3 "now run them"
-fmx control keys                        # every binding and its command
-```
+| Tool | Purpose |
+|---|---|
+| `get_orientation` | Read the caller, active Agent, all Agents and subagents, Tray tree, terminal size, and open fmx surface |
+| `create_agent` | Create an Agent in a repository, optionally in a new Worktree and with per-process model or effort overrides |
+| `focus_agent` | Focus an Agent by stable `agent_id`, `pane_id`, display id, relative Target, Session name, or Session-id prefix |
+| `configure_tray` | Read or change the Tray's width and visibility |
+| `get_agent_work` | Read Fx's authoritative active turn, paused state, and queued work |
+| `queue_agent_work` | Append plain-text work to Fx's native queue |
+| `steer_agent` | Steer the active Fx turn, or queue the work when no turn is active |
+| `interrupt_agent` | Interrupt active work and pause remaining queued work for inspection |
+| `update_queued_work` | Replace the plain text of one queued Turn |
+| `delete_queued_work` | Delete one queued Turn |
+| `resume_agent_queue` | Resume Fx's paused queue unchanged |
 
-`fmx control` with no arguments prints the rest.
+Creation with no directory uses the caller's repository, then the first
+configured Project. Work tools default to the caller's Agent and use Fx's
+native semantic queue, steer, and interrupt operations—never terminal paste.
+There is deliberately no prompt-send, wait, event-stream, permission-answer,
+or Runtime-lifecycle surface. See the [agent integration guide](docs/agent-integration.md)
+for exact targeting, queue semantics, results, errors, and integration advice.
 
-## Bus
-
-The Runtime Bus is the local machine interface for sidecars, alternate views,
-notification tools, and commands. `fmx bus` subscribes to its newline-delimited
-JSON events, beginning with a complete snapshot of the active Agent and every
-Agent's stable identity, display number, session metadata, Git context,
-lifecycle state, and subagents. Later state records are also complete, so a
-consumer can replace its local projection rather than patching it:
-
-```sh
-fmx bus                                  # snapshots and state changes
-fmx bus --activity                       # plus every accepted ADE event
-fmx bus --activity | jq -c 'select(.event == "activity")'
-```
-
-Activity is attributed to its stable Agent, main or subagent session, parent
-session, turn, and workspace when Fx supplied them. `ade_sequence` is
-process-local and `gap_before: true` says fmx did not observe the immediately
-preceding sequence. Activity is live-only, never replayed; reconnect for a
-fresh state snapshot. Summary mode excludes tool arguments and assistant text.
-`--raw-payloads` includes complete ADE payloads, may expose secrets, and
-implies `--activity`.
-
-The Bus is private to the local user, but even ordinary state includes
-workspace paths, terminal labels, and prompt-derived session names. Consumers
-that store or forward records own that exposure.
-
-Direct Bus peers connect to the mode-0600 socket reported as `fmx.socket` by
-`fmx control orient`. A peer can subscribe, send correlated control requests,
-or do both on one connection:
-
-```jsonl
-{"schema_version":1,"type":"subscribe","topics":["state","activity"],"activity_payload":"summary"}
-{"schema_version":1,"type":"request","id":"focus-1","method":"focus","params":{"target":"next"}}
-```
-
-The Runtime answers with typed `event`, `response`, and `error` records.
-Responses carry the authoritative `state_revision` and take priority over
-queued events; queues stay bounded, so a slow Bus peer is disconnected instead
-of delaying fmx or Fx. Bus peers are not terminal Clients and do not keep the
-Runtime alive. `fmx control` uses this same Bus. The complete wire contract is
-in [Runtime Bus schema 1](docs/runtime-bus.md).
+The mode-0600 [Runtime bridge](docs/runtime-bridge.md) between `fmx-mcp` and a
+running Runtime is an implementation detail, not a supported automation API.
 
 ## Development
 

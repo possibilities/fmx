@@ -91,6 +91,7 @@ const restoredEntry = (agentId = "d".repeat(32)): ManifestEntry => ({
   createdAt: 1,
   fxSessionId: null,
   agentStatus: null,
+  workControl: null,
   phase: "running",
 })
 

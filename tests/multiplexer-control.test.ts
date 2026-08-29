@@ -6,7 +6,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { AdeAgentState, AdeAttentionKind, AdeRecord } from "../src/ade-events.ts"
-import { type CatalogInfo, ControlFailure, type Snapshot } from "../src/control-protocol.ts"
+import { ControlFailure, type Snapshot } from "../src/control-protocol.ts"
+import {
+  FxWorkControlError,
+  type FxWorkControlBinding,
+  type FxWorkControlMethod,
+  type FxWorkControlRequester,
+  type FxWorkControlResult,
+} from "../src/fx-work-control.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { instanceIdForPane, record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
@@ -14,10 +21,48 @@ import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
-const BUS_PATH = `/tmp/fmx-control-test-${process.pid}.bus`
+const RUNTIME_PATH = `/tmp/fmx-control-test-${process.pid}.bus`
 const NEVER = new AbortController().signal
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
+
+const WORK_SNAPSHOT = {
+  active_turn_id: "41",
+  queue_paused: false,
+  queue: [{
+    turn_id: "42",
+    kind: "steering" as const,
+    text: "next",
+    has_images: false,
+    has_skill_bindings: false,
+    has_review_draft: false,
+  }],
+}
+
+type WorkCall = {
+  binding: FxWorkControlBinding
+  method: FxWorkControlMethod
+  params: Record<string, unknown>
+  signal: AbortSignal
+}
+
+class FakeWorkControl implements FxWorkControlRequester {
+  readonly calls: WorkCall[] = []
+  failure: FxWorkControlError | null = null
+
+  async request(
+    binding: FxWorkControlBinding,
+    method: FxWorkControlMethod,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<FxWorkControlResult> {
+    this.calls.push({ binding, method, params, signal })
+    if (this.failure) throw this.failure
+    return method === "work.queue" || method === "work.steer"
+      ? { snapshot: WORK_SNAPSHOT, turn_id: "42", disposition: method === "work.steer" ? "steering" : "queued" }
+      : { snapshot: WORK_SNAPSHOT }
+  }
+}
 
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-control-")))
@@ -33,15 +78,17 @@ async function harness(name: string) {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const adeSocket = new TestAdeSocket(`/tmp/fmx-control-test-${name}-${process.pid}.ade.sock`)
   const options = agentOptions()
+  const fxWorkControl = new FakeWorkControl()
   const multiplexer = new Multiplexer(setup.renderer, {
     ...options,
     fxPath: FAKE_FX,
     cwd: join(code, "alpha"),
     keybindings: resolveKeybindings().keybindings,
-    projectRoots: ["~/code"],
     home,
     adeSocket,
-    busSocketPath: BUS_PATH,
+    runtimeSocketPath: RUNTIME_PATH,
+    projectRoots: [code],
+    fxWorkControl,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -73,10 +120,19 @@ async function harness(name: string) {
     adeSocket.main(paneId, "SessionChanged", { sessionId })
     await setup.renderOnce()
   }
-  const launch = (params: Record<string, unknown> = {}) =>
-    control("launch", params) as Promise<{ agent: { id: number } }>
+  const start = async (params: {
+    directory?: string
+    worktree?: boolean
+    focus?: boolean
+  } = {}) => ({
+    agent: await multiplexer.createAgent({
+      directory: params.directory ?? join(code, "alpha"),
+      worktree: params.worktree,
+      focus: params.focus,
+    }),
+  })
   await multiplexer.start()
-  return { setup, multiplexer, control, close, report, session, launch, home, code, adeSocket, options }
+  return { setup, multiplexer, control, close, report, session, start, home, code, adeSocket, options, fxWorkControl }
 }
 
 async function sendAde(socket: TestAdeSocket, record: AdeRecord): Promise<void> {
@@ -127,7 +183,8 @@ test("orients an empty fmx", async () => {
   const h = await harness("empty")
   try {
     const snapshot = (await h.control("orient", { caller: 1 })) as Snapshot
-    expect(snapshot.fmx).toMatchObject({ pid: process.pid, socket: BUS_PATH, cols: 100, rows: 30 })
+    expect(snapshot.fmx).toMatchObject({ pid: process.pid, cols: 100, rows: 30 })
+    expect(snapshot.fmx).not.toHaveProperty("socket")
     expect(snapshot.you).toBeNull()
     expect(snapshot.active).toBeNull()
     expect(snapshot.agents).toEqual([])
@@ -138,15 +195,20 @@ test("orients an empty fmx", async () => {
   }
 })
 
-test("launches in the background once something is on screen, and says where the caller is", async () => {
-  const h = await harness("launch")
+test("creates background Agents from explicit, caller, and configured projects", async () => {
+  const h = await harness("create")
   try {
-    const first = await h.launch()
+    const first = await h.control("agent.create") as { agent: Snapshot["agents"][number] }
     expect(first.agent.id).toBe(1)
+    expect(first.agent.cwd).toBe(join(h.code, "alpha"))
     await h.setup.renderOnce()
     expect(terminal(h.setup, 1).visible).toBe(true)
 
-    const second = await h.launch({ caller: 1, directory: join(h.code, "beta"), prompt: "write tests" })
+    const second = await h.control("agent.create", {
+      directory: join(h.code, "beta"),
+      model: "gpt-test",
+      effort: "high",
+    }) as { agent: Snapshot["agents"][number] }
     await h.setup.renderOnce()
     expect(second.agent.id).toBe(2)
     expect(terminal(h.setup, 2).visible).toBe(false)
@@ -155,9 +217,9 @@ test("launches in the background once something is on screen, and says where the
     const snapshot = (await h.control("orient", { caller: 1 })) as Snapshot
     expect(snapshot.active).toBe(1)
     expect(snapshot.you).toMatchObject({ id: 1, active: true, cwd: join(h.code, "alpha"), project: "alpha" })
-    expect(snapshot.agents.map((agent) => [agent.id, agent.project, agent.awaiting_work])).toEqual([
-      [1, "alpha", false],
-      [2, "beta", true],
+    expect(snapshot.agents.map((agent) => [agent.id, agent.project])).toEqual([
+      [1, "alpha"],
+      [2, "beta"],
     ])
     expect(snapshot.tray.visible).toBe(true)
     expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
@@ -169,11 +231,66 @@ test("launches in the background once something is on screen, and says where the
       ["agent", 2, "· —", 1],
     ])
 
-    const focused = await h.launch({ focus: true })
+    const third = await h.control("agent.create", { caller: 1 }) as { agent: Snapshot["agents"][number] }
     await h.setup.renderOnce()
-    expect(focused.agent.id).toBe(3)
-    expect(terminal(h.setup, 3).visible).toBe(true)
-    expect(terminal(h.setup, 1).visible).toBe(false)
+    expect(third.agent).toMatchObject({ id: 3, cwd: join(h.code, "alpha"), active: false })
+    expect(terminal(h.setup, 3).visible).toBe(false)
+    expect(terminal(h.setup, 1).visible).toBe(true)
+
+    expect(h.options.transport.started[1]?.request.env).toMatchObject({
+      FX_MODEL: "gpt-test",
+      FX_EFFORT: "high",
+    })
+    for (const entry of h.options.manifest.entries) {
+      expect(entry.workControl).toMatchObject({ instanceId: entry.agentId })
+      expect(entry.workControl?.socketPath).toBe(RUNTIME_PATH.replace(/\.bus$/u, `.${entry.agentId}.fx`))
+      expect(entry.workControl?.token).toMatch(/^[0-9a-f]{64}$/u)
+    }
+    expect(first.agent).not.toHaveProperty("workControl")
+  } finally {
+    await h.close()
+  }
+})
+
+test("routes every semantic work operation to the targeted Fx authority", async () => {
+  const h = await harness("work")
+  try {
+    const first = await h.control("agent.create") as { agent: Snapshot["agents"][number] }
+    await h.control("agent.create", { directory: join(h.code, "beta") })
+
+    expect(await h.control("work.snapshot", { caller: 1 })).toMatchObject({
+      agent: { id: 1 },
+      work: WORK_SNAPSHOT,
+    })
+    expect(await h.control("work.queue", { target: "2", text: "after this" })).toMatchObject({
+      agent: { id: 2 },
+      turn_id: "42",
+      disposition: "queued",
+      work: WORK_SNAPSHOT,
+    })
+    expect(await h.control("work.steer", { target: first.agent.agent_id, text: "change course" })).toMatchObject({
+      agent: { id: 1 },
+      disposition: "steering",
+    })
+    await h.control("work.interrupt", { target: "active" })
+    await h.control("queue.update", { target: "1", turn_id: "42", text: "replacement" })
+    await h.control("queue.delete", { target: "1", turn_id: "42" })
+    await h.control("queue.resume", { target: "1" })
+
+    expect(h.fxWorkControl.calls.map(({ binding, method, params }) => [binding.instanceId, method, params])).toEqual([
+      [first.agent.agent_id, "work.snapshot", {}],
+      [h.options.manifest.entries[1]!.agentId, "work.queue", { text: "after this" }],
+      [first.agent.agent_id, "work.steer", { text: "change course" }],
+      [first.agent.agent_id, "work.interrupt", {}],
+      [first.agent.agent_id, "queue.update", { turn_id: "42", text: "replacement" }],
+      [first.agent.agent_id, "queue.delete", { turn_id: "42" }],
+      [first.agent.agent_id, "queue.resume", {}],
+    ])
+
+    h.fxWorkControl.failure = new FxWorkControlError("queue_editor_visible", "the human editor is open")
+    const busy = await failure(h.control("work.interrupt", { target: "1" }))
+    expect(busy).toMatchObject({ code: "busy", data: { fx_code: "queue_editor_visible" } })
+    expect((await failure(h.control("queue.delete", { target: "1", turn_id: "0" }))).code).toBe("invalid_params")
   } finally {
     await h.close()
   }
@@ -184,7 +301,7 @@ test("includes filesystem subagents in the tray orientation", async () => {
   const parent = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
   const child = "1787368609310-1787368609310138000-3e38dc7a8d7c16c2"
   try {
-    await h.launch()
+    await h.start()
     await mkdir(join(h.home, ".fx", "sessions", parent), { recursive: true })
     const subagentDirectory = join(h.home, ".fx", "sessions", child, "subagent")
     await mkdir(subagentDirectory, { recursive: true })
@@ -222,21 +339,21 @@ test("includes filesystem subagents in the tray orientation", async () => {
   }
 })
 
-test("refuses a launch it cannot honour without drawing anything", async () => {
+test("the internal creation engine refuses requests it cannot honour without drawing anything", async () => {
   const h = await harness("refuse")
   try {
-    const missing = await failure(h.launch({ directory: join(h.code, "nowhere") }))
+    const missing = await failure(h.start({ directory: join(h.code, "nowhere") }))
     expect(missing.code).toBe("invalid_params")
 
     // A directory outside any repository is not somewhere an agent can run.
     const loose = join(h.home, "loose")
     await mkdir(loose, { recursive: true })
-    const outside = await failure(h.launch({ directory: loose }))
+    const outside = await failure(h.start({ directory: loose }))
     expect(outside.code).toBe("invalid_params")
     expect(outside.message).toContain("not a git repository")
 
     // The projects here have nothing committed, so nothing to branch from.
-    const worktree = await failure(h.launch({ directory: join(h.code, "beta"), worktree: true }))
+    const worktree = await failure(h.start({ directory: join(h.code, "beta"), worktree: true }))
     expect(worktree.code).toBe("failed")
     expect(worktree.message).toContain("no commit to branch from")
     const snapshot = (await h.control("orient")) as Snapshot
@@ -247,62 +364,12 @@ test("refuses a launch it cannot honour without drawing anything", async () => {
   }
 })
 
-test("launches into the first project when the workspace is not itself a repository", async () => {
-  // What index.ts passes as `cwd` is the first configured root, and a root
-  // like `~/code` — the line startup tells a human to add — holds
-  // repositories without being one. A launch that names no project and comes
-  // from no agent still has somewhere to go: the choice the dialog's project
-  // row would have opened on.
-  const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-roots-")))
-  const code = join(home, "code")
-  await initRepository(join(code, "alpha"), "trunk")
-  const setup = await createTestRenderer({ width: 100, height: 30 })
-  const multiplexer = new Multiplexer(setup.renderer, {
-    ...agentOptions(),
-    fxPath: FAKE_FX,
-    cwd: code,
-    keybindings: resolveKeybindings().keybindings,
-    projectRoots: ["~/code"],
-    home,
-  })
-  try {
-    await multiplexer.start()
-    const launched = (await multiplexer.control.handle("launch", {}, NEVER)) as { agent: { cwd: string; branch: string } }
-    expect(launched.agent.cwd).toBe(join(code, "alpha"))
-    expect(launched.agent.branch).toBe("trunk")
-  } finally {
-    await multiplexer.shutdown()
-  }
-})
-
-test("refuses a launch when no configured root holds a repository", async () => {
-  const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-no-roots-")))
-  await mkdir(join(home, "code", "notes"), { recursive: true })
-  const setup = await createTestRenderer({ width: 100, height: 30 })
-  const multiplexer = new Multiplexer(setup.renderer, {
-    ...agentOptions(),
-    fxPath: FAKE_FX,
-    cwd: join(home, "code"),
-    keybindings: resolveKeybindings().keybindings,
-    projectRoots: ["~/code"],
-    home,
-  })
-  try {
-    await multiplexer.start()
-    const error = await failure(multiplexer.control.handle("launch", {}, NEVER) as Promise<unknown>)
-    expect(error.code).toBe("invalid_params")
-    expect(error.message).toContain("not a git repository")
-  } finally {
-    await multiplexer.shutdown()
-  }
-})
-
 test("focuses by position, id, and name, and refuses while something is open", async () => {
   const h = await harness("focus")
   try {
-    await h.launch()
-    await h.launch()
-    await h.launch()
+    await h.start()
+    await h.start({ focus: false })
+    await h.start({ focus: false })
     await h.setup.renderOnce()
     expect(((await h.control("orient")) as Snapshot).active).toBe(1)
 
@@ -311,6 +378,10 @@ test("focuses by position, id, and name, and refuses while something is open", a
     expect(await h.control("focus", { target: "previous" })).toMatchObject({ agent: { id: 3 } })
     expect(await h.control("focus", { target: "2", caller: 1 })).toMatchObject({ agent: { id: 2 } })
     expect(await h.control("focus", { target: "current", caller: 1 })).toMatchObject({ agent: { id: 1 } })
+    const identities = ((await h.control("orient")) as Snapshot).agents
+    expect(await h.control("focus", { target: identities[1]!.agent_id })).toMatchObject({ agent: { id: 2 } })
+    expect(await h.control("focus", { target: identities[2]!.pane_id })).toMatchObject({ agent: { id: 3 } })
+    await h.control("focus", { target: "current", caller: 1 })
     await h.setup.renderOnce()
     expect(terminal(h.setup, 1).visible).toBe(true)
 
@@ -320,7 +391,9 @@ test("focuses by position, id, and name, and refuses while something is open", a
     expect((await failure(h.control("focus", { target: "9" }))).code).toBe("not_found")
     expect((await failure(h.control("focus", { target: "current" }))).code).toBe("invalid_params")
 
-    await h.control("keys", { show: true })
+    h.setup.mockInput.pressKey("b", { ctrl: true })
+    h.setup.mockInput.pressKey("?")
+    await h.setup.renderOnce()
     expect(((await h.control("orient")) as Snapshot).surface).toEqual({ kind: "help" })
     const busy = await failure(h.control("focus", { target: "next" }))
     expect(busy.code).toBe("busy")
@@ -345,8 +418,8 @@ test("adopts native session names over ADE and recovers sequence gaps", async ()
   }
 
   try {
-    await h.launch()
-    await h.launch()
+    await h.start()
+    await h.start({ focus: false })
     const ade = h.adeSocket
     const [first, second] = h.options.manifest.entries
     expect(first).toBeDefined()
@@ -447,7 +520,7 @@ test("does not let delayed child attribution rewind the active main session", as
   const newSession = "1787362101401-1787362101401156000-2897385323da2687"
   const childSession = "1787362101402-1787362101402156000-2897385323da2688"
   try {
-    await h.launch()
+    await h.start()
     const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
     h.adeSocket.main(paneId, "FxStarted", { sessionId: oldSession, state: "idle" })
     h.adeSocket.main(paneId, "SessionChanged", { sessionId: newSession, state: "idle" })
@@ -471,7 +544,7 @@ test("accepts a new process-local sequence after an orderly Fx relaunch", async 
   const h = await harness("sequence-generation")
   const sessionId = "1787362101410-1787362101410156000-2897385323da2689"
   try {
-    await h.launch()
+    await h.start()
     const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
     const instanceId = paneId.slice(2)
     h.adeSocket.emit(feedRecord("FxStarted", { sequence: 1, instanceId, sessionId, state: "idle" }))
@@ -487,163 +560,11 @@ test("accepts a new process-local sequence after an orderly Fx relaunch", async 
   }
 })
 
-test("waits for an agent through the prompt it was launched with", async () => {
-  const h = await harness("wait")
+test("configures the Tray", async () => {
+  const h = await harness("tray")
   try {
-    await h.launch({ prompt: "do the work" })
-    const waiting = h.control("agent.wait", { target: "1" }) as Promise<{ state: string }>
-    let settled = false
-    void waiting.then(() => (settled = true))
-
-    // The idle fx reports at startup is not the idle that means finished.
-    await h.report("p_1", "idle")
-    await Bun.sleep(10)
-    expect(settled).toBe(false)
-    await h.report("p_1", "working")
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
-    // Agent 1 is on screen, so its finish is seen as it happens: idle, not done.
-    await h.report("p_1", "idle")
-    expect((await waiting).state).toBe("idle")
-    expect(await h.control("agent.wait", { target: "1", states: ["idle"] })).toMatchObject({ state: "idle" })
-
-    // A finish nobody was looking at is done until someone looks.
-    await h.launch({ prompt: "more work" })
-    const background = h.control("agent.wait", { target: "2" }) as Promise<{ state: string }>
-    await h.report("p_2", "working")
-    await h.report("p_2", "idle")
-    expect((await background).state).toBe("done")
-    await h.control("focus", { target: "2" })
-    expect(await h.control("agent.wait", { target: "2" })).toMatchObject({ state: "idle" })
-    await h.control("focus", { target: "1" })
-    const timedOut = await failure(h.control("agent.wait", { target: "1", states: ["blocked"], timeout_ms: 20 }))
-    expect(timedOut.code).toBe("timeout")
-    expect((await failure(h.control("agent.wait", { target: "1", states: ["napping"] }))).code).toBe(
-      "invalid_params",
-    )
-
-    await h.report("p_1", "blocked", "question")
-    expect(await h.control("agent.wait", { target: "1" })).toMatchObject({
-      state: "blocked",
-      agent: { attention: "question" },
-    })
-  } finally {
-    await h.close()
-  }
-})
-
-test("cancels an Agent wait when its Bus connection closes", async () => {
-  const h = await harness("wait-cancelled")
-  try {
-    await h.launch()
-    const abort = new AbortController()
-    const waiting = h.multiplexer.control.handle("agent.wait", { target: "1" }, abort.signal)
-    abort.abort()
-    const cancelled = await failure(waiting)
-    expect(cancelled.code).toBe("cancelled")
-    expect(cancelled.message).toBe("waiting for agent 1 was cancelled")
-  } finally {
-    await h.close()
-  }
-})
-
-test("sends text into a running agent and holds a wait until it is picked up", async () => {
-  const h = await harness("send")
-  try {
-    await h.launch({ prompt: "first" })
-    expect((await failure(h.control("agent.send", { target: "1", text: "second" }))).code).toBe("busy")
-    await h.report("p_1", "idle")
-    await Bun.sleep(450)
-    await h.report("p_1", "working")
-    await h.report("p_1", "idle")
-
-    expect(await h.control("agent.send", { target: "1", text: "second" })).toMatchObject({
-      agent: { id: 1, awaiting_work: true },
-    })
-    const waiting = h.control("agent.wait", { target: "1", timeout_ms: 2000 }) as Promise<{ state: string }>
-    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
-    h.adeSocket.main(paneId, "PromptQueued", { state: "working" })
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
-    await h.report("p_1", "idle")
-    expect((await waiting).state).toBe("idle")
-    expect((await failure(h.control("agent.send", { target: "1", text: "  " }))).code).toBe("invalid_params")
-  } finally {
-    await h.close()
-  }
-})
-
-test("repairs a dropped PromptQueued after an observed idle boundary", async () => {
-  const h = await harness("awaiting-gap")
-  const sessionId = "1787362101420-1787362101420156000-2897385323da2690"
-  try {
-    await h.launch({ prompt: "do the work" })
-    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
-    const instanceId = paneId.slice(2)
-    h.adeSocket.emit(feedRecord("FxStarted", { sequence: 1, instanceId, sessionId, state: "idle" }))
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(true)
-
-    // Sequence two was the dropped PromptQueued admission.
-    h.adeSocket.emit(feedRecord("TurnStarted", { sequence: 3, instanceId, sessionId, state: "working" }))
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
-  } finally {
-    await h.close()
-  }
-})
-
-test("does not treat an unrelated sequence gap as prompt admission", async () => {
-  const h = await harness("awaiting-unrelated-gap")
-  const sessionId = "1787362101421-1787362101421156000-2897385323da2692"
-  try {
-    await h.launch()
-    const paneId = ((await h.control("orient")) as Snapshot).agents[0]!.pane_id
-    const instanceId = paneId.slice(2)
-    h.adeSocket.emit(feedRecord("PreToolUse", { sequence: 10, instanceId, sessionId, state: "working" }))
-    await h.control("agent.send", { target: "1", text: "next prompt" })
-
-    // Sequence eleven was an unrelated dropped child/current-turn record.
-    h.adeSocket.emit(feedRecord("PreToolUse", { sequence: 12, instanceId, sessionId, state: "working" }))
-    h.adeSocket.emit(feedRecord("PostTurnEnd", { sequence: 13, instanceId, sessionId, state: "idle" }))
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(true)
-    expect((await failure(h.control("agent.wait", { target: "1", timeout_ms: 20 }))).code).toBe("timeout")
-
-    h.adeSocket.emit(feedRecord("PromptQueued", { sequence: 14, instanceId, sessionId, state: "working" }))
-    expect(((await h.control("orient")) as Snapshot).agents[0]?.awaiting_work).toBe(false)
-  } finally {
-    await h.close()
-  }
-})
-
-test("offers the catalog accepted by CLI launches", async () => {
-  const h = await harness("catalog")
-  try {
-    const catalog = (await h.control("catalog")) as CatalogInfo
-    expect(catalog.default).toEqual({ model: "gpt-5.6-sol", effort: "high" })
-    expect(catalog.models[0]).toEqual({
-      id: "gpt-5.6-sol",
-      efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      default_effort: "high",
-    })
-    expect(catalog.models.map((model) => model.id)).toContain("gpt-5.4-mini")
-
-  } finally {
-    await h.close()
-  }
-})
-
-test("lists the keys with their command equivalents, and resizes the tray", async () => {
-  const h = await harness("keys")
-  try {
-    expect(await h.control("keys")).toEqual({
-      prefix: "ctrl+b",
-      bindings: {
-        help: { keys: ["prefix+?"], command: "fmx control keys --show" },
-        detach: { keys: ["prefix+d"], command: null },
-        previous_tab: { keys: ["prefix+p"], command: "fmx control focus previous" },
-        next_tab: { keys: ["prefix+n"], command: "fmx control focus next" },
-        toggle_tray: { keys: ["prefix+b"], command: "fmx control tray --toggle" },
-      },
-    })
     expect(await h.control("tray", { hidden: true })).toEqual({ visible: false, hidden: true, width: 26 })
-    await h.launch()
+    await h.start()
     expect(await h.control("tray", { width: 30 })).toEqual({ visible: false, hidden: true, width: 30 })
     expect(await h.control("tray", { toggle: true })).toEqual({ visible: true, hidden: false, width: 30 })
     expect(await h.control("tray", { width: 400 })).toEqual({ visible: true, hidden: false, width: 50 })
@@ -668,26 +589,21 @@ async function waitForSnapshot(
   }
 }
 
-test("settles a wait when the human acknowledges a finished turn", async () => {
-  const h = await harness("wait-ack")
+test("orientation reflects acknowledgement when the human focuses a finished Agent", async () => {
+  const h = await harness("focus-ack")
   try {
-    await h.launch({ prompt: "do the work" })
-    await h.launch({ prompt: "more work" })
+    await h.start()
+    await h.start()
     await h.control("focus", { target: "2" })
     await h.report("p_1", "working")
     await h.report("p_1", "idle")
 
     // Agent 1 finished off screen, so it reads `done` rather than `idle`.
-    const waiting = h.control("agent.wait", { target: "1", states: ["idle"] }) as Promise<{ state: string }>
-    let settled = false
-    void waiting.then(() => (settled = true))
-    await Bun.sleep(10)
-    expect(settled).toBe(false)
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.state).toBe("done")
 
-    // Looking at it acknowledges the finish, and an idle fx sends nothing
-    // more: the wait settles here or never.
+    // Looking at it acknowledges the finish without another ADE record.
     await h.control("focus", { target: "1" })
-    expect((await waiting).state).toBe("idle")
+    expect(((await h.control("orient")) as Snapshot).agents[0]?.state).toBe("idle")
   } finally {
     await h.close()
   }
@@ -696,7 +612,7 @@ test("settles a wait when the human acknowledges a finished turn", async () => {
 test("re-baselines an Agent's feed after a run of records beneath a bad sequence", async () => {
   const h = await harness("stale-sequence")
   try {
-    await h.launch({ prompt: "do the work" })
+    await h.start()
     await h.report("p_1", "working")
     const instanceId = instanceIdForPane(((await h.control("orient")) as Snapshot).agents[0]!.pane_id)
     const state = async () => ((await h.control("orient")) as Snapshot).agents[0]?.state

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { readdirSync } from "node:fs"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import {
   identityFor,
@@ -102,14 +102,23 @@ test("creation is written before it is acknowledged, and acknowledged in place",
   await withDirectory(async (dir) => {
     const path = join(dir, "agents.json")
     const manifest = await AgentManifest.open(path, HOME)
-    const entry = await manifest.beginCreate(params())
+    const identity = identityFor("9".repeat(32))
+    const workControl = {
+      socketPath: "/tmp/fmx-home.agent.fx",
+      instanceId: identity.agentId,
+      token: "ab".repeat(32),
+    }
+    const entry = await manifest.beginCreate({ ...params(), identity, workControl })
     expect(entry.phase).toBe("creating")
     expect(entry.displayId).toBe(1)
+    expect(entry.workControl).toEqual(workControl)
 
     // The crash window: what is on disk right now says `creating`.
     const onDisk = await loadManifest(path, HOME)
     expect(onDisk.agents).toHaveLength(1)
     expect(onDisk.agents[0]!.phase).toBe("creating")
+    expect(onDisk.agents[0]!.workControl).toEqual(workControl)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
 
     await manifest.markRunning(entry.agentId)
     expect((await loadManifest(path, HOME)).agents[0]!.phase).toBe("running")

@@ -1,3 +1,7 @@
-# One duplex Runtime Bus carries events and commands
+# The stable Runtime socket is a single-request bridge
 
-fmx replaces the separate `.obs` event and `.ctl` request/reply sockets with one stable, mode-0600 Home Bus at `/tmp/fmx-<uid>/<home id>.bus`, because integrations should be able to subscribe and issue multiple correlated commands on the same connection while Fx's ADE ingress remains isolated and one-way. Each peer has bounded queues and pending work, command responses carry the authoritative state revision and take priority over whole events not yet written, and a slow peer is disconnected, so combining the public lanes does not let subscriptions delay the Runtime, another peer, a command, or Fx; `fmx bus` subscribes and the unchanged `fmx control` CLI uses the same wire.
+[ADR 0013](0013-mcp-only-agent-automation.md) supersedes this decision's public
+clients and multiplexed event protocol. The stable mode-0600
+`/tmp/fmx-<uid>/<home id>.bus` path remains so surviving Agents retain their
+Runtime address, but it now carries exactly one private MCP request and one
+response per connection; `.obs` and `.ctl` remain retired residue only.

@@ -39,7 +39,7 @@ fxnk_version="$(pin_value fx.json fxnk)"
 
 printf '%s\n' \
   "fmx source install:" \
-  "  bun install --frozen-lockfile and bun link in $root_dir" \
+  "  bun install --frozen-lockfile and link fmx plus fmx-mcp in $root_dir" \
   "  build Fx $fx_commit from source as $fx_installed" \
   "  build the pinned Companion as $companion_installed" \
   "  verify the complete installation with fmx doctor"
@@ -56,6 +56,11 @@ done
 bun install --cwd "$root_dir" --frozen-lockfile \
   || fail 'frozen dependency installation failed'
 (cd "$root_dir" && bun link) || fail 'bun link failed'
+bun_bin="$(bun pm bin -g)"
+for linked_command in fmx fmx-mcp; do
+  [[ -x "$bun_bin/$linked_command" ]] \
+    || fail "bun link did not install an executable $bun_bin/$linked_command"
+done
 
 mkdir -p "$install_dir"
 [[ ! -e "$fx_installed" || -f "$fx_installed" ]] \

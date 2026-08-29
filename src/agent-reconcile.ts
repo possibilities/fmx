@@ -1,5 +1,6 @@
 import { unlink } from "node:fs/promises"
 import { identityFor, isAgentId, type AgentManifest, type ManifestEntry } from "./agent-manifest.ts"
+import { removeFxWorkControlResidue } from "./fx-work-control.ts"
 import type { CompanionCommand, SessionEntry } from "./zmx-command.ts"
 
 /**
@@ -109,6 +110,8 @@ export type ReconcileOptions = {
   /** How long to wait for a refused/unreachable session to settle. */
   settleMs?: number
   now?: () => number
+  /** Exact Runtime path used to validate dead Agents' work-control residue. */
+  runtimeSocketPath?: string
 }
 
 /**
@@ -123,6 +126,12 @@ export async function reconcileAgents(
 ): Promise<ReconcileOutcome> {
   const settleMs = options.settleMs ?? 3000
   const now = options.now ?? Date.now
+  const removeEntry = async (entry: ManifestEntry, removeResidue = true) => {
+    if (removeResidue) {
+      await removeFxWorkControlResidue(entry.workControl, options.runtimeSocketPath ?? null)
+    }
+    await manifest.remove(entry.agentId)
+  }
   const outcome: ReconcileOutcome = { attached: [], adopted: [], removed: [], cleared: [], unresolved: [], ignored: [] }
 
   let sessions = await companion.list()
@@ -156,8 +165,12 @@ export async function reconcileAgents(
       session,
     })
   }
+  const ignoredNames = new Set(plan.ignored.map((session) => session.name))
   for (const { entry, session } of plan.remove) {
-    await manifest.remove(entry.agentId)
+    // A live foreign session under our old name is left wholly alone: it may
+    // have taken the filesystem endpoint too. Absence, exit, and a dead
+    // refused socket prove no process remains to own the old endpoint.
+    await removeEntry(entry, !ignoredNames.has(entry.zmxName))
     if (session?.state === "exited") {
       try {
         await companion.forget(session.name)
@@ -185,7 +198,7 @@ export async function reconcileAgents(
       continue
     }
     if (entry) {
-      await manifest.remove(entry.agentId)
+      await removeEntry(entry)
       outcome.removed.push({ entry, session })
     }
     if (session.socketPath) await unlink(session.socketPath).catch(() => {})

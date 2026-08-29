@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path"
 
 /**
  * Where an fx Agent is working, as far as git is concerned. fmx reads this
- * from the launch directory it owns rather than treating lifecycle context as
+ * from the Agent directory it owns rather than treating lifecycle context as
  * repository authority.
  */
 export type GitContext = {
@@ -55,7 +55,7 @@ export async function readGitContext(cwd: string): Promise<GitContext | null> {
  * The combined call fails on it, because `HEAD` names no revision — but the
  * checkout is real and its branch is already written down, and mistaking a
  * new repository for no repository would leave the directory it was made for
- * unlaunchable. The two halves are read separately instead.
+ * unusable. The two halves are read separately instead.
  */
 async function readUnbornContext(cwd: string): Promise<GitContext | null> {
   const lines = await runGit(cwd, [
@@ -73,14 +73,9 @@ async function readUnbornContext(cwd: string): Promise<GitContext | null> {
   return { root, mainRoot: dirname(commonDir), branch }
 }
 
-/**
- * Whether a directory is inside a repository, answered without spawning git:
- * the walk to the filesystem root git's own discovery makes, looking for the
- * `.git` a checkout leaves behind — a directory in a normal one, a file in a
- * linked worktree. The project scan and the Bus's parameter checks
- * are synchronous and cannot wait for `readGitContext`, which remains the
- * authority every launch is held to.
- */
+/** Whether a directory is inside a checkout, answered synchronously for MCP
+ * parameter validation and configured-project discovery. `readGitContext`
+ * remains the authority before an Agent is actually created. */
 export function isRepositoryDirectory(directory: string): boolean {
   let at = directory
   for (;;) {
@@ -101,7 +96,7 @@ export function projectNameFor(context: GitContext | null, cwd: string): string 
  * The tree this agent is actually working in: a linked Worktree's own
  * directory name, or the checked-out branch for the repository's main tree.
  * null whenever git has no answer — it has not replied yet, or the checkout
- * went away under a running agent. A launch requires a repository, so this
+ * went away under a running Agent. An Agent start requires a repository, so this
  * never means the directory was untracked, and nothing invents a name for it.
  */
 export function treeNameFor(context: GitContext | null): string | null {

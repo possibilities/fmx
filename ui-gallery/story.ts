@@ -157,8 +157,8 @@ export class UiStorySession {
   async snapshot(): Promise<UiStorySnapshot> {
     this.ensureOpen()
     // Several component actions deliberately finish through microtasks. Two
-    // passes make those immediate transitions visible without waiting on the
-    // long timers used by launch prompting.
+    // passes make those immediate transitions visible without waiting on
+    // unrelated timers.
     await Promise.resolve()
     await new Promise<void>((resolve) => setImmediate(resolve))
     await this.setup.renderOnce()

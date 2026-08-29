@@ -2,9 +2,9 @@ import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 
 /**
- * Repositories for tests to launch into. An agent runs in a repository or it
+ * Repositories for tests to start Agents in. An Agent runs in a repository or it
  * does not run, so a directory standing in for a project has to be a real
- * checkout — `readGitContext` is what every launch is held to, and an empty
+ * checkout — `readGitContext` is what every Agent start is held to, and an empty
  * `.git` would not survive it.
  */
 

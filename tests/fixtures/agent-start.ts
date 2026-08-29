@@ -2,24 +2,23 @@ import type { createTestRenderer } from "@opentui/core/testing"
 import type { Multiplexer } from "../../src/multiplexer.ts"
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
-const NEVER = new AbortController().signal
 
-/** Start an Agent through the same control method the CLI drives. */
-export function startAgent(
+/** Exercise fmx's internal creation engine without adding a public driver. */
+export function createAgent(
   multiplexer: Multiplexer,
   directory = process.cwd(),
   focus = true,
 ): Promise<unknown> {
-  return multiplexer.control.handle("launch", { directory, focus }, NEVER)
+  return multiplexer.createAgent({ directory, focus })
 }
 
-export async function launchAgent(
+export async function startVisibleAgent(
   setup: Setup,
   multiplexer: Multiplexer,
   id = 1,
   timeoutMs = 4_000,
 ): Promise<void> {
-  await startAgent(multiplexer)
+  await createAgent(multiplexer)
   const deadline = Date.now() + timeoutMs
   while (setup.renderer.root.findDescendantById(`fx-${id}`) === undefined) {
     if (Date.now() >= deadline) throw new Error(`agent ${id} never appeared`)

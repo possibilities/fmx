@@ -2,12 +2,12 @@ import { mkdir } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 
 /**
- * Worktrees fmx makes for a launch. A worktree is named `<project>-<ordinal>`
+ * Worktrees fmx makes for an Agent start. A worktree is named `<project>-<ordinal>`
  * — `fmx-1`, `fmx-2` — and the name is the branch and the directory alike, so
  * there is one word to recognize it by wherever it turns up.
  *
- * Ordinals count against the main repository, never the worktree a launch was
- * started from: `fmx-1` is a worktree of `fmx`, and launching again from
+ * Ordinals count against the main repository, never the Worktree an Agent was
+ * started from: `fmx-1` is a worktree of `fmx`, and starting again from
  * inside it must produce `fmx-2` rather than `fmx-1-1`.
  */
 
@@ -74,7 +74,7 @@ export function planWorktree(context: WorktreeContext, root: string): WorktreePl
 }
 
 /**
- * Branch from what the launch was looking at, not from the main worktree's
+ * Branch from what the Agent start was looking at, not from the main worktree's
  * HEAD: picking a project that is on a feature branch and getting a worktree
  * off `main` would be a silent substitution.
  */

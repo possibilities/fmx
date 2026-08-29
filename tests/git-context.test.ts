@@ -48,6 +48,7 @@ test("answers null outside a repository", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-git-"))
   try {
     expect(await readGitContext(directory)).toBeNull()
+    expect(isRepositoryDirectory(directory)).toBe(false)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -63,6 +64,7 @@ test("answers for a repository with nothing committed yet", async () => {
     // The branch is what the tray draws for it, so an unborn repository is a
     // project exactly because this comes back with a name.
     const context = await readGitContext(directory)
+    expect(isRepositoryDirectory(directory)).toBe(true)
     expect(context?.root).toBe(directory)
     expect(context?.mainRoot).toBe(directory)
     expect(context?.branch).toBe("trunk")
@@ -88,25 +90,6 @@ test("answers null for a repository whose HEAD names no branch", async () => {
       await Bun.write(join(directory, ".git", "HEAD"), head!)
       expect(await readGitContext(directory)).toBeNull()
     }
-  } finally {
-    await rm(scratch, { recursive: true, force: true })
-  }
-})
-
-test("recognizes a repository directory without spawning git", async () => {
-  const scratch = await realpath(await mkdtemp(join(tmpdir(), "fmx-git-walk-")))
-  try {
-    expect(isRepositoryDirectory(scratch)).toBe(false)
-    await Bun.spawn(["git", "-C", scratch, "init", "--quiet"], {
-      stdout: "ignore",
-      stderr: "ignore",
-    }).exited
-    expect(isRepositoryDirectory(scratch)).toBe(true)
-    // The walk climbs the way git's own discovery does, so a directory deep
-    // inside a checkout answers as readily as its root.
-    const nested = join(scratch, "src", "deep")
-    await mkdir(nested, { recursive: true })
-    expect(isRepositoryDirectory(nested)).toBe(true)
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }

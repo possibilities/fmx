@@ -6,7 +6,7 @@ import {
   HandlerRelay,
   AgentEndedError,
   AgentUnreachableError,
-  type AgentLaunch,
+  type AgentStart,
   type AgentTransport,
   type AgentTransportFactory,
   type TerminalSize,
@@ -54,15 +54,15 @@ export class CompanionTransportFactory implements AgentTransportFactory {
     this.closed = true
   }
 
-  async start(launch: AgentLaunch): Promise<AgentTransport> {
-    const { entry } = launch
+  async start(request: AgentStart): Promise<AgentTransport> {
+    const { entry } = request
     let socketPath: string
     try {
       const created = await this.companion.create({
         name: entry.zmxName,
-        command: launch.command,
-        cwd: launch.cwd,
-        env: launch.env,
+        command: request.command,
+        cwd: request.cwd,
+        env: request.env,
         labels: ownershipLabels(this.homeId, entry.agentId),
         scrollbackLines: this.options.scrollbackLines ?? COMPANION_SCROLLBACK_LINES,
       })
@@ -91,7 +91,7 @@ export class CompanionTransportFactory implements AgentTransportFactory {
     // From here fx is running whatever happens: a failure to reach it is
     // the transport's, and the Agent is recovered, never removed.
     try {
-      return await this.connect(entry, socketPath, launch.size)
+      return await this.connect(entry, socketPath, request.size)
     } catch (error) {
       throw new AgentUnreachableError(entry, error instanceof Error ? error : new Error(String(error)))
     }

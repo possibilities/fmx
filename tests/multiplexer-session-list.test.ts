@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
 import { TestAdeSocket } from "./fixtures/ade-feed.ts"
-import { launchAgent } from "./fixtures/agent-launch.ts"
+import { startVisibleAgent } from "./fixtures/agent-start.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
 import { rowText, SessionList, stateIcon, stateRole, truncate } from "../src/session-list.ts"
 import { buildTree, type SessionEntry } from "../src/session-tree.ts"
@@ -356,7 +356,7 @@ test("mounts the list into the tray", async () => {
     adeSocket: new TestAdeSocket(`/tmp/fmx-list-test-${process.pid}.ade.sock`),
   })
   await multiplexer.start()
-  await launchAgent(setup, multiplexer)
+  await startVisibleAgent(setup, multiplexer)
   try {
     await setup.renderOnce()
     const list = setup.renderer.root.findDescendantById("fmx-session-list") as BoxRenderable

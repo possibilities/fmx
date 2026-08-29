@@ -17,7 +17,6 @@ const ROOT = resolve(import.meta.dir, "..")
 // agent runs in a repository, and the project row is named for the
 // repository either one belongs to rather than for the directory it sits in.
 const GALLERY_CWD = ROOT
-const NEVER = new AbortController().signal
 const SESSION_ID = "909bc46b64721838"
 const AGENT_SCREEN =
   "\x1b[2J\x1b[H\x1b[1;36mWorking on the UI gallery\x1b[0m\r\n\r\n" +
@@ -47,7 +46,7 @@ export const UI_STORIES: readonly UiStory[] = [
     interaction: "Use ctrl+b b to toggle the Tray and ctrl+b ? to inspect the active key map.",
     arrange: mountMultiplexer({
       screen: AGENT_SCREEN,
-      afterMount: launchGalleryAgent,
+      afterMount: startGalleryAgent,
     }),
   },
   {
@@ -60,7 +59,7 @@ export const UI_STORIES: readonly UiStory[] = [
     arrange: mountMultiplexer({
       screen: AGENT_SCREEN,
       sizingOwnerFrame: { cols: 68, rows: 18 },
-      afterMount: launchGalleryAgent,
+      afterMount: startGalleryAgent,
     }),
   },
   {
@@ -196,13 +195,13 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
       cwd: GALLERY_CWD,
       keybindings: resolveKeybindings().keybindings,
       manifest: AgentManifest.ephemeral("ui-gallery"),
-      transport: options.transport ?? new GalleryAgentTransportFactory(options.screen ?? "", (launch) => {
-        const sessionId = `1770000000000-000000000-gallery${launch.entry.displayId}`
+      transport: options.transport ?? new GalleryAgentTransportFactory(options.screen ?? "", (request) => {
+        const sessionId = `1770000000000-000000000-gallery${request.entry.displayId}`
         adeSocket.report({
           schemaVersion: 1,
           sequence: 1,
           event: "FxStarted",
-          instanceId: launch.entry.agentId,
+          instanceId: request.entry.agentId,
           context: {
             agentRole: "main",
             workspaceRoot: null,
@@ -219,7 +218,7 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
           schemaVersion: 1,
           sequence: 2,
           event: "PromptQueued",
-          instanceId: launch.entry.agentId,
+          instanceId: request.entry.agentId,
           context: {
             agentRole: "main",
             workspaceRoot: null,
@@ -236,7 +235,7 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
           schemaVersion: 1,
           sequence: 3,
           event: "SessionMetadataChanged",
-          instanceId: launch.entry.agentId,
+          instanceId: request.entry.agentId,
           context: {
             agentRole: "main",
             workspaceRoot: null,
@@ -251,7 +250,6 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
         })
       }),
       adeSocket,
-      projectRoots: [],
       home: ROOT,
       initialTheme: {
         theme: context.themeMode,
@@ -276,14 +274,10 @@ function mountMultiplexer(options: MultiplexerStoryOptions = {}): (context: UiSt
   }
 }
 
-async function launchGalleryAgent(
+async function startGalleryAgent(
   multiplexer: Multiplexer,
 ): Promise<void> {
-  await multiplexer.control.handle(
-    "launch",
-    { directory: GALLERY_CWD, focus: true },
-    NEVER,
-  )
+  await multiplexer.createAgent({ directory: GALLERY_CWD, focus: true })
   await settlePromises()
 }
 

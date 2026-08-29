@@ -7,9 +7,9 @@ const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
 
 type LoadedConfig = {
   keybindings: Keybindings
-  /** Directories whose repository children a CLI launch may default to. */
+  /** Directories fmx may use as a Home's working directory. */
   projectRoots: string[]
-  /** Where a launch's new worktree is checked out. */
+  /** Where a requested Agent Worktree is checked out. */
   worktreeRoot: string
   diagnostics: string[]
 }
