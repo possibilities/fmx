@@ -27,7 +27,7 @@ export type FmxHome = {
 export class InvalidFmxNameError extends Error {
   constructor(readonly value: string) {
     super(
-      `invalid fmx name: ${JSON.stringify(value)}; use 1-32 lowercase letters, digits, _ or -, starting with a letter`,
+      `invalid fmx Session name: ${JSON.stringify(value)}; use 1-32 lowercase letters, digits, _ or -, starting with a letter`,
     )
     this.name = "InvalidFmxNameError"
   }

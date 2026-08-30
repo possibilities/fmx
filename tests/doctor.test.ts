@@ -41,19 +41,22 @@ test("doctor reports a paired installation and requires a compatible Fx", async 
     }
     const report = await doctor(env)
     expect(report.ok).toBe(true)
-    expect(report.lines[0]).toBe(`fmx        ${VERSION}`)
-    expect(report.lines).toContain(`companion  ${companion} (on PATH)`)
-    expect(report.lines).toContain(`directory  ${directory} (private)`)
-    expect(report.lines).toContain(`build      ${COMPANION_PIN.build} (the build pinned by this fmx checkout)`)
-    expect(report.lines).toContain(`protocol   ${PROTOCOL_VERSION}`)
-    expect(report.lines).toContain(`home       ${homeIdFor(join(root, "config", "fmx"))} (${join(root, "config", "fmx")})`)
-    expect(report.lines).toContain(`fx         ${fx} (fxnk ${MIN_FXNK_VERSION})`)
+    expect(report.lines[0]).toBe(`fmx          ${VERSION}`)
+    expect(report.lines).toContain(`companion    ${companion} (on PATH)`)
+    expect(report.lines).toContain(`directory    ${directory} (private)`)
+    expect(report.lines).toContain(`build        ${COMPANION_PIN.build} (the build pinned by this fmx checkout)`)
+    expect(report.lines).toContain(`protocol     ${PROTOCOL_VERSION}`)
+    expect(report.lines).toContain(
+      `fmx Session  default · ${homeIdFor(join(root, "config", "fmx"))} (${join(root, "config", "fmx")})`,
+    )
+    expect(report.lines).toContain(`fx           ${fx} (fxnk ${MIN_FXNK_VERSION})`)
 
     const namedHome = resolveFmxHome("review", env)
     const named = await doctor(env, namedHome)
     expect(named.ok).toBe(true)
-    expect(named.lines).toContain("name       review")
-    expect(named.lines).toContain(`home       ${namedHome.id} (${join(root, "config", "fmx", "homes", "review")})`)
+    expect(named.lines).toContain(
+      `fmx Session  review · ${namedHome.id} (${join(root, "config", "fmx", "homes", "review")})`,
+    )
 
     // Fx is a required half of the runtime contract, not an informational row.
     await rm(fx)
@@ -102,8 +105,8 @@ test("doctor fails on a Companion directory that is not ours, and does not run t
     const report = await doctor({ PATH: root, FMX_ZMX_DIR: directory, XDG_CONFIG_HOME: join(root, "config"), FMX_FX_PATH: await fakeFx(root) })
     expect(report.ok).toBe(false)
     expect(report.lines.find((line) => line.startsWith("directory "))).toContain("readable or writable by others")
-    expect(report.lines.find((line) => line.startsWith("build "))).toBe(`build      not checked: the directory is unusable (expected ${COMPANION_PIN.build})`)
-    expect(report.lines).toContain(`companion  ${companion} (on PATH)`)
+    expect(report.lines.find((line) => line.startsWith("build "))).toBe(`build        not checked: the directory is unusable (expected ${COMPANION_PIN.build})`)
+    expect(report.lines).toContain(`companion    ${companion} (on PATH)`)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

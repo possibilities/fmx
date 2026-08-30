@@ -127,7 +127,7 @@ const toolResultSchema = <T extends z.ZodRawShape>(success: z.ZodObject<T>) =>
   )
 
 const targetDescription =
-  "Stable agent_id (preferred), display id, pane_id, current, active, next, previous, exact session name, or unique session-id prefix."
+  "Stable agent_id (preferred), display id, pane_id, current, active, next, previous, exact Fx Conversation name, or unique compatibility session_id prefix."
 
 const targetInput = z.string().min(1).optional().describe(`${targetDescription} Defaults to current.`)
 const workTextInput = z.string().min(1).describe("Plain-text work for Fx to admit through its native worker queue.")
@@ -147,7 +147,7 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
     {
       title: "Get fmx orientation",
       description:
-        "Read the selected named fmx (when any), caller, active Agent, every Agent and subagent, Tray tree, terminal dimensions, and open fmx surface.",
+        "Read the selected fmx Session, caller, active Agent, every Agent and subagent, Tray tree, terminal dimensions, and open fmx surface.",
       outputSchema: toolResultSchema(orientationSchema),
       annotations: {
         readOnlyHint: true,
@@ -212,7 +212,7 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
     "configure_tray",
     {
       title: "Configure the fmx Tray",
-      description: "Read or change the shared Session list's persisted width and visibility.",
+      description: "Read or change the shared Agent list's persisted width and visibility.",
       inputSchema: z.object({
         width: z.number().int().min(1).optional().describe("Requested Tray width; fmx clamps it to the current screen."),
         hidden: z.boolean().optional().describe("True hides the Tray; false shows it when Agents exist."),

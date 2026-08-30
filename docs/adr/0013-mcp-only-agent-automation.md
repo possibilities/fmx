@@ -8,7 +8,7 @@ queued-work update/delete, and queue-resume operations.
 
 Prompt paste/send, waiting, observation streams, catalog and key inspection,
 permission or question answers, queue reorder/arbitrary-start/clear, and
-subagent, Session, or Runtime lifecycle control remain absent. The internal
+subagent, Fx Conversation, or Runtime lifecycle control remain absent. The internal
 Runtime bridge carries one MCP request per connection, while authenticated
 per-Agent Work control mirrors Fx's semantic authority instead of emulating it
 through terminal input.

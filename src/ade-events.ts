@@ -49,7 +49,7 @@ export type AdeSocketOptions =
 /** Another Runtime owns this Home's ADE socket and Manifest authority. */
 export class HomeActiveError extends Error {
   constructor(readonly path: string) {
-    super(`another fmx Runtime is already running for this Home (listening on ${path})`)
+    super(`another fmx Runtime is already running for this fmx Session (listening on ${path})`)
   }
 }
 

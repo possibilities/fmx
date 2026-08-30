@@ -91,7 +91,7 @@ Open or attach a terminal Client for the selected fmx Runtime.
 Agent automation is provided by the separate fmx-mcp server.
 
 Options:
-      --name NAME                 select an independent named fmx
+      --name NAME                 select an independent fmx Session
       --agent-picker              use the top Agent picker instead of the Tray
       --hide-single-agent-picker  hide the Agent picker while only one Agent runs
   -h, --help                      show this help

@@ -87,8 +87,7 @@ export async function doctor(
   }
   rows.push(["protocol", String(PROTOCOL_VERSION)])
 
-  if (home.name !== null) rows.push(["name", home.name])
-  rows.push(["home", `${home.id} (${home.directory})`])
+  rows.push(["fmx Session", `${home.name ?? "default"} · ${home.id} (${home.directory})`])
 
   try {
     const fxPath = await resolveFx(env[FX_PATH_ENV_VAR], env)

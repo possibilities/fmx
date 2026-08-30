@@ -2,13 +2,14 @@
   "name": "fmx",
   "version": "0.3.1",
   "packageManager": "bun@1.4.0",
-  "description": "A lightweight terminal multiplexer for fx sessions",
+  "description": "A lightweight terminal multiplexer for Fx Conversations",
   "type": "module",
   "bin": {
     "fmx": "./src/index.ts",
     "fmx-mcp": "./src/mcp.ts"
   },
   "scripts": {
+    "contracts:check": "bun scripts/check-agentworkplace-contracts.ts",
     "gallery": "bun ui-gallery/cli.ts",
     "gallery:check": "bun ui-gallery/cli.ts --check",
     "install:source": "scripts/install.sh --install",

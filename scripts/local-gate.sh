@@ -17,6 +17,7 @@ esac
 
 printf 'fmx local gate: gating on %s\n' "$platform"
 scripts/install.sh --install
+bun run contracts:check
 bun run typecheck
 bun test
 FMX_BINARY_PATH="${BUN_INSTALL:-$HOME/.bun}/bin/fmx" \

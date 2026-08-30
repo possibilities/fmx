@@ -16,12 +16,12 @@ command = "fmx-mcp"
 required = true
 ```
 
-An MCP server started inside an Agent uses that Agent's Home and knows that
+An MCP server started inside an Agent uses that Agent's fmx Session and knows that
 Agent as `current`. A server started outside an Agent connects only when
 exactly one Runtime is live on the machine. If none or several are live, the
-tool call fails rather than guessing. Select an independent named fmx when
-starting its terminal Client with `fmx --name NAME`; MCP has no Home-selection
-parameter and cannot cross from one Home's Agent roster into another.
+tool call fails rather than guessing. Select an independent fmx Session when
+starting its terminal Client with `fmx --name NAME`; MCP has no fmx Session
+selector and cannot cross from one fmx Session's Agent list into another.
 
 The Runtime ends when its final terminal Client detaches. Its Agents continue
 under the Companion, but MCP calls cannot reach them until a terminal Client
@@ -69,11 +69,12 @@ state, not as a promise that an earlier state remains current.
 | `current` | The Agent containing the MCP caller |
 | `active` | The Agent currently shown by fmx |
 | `next` / `previous` | Relative to the Agent currently shown, wrapping at the ends |
-| exact Session name | Fx's native persisted name; duplicates are ambiguous |
-| unique Session-id prefix | Fallback after exact-name matching |
+| exact Fx Conversation name | Fx's native persisted name; duplicates are ambiguous |
+| unique compatibility `session_id` prefix | Fallback after exact-name matching |
 
 Stable Agent id, Pane id, decimal display id, and reserved words are recognized
-before name matching. An exact Session name wins over a Session-id prefix.
+before name matching. An exact Fx Conversation name wins over a compatibility
+`session_id` prefix.
 Ambiguous names or prefixes are refused with candidate display ids.
 
 Outside an Agent, an omitted work Target still means `current` and therefore
@@ -102,7 +103,7 @@ Inspect `structuredContent.error.code`, not the message:
 | --- | --- |
 | `invalid_params` | Correct the Target or request. `current` also produces this outside an Agent. |
 | `not_found` | The Agent, active work, or queued Turn no longer exists; orient or read work again. |
-| `ambiguous` | A name or Session-id prefix matched several Agents; use an `agent_id`. |
+| `ambiguous` | An Fx Conversation name or compatibility `session_id` prefix matched several Agents; use an `agent_id`. |
 | `busy` | A human-visible modal or Fx queue editor owns the operation; preserve it and retry after it closes. |
 | `timeout` | The Runtime or Fx did not answer before its bound; reread before deciding whether to retry a mutation. |
 | `cancelled` | The MCP call was cancelled; reread before retrying a mutation. Agent creation may have completed once its lifecycle transaction began. |
@@ -122,11 +123,11 @@ errors and never reach the Runtime.
 Takes no input. Its result contains:
 
 - `fmx`: Runtime pid, version, working directory, current terminal size, and
-  optional `name` when this is an explicitly named fmx;
+  optional `name` when this is an explicitly named fmx Session;
 - `you`: the caller's Agent, or `null` outside an Agent;
 - `active`: the active display id, or `null` with no Agents;
 - `agents`: creation-ordered Agent records with stable identities, repository
-  context, native Session identity and name, lifecycle state, attention, and
+  context, native Fx Conversation identity and name, lifecycle state, attention, and
   nested subagents;
 - `tray`: actual visibility, persisted hidden choice, width, and the rows fmx
   currently draws; and
@@ -303,7 +304,7 @@ Turn. Fx refuses when the queue is not paused.
 The MCP surface has exactly eleven tools. It deliberately has no generic
 prompt send or terminal paste, wait-for-Agent operation, events or resource
 subscriptions, prompt/output transcript, permission or question answer,
-queued-work reorder/start/clear-all, subagent control, Session rename/change,
+queued-work reorder/start/clear-all, subagent control, Fx Conversation rename/change,
 model catalog, key inspection, Client detach, Agent kill, or Runtime lifecycle
 operation.
 

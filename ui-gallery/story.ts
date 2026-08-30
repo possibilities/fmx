@@ -4,7 +4,7 @@ import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testin
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
   "Agent picker",
-  "Session list",
+  "Agent list",
 ] as const
 
 export type UiGalleryComponent = (typeof UI_GALLERY_COMPONENTS)[number]

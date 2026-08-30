@@ -32,13 +32,13 @@ describe("parseArgs", () => {
     })
   })
 
-  test("selects one independent named fmx", () => {
+  test("selects one independent fmx Session", () => {
     expect(parseArgs(["--name", "foo"])).toMatchObject({ name: "foo", agentPicker: false })
     expect(parseArgs(["--name=work_2", "doctor"])).toMatchObject({ doctor: true, name: "work_2" })
     expect(parseArgs(["doctor", "--name", "foo-bar"]).name).toBe("foo-bar")
     expect(parseArgs(["--name", "default"]).name).toBeNull()
     expect(usage()).toContain("--name NAME")
-    expect(usage()).toContain("select an independent named fmx")
+    expect(usage()).toContain("select an independent fmx Session")
   })
 
   test("selects the alternate top Agent picker", () => {
@@ -68,7 +68,7 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--name="])).toThrow("--name requires a value")
     expect(() => parseArgs(["--name", "foo", "--name", "bar"])).toThrow("only once")
     for (const invalid of ["A", "2fast", "has.dot", "has/slash", `a${"b".repeat(32)}`]) {
-      expect(() => parseArgs(["--name", invalid])).toThrow("invalid fmx name")
+      expect(() => parseArgs(["--name", invalid])).toThrow("invalid fmx Session name")
     }
   })
 

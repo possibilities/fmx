@@ -2,7 +2,7 @@
 
 **fmx** /fʌks/ — An orchestration surface for [fx](https://fx.sh/).
 
-Many agents in one terminal: a session list and the active agent. Agents live
+Many Agents in one terminal: an Agent list and the active Agent. Agents live
 in a companion daemon, so they keep running when fmx is not.
 
 ## Install
@@ -47,7 +47,7 @@ of the Tray:
 fmx --agent-picker
 ```
 
-The picker lists the switchable Agents newest first, with their Session name,
+The picker lists the switchable Agents newest first, with their Fx Conversation name,
 Project context, and current state. `ctrl-b b` opens it; use the arrow keys and
 Enter to select, or Escape to close it.
 
@@ -61,25 +61,26 @@ fmx --agent-picker --hide-single-agent-picker
 If the roster returns to one Agent, the picker closes and gives its three rows
 back to that Agent.
 
-The view belongs to the shared Runtime for that Home. Plain `fmx` attaches to
+The view belongs to the shared Runtime for that fmx Session. Plain `fmx` attaches to
 whichever view is already running and starts the Tray view when there is no
-Runtime. An explicit `fmx --agent-picker` refuses to attach when that Home
+Runtime. An explicit `fmx --agent-picker` refuses to attach when that fmx Session
 already has a Tray Runtime, so it never silently gives a different view than
 the one requested. An explicit `--hide-single-agent-picker` likewise refuses a
 live picker Runtime that was started without that behavior.
 
-Use `--name` to select an independent named fmx:
+Use `--name` to select an independent fmx Session:
 
 ```sh
 fmx --name review
 fmx --name implementation
 ```
 
-Each name has its own Agents and display numbering, saved UI state, Runtime,
-Clients, and private sockets. Running the same name again attaches to that
-name's existing Runtime. Every name shares `config.toml`, Fx's profile,
-credentials and saved sessions, project roots, repositories, and binaries.
-Plain `fmx` and `fmx --name default` select the original default unchanged.
+Each fmx Session has its own Agents and display numbering, saved UI state,
+Runtime, Clients, and private sockets. Running the same name again attaches to
+that fmx Session's existing Runtime. Every fmx Session shares `config.toml`,
+Fx's profile, credentials and saved Fx Conversations, project roots,
+repositories, and binaries. Plain `fmx` and `fmx --name default` select the
+original default fmx Session unchanged.
 
 An agent disappears only when it exits — end it from inside, the way you would
 at a terminal. `fmx-zmx list`, `attach`, and `kill` reach one by hand.
@@ -93,9 +94,9 @@ live.
 
 | Tool | Purpose |
 |---|---|
-| `get_orientation` | Read the selected named fmx, caller, active Agent, all Agents and subagents, Tray tree, terminal size, and open fmx surface |
+| `get_orientation` | Read the selected fmx Session, caller, active Agent, all Agents and subagents, Tray tree, terminal size, and open fmx surface |
 | `create_agent` | Create an Agent in a repository, optionally in a new Worktree and with per-process model or effort overrides |
-| `focus_agent` | Focus an Agent by stable `agent_id`, `pane_id`, display id, relative Target, Session name, or Session-id prefix |
+| `focus_agent` | Focus an Agent by stable `agent_id`, `pane_id`, display id, relative Target, Fx Conversation name, or compatibility `session_id` prefix |
 | `configure_tray` | Read or change the Tray's width and visibility |
 | `get_agent_work` | Read Fx's authoritative active turn, paused state, and queued work |
 | `queue_agent_work` | Append plain-text work to Fx's native queue |

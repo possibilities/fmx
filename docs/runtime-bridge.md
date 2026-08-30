@@ -7,12 +7,12 @@ through those tools rather than by opening this socket.
 
 ## Connection
 
-One Runtime binds one mode-0600 Unix socket for its selected Home at
+One Runtime binds one mode-0600 Unix socket for its selected fmx Session at
 `/tmp/fmx-<uid>/<home id>.bus`. Every Agent receives the stable path as
 `FMX_SOCKET_PATH`. For each MCP tool call, `fmx-mcp` resolves that path (or the
 sole live Runtime when called outside an Agent), opens one connection, sends
 one request, receives one response, and closes it. Different `fmx --name`
-selections have different Home ids and therefore different bridge paths; the
+selections have different internal ids and therefore different bridge paths; the
 bridge protocol itself has no name selector.
 
 Both directions contain one JSON object followed by a newline. A connection

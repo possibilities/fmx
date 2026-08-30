@@ -65,7 +65,7 @@ describe("fmx Home selection", () => {
     expect(normalizeFmxName("work_2-fast")).toBe("work_2-fast")
     expect(normalizeFmxName("default")).toBeNull()
     for (const invalid of ["", "A", "2fast", "has.dot", "has/slash", `a${"b".repeat(32)}`]) {
-      expect(() => normalizeFmxName(invalid)).toThrow("invalid fmx name")
+      expect(() => normalizeFmxName(invalid)).toThrow("invalid fmx Session name")
     }
   })
 })

@@ -13,7 +13,7 @@ test(
     expect(UI_GALLERY_COMPONENTS).toEqual([
       "Multiplexer",
       "Agent picker",
-      "Session list",
+      "Agent list",
     ])
     const built = await buildUiGallery()
     expect(UI_GALLERY_PALETTE_NAMES).toEqual(["dark", "light", "fallback"])
@@ -88,7 +88,7 @@ test(
 
       setup.mockInput.pressArrow("down")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Session list")
+      expect(app.activeComponent).toBe("Agent list")
       expect(app.activeStoryId).toBe(built.stories.light[6]!.id)
 
       setup.mockInput.pressArrow("up")
@@ -133,7 +133,7 @@ test(
 
       setup.mockInput.pressArrow("left")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Session list")
+      expect(app.activeComponent).toBe("Agent list")
       expect(app.activeStoryId).toBe(built.stories.dark.at(-1)!.id)
       expect(setup.captureCharFrame()).toContain("SLIDESHOW · 9/9")
 

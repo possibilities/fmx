@@ -31,7 +31,7 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "multiplexer-empty",
     component: "Multiplexer",
     title: "No Agents",
-    description: "An empty Home keeps the full work surface quiet.",
+    description: "An empty fmx Session keeps the full work surface quiet.",
     viewport: { cols: 86, rows: 24 },
     expectedText: ["no agents"],
     interaction: "Use ctrl+b ? to open the key reference.",
@@ -41,7 +41,7 @@ export const UI_STORIES: readonly UiStory[] = [
     id: "multiplexer-working",
     component: "Multiplexer",
     title: "Working Agent",
-    description: "The everyday composition: Session list, active path, divider, and one working surface.",
+    description: "The everyday composition: Agent list, active path, divider, and one working surface.",
     viewport: { cols: 86, rows: 24 },
     expectedText: ["Review UI", "Working on the UI gallery", "Review the gallery in a terminal"],
     interaction: "Use ctrl+b b to toggle the Tray and ctrl+b ? to inspect the active key map.",
@@ -95,7 +95,7 @@ export const UI_STORIES: readonly UiStory[] = [
   },
   {
     id: "session-list-status-atlas",
-    component: "Session list",
+    component: "Agent list",
     title: "Status atlas",
     description: "Every Agent state and each blocked attention glyph aligned in one branch.",
     viewport: { cols: 36, rows: 15 },
@@ -114,7 +114,7 @@ export const UI_STORIES: readonly UiStory[] = [
   },
   {
     id: "session-list-hierarchy",
-    component: "Session list",
+    component: "Agent list",
     title: "Projects, branches, and Subagents",
     description: "The active path, recursive Subagent rows, and an Agent whose checkout is gone in a second project.",
     viewport: { cols: 42, rows: 16 },
@@ -150,9 +150,9 @@ export const UI_STORIES: readonly UiStory[] = [
   },
   {
     id: "session-list-narrow",
-    component: "Session list",
+    component: "Agent list",
     title: "Narrow tray",
-    description: "Long project, branch, and Session name values truncate only at their right edge.",
+    description: "Long Project, branch, and Fx Conversation name values truncate only at their right edge.",
     viewport: { cols: 20, rows: 8 },
     expectedText: ["agentbrain-worktree", "feature/componen…", "◐ gallery-with…"],
     arrange(context) {

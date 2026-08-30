@@ -3,17 +3,17 @@
 **Agent** — one fx process together with the embedded terminal fmx renders
 it in. Agents are numbered by fmx, keep their number across fmx restarts,
 and disappear when their fx exits — never when fmx does: the Companion holds
-the fx, and the next fmx for the Home attaches to it.
+the fx, and the next Runtime for the fmx Session attaches to it.
 _Avoid_: pane, tab, window, session, instance.
 
-**Runtime** — the one Companion-held fmx process and PTY for a Home. It owns
+**Runtime** — the one Companion-held fmx process and PTY for an fmx Session. It owns
 the renderer, Multiplexer, sockets, Manifest reconciliation, and shared UI;
 it ends when its final Client leaves, while every Agent remains held by the
 Companion.
 _Avoid_: server, daemon, host, backend.
 
 **Client** — one thin interactive `fmx` invocation and its physical terminal,
-attached to the Home's Runtime. It relays terminal bytes and size, and alone
+attached to the fmx Session's Runtime. It relays terminal bytes and size, and alone
 owns Detach; several Clients may watch and interact with the same shared UI.
 _Avoid_: viewer, frontend, session, fmx instance.
 
@@ -62,25 +62,16 @@ operator path that links fmx and builds both native pins from exact source.
 Fmx has no binary release or publication path.
 _Avoid_: release, bucket installer, artifact channel.
 
-**Named fmx** — an independent fmx selected by `--name`: it has its own Home,
-Agents, Runtime, Clients, Manifest, UI state, and private sockets while sharing
-`config.toml`, Fx's profile and saved sessions, repositories, and binaries with
-the default and every other name. `default` explicitly selects the existing
-unnamed fmx.
-_Avoid_: session (that is Fx's saved conversation), profile, workspace,
-instance.
+**fmx Session** — one independent fmx selected by `--name`, including
+`default`. It owns one Agent roster, Runtime, Client set, Manifest, UI state,
+and private sockets while sharing `config.toml`, Fx's profile and saved Fx
+Conversations, repositories, and binaries with every other fmx Session. The
+default uses `~/.config/fmx` (or `$XDG_CONFIG_HOME/fmx`); a named fmx Session
+uses its `homes/<name>` child. A short digest of that internal state directory
+labels its Companion sessions and stable ADE-feed and Runtime-bridge sockets.
+_Avoid_: Home, profile, workspace, instance, Fx Conversation.
 
-**Home** — one selected fmx-owned-state directory and the identity that follows
-from it: the default uses `~/.config/fmx` (or `$XDG_CONFIG_HOME/fmx`) and a named
-fmx uses its `homes/<name>` child. A short digest of that directory labels every
-Companion session the Home creates and keys its stable ADE-feed and
-Runtime-bridge sockets; every Home loads the one shared `config.toml` from the
-config root. One Home has at most one Runtime, may have several Clients, and
-owns the Agents its Companion holds between Runtime lifetimes.
-_Avoid_: profile (that is a start level's rejected synonym, and `fx-profile`
-is fx's own settings), configuration directory, installation, workspace.
-
-**Manifest** — the Home's `agents.json` (`~/.config/fmx/agents.json` for the
+**Manifest** — the fmx Session's `agents.json` (`~/.config/fmx/agents.json` for the
 default, `~/.config/fmx/homes/<name>/agents.json` when named), its own record of
 the Agents its Companion holds: one entry per Agent carrying its identity,
 display number, directory, the fx it runs, and the last ADE lifecycle
@@ -90,7 +81,7 @@ are the truth, and a start joins the two — attaching what both know, adopting
 what only the Companion holds, dropping what only the Manifest remembers. It
 keeps no prompt text.
 _Avoid_: registry (that is the agent registry), state file (that is
-`state.json`), session list.
+`state.json`), Agent list.
 
 **Transport** — what carries one Agent's terminal between fmx and the
 Companion: bytes out, bytes in, the size, and the two ways it ends — fx
@@ -108,12 +99,12 @@ derived again from fx's control records and live locks, then driven by live ADE
 snapshots.
 _Avoid_: replay, resync, history.
 
-**ADE feed** — the private, one-way, stable-per-Home Unix socket over which Fx
+**ADE feed** — the private, one-way, stable-per-fmx-Session Unix socket over which Fx
 publishes ordered lifecycle events for every Agent and subagent. It is fmx's
 sole Fx lifecycle source: each record carries the stable Manifest Agent
-identity, session context, and a complete state-and-attention snapshot, so an
+identity, Fx Conversation context, and a complete state-and-attention snapshot, so an
 unknown additive event or the first record after a gap repairs live state;
-session-name gaps additionally recover from Fx's durable display record.
+Fx Conversation-name gaps additionally recover from Fx's durable display record.
 _Avoid_: Observation stream, control socket, event bus, request/reply channel.
 
 **Pane id** — the retained opaque control and Companion-label identity for an
@@ -132,7 +123,7 @@ Focus and error are direct ANSI slots `4` and `1`, each with one job and never
 sampled from the host. A state is a glyph and a weight, never a hue.
 _Avoid_: host ramp, derived palette, modal colors.
 
-**Tray** — the collapsible left column that carries the Session list: hidden
+**Tray** — the collapsible left column that carries the Agent list: hidden
 while no agent runs or when toggled away, resizable by its divider, its width
 and visibility remembered across runs.
 _Avoid_: sidebar, panel.
@@ -145,9 +136,10 @@ open. With `--hide-single-agent-picker`, the complete control is absent until
 at least two Agents exist.
 _Avoid_: session dropdown, header, top bar, alternate Tray.
 
-**Session list** — the tray's tree of running agents: project, then
+**Agent list** — the Tray's tree of running Agents: Project, then
 branch, then one row per agent carrying its status icon and its name — the
-native session name once fx reports one, the short session id until then.
+native Fx Conversation name once fx reports one, the short compatibility
+`session_id` until then.
 An agent whose Git context git has no answer for hangs straight off its
 project, one rung shallower, rather than under a stand-in branch.
 Depth is carried by indentation alone, with no connecting glyphs.
@@ -163,8 +155,8 @@ machine state, restored before the first frame so detach and reattach do not
 move focus back to agent one.
 _Avoid_: agent panel, tab bar, session picker.
 
-**Subagent row** — a non-selectable Session list row for an fx subagent whose
-filesystem control record names a visible Agent's session as its parent.
+**Subagent row** — a non-selectable Agent list row for an fx subagent whose
+filesystem control record names a visible Agent's Fx Conversation as its parent.
 It uses the agent-row status icon and nests recursively beneath that parent;
 its state comes from the control record and the subagent's own session lock.
 _Avoid_: child pane, sub-agent.
@@ -175,7 +167,7 @@ them, so two faint backgrounds never have to be told apart.
 _Avoid_: selection, breadcrumb.
 
 **Project root** — a directory named by `project_roots`. The shared
-configuration must name at least one before any Home's TUI can start, and the
+configuration must name at least one before any fmx Session's TUI can start, and the
 first is each Runtime's working directory. Personal roots belong in
 `config.toml`, never in a shipped default.
 _Avoid_: workspace root, start default, scan directory.
@@ -196,7 +188,7 @@ _Avoid_: branch, checkout, clone.
 directory inside a git repository whose branch can be named. A Project root
 and its children qualify or they are not offered, a named directory that does
 not is refused, and a repository with nothing committed yet is a Project — its
-unborn HEAD still names the branch the Session list draws — that simply cannot
+unborn HEAD still names the branch the Agent list draws — that simply cannot
 offer a Worktree. A HEAD naming neither a ref nor a commit names no branch,
 so it is not a Project at all.
 _Avoid_: workspace, folder, tracked directory.
@@ -204,13 +196,13 @@ _Avoid_: workspace, folder, tracked directory.
 **Git context** — the Worktree root and branch fmx reads from the Agent
 directory it owns rather than treating lifecycle context as repository
 authority. Every Agent start is held to one, so an Agent without a context is a
-checkout that went away under a running one: its Session list row hangs
+checkout that went away under a running one: its Agent list row hangs
 straight off its project, with no rung standing in for the branch that is not
 there.
 _Avoid_: repo info, workspace, untracked.
 
 **Agent record** — what Fx's ADE snapshots report about one Agent: state,
-attention, and session identity. On Restore it begins at the Manifest's last
+attention, and Fx Conversation identity. On Restore it begins at the Manifest's last
 ADE checkpoint; any later record replaces that state even when the transition
 event itself was dropped. Which Agent a human is looking at is fmx's own
 knowledge and lives in the Multiplexer.
@@ -222,14 +214,14 @@ rather than a clock. An idle agent that is not seen is **done** — finished and
 unacknowledged — which is the only difference between the `✓` and `○` icons.
 _Avoid_: read, acknowledged, unread.
 
-**Session name** — the native display name fx persists for a session and
+**Fx Conversation name** — the native display name fx persists for a Conversation and
 changes through `/rename`. Fx may infer it from the first admitted prompt, in
 which case the name is a lowercase hyphenated slug, and reports committed
 changes over ADE as `SessionMetadataChanged`; fmx only reads that authority,
 shows the name, and uses exact matches as control targets.
-Duplicate names remain ambiguous. The Fx storage and event schema call the
-field `title`.
-_Avoid_: fmx name, label.
+Duplicate names remain ambiguous. The Fx compatibility storage and event
+schema call the field `title` and retain `session_id` for identity.
+_Avoid_: fmx Session name, label.
 
 **MCP server** — the separate `fmx-mcp` stdio executable and sole supported
 agent automation interface. It resolves the caller's Runtime for each tool
@@ -238,7 +230,7 @@ and Fx-native semantic work control; it neither owns a Runtime nor keeps one
 alive.
 _Avoid_: CLI, daemon, Runtime, direct Runtime-bridge client.
 
-**Runtime bridge** — the implementation-private, mode-0600, stable-per-Home
+**Runtime bridge** — the implementation-private, mode-0600, stable-per-fmx-Session
 Unix socket at `/tmp/fmx-<uid>/<home id>.bus` over which the MCP server sends
 one correlated request to a running Runtime and receives one response. Each
 tool call opens a fresh bounded connection; the bridge carries no observation
@@ -261,15 +253,15 @@ unsigned 64-bit value is never rounded by JSON tooling.
 _Avoid_: queue index, display id, integer position.
 
 **Orientation** — what the MCP server's `get_orientation` tool answers: the
-selected named fmx when there is one, the caller's own Agent as `you`, every
+selected fmx Session, the caller's own Agent as `you`, every
 Agent, the Tray's rows as drawn, and whatever surface is open. A read, which
 never marks anything Seen.
 _Avoid_: status, state dump, introspection.
 
 **Target** — how an MCP tool names an Agent: its stable Agent id or Pane id,
 its display id, `current` for the caller's own, `active` for the one on screen,
-`next` or `previous` relative to it, or an exact Session name, with a Session-id
-prefix as the fallback.
+`next` or `previous` relative to it, or an exact Fx Conversation name, with a
+compatibility `session_id` prefix as the fallback.
 _Avoid_: selector, handle, address.
 
 **UI gallery** — the developer-only TUI that browses fmx-owned OpenTUI
