@@ -62,23 +62,33 @@ operator path that links fmx and builds both native pins from exact source.
 Fmx has no binary release or publication path.
 _Avoid_: release, bucket installer, artifact channel.
 
-**Home** — one fmx configuration directory (`~/.config/fmx`, or
-`$XDG_CONFIG_HOME/fmx`) and the identity that follows from it: a short digest
-of the directory's path, which labels every Companion session the Home creates
-and keys its stable ADE-feed and Runtime-bridge sockets. One Home has at most
-one Runtime, may have several Clients, and owns the Agents its Companion holds
-between Runtime lifetimes.
-_Avoid_: profile (that is a start level's rejected synonym, and `fx-profile`
-is fx's own settings), installation, workspace.
+**Named fmx** — an independent fmx selected by `--name`: it has its own Home,
+Agents, Runtime, Clients, Manifest, UI state, and private sockets while sharing
+`config.toml`, Fx's profile and saved sessions, repositories, and binaries with
+the default and every other name. `default` explicitly selects the existing
+unnamed fmx.
+_Avoid_: session (that is Fx's saved conversation), profile, workspace,
+instance.
 
-**Manifest** — `~/.config/fmx/agents.json`, the Home's own record of the
-Agents its Companion holds: one entry per Agent carrying its identity,
+**Home** — one selected fmx-owned-state directory and the identity that follows
+from it: the default uses `~/.config/fmx` (or `$XDG_CONFIG_HOME/fmx`) and a named
+fmx uses its `homes/<name>` child. A short digest of that directory labels every
+Companion session the Home creates and keys its stable ADE-feed and
+Runtime-bridge sockets; every Home loads the one shared `config.toml` from the
+config root. One Home has at most one Runtime, may have several Clients, and
+owns the Agents its Companion holds between Runtime lifetimes.
+_Avoid_: profile (that is a start level's rejected synonym, and `fx-profile`
+is fx's own settings), configuration directory, installation, workspace.
+
+**Manifest** — the Home's `agents.json` (`~/.config/fmx/agents.json` for the
+default, `~/.config/fmx/homes/<name>/agents.json` when named), its own record of
+the Agents its Companion holds: one entry per Agent carrying its identity,
 display number, directory, the fx it runs, and the last ADE lifecycle
 checkpoint, written before the Companion is asked to start anything and
-removed when the Agent ends. A claim, not the truth: the Companion's
-sessions are the truth, and a start joins the two — attaching what both know,
-adopting what only the Companion holds, dropping what only the Manifest
-remembers. It keeps no prompt text.
+removed when the Agent ends. A claim, not the truth: the Companion's sessions
+are the truth, and a start joins the two — attaching what both know, adopting
+what only the Companion holds, dropping what only the Manifest remembers. It
+keeps no prompt text.
 _Avoid_: registry (that is the agent registry), state file (that is
 `state.json`), session list.
 
@@ -156,10 +166,10 @@ Ramp's surface fill and its ancestors are set in bold; nothing else marks
 them, so two faint backgrounds never have to be told apart.
 _Avoid_: selection, breadcrumb.
 
-**Project root** — a directory named by `project_roots`. A Home must configure
-at least one before its TUI can start, and the first is the Runtime's working
-directory. Personal roots belong in the Home's configuration, never in a
-shipped default.
+**Project root** — a directory named by `project_roots`. The shared
+configuration must name at least one before any Home's TUI can start, and the
+first is each Runtime's working directory. Personal roots belong in
+`config.toml`, never in a shipped default.
 _Avoid_: workspace root, start default, scan directory.
 
 **Agent start level** — the model and reasoning effort a new Agent starts
@@ -243,8 +253,9 @@ unsigned 64-bit value is never rounded by JSON tooling.
 _Avoid_: queue index, display id, integer position.
 
 **Orientation** — what the MCP server's `get_orientation` tool answers: the
-caller's own Agent as `you`, every Agent, the Tray's rows as drawn, and whatever
-surface is open. A read, which never marks anything Seen.
+selected named fmx when there is one, the caller's own Agent as `you`, every
+Agent, the Tray's rows as drawn, and whatever surface is open. A read, which
+never marks anything Seen.
 _Avoid_: status, state dump, introspection.
 
 **Target** — how an MCP tool names an Agent: its stable Agent id or Pane id,

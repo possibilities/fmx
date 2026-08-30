@@ -1,12 +1,11 @@
 import { randomBytes } from "node:crypto"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname } from "node:path"
 import type { AgentAttention, AgentState } from "./agent-registry.ts"
 import type { FxWorkControlBinding } from "./fx-work-control.ts"
-import { fmxDirectory } from "./state.ts"
+import { resolveFmxHome } from "./home.ts"
 
-const MANIFEST_PATH_ENV_VAR = "FMX_MANIFEST_PATH"
 export const MANIFEST_VERSION = 1
 
 /**
@@ -71,9 +70,9 @@ export type Manifest = {
 export function manifestPath(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
+  name: string | null = null,
 ): string {
-  if (env[MANIFEST_PATH_ENV_VAR]) return env[MANIFEST_PATH_ENV_VAR]
-  return join(fmxDirectory(env, homeDirectory), "agents.json")
+  return resolveFmxHome(name, env, homeDirectory).manifestPath
 }
 
 export function mintIdentity(token: string = randomBytes(16).toString("hex")): AgentIdentity {

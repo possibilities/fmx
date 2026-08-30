@@ -130,6 +130,8 @@ export type Snapshot = {
     cwd: string
     cols: number
     rows: number
+    /** Present only for an explicitly named fmx; absent preserves default output. */
+    name?: string
   }
   /** The caller's own agent, when called from inside one. */
   you: AgentInfo | null

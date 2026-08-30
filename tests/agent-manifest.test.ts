@@ -36,6 +36,9 @@ test("manifest path honors the override and otherwise sits beside state.json", (
   expect(manifestPath({ FMX_MANIFEST_PATH: "/x/m.json" }, "/home/u")).toBe("/x/m.json")
   expect(manifestPath({}, "/home/u")).toBe("/home/u/.config/fmx/agents.json")
   expect(manifestPath({ XDG_CONFIG_HOME: "/cfg" }, "/home/u")).toBe("/cfg/fmx/agents.json")
+  expect(manifestPath({ XDG_CONFIG_HOME: "/cfg" }, "/home/u", "foo")).toBe(
+    "/cfg/fmx/homes/foo/agents.json",
+  )
 })
 
 test("parsing keeps valid entries and drops each bad one on its own", () => {

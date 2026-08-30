@@ -1,7 +1,7 @@
 import { chmodSync } from "node:fs"
 import { userInfo } from "node:os"
 import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
-import { homeId, privateRootDirectory } from "./zmx-environment.ts"
+import { privateRootDirectory } from "./zmx-environment.ts"
 import { isAddressInUse, listenerAnswers, removeSocketFile } from "./unix-socket.ts"
 
 type SocketListener = ReturnType<typeof Bun.listen>
@@ -42,11 +42,9 @@ export type AdeEventSource = {
   addEventListener(listener: AdeEventListener): void
 }
 
-export type AdeSocketOptions = {
-  /** Keys the stable default path. Defaults to this process's Home. */
-  homeId?: string
-  path?: string
-}
+export type AdeSocketOptions =
+  | { /** Keys the stable default path. */ homeId: string; path?: undefined }
+  | { /** An exact path for a deterministic test. */ path: string; homeId?: string }
 
 /** Another Runtime owns this Home's ADE socket and Manifest authority. */
 export class HomeActiveError extends Error {
@@ -72,8 +70,8 @@ export class AdeSocket implements AdeEventSource {
   private startupBacklog: { record: AdeRecord; bytes: number }[] = []
   private startupBacklogBytes = 0
 
-  constructor(options: AdeSocketOptions = {}) {
-    this.path = options.path ?? defaultAdeSocketPath(options.homeId ?? homeId())
+  constructor(options: AdeSocketOptions) {
+    this.path = options.path ?? defaultAdeSocketPath(options.homeId)
   }
 
   addEventListener(listener: AdeEventListener): void {

@@ -53,6 +53,7 @@ const orientationSchema = z.object({
     cwd: z.string(),
     cols: z.number().int(),
     rows: z.number().int(),
+    name: z.string().optional(),
   }),
   you: agentSchema.nullable(),
   active: z.number().int().nullable(),
@@ -145,7 +146,7 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
     {
       title: "Get fmx orientation",
       description:
-        "Read the caller, active Agent, every Agent and subagent, Tray tree, terminal dimensions, and open fmx surface.",
+        "Read the selected named fmx (when any), caller, active Agent, every Agent and subagent, Tray tree, terminal dimensions, and open fmx surface.",
       outputSchema: toolResultSchema(orientationSchema),
       annotations: {
         readOnlyHint: true,

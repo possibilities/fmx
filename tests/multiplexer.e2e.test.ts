@@ -9,8 +9,9 @@ import { defaultAdeSocketPath } from "../src/ade-events.ts"
 import { RuntimeBridge } from "../src/runtime-bridge.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { RuntimeClient } from "../src/runtime-client.ts"
+import { resolveFmxHome } from "../src/home.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
-import { COMPANION_BINARY_NAME, homeIdFor } from "../src/zmx-environment.ts"
+import { COMPANION_BINARY_NAME } from "../src/zmx-environment.ts"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FAKE_FX = resolve(ROOT, "tests/fixtures/fake-fx.ts")
@@ -26,7 +27,8 @@ const PTY_TEST_ENABLED =
   Boolean(COMPANION && existsSync(COMPANION))
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
-const homeOf = (temporaryDirectory: string) => homeIdFor(join(temporaryDirectory, "config", "fmx"))
+const homeOf = (temporaryDirectory: string, name: string | null = null) =>
+  resolveFmxHome(name, { XDG_CONFIG_HOME: join(temporaryDirectory, "config") }).id
 const companionDirectoryFor = (temporaryDirectory: string) =>
   `/tmp/fmxz-${createHash("sha256").update(basename(temporaryDirectory)).digest("hex").slice(0, 12)}`
 
@@ -132,17 +134,142 @@ test.skipIf(!PTY_TEST_ENABLED)(
   30_000,
 )
 
+test.skipIf(!PTY_TEST_ENABLED)(
+  "named fmx Runtimes are independent and same-name Clients join",
+  async () => {
+    await chmod(FAKE_FX, 0o755)
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "fmx-names-e2e-"))
+    const configFile = join(temporaryDirectory, "config.toml")
+    await writeFile(configFile, `project_roots = [${JSON.stringify(ROOT)}]\n`)
+    const env = {
+      ...process.env,
+      FMX_FX_PATH: FAKE_FX,
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      FMX_CONFIG_PATH: configFile,
+      XDG_CONFIG_HOME: join(temporaryDirectory, "config"),
+      FMX_ZMX_PATH: COMPANION!,
+      FMX_ZMX_DIR: companionDirectoryFor(temporaryDirectory),
+      FMX_MANIFEST_PATH: undefined,
+      FMX_STATE_PATH: undefined,
+    }
+    const spawnClient = (name: string, sink: { output: string }, cols: number, rows: number) => {
+      const decoder = new TextDecoder()
+      return Bun.spawn([...FMX_COMMAND, "--name", name], {
+        cwd: ROOT,
+        env,
+        terminal: {
+          cols,
+          rows,
+          data: (_terminal, bytes) => {
+            sink.output += decoder.decode(bytes, { stream: true })
+          },
+        },
+      })
+    }
+
+    const fooOutput = { output: "" }
+    const barOutput = { output: "" }
+    const foo = spawnClient("foo", fooOutput, 100, 24)
+    const bar = spawnClient("bar", barOutput, 80, 20)
+    let secondFoo: ReturnType<typeof spawnClient> | null = null
+    try {
+      await waitUntil(() => fooOutput.output.includes("no agents"), 8_000, () => fooOutput.output)
+      await waitUntil(() => barOutput.output.includes("no agents"), 8_000, () => barOutput.output)
+
+      const fooInitial = await orientation(temporaryDirectory, env, "foo")
+      const barInitial = await orientation(temporaryDirectory, env, "bar")
+      expect(fooInitial?.fmx).toMatchObject({ name: "foo", cols: 100, rows: 24 })
+      expect(barInitial?.fmx).toMatchObject({ name: "bar", cols: 80, rows: 20 })
+      expect(fooInitial!.fmx.pid).not.toBe(barInitial!.fmx.pid)
+
+      const fooAgent = await runtimeRequest(temporaryDirectory, env, "foo", "agent.create", {
+        directory: ROOT,
+      }) as { agent: Snapshot["agents"][number] }
+      const barAgent = await runtimeRequest(temporaryDirectory, env, "bar", "agent.create", {
+        directory: ROOT,
+      }) as { agent: Snapshot["agents"][number] }
+      expect(fooAgent.agent.display_id).toBe(1)
+      expect(barAgent.agent.display_id).toBe(1)
+      expect(fooAgent.agent.agent_id).not.toBe(barAgent.agent.agent_id)
+
+      const secondFooOutput = { output: "" }
+      secondFoo = spawnClient("foo", secondFooOutput, 60, 16)
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(temporaryDirectory, env, "foo")
+          return snapshot?.fmx.pid === fooInitial!.fmx.pid &&
+            snapshot.fmx.cols === 60 && snapshot.fmx.rows === 16 &&
+            snapshot.agents.length === 1 && snapshot.agents[0]?.agent_id === fooAgent.agent.agent_id
+        },
+        8_000,
+        () => secondFooOutput.output,
+      )
+      expect((await orientation(temporaryDirectory, env, "bar"))?.agents[0]?.agent_id).toBe(
+        barAgent.agent.agent_id,
+      )
+
+      foo.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(foo.exited, 6_000, "first foo Client did not detach")).toBe(0)
+      foo.terminal?.close()
+      expect((await orientation(temporaryDirectory, env, "foo"))?.fmx.pid).toBe(fooInitial!.fmx.pid)
+
+      secondFoo.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(secondFoo.exited, 6_000, "final foo Client did not detach")).toBe(0)
+      secondFoo.terminal?.close()
+      await waitUntil(
+        async () => (await orientation(temporaryDirectory, env, "foo")) === null,
+        8_000,
+        () => secondFooOutput.output,
+      )
+      expect(await orientation(temporaryDirectory, env, "bar")).not.toBeNull()
+
+      bar.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await withTimeout(bar.exited, 6_000, "bar Client did not detach")).toBe(0)
+      bar.terminal?.close()
+      await waitUntil(
+        async () => (await orientation(temporaryDirectory, env, "bar")) === null,
+        8_000,
+        () => barOutput.output,
+      )
+    } finally {
+      if (foo.exitCode === null) foo.kill("SIGKILL")
+      foo.terminal?.close()
+      if (bar.exitCode === null) bar.kill("SIGKILL")
+      bar.terminal?.close()
+      if (secondFoo && secondFoo.exitCode === null) secondFoo.kill("SIGKILL")
+      secondFoo?.terminal?.close()
+      await endCompanionSessions(temporaryDirectory)
+      await rm(temporaryDirectory, { recursive: true, force: true })
+    }
+  },
+  45_000,
+)
+
 async function orientation(
   temporaryDirectory: string,
   env: NodeJS.ProcessEnv,
+  name: string | null = null,
 ): Promise<Snapshot | null> {
-  const socketPath = RuntimeBridge.pathFor(defaultAdeSocketPath(homeOf(temporaryDirectory)))
+  const socketPath = RuntimeBridge.pathFor(defaultAdeSocketPath(homeOf(temporaryDirectory, name)))
   try {
     return await new RuntimeClient({ env: { ...env, FMX_SOCKET_PATH: socketPath } })
       .request("orient", {}, new AbortController().signal) as Snapshot
   } catch {
     return null
   }
+}
+
+async function runtimeRequest(
+  temporaryDirectory: string,
+  env: NodeJS.ProcessEnv,
+  name: string,
+  method: Parameters<RuntimeClient["request"]>[0],
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  const socketPath = RuntimeBridge.pathFor(defaultAdeSocketPath(homeOf(temporaryDirectory, name)))
+  return await new RuntimeClient({ env: { ...env, FMX_SOCKET_PATH: socketPath } })
+    .request(method, params, new AbortController().signal)
 }
 
 async function endCompanionSessions(temporaryDirectory: string): Promise<void> {

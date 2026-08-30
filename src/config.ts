@@ -1,9 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { resolveFmxHome } from "./home.ts"
 import { resolveKeybindings, type Keybindings } from "./keybindings.ts"
-
-const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
 
 type LoadedConfig = {
   keybindings: Keybindings
@@ -24,9 +22,7 @@ export function configPath(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
 ): string {
-  if (env[CONFIG_PATH_ENV_VAR]) return env[CONFIG_PATH_ENV_VAR]
-  const configHome = env.XDG_CONFIG_HOME || join(homeDirectory, ".config")
-  return join(configHome, "fmx", "config.toml")
+  return resolveFmxHome(null, env, homeDirectory).configPath
 }
 
 export async function loadConfig(path = configPath()): Promise<LoadedConfig> {

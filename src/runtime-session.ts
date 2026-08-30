@@ -188,11 +188,18 @@ async function consumeBootstrapMarker(path: string): Promise<boolean> {
 }
 
 /** argv for this same fmx, whether it is a Bun source checkout or one binary. */
-export function currentRuntimeCommand(
-  executable: string = process.execPath,
-  main: string = Bun.main,
-): string[] {
-  return main.startsWith("/$bunfs/") ? [executable] : [executable, main]
+export type RuntimeCommandOptions = {
+  executable?: string
+  main?: string
+  /** null leaves the default Runtime argv byte-for-byte unchanged. */
+  name?: string | null
+}
+
+export function currentRuntimeCommand(options: RuntimeCommandOptions = {}): string[] {
+  const executable = options.executable ?? process.execPath
+  const main = options.main ?? Bun.main
+  const command = main.startsWith("/$bunfs/") ? [executable] : [executable, main]
+  return options.name ? [...command, "--name", options.name] : command
 }
 
 export function isRuntimeProcess(env: NodeJS.ProcessEnv = process.env): boolean {

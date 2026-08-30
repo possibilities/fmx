@@ -1,8 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
-
-const STATE_PATH_ENV_VAR = "FMX_STATE_PATH"
+import { dirname } from "node:path"
+import { resolveFmxHome } from "./home.ts"
 
 /** Machine-owned UI state, kept out of the hand-edited config.toml. */
 export type PersistedState = {
@@ -14,22 +13,12 @@ export type PersistedState = {
   activeAgentId?: string
 }
 
-/** Everything fmx keeps for itself lives here, alongside the config file the
- * human edits. */
-export function fmxDirectory(
-  env: NodeJS.ProcessEnv = process.env,
-  homeDirectory: string = homedir(),
-): string {
-  const configHome = env.XDG_CONFIG_HOME || join(homeDirectory, ".config")
-  return join(configHome, "fmx")
-}
-
 export function statePath(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
+  name: string | null = null,
 ): string {
-  if (env[STATE_PATH_ENV_VAR]) return env[STATE_PATH_ENV_VAR]
-  return join(fmxDirectory(env, homeDirectory), "state.json")
+  return resolveFmxHome(name, env, homeDirectory).statePath
 }
 
 export async function loadState(path = statePath()): Promise<PersistedState> {

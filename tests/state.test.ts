@@ -11,6 +11,9 @@ describe("statePath", () => {
     )
     expect(statePath({ XDG_CONFIG_HOME: "/xdg" }, "/home/me")).toBe("/xdg/fmx/state.json")
     expect(statePath({}, "/home/me")).toBe("/home/me/.config/fmx/state.json")
+    expect(statePath({ XDG_CONFIG_HOME: "/xdg" }, "/home/me", "foo")).toBe(
+      "/xdg/fmx/homes/foo/state.json",
+    )
   })
 })
 
