@@ -1,4 +1,5 @@
 import packageMetadata from "../package.json" with { type: "json" }
+import { normalizeFmxName } from "./home.ts"
 
 export const VERSION = packageMetadata.version
 
@@ -7,6 +8,8 @@ export type CliOptions = {
   version: boolean
   /** `fmx doctor`: report the installation instead of running the TUI. */
   doctor: boolean
+  /** null selects the existing unnamed/default fmx. */
+  name: string | null
 }
 
 export class UsageError extends Error {
@@ -17,10 +20,24 @@ export class UsageError extends Error {
 }
 
 export function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { help: false, version: false, doctor: false }
+  const options: CliOptions = { help: false, version: false, doctor: false, name: null }
   const positional: string[] = []
+  let nameSpecified = false
 
-  for (const arg of args) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!
+    if (arg === "--name" || arg.startsWith("--name=")) {
+      if (nameSpecified) throw new UsageError("--name may be specified only once")
+      const value = arg === "--name" ? args[++index] : arg.slice("--name=".length)
+      if (value === undefined || value === "") throw new UsageError("--name requires a value")
+      try {
+        options.name = normalizeFmxName(value)
+      } catch (error) {
+        throw new UsageError(error instanceof Error ? error.message : String(error))
+      }
+      nameSpecified = true
+      continue
+    }
     switch (arg) {
       case "-h":
       case "--help":
@@ -47,15 +64,16 @@ export function parseArgs(args: string[]): CliOptions {
 }
 
 export function usage(): string {
-  return `Usage: fmx [options]
-       fmx doctor
+  return `Usage: fmx [--name NAME] [options]
+       fmx [--name NAME] doctor
 
-Open or attach a terminal Client for this Home's fmx Runtime.
+Open or attach a terminal Client for the selected fmx Runtime.
 Agent automation is provided by the separate fmx-mcp server.
 
 Options:
-  -h, --help     show this help
-  -v, --version  print the version
+      --name NAME  select an independent named fmx
+  -h, --help       show this help
+  -v, --version    print the version
 
 Commands:
   doctor         verify the Companion, its private directory, and Fx

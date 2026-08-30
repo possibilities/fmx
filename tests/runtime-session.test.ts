@@ -85,8 +85,22 @@ test("Runtime bootstrap waits for a first Client marker and consumes it", async 
 })
 
 test("the Runtime command distinguishes a source checkout from a compiled binary", () => {
-  expect(currentRuntimeCommand("/bin/bun", "/work/src/index.ts")).toEqual(["/bin/bun", "/work/src/index.ts"])
-  expect(currentRuntimeCommand("/bin/fmx", "/$bunfs/root/index.js")).toEqual(["/bin/fmx"])
+  expect(currentRuntimeCommand({ executable: "/bin/bun", main: "/work/src/index.ts" })).toEqual([
+    "/bin/bun",
+    "/work/src/index.ts",
+  ])
+  expect(currentRuntimeCommand({ executable: "/bin/fmx", main: "/$bunfs/root/index.js" })).toEqual(["/bin/fmx"])
+  expect(currentRuntimeCommand({ executable: "/bin/bun", main: "/work/src/index.ts", name: "foo" })).toEqual([
+    "/bin/bun",
+    "/work/src/index.ts",
+    "--name",
+    "foo",
+  ])
+  expect(currentRuntimeCommand({ executable: "/bin/fmx", main: "/$bunfs/root/index.js", name: "foo" })).toEqual([
+    "/bin/fmx",
+    "--name",
+    "foo",
+  ])
 })
 
 function session(name: string, state: SessionEntry["state"], labels: Record<string, string>): SessionEntry {

@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto"
 import { access, constants, realpath, stat } from "node:fs/promises"
 import { userInfo } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import companionPin from "../companion.json" with { type: "json" }
 import { ensurePrivateDirectories } from "./private-directory.ts"
-import { fmxDirectory } from "./state.ts"
 
 /** The development override for where the Companion binary is. */
 export const COMPANION_PATH_ENV_VAR = "FMX_ZMX_PATH"
@@ -38,21 +36,6 @@ export const INHERITED_COMPANION_VARIABLES = [
   "ZMX_SCROLLBACK_LINES",
   "ZMX_NO_DETACH_KEY",
 ] as const
-
-/**
- * The Home id: what labels every session this fmx creates and keys its
- * stable ADE-feed and Runtime-bridge sockets. Derived from the fmx directory's path
- * rather than minted and stored, so a Home whose manifest is lost can still
- * recognize its own sessions by label, and two Homes on one machine (two
- * `XDG_CONFIG_HOME`s) never collide.
- */
-export function homeIdFor(directory: string): string {
-  return createHash("sha256").update(directory).digest("hex").slice(0, 12)
-}
-
-export function homeId(env: NodeJS.ProcessEnv = process.env): string {
-  return homeIdFor(fmxDirectory(env))
-}
 
 /**
  * Where the Companion keeps sockets and exit records. Under `/tmp` rather

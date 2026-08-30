@@ -15,7 +15,7 @@ import {
   type FxWorkControlResult,
 } from "../src/fx-work-control.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
-import { Multiplexer } from "../src/multiplexer.ts"
+import { fmxTerminalTitle, Multiplexer } from "../src/multiplexer.ts"
 import { instanceIdForPane, record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
@@ -73,7 +73,7 @@ async function workspace(): Promise<{ home: string; code: string }> {
   return { home, code }
 }
 
-async function harness(name: string) {
+async function harness(name: string, fmxName?: string) {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const adeSocket = new TestAdeSocket(`/tmp/fmx-control-test-${name}-${process.pid}.ade.sock`)
@@ -84,6 +84,7 @@ async function harness(name: string) {
     fxPath: FAKE_FX,
     cwd: join(code, "alpha"),
     keybindings: resolveKeybindings().keybindings,
+    fmxName,
     home,
     adeSocket,
     runtimeSocketPath: RUNTIME_PATH,
@@ -184,12 +185,27 @@ test("orients an empty fmx", async () => {
   try {
     const snapshot = (await h.control("orient", { caller: 1 })) as Snapshot
     expect(snapshot.fmx).toMatchObject({ pid: process.pid, cols: 100, rows: 30 })
+    expect(snapshot.fmx).not.toHaveProperty("name")
     expect(snapshot.fmx).not.toHaveProperty("socket")
     expect(snapshot.you).toBeNull()
     expect(snapshot.active).toBeNull()
     expect(snapshot.agents).toEqual([])
     expect(snapshot.tray).toMatchObject({ visible: false, rows: [] })
     expect(snapshot.surface).toEqual({ kind: "none" })
+  } finally {
+    await h.close()
+  }
+})
+
+test("identifies a named fmx in Orientation and terminal titles", async () => {
+  const h = await harness("named", "review")
+  try {
+    const snapshot = (await h.control("orient")) as Snapshot
+    expect(snapshot.fmx.name).toBe("review")
+    expect(fmxTerminalTitle()).toBe("fmx")
+    expect(fmxTerminalTitle(undefined, "agent")).toBe("fmx · agent")
+    expect(fmxTerminalTitle("review")).toBe("fmx review")
+    expect(fmxTerminalTitle("review", "agent")).toBe("fmx review · agent")
   } finally {
     await h.close()
   }

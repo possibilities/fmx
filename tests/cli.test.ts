@@ -7,8 +7,8 @@ import { parseArgs, usage, VERSION } from "../src/cli.ts"
 
 describe("parseArgs", () => {
   test("keeps the fmx executable to the TUI and installation diagnostics", () => {
-    expect(parseArgs([])).toEqual({ help: false, version: false, doctor: false })
-    expect(parseArgs(["doctor"])).toEqual({ help: false, version: false, doctor: true })
+    expect(parseArgs([])).toEqual({ help: false, version: false, doctor: false, name: null })
+    expect(parseArgs(["doctor"])).toEqual({ help: false, version: false, doctor: true, name: null })
     expect(parseArgs(["-h"]).help).toBe(true)
     expect(parseArgs(["--version"]).version).toBe(true)
     expect(VERSION).toBe(packageMetadata.version)
@@ -16,6 +16,23 @@ describe("parseArgs", () => {
       fmx: "./src/index.ts",
       "fmx-mcp": "./src/mcp.ts",
     })
+  })
+
+  test("selects one independent named fmx", () => {
+    expect(parseArgs(["--name", "foo"])).toEqual({ help: false, version: false, doctor: false, name: "foo" })
+    expect(parseArgs(["--name=work_2", "doctor"])).toEqual({ help: false, version: false, doctor: true, name: "work_2" })
+    expect(parseArgs(["doctor", "--name", "foo-bar"]).name).toBe("foo-bar")
+    expect(parseArgs(["--name", "default"]).name).toBeNull()
+    expect(usage()).toContain("--name NAME  select an independent named fmx")
+  })
+
+  test("rejects missing, repeated, and unsafe names as usage errors", () => {
+    expect(() => parseArgs(["--name"])).toThrow("--name requires a value")
+    expect(() => parseArgs(["--name="])).toThrow("--name requires a value")
+    expect(() => parseArgs(["--name", "foo", "--name", "bar"])).toThrow("only once")
+    for (const invalid of ["A", "2fast", "has.dot", "has/slash", `a${"b".repeat(32)}`]) {
+      expect(() => parseArgs(["--name", invalid])).toThrow("invalid fmx name")
+    }
   })
 
   test("has no automation or socket subcommands", () => {

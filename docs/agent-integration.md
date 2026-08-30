@@ -19,7 +19,9 @@ required = true
 An MCP server started inside an Agent uses that Agent's Home and knows that
 Agent as `current`. A server started outside an Agent connects only when
 exactly one Runtime is live on the machine. If none or several are live, the
-tool call fails rather than guessing. There is no Home-selection parameter.
+tool call fails rather than guessing. Select an independent named fmx when
+starting its terminal Client with `fmx --name NAME`; MCP has no Home-selection
+parameter and cannot cross from one Home's Agent roster into another.
 
 The Runtime ends when its final terminal Client detaches. Its Agents continue
 under the Companion, but MCP calls cannot reach them until a terminal Client
@@ -119,7 +121,8 @@ errors and never reach the Runtime.
 
 Takes no input. Its result contains:
 
-- `fmx`: Runtime pid, version, working directory, and current terminal size;
+- `fmx`: Runtime pid, version, working directory, current terminal size, and
+  optional `name` when this is an explicitly named fmx;
 - `you`: the caller's Agent, or `null` outside an Agent;
 - `active`: the active display id, or `null` with no Agents;
 - `agents`: creation-ordered Agent records with stable identities, repository

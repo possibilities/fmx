@@ -40,6 +40,14 @@
   every Agent reuses that absolute path without another lookup or probe.
   AgentStart still installs the same fork separately as `fx`; fmx installs its
   pinned private copy as `fmx-fx` and launches it with `FX_AUTO_UPGRADE=0`.
+- `fmx --name NAME` selects an independent named Home under
+  `<config root>/homes/<name>` while every Home reads the one root
+  `config.toml`. Plain `fmx` and `--name default` select the preexisting root
+  Home exactly: its directory, id, Manifest, state, sockets, Companion labels,
+  and surviving Agents never migrate. Names match
+  `^[a-z][a-z0-9_-]{0,31}$`; named Runtime argv retains `--name`, while the
+  default Runtime argv stays unchanged. Do not add named-Home list, stop, or
+  delete commands.
 - One Home has one Companion-held Runtime (`fmxr-<home id>`) and any number
   of thin terminal Clients. The Runtime alone owns OpenTUI, `Multiplexer`,
   the Home sockets, and the Manifest. A Client relays bytes and dimensions;

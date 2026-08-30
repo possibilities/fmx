@@ -3,8 +3,9 @@ import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { doctor } from "../src/doctor.ts"
 import { VERSION } from "../src/cli.ts"
+import { homeIdFor, resolveFmxHome } from "../src/home.ts"
 import { PROTOCOL_VERSION } from "../src/zmx-protocol.ts"
-import { COMPANION_PIN, homeIdFor } from "../src/zmx-environment.ts"
+import { COMPANION_PIN } from "../src/zmx-environment.ts"
 import { MIN_FXNK_VERSION } from "../src/executable.ts"
 
 /** A compatible Fx fixture at a path whose realpath is stable on every OS. */
@@ -47,6 +48,12 @@ test("doctor reports a paired installation and requires a compatible Fx", async 
     expect(report.lines).toContain(`protocol   ${PROTOCOL_VERSION}`)
     expect(report.lines).toContain(`home       ${homeIdFor(join(root, "config", "fmx"))} (${join(root, "config", "fmx")})`)
     expect(report.lines).toContain(`fx         ${fx} (fxnk ${MIN_FXNK_VERSION})`)
+
+    const namedHome = resolveFmxHome("review", env)
+    const named = await doctor(env, namedHome)
+    expect(named.ok).toBe(true)
+    expect(named.lines).toContain("name       review")
+    expect(named.lines).toContain(`home       ${namedHome.id} (${join(root, "config", "fmx", "homes", "review")})`)
 
     // Fx is a required half of the runtime contract, not an informational row.
     await rm(fx)

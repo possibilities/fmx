@@ -5,14 +5,15 @@ import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { AdeSocket, HomeActiveError } from "./ade-events.ts"
 import { parseArgs, usage, VERSION } from "./cli.ts"
-import { configPath, loadConfig } from "./config.ts"
+import { loadConfig } from "./config.ts"
 import { RuntimeBridge } from "./runtime-bridge.ts"
 import { doctor } from "./doctor.ts"
 import { resolveFx } from "./executable.ts"
-import { AgentManifest, manifestPath } from "./agent-manifest.ts"
+import { AgentManifest } from "./agent-manifest.ts"
 import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
+import { resolveFmxHome, type FmxHome } from "./home.ts"
 import {
   type FxnkThemeResolution,
   FxnkThemeMonitor,
@@ -44,7 +45,6 @@ import {
   companionDirectory,
   companionMismatch,
   ensureCompanionDirectories,
-  homeId,
   privateRootDirectory,
   resolveCompanion,
 } from "./zmx-environment.ts"
@@ -68,8 +68,9 @@ async function main(): Promise<void> {
     process.stdout.write(`${VERSION}\n`)
     return
   }
+  const home = resolveFmxHome(options.name)
   if (options.doctor) {
-    const report = await doctor()
+    const report = await doctor(process.env, home)
     process.stdout.write(`${report.lines.join("\n")}\n`)
     process.exitCode = report.ok ? 0 : 1
     return
@@ -88,7 +89,7 @@ async function main(): Promise<void> {
     // this is the only visible startup state.
     concealClientCursor()
     try {
-      await startTerminalClient(releaseStartupSignals)
+      await startTerminalClient(home, releaseStartupSignals)
     } finally {
       // runTerminalClient performs the complete terminal cleanup. This guard
       // covers failures before a Companion connection exists.
@@ -101,27 +102,26 @@ async function main(): Promise<void> {
   if (!bootstrapPath) throw new Error("fmx Runtime has no Client bootstrap path")
   await waitForRuntimeBootstrap(bootstrapPath)
 
-  const loadedConfig = await loadConfig()
+  const loadedConfig = await loadConfig(home.configPath)
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
   if (loadedConfig.projectRoots.length === 0) {
-    throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${configPath()}`)
+    throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${home.configPath}`)
   }
   const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
   const fxPath = await resolveFx()
   const companionPath = await resolveCompanion()
-  const persistedState = await loadState()
+  const persistedState = await loadState(home.statePath)
   let stateSave: Promise<void> = Promise.resolve()
   const persistState = () => {
     const snapshot: PersistedState = { ...persistedState }
-    stateSave = stateSave.then(() => saveState(snapshot)).catch(() => {})
+    stateSave = stateSave.then(() => saveState(snapshot, home.statePath)).catch(() => {})
   }
-  const home = homeId()
 
   let renderer: CliRenderer | null = null
   let themeMonitor: FxnkThemeMonitor | null = null
   let app: Multiplexer | null = null
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
-  const adeSocket = new AdeSocket({ homeId: home })
+  const adeSocket = new AdeSocket({ homeId: home.id })
   let runtimeBridge: RuntimeBridge | null = null
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
@@ -176,10 +176,10 @@ async function main(): Promise<void> {
       process.stderr.write(`fmx: ${message}\n`)
     }
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
-    manifest = await AgentManifest.open(manifestPath(), home)
+    manifest = await AgentManifest.open(home.manifestPath, home.id)
     const runtimeSocketPath = RuntimeBridge.pathFor(adeSocket.path)
     const restored = await reconcileAtStartup(manifest, companion, runtimeSocketPath)
-    transport = new CompanionTransportFactory(companion, home, {
+    transport = new CompanionTransportFactory(companion, home.id, {
       attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
     })
     const survivors = restored.map(({ entry }) => entry)
@@ -218,6 +218,7 @@ async function main(): Promise<void> {
       fxPath,
       cwd: workspace,
       keybindings: loadedConfig.keybindings,
+      fmxName: home.name ?? undefined,
       manifest,
       transport,
       survivors,
@@ -299,11 +300,14 @@ async function main(): Promise<void> {
   }
 }
 
-async function startTerminalClient(onSignalHandlersInstalled: () => void): Promise<void> {
-  const loadedConfig = await loadConfig()
+async function startTerminalClient(
+  home: FmxHome,
+  onSignalHandlersInstalled: () => void,
+): Promise<void> {
+  const loadedConfig = await loadConfig(home.configPath)
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
   if (loadedConfig.projectRoots.length === 0) {
-    throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${configPath()}`)
+    throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${home.configPath}`)
   }
   const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
   const companionPath = await resolveCompanion()
@@ -316,9 +320,9 @@ async function startTerminalClient(onSignalHandlersInstalled: () => void): Promi
   }
   const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
   const runtime = await ensureRuntimeSession(companion, {
-    homeId: homeId(),
+    homeId: home.id,
     cwd: workspace,
-    command: currentRuntimeCommand(),
+    command: currentRuntimeCommand({ name: home.name }),
     env: stringEnvironment(process.env),
   })
   process.exitCode = await runTerminalClient({

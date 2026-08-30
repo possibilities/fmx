@@ -144,6 +144,8 @@ type MultiplexerOptions = {
   keybindings: Keybindings
   /** The Home's record of its Agents; every start and end is written through it. */
   manifest: AgentManifest
+  /** Public name of this independent fmx; absent is the existing default. */
+  fmxName?: string
   /** Where Agents are started and reached. */
   transport: AgentTransportFactory
   /** Agents the join found running: attached, in display order, before anything else. */
@@ -1705,6 +1707,7 @@ export class Multiplexer {
         cwd: this.options.cwd,
         cols: this.renderer.width,
         rows: this.renderer.height,
+        ...(this.options.fmxName ? { name: this.options.fmxName } : {}),
       },
       you: you ? this.agentInfo(you) : null,
       active: this.activeAgent()?.id ?? null,
@@ -1723,8 +1726,13 @@ export class Multiplexer {
   private refreshTerminalTitle(): void {
     if (this.shuttingDown && this.renderer.isDestroyed) return
     const active = this.activeAgent()
-    this.renderer.setTerminalTitle(active ? `fmx · ${active.label}` : "fmx")
+    this.renderer.setTerminalTitle(fmxTerminalTitle(this.options.fmxName, active?.label))
   }
+}
+
+export function fmxTerminalTitle(name?: string, activeLabel?: string): string {
+  const base = name ? `fmx ${name}` : "fmx"
+  return activeLabel ? `${base} · ${activeLabel}` : base
 }
 
 type HelpEntry = readonly [key: string, description: string]

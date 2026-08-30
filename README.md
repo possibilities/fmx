@@ -37,8 +37,21 @@ project_roots = ["~/code", "~/src"]
 worktree_root = "~/.fmx/worktrees"
 ```
 
-Run `fmx` again for the same configuration to attach another terminal to the
-same UI. The last one to interact sets the layout size.
+Run `fmx` again to attach another terminal to the same UI. The last one to
+interact sets the layout size.
+
+Use `--name` to select an independent named fmx:
+
+```sh
+fmx --name review
+fmx --name implementation
+```
+
+Each name has its own Agents and display numbering, saved UI state, Runtime,
+Clients, and private sockets. Running the same name again attaches to that
+name's existing Runtime. Every name shares `config.toml`, Fx's profile,
+credentials and saved sessions, project roots, repositories, and binaries.
+Plain `fmx` and `fmx --name default` select the original default unchanged.
 
 An agent disappears only when it exits — end it from inside, the way you would
 at a terminal. `fmx-zmx list`, `attach`, and `kill` reach one by hand.
@@ -52,7 +65,7 @@ live.
 
 | Tool | Purpose |
 |---|---|
-| `get_orientation` | Read the caller, active Agent, all Agents and subagents, Tray tree, terminal size, and open fmx surface |
+| `get_orientation` | Read the selected named fmx, caller, active Agent, all Agents and subagents, Tray tree, terminal size, and open fmx surface |
 | `create_agent` | Create an Agent in a repository, optionally in a new Worktree and with per-process model or effort overrides |
 | `focus_agent` | Focus an Agent by stable `agent_id`, `pane_id`, display id, relative Target, Session name, or Session-id prefix |
 | `configure_tray` | Read or change the Tray's width and visibility |

@@ -8,16 +8,9 @@ import {
   companionDirectory,
   companionEnvironment,
   companionMismatch,
-  homeIdFor,
   parseCompanionVersion,
   resolveCompanion,
 } from "../src/zmx-environment.ts"
-
-test("the Home id is a stable short digest of the fmx directory", () => {
-  expect(homeIdFor("/home/u/.config/fmx")).toMatch(/^[0-9a-f]{12}$/)
-  expect(homeIdFor("/home/u/.config/fmx")).toBe(homeIdFor("/home/u/.config/fmx"))
-  expect(homeIdFor("/home/u/.config/fmx")).not.toBe(homeIdFor("/other/fmx"))
-})
 
 test("the Companion directory is short, per user, and overridable", () => {
   expect(companionDirectory({}, 502)).toBe("/tmp/fmx-502/zmx")

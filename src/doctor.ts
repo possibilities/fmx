@@ -4,7 +4,7 @@ import {
   probeFxnkVersion,
   resolveFx,
 } from "./executable.ts"
-import { fmxDirectory } from "./state.ts"
+import { resolveFmxHome, type FmxHome } from "./home.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PATH_ENV_VAR,
@@ -14,7 +14,6 @@ import {
   companionDirectory,
   companionMismatch,
   ensureCompanionDirectories,
-  homeIdFor,
   installedDirectory,
   resolveCompanion,
   type ResolvedCompanion,
@@ -39,7 +38,10 @@ export type DoctorReport = {
   ok: boolean
 }
 
-export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<DoctorReport> {
+export async function doctor(
+  env: NodeJS.ProcessEnv = process.env,
+  home: FmxHome = resolveFmxHome(null, env),
+): Promise<DoctorReport> {
   const rows: [string, string][] = [["fmx", VERSION]]
   let ok = true
   const fail = (label: string, text: string) => {
@@ -85,8 +87,8 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Doct
   }
   rows.push(["protocol", String(PROTOCOL_VERSION)])
 
-  const home = fmxDirectory(env)
-  rows.push(["home", `${homeIdFor(home)} (${home})`])
+  if (home.name !== null) rows.push(["name", home.name])
+  rows.push(["home", `${home.id} (${home.directory})`])
 
   try {
     const fxPath = await resolveFx(env[FX_PATH_ENV_VAR], env)
