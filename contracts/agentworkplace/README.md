@@ -45,6 +45,26 @@ digests cover the complete committed JSONL bytes, including each record's LF.
 The command above prints a machine-readable verification receipt containing
 all fixture paths, byte counts, digests, and the manifest digest.
 
+After this adapter is committed, an integration owner can run the complete
+fmx gate and materialize a disposable canonical AgentWorkplace provider bundle
+without copying editable fmx fixtures into the consumer repository:
+
+```sh
+bun run contracts:provider -- \
+  --output /path/to/existing-empty-directory \
+  --agentworkplace-manifest /path/to/phase0-owned-manifest.json
+```
+
+The generator requires a clean committed fmx Worktree, runs
+`./scripts/local-gate.sh`, records its real status and the exact 18
+environment-gated general-suite skips, then rechecks the same committed HEAD.
+It copies the four verified owner fixtures byte-for-byte beside the generated
+manifest because provider artifacts are bundle-relative. The Runtime and
+Fx-facing ids are translated only at this boundary; the canonical owner ids,
+bytes, and manifest remain unchanged. The generated manifest names the exact
+committed SHA after the gate, so it intentionally lives outside the commit it
+identifies and avoids a self-referential Git SHA.
+
 The lifecycle golden traces cover both an admitted Agent with exact Companion
 exit proof and a durably cancelled partial launch with no Fx Conversation,
 authoritative never-started proof, and independent Worktree cleanup. Absence,
