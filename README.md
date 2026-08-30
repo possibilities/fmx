@@ -51,11 +51,22 @@ The picker lists the switchable Agents newest first, with their Session name,
 Project context, and current state. `ctrl-b b` opens it; use the arrow keys and
 Enter to select, or Escape to close it.
 
+Add `--hide-single-agent-picker` when one Agent should receive the whole
+terminal and the picker should appear only after a second Agent starts:
+
+```sh
+fmx --agent-picker --hide-single-agent-picker
+```
+
+If the roster returns to one Agent, the picker closes and gives its three rows
+back to that Agent.
+
 The view belongs to the shared Runtime for that Home. Plain `fmx` attaches to
 whichever view is already running and starts the Tray view when there is no
 Runtime. An explicit `fmx --agent-picker` refuses to attach when that Home
 already has a Tray Runtime, so it never silently gives a different view than
-the one requested.
+the one requested. An explicit `--hide-single-agent-picker` likewise refuses a
+live picker Runtime that was started without that behavior.
 
 Use `--name` to select an independent named fmx:
 

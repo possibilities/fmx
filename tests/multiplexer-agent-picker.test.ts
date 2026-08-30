@@ -85,3 +85,67 @@ test("replaces the Tray with the shared top Agent picker and routes its focus", 
     await multiplexer.shutdown()
   }
 })
+
+test("optionally returns the picker rows to a lone Agent", async () => {
+  const setup = await createTestRenderer({
+    width: 90,
+    height: 24,
+    kittyKeyboard: true,
+    exitOnCtrlC: false,
+  })
+  const options = agentOptions()
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...options,
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    agentPicker: true,
+    hideSingleAgentPicker: true,
+  })
+  await multiplexer.start()
+  const picker = setup.renderer.root.findDescendantById("fmx-agent-picker") as BoxRenderable
+  const selector = setup.renderer.root.findDescendantById("fmx-agent-picker-selector") as BoxRenderable
+  const content = setup.renderer.root.findDescendantById("fmx-content") as BoxRenderable
+
+  try {
+    await startVisibleAgent(setup, multiplexer)
+    await setup.renderOnce()
+    expect(picker.visible).toBe(false)
+    expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 90, 24])
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(selector.visible).toBe(false)
+
+    await startVisibleAgent(setup, multiplexer, 2)
+    await setup.renderOnce()
+    expect(picker.visible).toBe(true)
+    expect([content.x, content.y, content.width, content.height]).toEqual([0, 3, 90, 21])
+
+    setup.mockInput.pressKey("b", { ctrl: true })
+    setup.mockInput.pressKey("b")
+    await setup.renderOnce()
+    expect(selector.visible).toBe(true)
+
+    options.transport.started[1]!.write(Uint8Array.of(3, 3))
+    await waitFor(() => !picker.visible)
+    await setup.renderOnce()
+    expect(selector.visible).toBe(false)
+    expect([content.x, content.y, content.width, content.height]).toEqual([0, 0, 90, 24])
+    expect(await multiplexer.control.handle("orient", {}, new AbortController().signal)).toMatchObject({
+      active: 1,
+      surface: { kind: "none" },
+    })
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("condition was not met")
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}

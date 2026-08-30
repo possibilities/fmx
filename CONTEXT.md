@@ -141,7 +141,8 @@ _Avoid_: sidebar, panel.
 `--agent-picker`: one full-width outlined control above the active terminal
 and a downward-opening list of switchable Agents. It replaces the Tray for
 that shared Runtime, shows no subagent rows, and owns focus while its list is
-open.
+open. With `--hide-single-agent-picker`, the complete control is absent until
+at least two Agents exist.
 _Avoid_: session dropdown, header, top bar, alternate Tray.
 
 **Session list** — the tray's tree of running agents: project, then

@@ -7,8 +7,22 @@ import { parseArgs, usage, VERSION } from "../src/cli.ts"
 
 describe("parseArgs", () => {
   test("keeps the fmx executable to the TUI and installation diagnostics", () => {
-    expect(parseArgs([])).toEqual({ help: false, version: false, doctor: false, name: null, agentPicker: false })
-    expect(parseArgs(["doctor"])).toEqual({ help: false, version: false, doctor: true, name: null, agentPicker: false })
+    expect(parseArgs([])).toEqual({
+      help: false,
+      version: false,
+      doctor: false,
+      name: null,
+      agentPicker: false,
+      hideSingleAgentPicker: false,
+    })
+    expect(parseArgs(["doctor"])).toEqual({
+      help: false,
+      version: false,
+      doctor: true,
+      name: null,
+      agentPicker: false,
+      hideSingleAgentPicker: false,
+    })
     expect(parseArgs(["-h"]).help).toBe(true)
     expect(parseArgs(["--version"]).version).toBe(true)
     expect(VERSION).toBe(packageMetadata.version)
@@ -19,11 +33,12 @@ describe("parseArgs", () => {
   })
 
   test("selects one independent named fmx", () => {
-    expect(parseArgs(["--name", "foo"])).toEqual({ help: false, version: false, doctor: false, name: "foo", agentPicker: false })
-    expect(parseArgs(["--name=work_2", "doctor"])).toEqual({ help: false, version: false, doctor: true, name: "work_2", agentPicker: false })
+    expect(parseArgs(["--name", "foo"])).toMatchObject({ name: "foo", agentPicker: false })
+    expect(parseArgs(["--name=work_2", "doctor"])).toMatchObject({ doctor: true, name: "work_2" })
     expect(parseArgs(["doctor", "--name", "foo-bar"]).name).toBe("foo-bar")
     expect(parseArgs(["--name", "default"]).name).toBeNull()
-    expect(usage()).toContain("--name NAME     select an independent named fmx")
+    expect(usage()).toContain("--name NAME")
+    expect(usage()).toContain("select an independent named fmx")
   })
 
   test("selects the alternate top Agent picker", () => {
@@ -32,7 +47,20 @@ describe("parseArgs", () => {
       agentPicker: true,
       name: "review",
     })
-    expect(usage()).toContain("--agent-picker  use the top Agent picker instead of the Tray")
+    expect(usage()).toContain("--agent-picker")
+    expect(usage()).toContain("use the top Agent picker instead of the Tray")
+  })
+
+  test("optionally hides an otherwise redundant single-Agent picker", () => {
+    expect(parseArgs(["--hide-single-agent-picker", "--agent-picker"])).toMatchObject({
+      agentPicker: true,
+      hideSingleAgentPicker: true,
+    })
+    expect(() => parseArgs(["--hide-single-agent-picker"])).toThrow(
+      "--hide-single-agent-picker requires --agent-picker",
+    )
+    expect(usage()).toContain("--hide-single-agent-picker")
+    expect(usage()).toContain("hide the Agent picker while only one Agent runs")
   })
 
   test("rejects missing, repeated, and unsafe names as usage errors", () => {

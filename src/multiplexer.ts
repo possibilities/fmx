@@ -158,6 +158,8 @@ type MultiplexerOptions = {
   onTrayHiddenChange?: (hidden: boolean) => void
   /** Replace the Tray with the full-width top Agent picker for this Runtime. */
   agentPicker?: boolean
+  /** In picker mode, return its three rows to the terminal while exactly one Agent exists. */
+  hideSingleAgentPicker?: boolean
   /** Stable identity to focus before the first restored frame. */
   initialActiveAgentId?: string
   onActiveAgentChange?: (agentId: string | null) => void
@@ -386,6 +388,7 @@ export class Multiplexer {
   private readonly sessionList: SessionList
   private readonly agentPicker: AgentPicker
   private readonly pickerMode: boolean
+  private readonly hideSingleAgentPicker: boolean
   /** Hold restored navigation mutations in the model until one final publish. */
   private navigationPublicationHeld: boolean
   private readonly subagents: SubagentObserver
@@ -448,6 +451,7 @@ export class Multiplexer {
     this.renderer.setBackgroundColor(initialRamp.background)
     this.keybindings = options.keybindings
     this.pickerMode = options.agentPicker ?? false
+    this.hideSingleAgentPicker = this.pickerMode && (options.hideSingleAgentPicker ?? false)
     this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
     this.trayHidden = options.initialTrayHidden ?? false
     this.sessionNames = new SessionNames({ home: options.home })
@@ -984,10 +988,13 @@ export class Multiplexer {
   private refreshAgentChrome(): void {
     const hasAgents = this.agents.length > 0
     const showTray = hasAgents && !this.pickerMode && !this.trayHidden
+    const showPicker = hasAgents
+      && this.pickerMode
+      && (!this.hideSingleAgentPicker || this.agents.length > 1)
     this.tray.visible = showTray
     this.divider.visible = showTray
-    this.agentPicker.visible = hasAgents && this.pickerMode
-    if (!hasAgents) this.agentPicker.close()
+    this.agentPicker.visible = showPicker
+    if (!showPicker) this.agentPicker.close()
     this.emptyState.visible = !hasAgents
     if (!hasAgents) this.refreshEmptyState()
     this.applyLayout()

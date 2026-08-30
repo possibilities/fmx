@@ -12,6 +12,8 @@ export type CliOptions = {
   name: string | null
   /** Replace the Tray with the shared Runtime's top Agent picker. */
   agentPicker: boolean
+  /** In picker mode, spend no chrome while only one Agent exists. */
+  hideSingleAgentPicker: boolean
 }
 
 export class UsageError extends Error {
@@ -28,6 +30,7 @@ export function parseArgs(args: string[]): CliOptions {
     doctor: false,
     name: null,
     agentPicker: false,
+    hideSingleAgentPicker: false,
   }
   const positional: string[] = []
   let nameSpecified = false
@@ -58,6 +61,9 @@ export function parseArgs(args: string[]): CliOptions {
       case "--agent-picker":
         options.agentPicker = true
         break
+      case "--hide-single-agent-picker":
+        options.hideSingleAgentPicker = true
+        break
       default:
         if (arg.startsWith("-")) throw new UsageError(`unknown option: ${arg}`)
         positional.push(arg)
@@ -65,6 +71,9 @@ export function parseArgs(args: string[]): CliOptions {
     }
   }
 
+  if (options.hideSingleAgentPicker && !options.agentPicker) {
+    throw new UsageError("--hide-single-agent-picker requires --agent-picker")
+  }
   if (positional.length === 0) return options
   if (positional[0] !== "doctor") {
     throw new UsageError(`unknown command: ${positional[0]}\nCommands: doctor.`)
@@ -75,17 +84,18 @@ export function parseArgs(args: string[]): CliOptions {
 }
 
 export function usage(): string {
-  return `Usage: fmx [--name NAME] [--agent-picker] [options]
+  return `Usage: fmx [--name NAME] [--agent-picker [--hide-single-agent-picker]] [options]
        fmx [--name NAME] doctor
 
 Open or attach a terminal Client for the selected fmx Runtime.
 Agent automation is provided by the separate fmx-mcp server.
 
 Options:
-      --name NAME     select an independent named fmx
-      --agent-picker  use the top Agent picker instead of the Tray
-  -h, --help          show this help
-  -v, --version       print the version
+      --name NAME                 select an independent named fmx
+      --agent-picker              use the top Agent picker instead of the Tray
+      --hide-single-agent-picker  hide the Agent picker while only one Agent runs
+  -h, --help                      show this help
+  -v, --version                   print the version
 
 Commands:
   doctor         verify the Companion, its private directory, and Fx

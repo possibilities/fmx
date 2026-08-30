@@ -302,7 +302,7 @@ export class AgentPicker extends BoxRenderable {
   }
 
   private showMenu(): void {
-    if (this.opened || !this.published || this.entries.length === 0 || this.rowCapacity() === 0) return
+    if (this.opened || !this.visible || !this.published || this.entries.length === 0 || this.rowCapacity() === 0) return
     const active = this.entries.findIndex((entry) => entry.active)
     this.highlighted = active >= 0 ? active : 0
     this.scrollOffset = 0

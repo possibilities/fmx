@@ -31,14 +31,19 @@ export type RuntimeSessionRequest = {
   env: Record<string, string>
   /** An explicit preference; false accepts either view on an existing Runtime. */
   agentPicker?: boolean
+  /** An explicit picker behavior; false accepts either behavior on an existing picker Runtime. */
+  hideSingleAgentPicker?: boolean
 }
 
 /** One deterministic Companion session is the shared fmx Runtime for a Home. */
 export function runtimeSessionIdentity(
   homeId: string,
   companionDirectory: string,
-  options: { agentPicker?: boolean } = {},
+  options: { agentPicker?: boolean; hideSingleAgentPicker?: boolean } = {},
 ): RuntimeSessionIdentity {
+  if (options.hideSingleAgentPicker && !options.agentPicker) {
+    throw new Error("--hide-single-agent-picker requires --agent-picker")
+  }
   const name = `${RUNTIME_SESSION_PREFIX}-${homeId}`
   return {
     name,
@@ -47,6 +52,7 @@ export function runtimeSessionIdentity(
       home: homeId,
       kind: RUNTIME_SESSION_KIND,
       ...(options.agentPicker ? { view: "agent-picker" } : {}),
+      ...(options.hideSingleAgentPicker ? { picker: "hide-single" } : {}),
     },
     bootstrapPath: join(companionDirectory, `.${name}.bootstrap`),
   }
@@ -63,6 +69,7 @@ export async function ensureRuntimeSession(
 ): Promise<RuntimeSession> {
   const identity = runtimeSessionIdentity(request.homeId, companion.directory, {
     agentPicker: request.agentPicker,
+    hideSingleAgentPicker: request.hideSingleAgentPicker,
   })
   let session = await companion.settle(identity.name)
   if (session.state === "live") return attachedRuntime(identity, session)
@@ -120,8 +127,16 @@ function assertOwnedRuntime(identity: RuntimeSessionIdentity, session: SessionEn
 
 function assertCompatibleRuntimeView(identity: RuntimeSessionIdentity, session: SessionEntry): void {
   if (identity.labels.view === "agent-picker" && session.labels.view !== "agent-picker") {
+    const requestedFlags = identity.labels.picker === "hide-single"
+      ? "--agent-picker --hide-single-agent-picker"
+      : "--agent-picker"
     throw new Error(
-      "the live fmx Runtime is using the Tray; detach every Client, then start it again with --agent-picker",
+      `the live fmx Runtime is using the Tray; detach every Client, then start it again with ${requestedFlags}`,
+    )
+  }
+  if (identity.labels.picker === "hide-single" && session.labels.picker !== "hide-single") {
+    throw new Error(
+      "the live fmx Runtime keeps its Agent picker visible for one Agent; detach every Client, then start it again with --agent-picker --hide-single-agent-picker",
     )
   }
 }
@@ -215,14 +230,20 @@ export type RuntimeCommandOptions = {
   name?: string | null
   /** false leaves the default Runtime argv byte-for-byte unchanged. */
   agentPicker?: boolean
+  /** Valid only with agentPicker; false leaves picker Runtime argv unchanged. */
+  hideSingleAgentPicker?: boolean
 }
 
 export function currentRuntimeCommand(options: RuntimeCommandOptions = {}): string[] {
+  if (options.hideSingleAgentPicker && !options.agentPicker) {
+    throw new Error("--hide-single-agent-picker requires --agent-picker")
+  }
   const executable = options.executable ?? process.execPath
   const main = options.main ?? Bun.main
   const command = main.startsWith("/$bunfs/") ? [executable] : [executable, main]
   if (options.name) command.push("--name", options.name)
   if (options.agentPicker) command.push("--agent-picker")
+  if (options.hideSingleAgentPicker) command.push("--hide-single-agent-picker")
   return command
 }
 

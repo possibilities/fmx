@@ -70,10 +70,15 @@ test("a live owned Runtime is joined and a label impostor is refused", async () 
   )
 })
 
-test("an explicit Agent picker request refuses a live Tray Runtime while a plain Client joins either", async () => {
+test("explicit picker preferences refuse incompatible live Runtimes while less specific Clients join", async () => {
   const tray = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
   const picker = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test", { agentPicker: true })
+  const hiddenSingle = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test", {
+    agentPicker: true,
+    hideSingleAgentPicker: true,
+  })
   expect(picker.labels).toEqual({ ...tray.labels, view: "agent-picker" })
+  expect(hiddenSingle.labels).toEqual({ ...picker.labels, picker: "hide-single" })
 
   const makeCompanion = (labels: Record<string, string>) =>
     ({
@@ -85,10 +90,31 @@ test("an explicit Agent picker request refuses a live Tray Runtime while a plain
   await expect(ensureRuntimeSession(makeCompanion(tray.labels), { ...request, agentPicker: true })).rejects.toThrow(
     "detach every Client",
   )
+  await expect(
+    ensureRuntimeSession(makeCompanion(tray.labels), {
+      ...request,
+      agentPicker: true,
+      hideSingleAgentPicker: true,
+    }),
+  ).rejects.toThrow("--agent-picker --hide-single-agent-picker")
+  await expect(
+    ensureRuntimeSession(makeCompanion(picker.labels), {
+      ...request,
+      agentPicker: true,
+      hideSingleAgentPicker: true,
+    }),
+  ).rejects.toThrow("keeps its Agent picker visible for one Agent")
   expect(await ensureRuntimeSession(makeCompanion(picker.labels), request)).toEqual({
     socketPath: `/tmp/${tray.name}`,
     bootstrapPath: tray.bootstrapPath,
   })
+  expect(await ensureRuntimeSession(makeCompanion(hiddenSingle.labels), { ...request, agentPicker: true })).toEqual({
+    socketPath: `/tmp/${tray.name}`,
+    bootstrapPath: tray.bootstrapPath,
+  })
+  expect(() => runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test", { hideSingleAgentPicker: true })).toThrow(
+    "requires --agent-picker",
+  )
 })
 
 test("an explicit Agent picker request replaces an exited Tray Runtime", async () => {
@@ -162,6 +188,13 @@ test("the Runtime command distinguishes a source checkout from a compiled binary
     main: "/$bunfs/root/index.js",
     agentPicker: true,
   })).toEqual(["/bin/fmx", "--agent-picker"])
+  expect(currentRuntimeCommand({
+    executable: "/bin/fmx",
+    main: "/$bunfs/root/index.js",
+    agentPicker: true,
+    hideSingleAgentPicker: true,
+  })).toEqual(["/bin/fmx", "--agent-picker", "--hide-single-agent-picker"])
+  expect(() => currentRuntimeCommand({ hideSingleAgentPicker: true })).toThrow("requires --agent-picker")
 })
 
 function session(name: string, state: SessionEntry["state"], labels: Record<string, string>): SessionEntry {

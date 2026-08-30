@@ -59,7 +59,13 @@
   a Runtime it creates: an explicit picker Client refuses an already-live Tray
   Runtime with a detach-and-relaunch diagnostic, while a plain Client may join
   either shared view. Plain and named Runtime argv without the flag remain
-  unchanged. Do not persist the view or add an MCP picker tool.
+  unchanged. `--hide-single-agent-picker` is valid only beside
+  `--agent-picker`; it hides the complete three-row control while exactly one
+  Agent exists, reveals it when a second arrives, and closes and hides an open
+  picker when the roster returns to one. That explicit modifier also refuses a
+  live picker Runtime started without it, while an unmodified picker Client
+  may join either picker behavior. Both choices live only in Runtime argv and
+  Companion labels; do not persist them or add an MCP picker tool.
 - One Home has one Companion-held Runtime (`fmxr-<home id>`) and any number
   of thin terminal Clients. The Runtime alone owns OpenTUI, `Multiplexer`,
   the Home sockets, and the Manifest. A Client relays bytes and dimensions;
