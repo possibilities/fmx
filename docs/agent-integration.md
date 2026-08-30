@@ -130,7 +130,7 @@ Takes no input. Its result contains:
   nested subagents;
 - `tray`: actual visibility, persisted hidden choice, width, and the rows fmx
   currently draws; and
-- `surface`: `none`, `help`, or the current fmx error modal.
+- `surface`: `none`, `help`, `agent_picker`, or the current fmx error modal.
 
 Orientation is read-only and does not mark an Agent's state as Seen. Agent
 `state` is `blocked`, `working`, `done`, `idle`, or `unknown`; `attention` is
@@ -174,8 +174,8 @@ Agent.
 ```
 
 Selects the Agent shown on the shared human surface and returns its Agent
-record. It refuses with `busy` while an fmx modal is open rather than stealing
-terminal focus from that surface.
+record. It refuses with `busy` while another fmx surface owns focus, including
+the open Agent picker or a modal, rather than stealing terminal focus from it.
 
 ### `configure_tray`
 
@@ -188,6 +188,8 @@ the current terminal. `hidden` stores an explicit visibility choice;
 `toggle: true` reverses it. `hidden` and `toggle: true` cannot be combined.
 The result is `{ "visible", "hidden", "width" }`. With no fields, the tool is
 a read of that compact Tray state; use `get_orientation` when rows are needed.
+The settings remain persisted but have no visible effect while the Runtime is
+using the Agent picker view.
 
 ## Native Fx work control
 

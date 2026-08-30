@@ -70,6 +70,7 @@ const orientationSchema = z.object({
   surface: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("none") }),
     z.object({ kind: z.literal("help") }),
+    z.object({ kind: z.literal("agent_picker") }),
     z.object({ kind: z.literal("error"), heading: z.string(), message: z.string() }),
   ]),
 })
@@ -190,7 +191,7 @@ export function createFmxMcpServer(requester: RuntimeRequester = new RuntimeClie
     "focus_agent",
     {
       title: "Focus an fmx Agent",
-      description: "Select the Agent shown on the shared fmx surface. Refuses while a modal is open.",
+      description: "Select the Agent shown on the shared fmx surface. Refuses while another surface is open.",
       inputSchema: {
         target: z.string().min(1).describe(targetDescription),
       },

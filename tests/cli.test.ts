@@ -7,8 +7,8 @@ import { parseArgs, usage, VERSION } from "../src/cli.ts"
 
 describe("parseArgs", () => {
   test("keeps the fmx executable to the TUI and installation diagnostics", () => {
-    expect(parseArgs([])).toEqual({ help: false, version: false, doctor: false, name: null })
-    expect(parseArgs(["doctor"])).toEqual({ help: false, version: false, doctor: true, name: null })
+    expect(parseArgs([])).toEqual({ help: false, version: false, doctor: false, name: null, agentPicker: false })
+    expect(parseArgs(["doctor"])).toEqual({ help: false, version: false, doctor: true, name: null, agentPicker: false })
     expect(parseArgs(["-h"]).help).toBe(true)
     expect(parseArgs(["--version"]).version).toBe(true)
     expect(VERSION).toBe(packageMetadata.version)
@@ -19,11 +19,20 @@ describe("parseArgs", () => {
   })
 
   test("selects one independent named fmx", () => {
-    expect(parseArgs(["--name", "foo"])).toEqual({ help: false, version: false, doctor: false, name: "foo" })
-    expect(parseArgs(["--name=work_2", "doctor"])).toEqual({ help: false, version: false, doctor: true, name: "work_2" })
+    expect(parseArgs(["--name", "foo"])).toEqual({ help: false, version: false, doctor: false, name: "foo", agentPicker: false })
+    expect(parseArgs(["--name=work_2", "doctor"])).toEqual({ help: false, version: false, doctor: true, name: "work_2", agentPicker: false })
     expect(parseArgs(["doctor", "--name", "foo-bar"]).name).toBe("foo-bar")
     expect(parseArgs(["--name", "default"]).name).toBeNull()
-    expect(usage()).toContain("--name NAME  select an independent named fmx")
+    expect(usage()).toContain("--name NAME     select an independent named fmx")
+  })
+
+  test("selects the alternate top Agent picker", () => {
+    expect(parseArgs(["--agent-picker"])).toMatchObject({ agentPicker: true, name: null })
+    expect(parseArgs(["--name", "review", "--agent-picker"])).toMatchObject({
+      agentPicker: true,
+      name: "review",
+    })
+    expect(usage()).toContain("--agent-picker  use the top Agent picker instead of the Tray")
   })
 
   test("rejects missing, repeated, and unsafe names as usage errors", () => {

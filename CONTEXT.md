@@ -137,6 +137,13 @@ while no agent runs or when toggled away, resizable by its divider, its width
 and visibility remembered across runs.
 _Avoid_: sidebar, panel.
 
+**Agent picker** — the alternate Agent-navigation surface selected by
+`--agent-picker`: one full-width outlined control above the active terminal
+and a downward-opening list of switchable Agents. It replaces the Tray for
+that shared Runtime, shows no subagent rows, and owns focus while its list is
+open.
+_Avoid_: session dropdown, header, top bar, alternate Tray.
+
 **Session list** — the tray's tree of running agents: project, then
 branch, then one row per agent carrying its status icon and its name — the
 native session name once fx reports one, the short session id until then.

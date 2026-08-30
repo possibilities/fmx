@@ -3,6 +3,7 @@ import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testin
 
 export const UI_GALLERY_COMPONENTS = [
   "Multiplexer",
+  "Agent picker",
   "Session list",
 ] as const
 

@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert"
 import { resolve } from "node:path"
 import { BoxRenderable } from "@opentui/core"
+import { AgentPicker, type AgentPickerEntry } from "../src/agent-picker.ts"
 import { AgentManifest } from "../src/agent-manifest.ts"
 import type { AgentTransportFactory } from "../src/agent-transport.ts"
 import type { AdeEventListener, AdeRecord } from "../src/ade-events.ts"
@@ -61,6 +62,36 @@ export const UI_STORIES: readonly UiStory[] = [
       sizingOwnerFrame: { cols: 68, rows: 18 },
       afterMount: startGalleryAgent,
     }),
+  },
+  {
+    id: "agent-picker-closed",
+    component: "Agent picker",
+    title: "Active Agent",
+    description: "The closed control spends three rows to return the full terminal width.",
+    viewport: { cols: 72, rows: 10 },
+    expectedText: ["agent ◐ 4 · implement-gallery", "fmx · feature/ui-gallery"],
+    interaction: "Click the control to open the Agent list.",
+    arrange: mountAgentPicker(false, 4),
+  },
+  {
+    id: "agent-picker-open",
+    component: "Agent picker",
+    title: "Open Agent list",
+    description: "Newest-first Agent rows fly downward over the stage under the standard modal backdrop.",
+    viewport: { cols: 72, rows: 12 },
+    expectedText: ["✓ 3 · review-complete", "◐ 4 · implement-gallery", "? 2 · waiting-for-answer", "○ 1 · available"],
+    interaction: "Use arrows and Enter, or click an Agent row; Escape closes the list.",
+    arrange: mountAgentPicker(true, 4),
+  },
+  {
+    id: "agent-picker-shallow",
+    component: "Agent picker",
+    title: "Shallow terminal",
+    description: "The control remains intact while the physically constrained list scrolls around its highlight.",
+    viewport: { cols: 40, rows: 6 },
+    expectedText: ["agent ◐ 4 · implement-gallery", "✓ 3 · review-complete", "◐ 4 · implement-gallery"],
+    interaction: "Use Down to scroll beyond the two visible Agent rows.",
+    arrange: mountAgentPicker(true, 4),
   },
   {
     id: "session-list-status-atlas",
@@ -163,6 +194,60 @@ function mountSessionList(context: UiStoryContext, entries: SessionEntry[], widt
   list.applyTheme(context.themeMode)
   list.render(buildTree(entries), width)
   context.defer(() => list.root.destroyRecursively())
+}
+
+function mountAgentPicker(open: boolean, activeAgentId: number): (context: UiStoryContext) => void {
+  return (context) => {
+    let entries: AgentPickerEntry[] = [
+      pickerEntry({ agentId: 1, name: "available", state: "idle" }),
+      pickerEntry({ agentId: 2, name: "waiting-for-answer", state: "blocked", attention: "question" }),
+      pickerEntry({ agentId: 3, name: "review-complete", state: "done" }),
+      pickerEntry({
+        agentId: 4,
+        name: "implement-gallery",
+        branch: "feature/ui-gallery",
+        state: "working",
+      }),
+    ].map((candidate) => ({ ...candidate, active: candidate.agentId === activeAgentId }))
+    let picker!: AgentPicker
+    picker = new AgentPicker(context.setup.renderer, {
+      theme: context.themeMode,
+      onSelect: (agentId) => {
+        entries = entries.map((candidate) => ({ ...candidate, active: candidate.agentId === agentId }))
+        picker.setEntries(entries)
+      },
+    })
+    picker.visible = true
+    picker.resizeForSize(context.setup.renderer.width, context.setup.renderer.height)
+    picker.setEntries(entries)
+    context.canvas.add(picker)
+    if (open) picker.openMenu()
+
+    const keyHandler = (key: Parameters<AgentPicker["handleKeyPress"]>[0]) => {
+      if (!picker.open || !picker.handleKeyPress(key)) return
+      key.preventDefault()
+      key.stopPropagation()
+    }
+    context.setup.renderer.keyInput.on("keypress", keyHandler)
+    context.defer(() => {
+      context.setup.renderer.keyInput.off("keypress", keyHandler)
+      picker.destroyRecursively()
+    })
+  }
+}
+
+function pickerEntry(overrides: Partial<AgentPickerEntry> = {}): AgentPickerEntry {
+  return {
+    agentId: 1,
+    project: "fmx",
+    branch: "main",
+    sessionId: SESSION_ID,
+    name: null,
+    state: "idle",
+    attention: null,
+    active: false,
+    ...overrides,
+  }
 }
 
 type MultiplexerStoryOptions = {

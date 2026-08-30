@@ -20,6 +20,7 @@ import {
   displayStateFor,
   shortSessionId,
 } from "./agent-registry.ts"
+import { AgentPicker } from "./agent-picker.ts"
 import type { AdeEventSource, AdeRecord } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
 import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
@@ -155,6 +156,8 @@ type MultiplexerOptions = {
   onTrayWidthChange?: (width: number) => void
   initialTrayHidden?: boolean
   onTrayHiddenChange?: (hidden: boolean) => void
+  /** Replace the Tray with the full-width top Agent picker for this Runtime. */
+  agentPicker?: boolean
   /** Stable identity to focus before the first restored frame. */
   initialActiveAgentId?: string
   onActiveAgentChange?: (agentId: string | null) => void
@@ -366,6 +369,7 @@ class FxAgent {
 
 export class Multiplexer {
   private readonly stage: BoxRenderable
+  private readonly body: BoxRenderable
   private readonly tray: BoxRenderable
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
@@ -380,8 +384,10 @@ export class Multiplexer {
   /** Consecutive records refused as non-increasing, per Fx instance. */
   private readonly adeStaleRecords = new Map<string, number>()
   private readonly sessionList: SessionList
-  /** Hold restored Session-list mutations in the model until one final publish. */
-  private sessionListPublicationHeld: boolean
+  private readonly agentPicker: AgentPicker
+  private readonly pickerMode: boolean
+  /** Hold restored navigation mutations in the model until one final publish. */
+  private navigationPublicationHeld: boolean
   private readonly subagents: SubagentObserver
   private readonly seenSeq = new Map<number, number>()
   /** Per-directory git context, read once and reused by every agent there. */
@@ -441,21 +447,30 @@ export class Multiplexer {
     // the terminal-default canvas, chosen before any frame is exposed.
     this.renderer.setBackgroundColor(initialRamp.background)
     this.keybindings = options.keybindings
+    this.pickerMode = options.agentPicker ?? false
     this.trayWidth = options.initialTrayWidth ?? TRAY_DEFAULT_WIDTH
     this.trayHidden = options.initialTrayHidden ?? false
     this.sessionNames = new SessionNames({ home: options.home })
     this.subagents = new SubagentObserver({
       home: options.home,
       onChange: () => {
-        this.refreshSessionList()
+        this.refreshAgentNavigation()
       },
     })
-    const [helpWidth, helpHeight] = helpModalSize(this.keybindings)
+    const [helpWidth, helpHeight] = helpModalSize(this.keybindings, this.pickerMode)
 
     this.stage = new BoxRenderable(renderer, {
       id: "fmx-stage",
       width: "100%",
       height: "100%",
+      flexDirection: "column",
+    })
+    this.body = new BoxRenderable(renderer, {
+      id: "fmx-body",
+      width: "100%",
+      height: 0,
+      flexGrow: 1,
+      flexShrink: 1,
       flexDirection: "row",
     })
     this.tray = new BoxRenderable(renderer, {
@@ -494,16 +509,29 @@ export class Multiplexer {
       selectable: false,
     })
     this.content.add(this.emptyState)
-    this.stage.add(this.tray)
-    this.stage.add(this.divider)
-    this.stage.add(this.content)
 
     this.adeSocket = options.adeSocket ?? null
     this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
     this.sessionList.applyTheme(this.theme.theme)
-    this.sessionListPublicationHeld = (options.survivors?.length ?? 0) > 0
-    this.sessionList.root.visible = !this.sessionListPublicationHeld
+    this.navigationPublicationHeld = (options.survivors?.length ?? 0) > 0
+    this.sessionList.root.visible = !this.navigationPublicationHeld
     this.tray.add(this.sessionList.root)
+
+    this.agentPicker = new AgentPicker(renderer, {
+      theme: this.theme.theme,
+      onSelect: (agentId) => this.selectAgent(agentId),
+      onOpenChange: (open) => {
+        this.cancelPrefix()
+        if (open) this.activeAgent()?.terminal.blur()
+        else if (!this.shuttingDown) this.restoreFocus()
+      },
+    })
+    this.agentPicker.setPublished(!this.navigationPublicationHeld)
+    this.body.add(this.tray)
+    this.body.add(this.divider)
+    this.body.add(this.content)
+    this.stage.add(this.agentPicker)
+    this.stage.add(this.body)
 
     this.modalBackdrop = new BoxRenderable(renderer, {
       id: "fmx-modal-backdrop",
@@ -538,7 +566,7 @@ export class Multiplexer {
     })
     this.modalText = new TextRenderable(renderer, {
       id: "fmx-modal-text",
-      content: styledHelpContent(this.keybindings, initialRamp),
+      content: styledHelpContent(this.keybindings, initialRamp, this.pickerMode),
       fg: initialRamp.foreground,
       bg: initialRamp.background,
       selectable: false,
@@ -599,9 +627,10 @@ export class Multiplexer {
       this.syncSubagentParents(),
     ])
     if (this.shuttingDown) return
-    this.sessionListPublicationHeld = false
+    this.navigationPublicationHeld = false
     this.sessionList.root.visible = true
-    this.refreshSessionList()
+    this.agentPicker.setPublished(true)
+    this.refreshAgentNavigation()
   }
 
   setTheme(resolution: FxnkThemeResolution): void {
@@ -609,6 +638,7 @@ export class Multiplexer {
     this.theme = resolution
     const ramp = fxnkRamp(resolution.theme)
     this.renderer.setBackgroundColor(ramp.background)
+    this.agentPicker.applyTheme(resolution.theme)
     this.applyModalTheme()
     this.applyDividerTheme()
     this.refreshEmptyState()
@@ -627,6 +657,7 @@ export class Multiplexer {
     if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
     this.exitConfirmationTimer = null
     this.exitConfirmationKey = null
+    this.agentPicker.close()
     this.hideModal()
     this.subagents.stop()
 
@@ -764,7 +795,7 @@ export class Multiplexer {
       checkpoint?.seen === false ? Math.max(0, record.stateSeq - 1) : record.stateSeq,
     )
     if (entry.fxSessionId) this.sessionNames.recover(entry.fxSessionId)
-    this.refreshSessionList()
+    this.refreshAgentNavigation()
     return agent
   }
 
@@ -807,7 +838,7 @@ export class Multiplexer {
     this.refreshAgentChrome()
     if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
     this.loadGitContext(cwd)
-    this.refreshSessionList()
+    this.refreshAgentNavigation()
     return agent
   }
 
@@ -873,7 +904,7 @@ export class Multiplexer {
       this.activeIndex = -1
       this.options.onActiveAgentChange?.(null)
       this.refreshTerminalTitle()
-      this.refreshSessionList()
+      this.refreshAgentNavigation()
     } else if (wasActive) {
       this.activeIndex = -1
       this.switchTo(Math.min(index, this.agents.length - 1))
@@ -911,20 +942,22 @@ export class Multiplexer {
     active.terminal.setHostSelectionEnabled(true)
     // A surface drawn over fx keeps the keys; it hands them back when it
     // closes, so an agent shown behind it must not take them now.
-    if (!this.modalKind) this.restoreFocus()
+    if (!this.modalKind && !this.agentPicker.open) this.restoreFocus()
     this.markSeen(active)
     this.refreshTerminalTitle()
-    this.refreshSessionList()
+    this.refreshAgentNavigation()
   }
 
   private activeAgent(): FxAgent | null {
     return this.agents[this.activeIndex] ?? null
   }
 
-  private refreshSessionList(): void {
-    if (this.sessionListPublicationHeld) return
+  private refreshAgentNavigation(): void {
+    if (this.navigationPublicationHeld) return
     void this.syncSubagentParents()
-    this.sessionList.render(buildTree(this.sessionEntries()), this.trayWidth)
+    const entries = this.sessionEntries()
+    this.sessionList.render(buildTree(entries), this.trayWidth)
+    this.agentPicker.setEntries(entries)
   }
 
   private syncSubagentParents(): Promise<void> {
@@ -944,15 +977,17 @@ export class Multiplexer {
   }
 
   private restoreFocus(): void {
-    if (this.modalKind) return
+    if (this.modalKind || this.agentPicker.open) return
     this.activeAgent()?.terminal.focus()
   }
 
   private refreshAgentChrome(): void {
     const hasAgents = this.agents.length > 0
-    const showTray = hasAgents && !this.trayHidden
+    const showTray = hasAgents && !this.pickerMode && !this.trayHidden
     this.tray.visible = showTray
     this.divider.visible = showTray
+    this.agentPicker.visible = hasAgents && this.pickerMode
+    if (!hasAgents) this.agentPicker.close()
     this.emptyState.visible = !hasAgents
     if (!hasAgents) this.refreshEmptyState()
     this.applyLayout()
@@ -1030,7 +1065,7 @@ export class Multiplexer {
     const load = readGitContext(cwd).then((context) => {
       if (!this.shuttingDown && context) {
         this.gitContexts.set(cwd, context)
-        this.refreshSessionList()
+        this.refreshAgentNavigation()
       }
       return context
     }).finally(() => {
@@ -1116,7 +1151,7 @@ export class Multiplexer {
     }
     if (record.context.agentRole !== "main") {
       changed = this.subagents.applyAdeRecord(record) || changed
-      if (changed) this.refreshSessionList()
+      if (changed) this.refreshAgentNavigation()
       return
     }
 
@@ -1144,7 +1179,7 @@ export class Multiplexer {
     // one is checkpointed as unseen so a completed turn survives Detach.
     if (this.activeAgent() === agent) this.markSeen(agent)
     else this.checkpointAgent(agent)
-    this.refreshSessionList()
+    this.refreshAgentNavigation()
   }
 
   private installAdeSession(agent: FxAgent, sessionId: string | null): boolean {
@@ -1215,6 +1250,7 @@ export class Multiplexer {
 
   private applyLayout(requestedTrayWidth = this.trayWidth): void {
     this.applyTrayWidth(requestedTrayWidth)
+    this.agentPicker.resizeForSize(this.renderer.width, this.renderer.height)
   }
 
   private applyTrayWidth(requested = this.trayWidth): void {
@@ -1224,7 +1260,7 @@ export class Multiplexer {
     const min = Math.min(TRAY_MIN_WIDTH, max)
     this.trayWidth = Math.max(min, Math.min(max, requested))
     this.tray.width = this.trayWidth
-    this.refreshSessionList()
+    this.refreshAgentNavigation()
   }
 
   private applyDividerTheme(): void {
@@ -1232,7 +1268,7 @@ export class Multiplexer {
     this.divider.borderColor = color
     this.divider.focusedBorderColor = color
     this.sessionList.applyTheme(this.theme.theme)
-    this.refreshSessionList()
+    this.refreshAgentNavigation()
   }
 
   /** The modal takes keys, so its border is the focus hue — or the error hue
@@ -1254,7 +1290,7 @@ export class Multiplexer {
     this.modalText.content =
       this.modalKind === "spawn-error"
         ? styledSpawnErrorContent(this.spawnErrorHeading, this.spawnErrorLines, palette)
-        : styledHelpContent(this.keybindings, palette)
+        : styledHelpContent(this.keybindings, palette, this.pickerMode)
   }
 
   private onSelection(selection: Selection): void {
@@ -1292,6 +1328,11 @@ export class Multiplexer {
       ) {
         this.hideModal()
       }
+      return
+    }
+
+    if (this.pickerMode && this.agentPicker.open) {
+      this.handleAgentPickerKey(key)
       return
     }
 
@@ -1350,9 +1391,37 @@ export class Multiplexer {
         this.showHelp()
         return
       case "toggle_tray":
-        this.setTrayHidden(!this.trayHidden)
+        if (this.pickerMode) this.agentPicker.toggle()
+        else this.setTrayHidden(!this.trayHidden)
         return
     }
+  }
+
+  private handleAgentPickerKey(key: KeyEvent): void {
+    if (this.prefixArmed) {
+      this.swallow(key)
+      if (MODIFIER_ONLY_KEYS.has(key.name.toLowerCase())) return
+      this.cancelPrefix()
+      if (key.name === "escape") return
+      const action = actionForKey(this.keybindings, key, "prefix")
+      if (action?.name === "toggle_tray") this.agentPicker.toggle()
+      return
+    }
+
+    const directAction = actionForKey(this.keybindings, key, "direct")
+    if (directAction?.name === "toggle_tray") {
+      this.swallow(key)
+      this.agentPicker.toggle()
+      return
+    }
+    if (keyMatchesCombo(key, this.keybindings.prefix)) {
+      this.swallow(key)
+      this.prefixArmed = true
+      return
+    }
+
+    this.swallow(key)
+    this.agentPicker.handleKeyPress(key)
   }
 
   private cancelPrefix(): void {
@@ -1372,7 +1441,7 @@ export class Multiplexer {
   }
 
   private showHelp(): void {
-    const [width, height] = helpModalSize(this.keybindings)
+    const [width, height] = helpModalSize(this.keybindings, this.pickerMode)
     this.showModal("help", width, height)
   }
 
@@ -1394,6 +1463,7 @@ export class Multiplexer {
 
   private showModal(kind: ModalKind, width: number, height: number): void {
     this.modalKind = kind
+    this.agentPicker.close()
     this.resizeModal(width, height)
     this.applyModalTheme()
     this.modalBackdrop.visible = true
@@ -1577,7 +1647,7 @@ export class Multiplexer {
   /** Something drawn over fx takes the keys; a command that would fight it
    * for the screen is refused rather than silently stealing focus. */
   private refuseIfBusy(): void {
-    if (this.modalKind) {
+    if (this.modalKind || this.agentPicker.open) {
       throw new ControlFailure("busy", "something is already open", { surface: this.surface() })
     }
   }
@@ -1685,6 +1755,7 @@ export class Multiplexer {
     if (this.modalKind === "spawn-error") {
       return { kind: "error", heading: this.spawnErrorHeading, message: this.spawnErrorLines.join("") }
     }
+    if (this.agentPicker.open) return { kind: "agent_picker" }
     return { kind: "none" }
   }
 
@@ -1745,29 +1816,32 @@ const ACTIONS: Record<KeyActionName, { help: string }> = {
   toggle_tray: { help: "toggle tray" },
 }
 
-function helpEntries(keybindings: Keybindings): HelpEntry[] {
+function helpEntries(keybindings: Keybindings, agentPicker = false): HelpEntry[] {
   return [
     [keybindings.prefixLabel, "prefix mode"],
     ...ACTION_FIELDS.map(
-      (action): HelpEntry => [bindingLabel(keybindings[action]), ACTIONS[action].help],
+      (action): HelpEntry => [
+        bindingLabel(keybindings[action]),
+        action === "toggle_tray" && agentPicker ? "toggle agent picker" : ACTIONS[action].help,
+      ],
     ),
   ]
 }
 
-function helpModalSize(keybindings: Keybindings): [width: number, height: number] {
-  const lines = helpPlainText(keybindings).split("\n")
+function helpModalSize(keybindings: Keybindings, agentPicker = false): [width: number, height: number] {
+  const lines = helpPlainText(keybindings, agentPicker).split("\n")
   return [Math.max(...lines.map((line) => line.length)) + 5, lines.length + 2]
 }
 
-function helpPlainText(keybindings: Keybindings): string {
-  const entries = helpEntries(keybindings)
+function helpPlainText(keybindings: Keybindings, agentPicker = false): string {
+  const entries = helpEntries(keybindings, agentPicker)
   const keyColumn = helpKeyColumn(entries)
   return entries.map(([key, description]) => ` ${key.padEnd(keyColumn)}${description}`).join("\n")
 }
 
 /** Keys are labels — bold, one step down the ramp; what they do is the text. */
-function styledHelpContent(keybindings: Keybindings, ramp: Ramp): StyledText {
-  const entries = helpEntries(keybindings)
+function styledHelpContent(keybindings: Keybindings, ramp: Ramp, agentPicker = false): StyledText {
+  const entries = helpEntries(keybindings, agentPicker)
   const keyColumn = helpKeyColumn(entries)
   const chunks: TextChunk[] = []
   for (const [index, [key, description]] of entries.entries()) {

@@ -70,6 +70,56 @@ test("a live owned Runtime is joined and a label impostor is refused", async () 
   )
 })
 
+test("an explicit Agent picker request refuses a live Tray Runtime while a plain Client joins either", async () => {
+  const tray = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
+  const picker = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test", { agentPicker: true })
+  expect(picker.labels).toEqual({ ...tray.labels, view: "agent-picker" })
+
+  const makeCompanion = (labels: Record<string, string>) =>
+    ({
+      directory: "/tmp/fmx-runtime-test",
+      settle: async () => session(tray.name, "live", labels),
+    }) as unknown as CompanionCommand
+  const request = { homeId: HOME, cwd: "/work", command: ["fmx"], env: {} }
+
+  await expect(ensureRuntimeSession(makeCompanion(tray.labels), { ...request, agentPicker: true })).rejects.toThrow(
+    "detach every Client",
+  )
+  expect(await ensureRuntimeSession(makeCompanion(picker.labels), request)).toEqual({
+    socketPath: `/tmp/${tray.name}`,
+    bootstrapPath: tray.bootstrapPath,
+  })
+})
+
+test("an explicit Agent picker request replaces an exited Tray Runtime", async () => {
+  const tray = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
+  let forgotten = false
+  let created: CreateRequest | null = null
+  const companion = {
+    directory: "/tmp/fmx-runtime-test",
+    settle: async () => session(tray.name, "exited", tray.labels),
+    forget: async () => {
+      forgotten = true
+    },
+    create: async (request: CreateRequest) => {
+      created = request
+      return { name: request.name, socketPath: `/tmp/${request.name}`, pid: 4, createdAt: 5 }
+    },
+  } as unknown as CompanionCommand
+
+  expect(
+    await ensureRuntimeSession(companion, {
+      homeId: HOME,
+      cwd: "/work",
+      command: ["fmx", "--agent-picker"],
+      env: {},
+      agentPicker: true,
+    }),
+  ).toEqual({ socketPath: `/tmp/${tray.name}`, bootstrapPath: tray.bootstrapPath })
+  expect(forgotten).toBe(true)
+  expect(created).toMatchObject({ labels: { ...tray.labels, view: "agent-picker" } })
+})
+
 test("Runtime bootstrap waits for a first Client marker and consumes it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-runtime-bootstrap-"))
   const marker = join(directory, "ready")
@@ -101,6 +151,17 @@ test("the Runtime command distinguishes a source checkout from a compiled binary
     "--name",
     "foo",
   ])
+  expect(currentRuntimeCommand({
+    executable: "/bin/bun",
+    main: "/work/src/index.ts",
+    name: "foo",
+    agentPicker: true,
+  })).toEqual(["/bin/bun", "/work/src/index.ts", "--name", "foo", "--agent-picker"])
+  expect(currentRuntimeCommand({
+    executable: "/bin/fmx",
+    main: "/$bunfs/root/index.js",
+    agentPicker: true,
+  })).toEqual(["/bin/fmx", "--agent-picker"])
 })
 
 function session(name: string, state: SessionEntry["state"], labels: Record<string, string>): SessionEntry {

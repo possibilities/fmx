@@ -29,14 +29,25 @@ export type RuntimeSessionRequest = {
   cwd: string
   command: string[]
   env: Record<string, string>
+  /** An explicit preference; false accepts either view on an existing Runtime. */
+  agentPicker?: boolean
 }
 
 /** One deterministic Companion session is the shared fmx Runtime for a Home. */
-export function runtimeSessionIdentity(homeId: string, companionDirectory: string): RuntimeSessionIdentity {
+export function runtimeSessionIdentity(
+  homeId: string,
+  companionDirectory: string,
+  options: { agentPicker?: boolean } = {},
+): RuntimeSessionIdentity {
   const name = `${RUNTIME_SESSION_PREFIX}-${homeId}`
   return {
     name,
-    labels: { owner: OWNER_LABEL, home: homeId, kind: RUNTIME_SESSION_KIND },
+    labels: {
+      owner: OWNER_LABEL,
+      home: homeId,
+      kind: RUNTIME_SESSION_KIND,
+      ...(options.agentPicker ? { view: "agent-picker" } : {}),
+    },
     bootstrapPath: join(companionDirectory, `.${name}.bootstrap`),
   }
 }
@@ -50,7 +61,9 @@ export async function ensureRuntimeSession(
   companion: CompanionCommand,
   request: RuntimeSessionRequest,
 ): Promise<RuntimeSession> {
-  const identity = runtimeSessionIdentity(request.homeId, companion.directory)
+  const identity = runtimeSessionIdentity(request.homeId, companion.directory, {
+    agentPicker: request.agentPicker,
+  })
   let session = await companion.settle(identity.name)
   if (session.state === "live") return attachedRuntime(identity, session)
   if (session.state === "exited") {
@@ -93,16 +106,23 @@ export async function ensureRuntimeSession(
 
 function attachedRuntime(identity: RuntimeSessionIdentity, session: SessionEntry): RuntimeSession {
   assertOwnedRuntime(identity, session)
+  assertCompatibleRuntimeView(identity, session)
   if (!session.socketPath) throw new Error(`fmx Runtime ${identity.name} has no terminal socket`)
   return { socketPath: session.socketPath, bootstrapPath: identity.bootstrapPath }
 }
 
 function assertOwnedRuntime(identity: RuntimeSessionIdentity, session: SessionEntry): void {
-  if (
-    session.name !== identity.name ||
-    !Object.entries(identity.labels).every(([key, value]) => session.labels[key] === value)
-  ) {
+  const ownedLabels = { owner: OWNER_LABEL, home: identity.labels.home!, kind: RUNTIME_SESSION_KIND }
+  if (session.name !== identity.name || !Object.entries(ownedLabels).every(([key, value]) => session.labels[key] === value)) {
     throw new Error(`Companion session ${identity.name} does not belong to this fmx Runtime`)
+  }
+}
+
+function assertCompatibleRuntimeView(identity: RuntimeSessionIdentity, session: SessionEntry): void {
+  if (identity.labels.view === "agent-picker" && session.labels.view !== "agent-picker") {
+    throw new Error(
+      "the live fmx Runtime is using the Tray; detach every Client, then start it again with --agent-picker",
+    )
   }
 }
 
@@ -193,13 +213,17 @@ export type RuntimeCommandOptions = {
   main?: string
   /** null leaves the default Runtime argv byte-for-byte unchanged. */
   name?: string | null
+  /** false leaves the default Runtime argv byte-for-byte unchanged. */
+  agentPicker?: boolean
 }
 
 export function currentRuntimeCommand(options: RuntimeCommandOptions = {}): string[] {
   const executable = options.executable ?? process.execPath
   const main = options.main ?? Bun.main
   const command = main.startsWith("/$bunfs/") ? [executable] : [executable, main]
-  return options.name ? [...command, "--name", options.name] : command
+  if (options.name) command.push("--name", options.name)
+  if (options.agentPicker) command.push("--agent-picker")
+  return command
 }
 
 export function isRuntimeProcess(env: NodeJS.ProcessEnv = process.env): boolean {

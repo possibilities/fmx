@@ -10,6 +10,8 @@ export type CliOptions = {
   doctor: boolean
   /** null selects the existing unnamed/default fmx. */
   name: string | null
+  /** Replace the Tray with the shared Runtime's top Agent picker. */
+  agentPicker: boolean
 }
 
 export class UsageError extends Error {
@@ -20,7 +22,13 @@ export class UsageError extends Error {
 }
 
 export function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { help: false, version: false, doctor: false, name: null }
+  const options: CliOptions = {
+    help: false,
+    version: false,
+    doctor: false,
+    name: null,
+    agentPicker: false,
+  }
   const positional: string[] = []
   let nameSpecified = false
 
@@ -47,6 +55,9 @@ export function parseArgs(args: string[]): CliOptions {
       case "--version":
         options.version = true
         break
+      case "--agent-picker":
+        options.agentPicker = true
+        break
       default:
         if (arg.startsWith("-")) throw new UsageError(`unknown option: ${arg}`)
         positional.push(arg)
@@ -64,16 +75,17 @@ export function parseArgs(args: string[]): CliOptions {
 }
 
 export function usage(): string {
-  return `Usage: fmx [--name NAME] [options]
+  return `Usage: fmx [--name NAME] [--agent-picker] [options]
        fmx [--name NAME] doctor
 
 Open or attach a terminal Client for the selected fmx Runtime.
 Agent automation is provided by the separate fmx-mcp server.
 
 Options:
-      --name NAME  select an independent named fmx
-  -h, --help       show this help
-  -v, --version    print the version
+      --name NAME     select an independent named fmx
+      --agent-picker  use the top Agent picker instead of the Tray
+  -h, --help          show this help
+  -v, --version       print the version
 
 Commands:
   doctor         verify the Companion, its private directory, and Fx

@@ -12,6 +12,7 @@ test(
     expect(() => validateUiStories(UI_STORIES)).not.toThrow()
     expect(UI_GALLERY_COMPONENTS).toEqual([
       "Multiplexer",
+      "Agent picker",
       "Session list",
     ])
     const built = await buildUiGallery()
@@ -50,7 +51,7 @@ test(
     try {
       await setup.renderOnce()
       expect(setup.captureCharFrame()).toContain("UI GALLERY")
-      expect(setup.captureCharFrame()).toContain("2 components · 6 states")
+      expect(setup.captureCharFrame()).toContain("3 components · 9 states")
       expect(app.activeComponent).toBe("Multiplexer")
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
 
@@ -63,7 +64,7 @@ test(
       setup.mockInput.pressArrow("right")
       setup.mockInput.pressArrow("right")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Session list")
+      expect(app.activeComponent).toBe("Agent picker")
       expect(app.activeStoryId).toBe(built.stories.dark[3]!.id)
       expect(setup.captureCharFrame()).toContain("state 1/3")
 
@@ -81,10 +82,16 @@ test(
 
       setup.mockInput.pressArrow("down")
       await setup.renderOnce()
-      expect(app.activeComponent).toBe("Session list")
+      expect(app.activeComponent).toBe("Agent picker")
       expect(app.activeStoryId).toBe(built.stories.light[3]!.id)
       expect(setup.captureCharFrame()).toContain("state 1/3")
 
+      setup.mockInput.pressArrow("down")
+      await setup.renderOnce()
+      expect(app.activeComponent).toBe("Session list")
+      expect(app.activeStoryId).toBe(built.stories.light[6]!.id)
+
+      setup.mockInput.pressArrow("up")
       setup.mockInput.pressArrow("up")
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Multiplexer")
@@ -122,13 +129,13 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.dark[0]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("slide 1/6 · playing")
+      expect(setup.captureCharFrame()).toContain("slide 1/9 · playing")
 
       setup.mockInput.pressArrow("left")
       await setup.renderOnce()
       expect(app.activeComponent).toBe("Session list")
       expect(app.activeStoryId).toBe(built.stories.dark.at(-1)!.id)
-      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 6/6")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 9/9")
 
       setup.mockInput.pressArrow("right")
       setup.mockInput.pressKey("t")
@@ -151,12 +158,12 @@ test(
       expect(app.isSlideshowPaused).toBe(false)
       expect(app.activeStoryId).toBe(built.stories.light[1]!.id)
       expect(setup.captureCharFrame()).toContain("▶ PLAYING · space pauses")
-      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/6")
+      expect(setup.captureCharFrame()).toContain("SLIDESHOW · 2/9")
 
       setup.mockInput.pressEscape()
       await setup.renderOnce()
       expect(app.isSlideshow).toBe(false)
-      expect(setup.captureCharFrame()).toContain("2 components · 6 states")
+      expect(setup.captureCharFrame()).toContain("3 components · 9 states")
       const stoppedStory = app.activeStoryId
       await new Promise((resolve) => setTimeout(resolve, 70))
       expect(app.activeStoryId).toBe(stoppedStory)

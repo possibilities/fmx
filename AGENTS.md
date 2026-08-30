@@ -48,6 +48,18 @@
   `^[a-z][a-z0-9_-]{0,31}$`; named Runtime argv retains `--name`, while the
   default Runtime argv stays unchanged. Do not add named-Home list, stop, or
   delete commands.
+- `fmx --agent-picker` selects the alternate shared Runtime chrome: the Tray
+  and divider are absent, one full-width three-row Agent picker sits above the
+  active terminal, and its list flies downward over the terminal without a
+  second resize. The picker lists switchable main Agents newest-first, never
+  subagents, and uses the same state glyphs as the Session list. Its open list
+  owns focus, carries the standard focus border and modal backdrop, and closes
+  on selection, Escape, or Ctrl-C. `keys.toggle_tray` opens or closes it in
+  this mode; previous/next retain their meaning. The flag is carried only into
+  a Runtime it creates: an explicit picker Client refuses an already-live Tray
+  Runtime with a detach-and-relaunch diagnostic, while a plain Client may join
+  either shared view. Plain and named Runtime argv without the flag remain
+  unchanged. Do not persist the view or add an MCP picker tool.
 - One Home has one Companion-held Runtime (`fmxr-<home id>`) and any number
   of thin terminal Clients. The Runtime alone owns OpenTUI, `Multiplexer`,
   the Home sockets, and the Manifest. A Client relays bytes and dimensions;

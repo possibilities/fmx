@@ -121,6 +121,7 @@ export type TrayRow = {
 export type Surface =
   | { kind: "none" }
   | { kind: "help" }
+  | { kind: "agent_picker" }
   | { kind: "error"; heading: string; message: string }
 
 export type Snapshot = {

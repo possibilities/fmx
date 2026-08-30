@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     // this is the only visible startup state.
     concealClientCursor()
     try {
-      await startTerminalClient(home, releaseStartupSignals)
+      await startTerminalClient(home, options.agentPicker, releaseStartupSignals)
     } finally {
       // runTerminalClient performs the complete terminal cleanup. This guard
       // covers failures before a Companion connection exists.
@@ -230,6 +230,7 @@ async function main(): Promise<void> {
       initialTrayHidden: persistedState.trayHidden,
       initialActiveAgentId: persistedState.activeAgentId,
       initialTheme: runtimeTheme,
+      agentPicker: options.agentPicker,
       onTrayWidthChange: (width) => {
         persistedState.trayWidth = width
         // State persistence is an enhancement; a failed write must never
@@ -302,6 +303,7 @@ async function main(): Promise<void> {
 
 async function startTerminalClient(
   home: FmxHome,
+  agentPicker: boolean,
   onSignalHandlersInstalled: () => void,
 ): Promise<void> {
   const loadedConfig = await loadConfig(home.configPath)
@@ -322,8 +324,9 @@ async function startTerminalClient(
   const runtime = await ensureRuntimeSession(companion, {
     homeId: home.id,
     cwd: workspace,
-    command: currentRuntimeCommand({ name: home.name }),
+    command: currentRuntimeCommand({ name: home.name, agentPicker }),
     env: stringEnvironment(process.env),
+    agentPicker,
   })
   process.exitCode = await runTerminalClient({
     socketPath: runtime.socketPath,

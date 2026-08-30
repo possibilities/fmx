@@ -27,7 +27,7 @@ what an installation has.
 |---|---|
 | `ctrl-b d` | detach this terminal, leaving every agent running |
 | `ctrl-b p` / `ctrl-b n` | switch to the previous / next agent |
-| `ctrl-b b` | toggle the tray |
+| `ctrl-b b` | toggle the tray, or the Agent picker when that view is active |
 
 Configuration is `~/.config/fmx/config.toml`. At least one project root is
 required; everything else has a default:
@@ -39,6 +39,23 @@ worktree_root = "~/.fmx/worktrees"
 
 Run `fmx` again to attach another terminal to the same UI. The last one to
 interact sets the layout size.
+
+Use `--agent-picker` for a full-width Agent selector above the terminal instead
+of the Tray:
+
+```sh
+fmx --agent-picker
+```
+
+The picker lists the switchable Agents newest first, with their Session name,
+Project context, and current state. `ctrl-b b` opens it; use the arrow keys and
+Enter to select, or Escape to close it.
+
+The view belongs to the shared Runtime for that Home. Plain `fmx` attaches to
+whichever view is already running and starts the Tray view when there is no
+Runtime. An explicit `fmx --agent-picker` refuses to attach when that Home
+already has a Tray Runtime, so it never silently gives a different view than
+the one requested.
 
 Use `--name` to select an independent named fmx:
 
