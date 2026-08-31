@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises"
+import { lstat, unlink } from "node:fs/promises"
 import { identityFor, isAgentId, type AgentManifest, type ManifestEntry } from "./agent-manifest.ts"
 import { removeFxWorkControlResidue } from "./fx-work-control.ts"
 import type { CompanionCommand, SessionEntry } from "./zmx-command.ts"
@@ -141,14 +141,35 @@ export async function reconcileAgents(
 ): Promise<ReconcileOutcome> {
   const settleMs = options.settleMs ?? 3000
   const now = options.now ?? Date.now
-  const removeEntry = async (removal: AgentRemoval, removeResidue = true) => {
+  const removeEntry = async (
+    removal: AgentRemoval,
+    actions: { removeResidue?: boolean; forgetExit?: boolean; clearRefused?: boolean } = {},
+  ) => {
     await options.beforeRemove?.({
       entry: structuredClone(removal.entry),
       reason: removal.reason,
       session: removal.session === null ? null : structuredClone(removal.session),
     })
-    if (removeResidue) {
-      await removeFxWorkControlResidue(removal.entry.workControl, options.runtimeSocketPath ?? null)
+    const revalidate = () => assertRemovalStillValid(companion, manifest.homeId, removal)
+    if (actions.removeResidue !== false) {
+      await revalidate()
+      await removeFxWorkControlResidue(
+        removal.entry.workControl,
+        options.runtimeSocketPath ?? null,
+        { beforeUnlink: revalidate },
+      )
+    }
+    if (actions.forgetExit) {
+      await revalidate()
+      await companion.forget(removal.entry.zmxName)
+    }
+    if (actions.clearRefused && removal.session?.socketPath) {
+      await unlinkStablePath(removal.session.socketPath, revalidate)
+    }
+    if (actions.forgetExit || actions.clearRefused) {
+      await assertRemovalConsumedOrStillValid(companion, manifest.homeId, removal)
+    } else {
+      await revalidate()
     }
     await manifest.remove(removal.entry.agentId)
   }
@@ -191,18 +212,15 @@ export async function reconcileAgents(
     // have taken the filesystem endpoint too. Absence, exit, and a dead
     // refused socket prove no process remains to own the old endpoint.
     const foreign = ignoredByName.get(entry.zmxName) ?? null
-    await removeEntry({
+    const removal = {
       entry,
       reason: foreign !== null ? "foreign" : session?.state === "exited" ? "exited" : "absent",
       session: foreign ?? session,
-    }, foreign === null)
-    if (session?.state === "exited") {
-      try {
-        await companion.forget(session.name)
-      } catch {
-        // The record is advisory once the entry is gone; a later start forgets it again.
-      }
-    }
+    } satisfies AgentRemoval
+    await removeEntry(removal, {
+      removeResidue: foreign === null,
+      forgetExit: session?.state === "exited",
+    })
     outcome.removed.push({ entry, session })
   }
   for (const session of plan.forget) {
@@ -223,12 +241,88 @@ export async function reconcileAgents(
       continue
     }
     if (entry) {
-      await removeEntry({ entry, reason: "refused", session })
+      await removeEntry(
+        { entry, reason: "refused", session },
+        { clearRefused: session.socketPath !== null },
+      )
       outcome.removed.push({ entry, session })
-    }
-    if (session.socketPath) await unlink(session.socketPath).catch(() => {})
+    } else if (session.socketPath) await unlink(session.socketPath).catch(() => {})
     outcome.cleared.push(session)
   }
   outcome.ignored = plan.ignored
   return outcome
+}
+
+async function assertRemovalConsumedOrStillValid(
+  companion: CompanionCommand,
+  homeId: string,
+  removal: AgentRemoval,
+): Promise<void> {
+  const named = (await companion.list()).filter(({ name }) => name === removal.entry.zmxName)
+  if (named.length > 1) {
+    throw new Error(`Companion repeats session ${removal.entry.zmxName} after finalization`)
+  }
+  const current = named[0] ?? null
+  if (current === null || current.state === "absent") return
+  if (removal.reason === "exited" && current.state === "exited") return
+  if (
+    removal.reason === "refused" && current.state === "refused" &&
+    current.socketPath === removal.session?.socketPath
+  ) return
+  if (current.state === "live" && ownedAgentId(current, homeId) !== removal.entry.agentId) {
+    throw new Error(
+      `foreign Companion session ${removal.entry.zmxName} appeared after managed finalization`,
+    )
+  }
+  throw new Error(
+    `Companion session ${removal.entry.zmxName} changed after its managed identity was finalized`,
+  )
+}
+
+async function assertRemovalStillValid(
+  companion: CompanionCommand,
+  homeId: string,
+  removal: AgentRemoval,
+): Promise<void> {
+  const named = (await companion.list()).filter(({ name }) => name === removal.entry.zmxName)
+  if (named.length > 1) {
+    throw new Error(`Companion repeats session ${removal.entry.zmxName} during finalization`)
+  }
+  const current = named[0] ?? null
+  switch (removal.reason) {
+    case "absent":
+      if (current === null || current.state === "absent") return
+      break
+    case "exited":
+      if (current?.state === "exited") return
+      break
+    case "foreign":
+      if (current?.state === "live" && ownedAgentId(current, homeId) !== removal.entry.agentId) return
+      break
+    case "refused":
+      if (
+        current?.state === "refused" &&
+        current.socketPath === removal.session?.socketPath
+      ) return
+      break
+  }
+  throw new Error(
+    `Companion session ${removal.entry.zmxName} changed while its managed identity was finalized`,
+  )
+}
+
+async function unlinkStablePath(
+  path: string,
+  revalidate: () => Promise<void>,
+): Promise<void> {
+  const before = await lstat(path)
+  await revalidate()
+  const current = await lstat(path)
+  if (
+    current.dev !== before.dev || current.ino !== before.ino || current.mode !== before.mode ||
+    current.uid !== before.uid
+  ) {
+    throw new Error(`Companion endpoint changed before removal: ${path}`)
+  }
+  await unlink(path)
 }

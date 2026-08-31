@@ -90,6 +90,7 @@ export function fxWorkControlSocketPath(runtimeSocketPath: string, agentId: stri
 export async function removeFxWorkControlResidue(
   binding: FxWorkControlBinding | null,
   runtimeSocketPath: string | null,
+  options: { beforeUnlink?: () => void | Promise<void> } = {},
 ): Promise<boolean> {
   if (!binding || !runtimeSocketPath) return false
   const expected = fxWorkControlSocketPath(runtimeSocketPath, binding.instanceId)
@@ -102,6 +103,23 @@ export async function removeFxWorkControlResidue(
     throw error
   }
   if (!metadata.isSocket()) return false
+  await options.beforeUnlink?.()
+  let current
+  try {
+    current = await lstat(expected)
+  } catch (error) {
+    if (isMissing(error)) return false
+    throw error
+  }
+  if (
+    !current.isSocket() || current.dev !== metadata.dev || current.ino !== metadata.ino ||
+    current.uid !== metadata.uid || current.mode !== metadata.mode
+  ) {
+    throw new FxWorkControlError(
+      "unsafe_residue",
+      `Fx work-control endpoint changed before removal: ${expected}`,
+    )
+  }
   await unlink(expected)
   return true
 }

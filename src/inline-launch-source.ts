@@ -329,6 +329,51 @@ export class InlineLaunchSourceLedger {
     }))
   }
 
+  /**
+   * Bind a matching source when it has already arrived, otherwise retain the
+   * exact ensure as a pending intent. This is the Runtime-extension admission
+   * path: delivery order between the two independently durable messages is
+   * not a protocol failure.
+   */
+  bindEnsureRequestForEnsureIfPresent(
+    ensureInput: FrozenEnsureRequest,
+  ): Promise<InlineLaunchSourceRequest | null> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const ensure = parseFrozenEnsureRequest(ensureInput)
+      const index = await this.readIndex(guard)
+      const matches = index.records.filter((record) => sourceMatchesEnsure(record.request, ensure))
+      if (matches.length === 0) return null
+      if (matches.length > 1) {
+        throw sourceError(
+          "corrupt_record",
+          `multiple inline sources match ensure ${ensure.ensure_id}`,
+        )
+      }
+      const current = matches[0]!
+      if (current.bound_ensure_request !== null) {
+        if (!sameCanonical(current.bound_ensure_request, ensure)) {
+          throw sourceError(
+            "conflicting_claim",
+            `source ${current.request.source_id} is bound to another ensure request`,
+          )
+        }
+        return structuredClone(current.request)
+      }
+      const next = copyRecord(current)
+      next.revision = 2
+      next.bound_ensure_request = ensure
+      validateRecord(next, recordPathFor(this.root, current.request.source_id))
+      await this.writeRecord(
+        next,
+        guard,
+        requireRecordIdentity(index, current.request.source_id),
+        "bind_ensure",
+      )
+      await this.inject("after_commit_before_return", "bind_ensure", next)
+      return structuredClone(next.request)
+    }))
+  }
+
   /** Return decoded bytes only to a caller presenting the complete authority. */
   retrieve(authorityInput: InlineLaunchSourceAuthorityKey): Promise<InlineLaunchSourceBytes> {
     return this.serial(() => this.withLock(async (guard) => {

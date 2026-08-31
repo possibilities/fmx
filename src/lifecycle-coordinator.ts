@@ -108,6 +108,8 @@ export type LifecycleCoordinatorOptions = {
   ledger: EnsureLifecycleLedger
   sources: InlineLaunchSourceLedger
   ports: LifecycleCoordinatorPorts
+  /** Bound external effects; durable admission remains cheap and in-band. */
+  maxConcurrentEffects?: number
 }
 
 const STAGE_ORDER: readonly EnsureLifecycleStage[] = [
@@ -124,9 +126,18 @@ const STAGE_ORDER: readonly EnsureLifecycleStage[] = [
  * the Runtime-extension's bounded handler to return within its host deadline.
  */
 export class LifecycleCoordinator {
-  private readonly scheduled = new Map<string, Promise<void>>()
+  private readonly scheduled = new Map<string, { promise: Promise<void>; resolve: () => void }>()
+  private readonly queued: string[] = []
+  private activeEffects = 0
+  private readonly maxConcurrentEffects: number
 
-  constructor(private readonly options: LifecycleCoordinatorOptions) {}
+  constructor(private readonly options: LifecycleCoordinatorOptions) {
+    const maximum = options.maxConcurrentEffects ?? 4
+    if (!Number.isInteger(maximum) || maximum < 1 || maximum > 32) {
+      throw new Error("lifecycle coordinator maxConcurrentEffects must be an integer from 1 through 32")
+    }
+    this.maxConcurrentEffects = maximum
+  }
 
   /** Persist exact private source bytes before an ensure can consume them. */
   async acceptInlineSource(source: InlineLaunchSourceRequest): Promise<void> {
@@ -141,8 +152,8 @@ export class LifecycleCoordinator {
   async accept(message: RuntimeExtensionLifecycleInbound): Promise<void> {
     if (message.message_type === "ensure_request") {
       const record = await this.options.ledger.claim(message)
-      await this.options.sources.bindEnsureRequestForEnsure(record.request)
-      this.schedule(record.request.ensure_id)
+      const source = await this.options.sources.bindEnsureRequestForEnsureIfPresent(record.request)
+      if (source !== null) this.schedule(record.request.ensure_id)
       return
     }
     if (message.message_type === "receipt_acknowledgement" && message.receipt_kind === "ensure") {
@@ -181,15 +192,43 @@ export class LifecycleCoordinator {
 
   /** Test/host shutdown aid: waits for work already scheduled by this coordinator. */
   async settled(): Promise<void> {
-    while (this.scheduled.size > 0) await Promise.all([...this.scheduled.values()])
+    while (this.scheduled.size > 0) {
+      await Promise.all([...this.scheduled.values()].map(({ promise }) => promise))
+    }
   }
 
   private schedule(ensureId: string): void {
     if (this.scheduled.has(ensureId)) return
-    const job = this.drive(ensureId)
-      .catch((error) => this.options.ports.onError?.(error, ensureId))
-      .finally(() => this.scheduled.delete(ensureId))
-    this.scheduled.set(ensureId, job)
+    let resolveCompletion!: () => void
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve
+    })
+    this.scheduled.set(ensureId, { promise: completion, resolve: resolveCompletion })
+    this.queued.push(ensureId)
+    this.pump()
+  }
+
+  private pump(): void {
+    while (this.activeEffects < this.maxConcurrentEffects && this.queued.length > 0) {
+      const ensureId = this.queued.shift()!
+      const completion = this.scheduled.get(ensureId)
+      if (completion === undefined) continue
+      this.activeEffects++
+      void this.drive(ensureId)
+        .catch((error) => {
+          try {
+            this.options.ports.onError?.(error, ensureId)
+          } catch {
+            // Diagnostics cannot strand the durable queue.
+          }
+        })
+        .finally(() => {
+          this.activeEffects--
+          this.scheduled.delete(ensureId)
+          completion.resolve()
+          this.pump()
+        })
+    }
   }
 
   private async drive(ensureId: string): Promise<void> {

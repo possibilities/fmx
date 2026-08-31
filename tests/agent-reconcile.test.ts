@@ -257,6 +257,47 @@ test("reconciliation fails closed before removing an exited managed identity", a
   }
 })
 
+test("reconciliation revalidates after a managed finalizer and preserves a replacement session", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  const runtimeSocketPath = join(dir, "home.bus")
+  const binding = mintFxWorkControlBinding(runtimeSocketPath, ID_A)
+  const server = createServer()
+  try {
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({
+      cwd: "/work",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 0,
+      identity: identityFor(ID_A),
+      workControl: binding,
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(binding.socketPath, resolve)
+    })
+    const exited = session(ID_A, "exited")
+    const replacement = session(ID_A, "live", {
+      labels: ownershipLabels("foreign-home", ID_A),
+    })
+    const { companion, forgotten } = fakeCompanion([[exited], [replacement]])
+
+    await expect(reconcileAgents(manifest, companion, {
+      runtimeSocketPath,
+      beforeRemove: async () => {
+        await Promise.resolve()
+      },
+    })).rejects.toThrow("changed while its managed identity was finalized")
+
+    expect(manifest.get(ID_A)).not.toBeNull()
+    expect(await unixSocketExists(binding.socketPath)).toBe(true)
+    expect(forgotten).toEqual([])
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("reconcileAgents waits for a refused session to settle, then decides", async () => {
   const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
   try {
@@ -265,7 +306,8 @@ test("reconcileAgents waits for a refused session to settle, then decides", asyn
     const refused = session(ID_A, "refused", { labels: {}, detail: "ConnectionRefused" })
     const { companion, forgotten, calls } = fakeCompanion([[refused], [refused], [session(ID_A, "exited")]])
     const outcome = await reconcileAgents(manifest, companion, { settleMs: 2000 })
-    expect(calls()).toBe(3)
+    // Three settle reads, then one fresh proof before each destructive effect.
+    expect(calls()).toBe(6)
     expect(outcome.removed.map((item) => item.entry.agentId)).toEqual([ID_A])
     expect(outcome.unresolved).toEqual([])
     expect(forgotten).toHaveLength(1)

@@ -179,13 +179,58 @@ describe("durable lifecycle coordinator", () => {
     const observed: string[] = []
     const coordinator = new LifecycleCoordinator({ ledger, sources, ports: fakePorts(observed) })
 
-    await expect(coordinator.accept(fixture.ensure)).rejects.toThrow("no exact inline source")
+    await coordinator.accept(fixture.ensure)
     expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("claimed")
 
     await coordinator.acceptInlineSource(fixture.source)
     await coordinator.settled()
     expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
     expect(observed).toContain("work-control:hello λ")
+  })
+
+  test("recovery bounds concurrent external effects without dropping durable work", async () => {
+    const fixtures = await Promise.all(
+      ["bound-a", "bound-b", "bound-c", "bound-d", "bound-e"].map(sourceFixture),
+    )
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    let active = 0
+    let maximum = 0
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    ports.worktree.create = async ({ request }) => {
+      active++
+      maximum = Math.max(maximum, active)
+      await blocked
+      active--
+      return {
+        directory: request.planned_worktree.directory,
+        headCommit: request.planned_worktree.base_commit,
+      }
+    }
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      maxConcurrentEffects: 2,
+    })
+    for (const fixture of fixtures) {
+      await coordinator.acceptInlineSource(fixture.source)
+      await coordinator.accept(fixture.ensure)
+    }
+    for (let attempt = 0; attempt < 100 && maximum < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    expect(maximum).toBe(2)
+    release()
+    await coordinator.settled()
+    expect(maximum).toBe(2)
+    expect((await ledger.list()).every(({ stage }) => stage === "fx_started")).toBe(true)
   })
 
   test("an exact completed retry republishes current authority without repeating an effect", async () => {
