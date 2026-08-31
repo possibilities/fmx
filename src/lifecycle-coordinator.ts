@@ -130,7 +130,11 @@ export class LifecycleCoordinator {
 
   /** Persist exact private source bytes before an ensure can consume them. */
   async acceptInlineSource(source: InlineLaunchSourceRequest): Promise<void> {
-    await this.options.sources.claim(source)
+    const claimed = await this.options.sources.claim(source)
+    const ensure = await this.options.ledger.get(claimed.request.ensure_id)
+    if (ensure === null) return
+    await this.options.sources.bindEnsureRequestForEnsure(ensure.request)
+    this.schedule(ensure.request.ensure_id)
   }
 
   /** Admit an extension lifecycle message without running a long external effect. */
@@ -191,7 +195,10 @@ export class LifecycleCoordinator {
   private async drive(ensureId: string): Promise<void> {
     for (;;) {
       const record = await this.require(ensureId)
-      if (record.stage === "fx_started") return
+      if (record.stage === "fx_started") {
+        await this.publish(ensureId)
+        return
+      }
       const source = await this.options.sources.sourceForEnsure(record.request)
       if (source === null) throw new Error(`ensure ${ensureId} has no durably bound inline source`)
 
@@ -221,7 +228,10 @@ export class LifecycleCoordinator {
       await this.options.ledger.bindFxFinalReceiptAuthority(ensureId, prepared.finalReceiptAuthority)
 
       if (record.stage === "manifest_claimed") {
-        if (await this.options.ports.cancellation.beginStart(ensureId) === "cancelled_before_start") return
+        if (await this.options.ports.cancellation.beginStart(ensureId) === "cancelled_before_start") {
+          await this.publish(ensureId)
+          return
+        }
         const effect = await this.options.ports.companion.start({ record, invocation: prepared.invocation })
         await this.options.ledger.advance(ensureId, {
           kind: "companion_started",
@@ -245,6 +255,7 @@ export class LifecycleCoordinator {
         conversation_id: admitted.conversationId,
       })
       await this.publish(ensureId)
+      return
     }
   }
 

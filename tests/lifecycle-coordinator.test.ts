@@ -171,6 +171,52 @@ describe("durable lifecycle coordinator", () => {
     expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
   })
 
+  test("a source arriving after a durable ensure claim resumes that exact intent", async () => {
+    const fixture = await sourceFixture("source-late")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const observed: string[] = []
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports: fakePorts(observed) })
+
+    await expect(coordinator.accept(fixture.ensure)).rejects.toThrow("no exact inline source")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("claimed")
+
+    await coordinator.acceptInlineSource(fixture.source)
+    await coordinator.settled()
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+    expect(observed).toContain("work-control:hello λ")
+  })
+
+  test("an exact completed retry republishes current authority without repeating an effect", async () => {
+    const fixture = await sourceFixture("receipt-retry")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    ports.receipts = {
+      ensure: async (record) => {
+        observed.push(`receipt:${record.stage}`)
+        return null
+      },
+      publish: async () => {
+        throw new Error("a null receipt must not be published")
+      },
+    }
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+
+    await coordinator.acceptInlineSource(fixture.source)
+    await coordinator.accept(fixture.ensure)
+    await coordinator.settled()
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+
+    observed.length = 0
+    await coordinator.accept(fixture.ensure)
+    await coordinator.settled()
+    expect(observed).toEqual(["receipt:fx_started"])
+  })
+
   test("retains correlated Fx final receipts before handing manifest retirement to its owner", async () => {
     const fixture = await sourceFixture("final")
     const finalReceipt = await finalFixture(fixture)
