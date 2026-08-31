@@ -237,7 +237,16 @@ export class LifecycleCoordinator {
       .map((record) => record.request.agent_id)
     if (protectedIds.length > 0) await this.options.ports.manifest.protect?.(protectedIds)
     for (const record of records) {
-      if (record.stage !== "fx_started" || record.fx_final.receipt !== null) {
+      if (
+        record.fx_final.receipt !== null ||
+        record.fx_admission_decision?.decision.kind === "cancelled_before_start"
+      ) {
+        this.schedule(record.request.ensure_id)
+        continue
+      }
+      if (record.stage === "fx_started") continue
+      const source = await this.options.sources.bindEnsureRequestForEnsureIfPresent(record.request)
+      if (source !== null) {
         this.schedule(record.request.ensure_id)
       }
     }

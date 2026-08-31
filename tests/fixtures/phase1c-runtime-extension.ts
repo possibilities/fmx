@@ -180,8 +180,9 @@ function assertPersistedIntents(current: FixtureMessages): void {
 }
 
 function buildFixture(initialize: Initialize): FixtureMessages {
+  const paths = fixturePaths()
   const initialWork = encodeInlineSourceBytes(Buffer.from("Phase 1C fixture work\n", "utf8"))
-  const launchControls = encodeInlineSourceBytes(encodeInlineLaunchControls(["--record"]))
+  const launchControls = encodeInlineSourceBytes(encodeInlineLaunchControls(["--context-limit", "128000"]))
   const launch = {
     schema_id: "fx.launch-admission-final",
     schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
@@ -193,7 +194,7 @@ function buildFixture(initialize: Initialize): FixtureMessages {
     conversation_name: "phase1c-runtime-extension",
     resume: { mode: "fresh" },
     state_root: "/var/tmp/fmx-phase1c-runtime-extension/state",
-    directory: "/var/tmp/fmx-phase1c-runtime-extension/worktree",
+    directory: paths.directory,
     initial_work_digest: initialWork.sha256,
     remaining_launch_controls_digest: launchControls.sha256,
   } satisfies FrozenLaunchRequest
@@ -213,8 +214,8 @@ function buildFixture(initialize: Initialize): FixtureMessages {
     worktree_id: "phase1c-worktree",
     agent_id: "c".repeat(32),
     planned_worktree: {
-      repository: "/var/tmp/fmx-phase1c-runtime-extension/repository",
-      base_commit: "a".repeat(40),
+      repository: paths.repository,
+      base_commit: paths.baseCommit,
       branch: "phase1c-runtime-extension",
       directory: launch.directory,
     },
@@ -291,6 +292,30 @@ function buildFixture(initialize: Initialize): FixtureMessages {
       return ensureLifecycleMessageSchema.parse(request) as CleanupRequest
     },
   }
+}
+
+/**
+ * Focused composition tests may bind the immutable fixture request to a real
+ * temporary repository. Unit tests retain the historical deterministic bytes.
+ */
+function fixturePaths(): { repository: string; baseCommit: string; directory: string } {
+  const repository = process.env.FMX_PHASE1C_FIXTURE_REPOSITORY
+  const baseCommit = process.env.FMX_PHASE1C_FIXTURE_BASE_COMMIT
+  const directory = process.env.FMX_PHASE1C_FIXTURE_WORKTREE_DIRECTORY
+  if (repository === undefined && baseCommit === undefined && directory === undefined) {
+    return {
+      repository: "/var/tmp/fmx-phase1c-runtime-extension/repository",
+      baseCommit: "a".repeat(40),
+      directory: "/var/tmp/fmx-phase1c-runtime-extension/worktree",
+    }
+  }
+  if (
+    repository === undefined || baseCommit === undefined || directory === undefined ||
+    !repository.startsWith("/") || !directory.startsWith("/") || !/^[0-9a-f]{40}$/u.test(baseCommit)
+  ) {
+    throw new Error("phase1c fixture repository, base commit, and Worktree directory must be exact")
+  }
+  return { repository, baseCommit, directory }
 }
 
 function fixtureEndFor(

@@ -127,6 +127,43 @@ describe("durable lifecycle coordinator", () => {
     }
   })
 
+  test("immediate recovery binds the source retained with a ready source-and-ensure chunk", async () => {
+    const fixture = await sourceFixture("recover-ready-chunk")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const observed: string[] = []
+
+    // This is the durable boundary left when the Runtime-extension has
+    // retained source and ensure from one ready stdout chunk but the normal
+    // source-to-ensure binding callback did not get to run before recovery.
+    await sources.claim(fixture.source)
+    await ledger.claim(fixture.ensure)
+
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports: fakePorts(observed) })
+    await coordinator.recover()
+    await coordinator.settled()
+
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+    expect(observed).toContain("work-control:hello λ")
+  })
+
+  test("recovery preserves an unbound ensure when its source was never retained", async () => {
+    const fixture = await sourceFixture("recover-no-source")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const observed: string[] = []
+    await ledger.claim(fixture.ensure)
+
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports: fakePorts(observed) })
+    await coordinator.recover()
+    await coordinator.settled()
+
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("claimed")
+    expect(observed).toEqual([])
+  })
+
   test("a durable pre-start cancellation never starts or marks Fx started", async () => {
     const fixture = await sourceFixture("cancel")
     const root = await temporaryDirectory()
