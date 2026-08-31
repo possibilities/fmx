@@ -33,7 +33,6 @@ const VALUE_OPTIONS = new Set([
   "--permissions-file",
 ])
 const FLAG_OPTIONS = new Set([
-  "--record",
   "--no-additional-dirs",
   "--no-native-tools",
   "--no-default-skills",

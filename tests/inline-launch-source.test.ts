@@ -186,7 +186,7 @@ describe("inline-v2 source validation", () => {
   test("allows only the documented global-argument suffix and preserves every accepted string exactly", () => {
     const valid: readonly string[][] = [
       [],
-      ["--record"],
+      ["--no-default-skills"],
       ["--no-default-skills", "--skills-dir", "/tmp/team λ"],
       ["--append-system-prompt-file=/tmp/role.md", "--tool", "read_file"],
       ["--context-limit=tool=4096", "--add-dir", "/tmp/extra", "--no-additional-dirs"],
@@ -224,7 +224,7 @@ describe("inline-v2 source validation", () => {
       ["empty equals value", rawControlsBytes(["--tool="])],
       ["ASCII escape", rawControlsBytes(["--skills-dir", "/tmp/line\nnext"])],
       ["ASCII DEL", rawControlsBytes(["--skills-dir", "/tmp/del\u007fpath"])],
-      ["too many argv entries", rawControlsBytes(Array.from({ length: INLINE_REMAINING_GLOBAL_ARGS_MAX_COUNT + 1 }, () => "--record"))],
+      ["too many argv entries", rawControlsBytes(Array.from({ length: INLINE_REMAINING_GLOBAL_ARGS_MAX_COUNT + 1 }, () => "--no-default-skills"))],
       ["oversized argv entry", rawControlsBytes([`--skills-dir=${"a".repeat(INLINE_REMAINING_GLOBAL_ARG_MAX_BYTES)}`])],
     ]
     for (const [label, controls] of invalid) {

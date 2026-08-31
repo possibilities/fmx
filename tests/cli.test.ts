@@ -77,7 +77,7 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["bus"])).toThrow("unknown command: bus")
     expect(() => parseArgs(["--socket", "/tmp/fmx.bus"])).toThrow("unknown option: --socket")
     expect(() => parseArgs(["doctor", "now"])).toThrow("unexpected argument: now")
-    expect(() => parseArgs(["--record"])).toThrow("unknown option: --record")
+    expect(() => parseArgs(["--future-flag"])).toThrow("unknown option: --future-flag")
     expect(usage()).toContain("fmx-mcp")
     expect(usage()).not.toContain("fmx control")
   })

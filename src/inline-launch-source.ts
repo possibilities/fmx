@@ -46,7 +46,6 @@ export const INLINE_REMAINING_GLOBAL_ARGS_VALUE_OPTIONS = [
   "--permissions-file",
 ] as const
 export const INLINE_REMAINING_GLOBAL_ARGS_FLAG_OPTIONS = [
-  "--record",
   "--no-additional-dirs",
   "--no-native-tools",
   "--no-default-skills",

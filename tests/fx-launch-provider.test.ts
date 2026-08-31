@@ -71,7 +71,7 @@ test("uses one private helper endpoint per operation and maps every happy-path r
         return successFor(request)
       }),
     })
-    const controls = ["--record", "--tool", "read"]
+    const controls = ["--context-limit", "4096", "--tool", "read"]
     const digest = createHash("sha256").update(encodeLaunchControls(controls)).digest("hex")
     const launch = { ...launchRequest, remaining_launch_controls_digest: digest }
     expect((await client.prepare(launch)).receipt_id).toBe("receipt-a")
@@ -158,8 +158,8 @@ test("fails on a helper timeout or early exit and leaves no endpoint directory",
 })
 
 test("matches Fx's controls bounds and allowlist before starting a helper", () => {
-  expect(() => encodeLaunchControls(Array.from({ length: 128 }, () => "--record"))).not.toThrow()
-  expect(() => encodeLaunchControls(Array.from({ length: 129 }, () => "--record"))).toThrow(FxLaunchProviderError)
+  expect(() => encodeLaunchControls(Array.from({ length: 128 }, () => "--no-default-skills"))).not.toThrow()
+  expect(() => encodeLaunchControls(Array.from({ length: 129 }, () => "--no-default-skills"))).toThrow(FxLaunchProviderError)
   expect(() => encodeLaunchControls(["--tool", "x".repeat(1024)])).not.toThrow()
   expect(() => encodeLaunchControls(["--tool", "x".repeat(1025)])).toThrow(FxLaunchProviderError)
   const exactLimit = controlsAtExactLimit()
@@ -168,7 +168,7 @@ test("matches Fx's controls bounds and allowlist before starting a helper", () =
   expect(() => encodeLaunchControls(["--state-dir=/tmp/nope"])).toThrow(FxLaunchProviderError)
   expect(() => encodeLaunchControls(["--resume-last"])).toThrow(FxLaunchProviderError)
   expect(() => encodeLaunchControls(["--tool", "-read"])).toThrow(FxLaunchProviderError)
-  expect(() => encodeLaunchControls(["--tool=read", "--record"])).not.toThrow()
+  expect(() => encodeLaunchControls(["--tool=read", "--no-default-skills"])).not.toThrow()
 })
 
 function controlsAtExactLimit(): string[] {
@@ -244,7 +244,7 @@ function successFor(request: Record<string, unknown>): FakeResponse {
         value: {
           ...response,
           result: {
-            arguments: ["--state-dir", CORRELATION.stateRoot, "--name", "Launch provider test", "--record", "--tool", "read"],
+            arguments: ["--state-dir", CORRELATION.stateRoot, "--name", "Launch provider test", "--context-limit", "4096", "--tool", "read"],
             cwd: launchRequest.directory,
             environment: {
               FX_INTERNAL_LAUNCH_STATE_ROOT: CORRELATION.stateRoot,
