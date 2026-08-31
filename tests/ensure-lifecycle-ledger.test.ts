@@ -23,10 +23,12 @@ import {
 import { encodeCanonicalJson, type JsonValue } from "../src/contract-codec.ts"
 import {
   deriveEnsureDigest,
+  deriveFxAdmissionDecisionDigest,
   deriveFxFinalReceiptDigest,
   EnsureLifecycleLedger,
   recordPathFor,
   type FxFinalReceipt,
+  type FxAdmissionDecision,
   type FxFinalReceiptAcknowledgement,
   type FxFinalReceiptAuthorityBinding,
   type EnsureLifecycleLedgerErrorCode,
@@ -226,6 +228,60 @@ function fxFinalBindingFor(index: number): FxFinalReceiptAuthorityBinding {
   }
 }
 
+function fxAdmissionDecisionFor(
+  request: EnsureRequest,
+  binding: FxFinalReceiptAuthorityBinding,
+  index: number,
+): FxAdmissionDecision {
+  const decision = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "admission_decision",
+    receipt_id: `admission-receipt-${index}`,
+    receipt_digest: "",
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    admission_key: binding.admission_key,
+    decision: { kind: "admitted", turn_id: "1", disposition: "queued" },
+  } as FxAdmissionDecision
+  return { ...decision, receipt_digest: deriveFxAdmissionDecisionDigest(decision) }
+}
+
+function cancelledFxAdmissionDecisionFor(
+  request: EnsureRequest,
+  binding: FxFinalReceiptAuthorityBinding,
+  index: number,
+): FxAdmissionDecision {
+  const decision = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "admission_decision",
+    receipt_id: `cancelled-admission-receipt-${index}`,
+    receipt_digest: "",
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    admission_key: binding.admission_key,
+    decision: {
+      kind: "cancelled_before_start",
+      cancellation_request_id: `cancel-request-${index}`,
+    },
+  } as FxAdmissionDecision
+  return { ...decision, receipt_digest: deriveFxAdmissionDecisionDigest(decision) }
+}
+
+async function prepareAdmission(
+  ledger: EnsureLifecycleLedger,
+  request: EnsureRequest,
+  binding: FxFinalReceiptAuthorityBinding,
+  includeCompanion = true,
+): Promise<void> {
+  const transitions = transitionsFor(request)
+  await ledger.advance(request.ensure_id, transitions[0]!)
+  await ledger.advance(request.ensure_id, transitions[1]!)
+  await ledger.bindFxFinalReceiptAuthority(request.ensure_id, binding)
+  if (includeCompanion) await ledger.advance(request.ensure_id, transitions[2]!)
+}
+
 async function fxFinalFor(
   record: EnsureLifecycleRecord,
   index: number,
@@ -341,6 +397,11 @@ async function completedFixtureLedger(): Promise<{
     (await fixtureFxFinal()).binding,
   )
   await ledger.advance(fixture.request.ensure_id, companion!)
+  const admitted = await ledger.get(fixture.request.ensure_id)
+  await ledger.retainFxAdmissionDecision(
+    fixture.request.ensure_id,
+    fxAdmissionDecisionFor(admitted!.request, (await fixtureFxFinal()).binding, 0),
+  )
   await ledger.advance(fixture.request.ensure_id, fx!)
   await ledger.retainEnsureReceipt(fixture.completeReceipt)
   const record = await ledger.acknowledgeEnsureReceipt(fixture.completeAcknowledgement)
@@ -367,6 +428,11 @@ async function startedFinalLedger(index: number): Promise<{
   const binding = fxFinalBindingFor(index)
   await ledger.bindFxFinalReceiptAuthority(request.ensure_id, binding)
   await ledger.advance(request.ensure_id, companion!)
+  const admitted = await ledger.get(request.ensure_id)
+  await ledger.retainFxAdmissionDecision(
+    request.ensure_id,
+    fxAdmissionDecisionFor(admitted!.request, binding, index),
+  )
   const started = await ledger.advance(request.ensure_id, fx!)
   const { receipt, acknowledgement } = await fxFinalFor(started, index, binding)
   return { ledger, request, root, scratch, binding, receipt, acknowledgement }
@@ -464,23 +530,151 @@ describe("private recoverable ensure lifecycle ledger", () => {
     expect(await ledger.list()).toHaveLength(2)
   })
 
-  test("writes the unpublished private ledger as v2 and refuses v1 without migration", async () => {
+  test("writes the unpublished private ledger as v3 and refuses v1 without migration", async () => {
     const { ledger, request, root } = await populatedLedger(142)
     const claimed = (await ledger.get(request.ensure_id))!
     expect(claimed).toMatchObject({
       schema_id: "fmx.ensure-lifecycle-ledger",
-      schema_version: 2,
+      schema_version: 3,
       revision: 1,
     })
     const path = recordPathFor(root, request.ensure_id)
     const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, JsonValue>
-    expect(persisted.schema_version).toBe(2)
+    expect(persisted.schema_version).toBe(3)
     persisted.schema_version = 1
     await writeFile(path, Buffer.concat([
       Buffer.from(encodeCanonicalJson(persisted)),
       Buffer.from("\n"),
     ]), { mode: 0o600 })
     await expectLedgerError(EnsureLifecycleLedger.open(root), "corrupt_record")
+  })
+
+  test("retains admitted and cancelled Fx decisions idempotently across reopen", async () => {
+    const { request: fixtureRequest } = await fixtureA()
+    const { root } = await newLedgerRoot()
+    const ledger = await EnsureLifecycleLedger.open(root)
+    const request = distinctRequest(fixtureRequest, 150)
+    const binding = fxFinalBindingFor(150)
+    await ledger.claim(request)
+    await prepareAdmission(ledger, request, binding)
+
+    const admitted = fxAdmissionDecisionFor(request, binding, 150)
+    const retained = await ledger.retainFxAdmissionDecision(request.ensure_id, admitted)
+    expect(retained).toMatchObject({
+      revision: 6,
+      stage: "companion_started",
+      fx_admission_decision: admitted,
+    })
+    expect(await ledger.retainFxAdmissionDecision(request.ensure_id, structuredClone(admitted)))
+      .toEqual(retained)
+
+    const reopened = await EnsureLifecycleLedger.open(root)
+    expect(await reopened.get(request.ensure_id)).toEqual(retained)
+    expect(await reopened.retainFxAdmissionDecision(request.ensure_id, admitted)).toEqual(retained)
+
+    const cancelRoot = (await newLedgerRoot()).root
+    const cancelLedger = await EnsureLifecycleLedger.open(cancelRoot)
+    const cancelRequest = distinctRequest(fixtureRequest, 151)
+    const cancelBinding = fxFinalBindingFor(151)
+    await cancelLedger.claim(cancelRequest)
+    await prepareAdmission(cancelLedger, cancelRequest, cancelBinding, false)
+    const cancelled = cancelledFxAdmissionDecisionFor(cancelRequest, cancelBinding, 151)
+    const cancelledRecord = await cancelLedger.retainFxAdmissionDecision(
+      cancelRequest.ensure_id,
+      cancelled,
+    )
+    expect(cancelledRecord).toMatchObject({
+      revision: 5,
+      stage: "manifest_claimed",
+      fx_admission_decision: cancelled,
+    })
+    const reopenedCancel = await EnsureLifecycleLedger.open(cancelRoot)
+    expect(await reopenedCancel.get(cancelRequest.ensure_id)).toEqual(cancelledRecord)
+  })
+
+  test("rejects admission decision digest, correlation, and kind conflicts", async () => {
+    const { request: fixtureRequest } = await fixtureA()
+    const { root } = await newLedgerRoot()
+    const ledger = await EnsureLifecycleLedger.open(root)
+    const request = distinctRequest(fixtureRequest, 152)
+    const binding = fxFinalBindingFor(152)
+    await ledger.claim(request)
+    await prepareAdmission(ledger, request, binding)
+    const admitted = fxAdmissionDecisionFor(request, binding, 152)
+    await ledger.retainFxAdmissionDecision(request.ensure_id, admitted)
+
+    const invalidDigest = structuredClone(admitted)
+    invalidDigest.receipt_digest = "0".repeat(64)
+    await expectLedgerError(
+      ledger.retainFxAdmissionDecision(request.ensure_id, invalidDigest),
+      "receipt_conflict",
+    )
+    for (const mutate of [
+      (candidate: FxAdmissionDecision) => { candidate.launch_id = "different-launch" },
+      (candidate: FxAdmissionDecision) => { candidate.launch_digest = "0".repeat(64) },
+      (candidate: FxAdmissionDecision) => { candidate.admission_key = "different-admission" },
+    ]) {
+      const changed = structuredClone(admitted)
+      mutate(changed)
+      changed.receipt_digest = deriveFxAdmissionDecisionDigest(changed)
+      await expectLedgerError(
+        ledger.retainFxAdmissionDecision(request.ensure_id, changed),
+        "receipt_conflict",
+      )
+    }
+    const changedKind = structuredClone(admitted)
+    changedKind.decision = {
+      kind: "cancelled_before_start",
+      cancellation_request_id: "different-cancel-request",
+    }
+    changedKind.receipt_digest = deriveFxAdmissionDecisionDigest(changedKind)
+    await expectLedgerError(
+      ledger.retainFxAdmissionDecision(request.ensure_id, changedKind),
+      "receipt_conflict",
+    )
+  })
+
+  test("enforces cross-record decision receipt uniqueness and cancellation terminal rules", async () => {
+    const { request: fixtureRequest } = await fixtureA()
+    const { root } = await newLedgerRoot()
+    const ledger = await EnsureLifecycleLedger.open(root)
+    const left = distinctRequest(fixtureRequest, 153)
+    const right = distinctRequest(fixtureRequest, 154)
+    const leftBinding = fxFinalBindingFor(153)
+    const rightBinding = fxFinalBindingFor(154)
+    await ledger.claim(left)
+    await ledger.claim(right)
+    await prepareAdmission(ledger, left, leftBinding)
+    await prepareAdmission(ledger, right, rightBinding)
+    const leftDecision = fxAdmissionDecisionFor(left, leftBinding, 153)
+    await ledger.retainFxAdmissionDecision(left.ensure_id, leftDecision)
+    const reused = fxAdmissionDecisionFor(right, rightBinding, 154)
+    reused.receipt_id = leftDecision.receipt_id
+    reused.receipt_digest = deriveFxAdmissionDecisionDigest(reused)
+    await expectLedgerError(
+      ledger.retainFxAdmissionDecision(right.ensure_id, reused),
+      "receipt_conflict",
+    )
+
+    const cancel = distinctRequest(fixtureRequest, 155)
+    const cancelBinding = fxFinalBindingFor(155)
+    await ledger.claim(cancel)
+    await prepareAdmission(ledger, cancel, cancelBinding, false)
+    const cancelled = cancelledFxAdmissionDecisionFor(cancel, cancelBinding, 155)
+    await ledger.retainFxAdmissionDecision(cancel.ensure_id, cancelled)
+    await expectLedgerError(ledger.advance(cancel.ensure_id, {
+      kind: "fx_started",
+      conversation_id: CONVERSATION_ID,
+    }), "invalid_transition")
+    const final = await fxFinalFor(
+      (await ledger.get(cancel.ensure_id))!,
+      155,
+      cancelBinding,
+    )
+    await expectLedgerError(
+      ledger.retainFxFinalReceipt(cancel.ensure_id, final.receipt),
+      "receipt_conflict",
+    )
   })
 
   test("advances exact effects monotonically and makes every completed step replay-safe", async () => {
@@ -503,9 +697,14 @@ describe("private recoverable ensure lifecycle ledger", () => {
           kind: "fx_started",
           conversation_id: "invalid/conversation",
         }), "invalid_transition")
+        const current = (await ledger.get(request.ensure_id))!
+        await ledger.retainFxAdmissionDecision(
+          request.ensure_id,
+          fxAdmissionDecisionFor(current.request, binding, 20),
+        )
       }
       const advanced = await ledger.advance(request.ensure_id, transition)
-      expect(advanced.revision).toBe(index + 2 + (index >= 2 ? 1 : 0))
+      expect(advanced.revision).toBe(index + 2 + (index >= 2 ? 1 : 0) + (index >= 3 ? 1 : 0))
       expect(advanced.stage).toBe(transition.kind)
       expect(await ledger.advance(request.ensure_id, structuredClone(transition))).toEqual(advanced)
     }
@@ -521,7 +720,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
       pane_id: `p_${"f".repeat(32)}`,
     }), "invalid_transition")
     expect(await ledger.get(request.ensure_id)).toMatchObject({
-      revision: 6,
+      revision: 7,
       stage: "fx_started",
       effects: {
         worktree: { status: "created", head_commit: HEAD_COMMIT },
@@ -562,11 +761,16 @@ describe("private recoverable ensure lifecycle ledger", () => {
       (await fixtureFxFinal()).binding,
     )
     await ledger.advance(fixture.request.ensure_id, companion!)
+    const admitted = await ledger.get(fixture.request.ensure_id)
+    await ledger.retainFxAdmissionDecision(
+      fixture.request.ensure_id,
+      fxAdmissionDecisionFor(admitted!.request, (await fixtureFxFinal()).binding, 1),
+    )
     await ledger.advance(fixture.request.ensure_id, fx!)
     await ledger.retainEnsureReceipt(fixture.completeReceipt)
     const complete = await ledger.acknowledgeEnsureReceipt(fixture.completeAcknowledgement)
     expect(complete).toMatchObject({
-      revision: 10,
+      revision: 11,
       stage: "fx_started",
       receipts: [fixture.partialReceipt, fixture.completeReceipt],
       acknowledgements: [fixture.partialAcknowledgement, fixture.completeAcknowledgement],
@@ -644,6 +848,11 @@ describe("private recoverable ensure lifecycle ledger", () => {
       "receipt_conflict",
     )
     await ledger.advance(fixture.request.ensure_id, companion!)
+    const admitted = await ledger.get(fixture.request.ensure_id)
+    await ledger.retainFxAdmissionDecision(
+      fixture.request.ensure_id,
+      fxAdmissionDecisionFor(admitted!.request, fxFinal.binding, 2),
+    )
     await ledger.advance(fixture.request.ensure_id, fx!)
     await expectLedgerError(
       ledger.prepareFxFinalReceiptAcknowledgement(
@@ -658,7 +867,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
       fxFinal.receipt,
     )
     expect(retained).toMatchObject({
-      revision: 7,
+      revision: 8,
       stage: "fx_started",
       fx_final: {
         binding: fxFinal.binding,
@@ -691,7 +900,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
       fxFinal.acknowledgement,
     )
     expect(prepared).toMatchObject({
-      revision: 8,
+      revision: 9,
       fx_final: {
         acknowledgement: fxFinal.acknowledgement,
         acknowledgement_applied: false,
@@ -716,7 +925,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
       authority,
     )
     expect(applied).toMatchObject({
-      revision: 9,
+      revision: 10,
       fx_final: { acknowledgement_applied: true },
     })
     expect(authorityCalls).toEqual([fxFinal.acknowledgement])
@@ -774,7 +983,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
       })
       const retained = await reopened.retainFxFinalReceipt(request.ensure_id, final.receipt)
       expect(retained).toMatchObject({
-        schema_version: 2,
+        schema_version: 3,
         revision: 6,
         stage: "companion_started",
         effects: { fx: { status: "pending" } },
@@ -830,12 +1039,16 @@ describe("private recoverable ensure lifecycle ledger", () => {
         }),
         "invalid_transition",
       )
+      await recovered.retainFxAdmissionDecision(
+        request.ensure_id,
+        fxAdmissionDecisionFor(request, binding, 141),
+      )
       const correlated = await recovered.advance(request.ensure_id, {
         kind: "fx_started",
         conversation_id: final.receipt.conversation_id,
       })
       expect(correlated).toMatchObject({
-        revision: 7,
+        revision: 8,
         stage: "fx_started",
         effects: {
           fx: { status: "started", conversation_id: final.receipt.conversation_id },
@@ -870,7 +1083,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
         "receipt_conflict",
       )
       expect(await setup.ledger.get(setup.request.ensure_id)).toMatchObject({
-        revision: 6,
+        revision: 7,
         fx_final: { receipt: null },
       })
     }
@@ -935,7 +1148,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
         setup.acknowledgement,
         authority,
       )
-      expect(applied).toMatchObject({ revision: 9, fx_final: { acknowledgement_applied: true } })
+      expect(applied).toMatchObject({ revision: 10, fx_final: { acknowledgement_applied: true } })
       expect(calls).toEqual([{
         binding: setup.binding,
         acknowledgement: setup.acknowledgement,
@@ -964,7 +1177,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
         failingAuthority,
       )).rejects.toThrow("authority unavailable")
       expect(await setup.ledger.get(setup.request.ensure_id)).toMatchObject({
-        revision: 8,
+        revision: 9,
         fx_final: {
           acknowledgement: setup.acknowledgement,
           acknowledgement_applied: false,
@@ -1010,7 +1223,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
       )).rejects.toThrow("local applied marker lost")
       const recovered = await EnsureLifecycleLedger.open(setup.root)
       expect(await recovered.get(setup.request.ensure_id)).toMatchObject({
-        revision: 8,
+        revision: 9,
         fx_final: { acknowledgement_applied: false },
       })
       await recovered.acknowledgeFxFinalReceipt(
@@ -1044,6 +1257,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
       "receipt",
       "acknowledgement",
       "fx_binding",
+      "fx_admission",
       "fx_receipt",
       "fx_acknowledgement",
       "fx_applied",
@@ -1072,6 +1286,22 @@ describe("private recoverable ensure lifecycle ledger", () => {
             const binding = fxFinalBindingFor(30 + familyIndex * 10 + pointIndex)
             finalRevision = 2
             apply = (ledger) => ledger.bindFxFinalReceiptAuthority(request.ensure_id, binding)
+          } else if (family === "fx_admission") {
+            await clean.advance(request.ensure_id, worktree)
+            await clean.advance(request.ensure_id, transitions[1]!)
+            const binding = fxFinalBindingFor(30 + familyIndex * 10 + pointIndex)
+            await clean.bindFxFinalReceiptAuthority(request.ensure_id, binding)
+            await clean.advance(request.ensure_id, transitions[2]!)
+            beforeRevision = 5
+            beforeStage = "companion_started"
+            finalRevision = 6
+            finalStage = "companion_started"
+            const decision = fxAdmissionDecisionFor(
+              request,
+              binding,
+              30 + familyIndex * 10 + pointIndex,
+            )
+            apply = (ledger) => ledger.retainFxAdmissionDecision(request.ensure_id, decision)
           } else if (family === "advance") {
             finalRevision = 2
             finalStage = "worktree_created"
@@ -1104,23 +1334,27 @@ describe("private recoverable ensure lifecycle ledger", () => {
             const binding = fxFinalBindingFor(30 + familyIndex * 10 + pointIndex)
             await clean.bindFxFinalReceiptAuthority(request.ensure_id, binding)
             await clean.advance(request.ensure_id, transitions[2]!)
+            await clean.retainFxAdmissionDecision(
+              request.ensure_id,
+              fxAdmissionDecisionFor(request, binding, 30 + familyIndex * 10 + pointIndex),
+            )
             const started = await clean.advance(request.ensure_id, transitions[3]!)
             const final = await fxFinalFor(
               started,
               30 + familyIndex * 10 + pointIndex,
               binding,
             )
-            beforeRevision = 6
+            beforeRevision = 7
             beforeStage = "fx_started"
             if (family === "fx_receipt") {
-              finalRevision = 7
+              finalRevision = 8
               finalStage = "fx_started"
               apply = (ledger) => ledger.retainFxFinalReceipt(request.ensure_id, final.receipt)
             } else {
               await clean.retainFxFinalReceipt(request.ensure_id, final.receipt)
-              beforeRevision = 7
+              beforeRevision = 8
               if (family === "fx_acknowledgement") {
-                finalRevision = 8
+                finalRevision = 9
                 finalStage = "fx_started"
                 apply = (ledger) => ledger.prepareFxFinalReceiptAcknowledgement(
                   request.ensure_id,
@@ -1131,8 +1365,8 @@ describe("private recoverable ensure lifecycle ledger", () => {
                   request.ensure_id,
                   final.acknowledgement,
                 )
-                beforeRevision = 8
-                finalRevision = 9
+                beforeRevision = 9
+                finalRevision = 10
                 finalStage = "fx_started"
                 fxAppliedCalls = []
                 const authority = {
@@ -1217,8 +1451,12 @@ describe("private recoverable ensure lifecycle ledger", () => {
     for (const [index, request] of [leftRequest, rightRequest].entries()) {
       const transitions = transitionsFor(request)
       await ledger.advance(request.ensure_id, transitions[2]!)
-      const started = await ledger.advance(request.ensure_id, transitions[3]!)
       const binding = index === 0 ? leftBinding : rightBinding
+      await ledger.retainFxAdmissionDecision(
+        request.ensure_id,
+        fxAdmissionDecisionFor(request, binding, 110 + index),
+      )
+      const started = await ledger.advance(request.ensure_id, transitions[3]!)
       finals.push({ request, ...await fxFinalFor(started, 110 + index, binding) })
     }
     const left = finals[0]!
@@ -1558,7 +1796,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
         ),
       ])
       expect(applied[0]).toEqual(applied[1])
-      expect(applied[0]).toMatchObject({ revision: 9, fx_final: { acknowledgement_applied: true } })
+      expect(applied[0]).toMatchObject({ revision: 10, fx_final: { acknowledgement_applied: true } })
       expect(authorityCalls.length).toBeGreaterThanOrEqual(1)
       expect(authorityCalls.every((acknowledgement) =>
         Buffer.from(encodeCanonicalJson(acknowledgement as unknown as JsonValue)).equals(

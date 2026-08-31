@@ -3,6 +3,7 @@ import {
   type EnsureLifecycleStage,
   type EnsureReceipt,
   type EnsureRequest,
+  type FxAdmissionDecision,
   type FxFinalReceipt,
   type FxFinalReceiptAcknowledgement,
   type FxFinalReceiptAuthority,
@@ -15,6 +16,26 @@ import {
 } from "./inline-launch-source.ts"
 import type { FxWorkControlBinding, FxWorkControlResult } from "./fx-work-control.ts"
 import type { RuntimeExtensionLifecycleInbound } from "./runtime-extension.ts"
+
+type FxAdmissionDecisionFor<Kind extends FxAdmissionDecision["decision"]["kind"]> =
+  Omit<FxAdmissionDecision, "decision"> & {
+    decision: Extract<FxAdmissionDecision["decision"], { kind: Kind }>
+  }
+
+export type AdmittedFxAdmissionDecision = FxAdmissionDecisionFor<"admitted">
+export type CancelledFxAdmissionDecision = FxAdmissionDecisionFor<"cancelled_before_start">
+
+export type LifecycleAdmissionOutcome =
+  | { kind: "pending" }
+  | {
+      kind: "admitted"
+      decision: AdmittedFxAdmissionDecision
+      conversationId: string
+    }
+  | {
+      kind: "cancelled_before_start"
+      decision: CancelledFxAdmissionDecision
+    }
 
 /**
  * The deliberately small, private orchestration seam between the durable
@@ -47,6 +68,8 @@ export type LifecycleCoordinatorPorts = {
       workControl: FxWorkControlBinding
     }>): Promise<{
       invocation: unknown
+      /** Exact reserved or resumed Conversation returned by Fx's provider build. */
+      conversationId: string
       finalReceiptAuthority: FxFinalReceiptAuthorityBinding
     }>
   }
@@ -68,7 +91,7 @@ export type LifecycleCoordinatorPorts = {
       admission: FxWorkControlResult
       /** Fx's current active Conversation after admission. */
       conversationId: string
-    }>
+    } | null>
   }
   admission: {
     /**
@@ -78,9 +101,9 @@ export type LifecycleCoordinatorPorts = {
      */
     import(input: Readonly<{
       record: EnsureLifecycleRecord
-      admission: FxWorkControlResult
-      conversationId: string
-    }>): Promise<void>
+      delivered: Readonly<{ admission: FxWorkControlResult; conversationId: string }> | null
+      expectedConversationId: string
+    }>): Promise<LifecycleAdmissionOutcome>
   }
   cancellation: {
     /**
@@ -88,11 +111,19 @@ export type LifecycleCoordinatorPorts = {
      * Once `start` is returned, an end request must use ordinary retirement;
      * it cannot be reclassified as cancelled-before-start.
      */
-    beginStart(ensureId: string): Promise<"start" | "cancelled_before_start">
+    beginStart(ensureId: string): Promise<
+      | { kind: "start" }
+      | { kind: "cancelled_before_start"; decision: CancelledFxAdmissionDecision }
+    >
   }
   retirement?: {
     /** Called only after a correlated final Fx receipt is retained durably. */
     afterFinalReceipt(ensureId: string, receipt: FxFinalReceipt): Promise<void>
+    /** Idempotently retire a partial launch after Fx's retained negative winner. */
+    afterAdmissionCancellation?(
+      ensureId: string,
+      decision: CancelledFxAdmissionDecision,
+    ): Promise<void>
     /** End/cleanup retain their own durable intents in the retirement slice. */
     accept?(message: Exclude<RuntimeExtensionLifecycleInbound, EnsureRequest>): Promise<void>
   }
@@ -110,6 +141,10 @@ export type LifecycleCoordinatorOptions = {
   ports: LifecycleCoordinatorPorts
   /** Bound external effects; durable admission remains cheap and in-band. */
   maxConcurrentEffects?: number
+  /** Total exact Work-control/provider attempts before leaving durable pending state. */
+  pendingAdmissionAttempts?: number
+  /** Delay between pending attempts; the timer is unrefed and cancelled by close(). */
+  pendingAdmissionRetryDelayMs?: number
 }
 
 const STAGE_ORDER: readonly EnsureLifecycleStage[] = [
@@ -128,8 +163,16 @@ const STAGE_ORDER: readonly EnsureLifecycleStage[] = [
 export class LifecycleCoordinator {
   private readonly scheduled = new Map<string, { promise: Promise<void>; resolve: () => void }>()
   private readonly queued: string[] = []
+  private readonly admissionGates = new Map<string, Promise<void>>()
+  private readonly pendingRetries = new Map<
+    string,
+    { attempts: number; timer: ReturnType<typeof setTimeout> | null }
+  >()
+  private closed = false
   private activeEffects = 0
   private readonly maxConcurrentEffects: number
+  private readonly pendingAdmissionAttempts: number
+  private readonly pendingAdmissionRetryDelayMs: number
 
   constructor(private readonly options: LifecycleCoordinatorOptions) {
     const maximum = options.maxConcurrentEffects ?? 4
@@ -137,6 +180,18 @@ export class LifecycleCoordinator {
       throw new Error("lifecycle coordinator maxConcurrentEffects must be an integer from 1 through 32")
     }
     this.maxConcurrentEffects = maximum
+    const attempts = options.pendingAdmissionAttempts ?? 4
+    if (!Number.isInteger(attempts) || attempts < 1 || attempts > 16) {
+      throw new Error("lifecycle coordinator pendingAdmissionAttempts must be an integer from 1 through 16")
+    }
+    this.pendingAdmissionAttempts = attempts
+    const retryDelay = options.pendingAdmissionRetryDelayMs ?? 100
+    if (!Number.isInteger(retryDelay) || retryDelay < 0 || retryDelay > 10_000) {
+      throw new Error(
+        "lifecycle coordinator pendingAdmissionRetryDelayMs must be an integer from 0 through 10000",
+      )
+    }
+    this.pendingAdmissionRetryDelayMs = retryDelay
   }
 
   /** Persist exact private source bytes before an ensure can consume them. */
@@ -171,13 +226,21 @@ export class LifecycleCoordinator {
       .map((record) => record.request.agent_id)
     if (protectedIds.length > 0) await this.options.ports.manifest.protect?.(protectedIds)
     for (const record of records) {
-      if (record.stage !== "fx_started") this.schedule(record.request.ensure_id)
+      if (record.stage !== "fx_started" || record.fx_final.receipt !== null) {
+        this.schedule(record.request.ensure_id)
+      }
     }
   }
 
   /** Retain Fx's final receipt before any Manifest-removal/retirement hook can run. */
   async retainFinalReceipt(ensureId: string, receipt: FxFinalReceipt): Promise<void> {
-    await this.options.ledger.retainFxFinalReceipt(ensureId, receipt)
+    // Serialize terminal receipt persistence against initial Work-control
+    // submission.  Whichever side enters first may finish; once the final
+    // receipt is durable, no later admission request can cross this gate.
+    await this.withAdmissionGate(ensureId, async () => {
+      await this.options.ledger.retainFxFinalReceipt(ensureId, receipt)
+    })
+    if (this.closed) return
     await this.options.ports.retirement?.afterFinalReceipt(ensureId, receipt)
   }
 
@@ -190,14 +253,35 @@ export class LifecycleCoordinator {
     return this.options.ledger.acknowledgeFxFinalReceipt(ensureId, acknowledgement, authority)
   }
 
-  /** Test/host shutdown aid: waits for work already scheduled by this coordinator. */
+  /**
+   * Wait for active/queued effects only. Deferred pending timers are excluded
+   * by design; hosts call close() before teardown to cancel those redrives.
+   */
   async settled(): Promise<void> {
     while (this.scheduled.size > 0) {
       await Promise.all([...this.scheduled.values()].map(({ promise }) => promise))
     }
   }
 
-  private schedule(ensureId: string): void {
+  /** Stop pending-delay redrives; durable records remain for the next Runtime's recover(). */
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    for (const { timer } of this.pendingRetries.values()) {
+      if (timer !== null) clearTimeout(timer)
+    }
+    this.pendingRetries.clear()
+    for (const ensureId of this.queued.splice(0)) {
+      const completion = this.scheduled.get(ensureId)
+      if (completion === undefined) continue
+      this.scheduled.delete(ensureId)
+      completion.resolve()
+    }
+  }
+
+  private schedule(ensureId: string, preservePendingBudget = false): void {
+    if (this.closed) return
+    if (!preservePendingBudget) this.clearPendingRetry(ensureId)
     if (this.scheduled.has(ensureId)) return
     let resolveCompletion!: () => void
     const completion = new Promise<void>((resolve) => {
@@ -209,13 +293,19 @@ export class LifecycleCoordinator {
   }
 
   private pump(): void {
+    if (this.closed) return
     while (this.activeEffects < this.maxConcurrentEffects && this.queued.length > 0) {
       const ensureId = this.queued.shift()!
       const completion = this.scheduled.get(ensureId)
       if (completion === undefined) continue
       this.activeEffects++
       void this.drive(ensureId)
+        .then((pending) => {
+          if (pending) this.deferPendingRetry(ensureId)
+          else this.clearPendingRetry(ensureId)
+        })
         .catch((error) => {
+          this.clearPendingRetry(ensureId)
           try {
             this.options.ports.onError?.(error, ensureId)
           } catch {
@@ -231,15 +321,35 @@ export class LifecycleCoordinator {
     }
   }
 
-  private async drive(ensureId: string): Promise<void> {
+  private async drive(ensureId: string): Promise<boolean> {
     for (;;) {
       const record = await this.require(ensureId)
+      if (this.closed) return false
+      if (record.fx_final.receipt !== null) {
+        await this.options.ports.retirement?.afterFinalReceipt(
+          ensureId,
+          record.fx_final.receipt,
+        )
+        if (this.closed) return false
+        await this.publish(ensureId)
+        return false
+      }
+      if (record.fx_admission_decision?.decision.kind === "cancelled_before_start") {
+        await this.options.ports.retirement?.afterAdmissionCancellation?.(
+          ensureId,
+          record.fx_admission_decision as CancelledFxAdmissionDecision,
+        )
+        if (this.closed) return false
+        await this.publish(ensureId)
+        return false
+      }
       if (record.stage === "fx_started") {
         await this.publish(ensureId)
-        return
+        return false
       }
       const source = await this.options.sources.sourceForEnsure(record.request)
       if (source === null) throw new Error(`ensure ${ensureId} has no durably bound inline source`)
+      if (this.closed) return false
 
       if (record.stage === "claimed") {
         const effect = await this.options.ports.worktree.create({ request: record.request, source })
@@ -248,6 +358,7 @@ export class LifecycleCoordinator {
           directory: effect.directory,
           head_commit: effect.headCommit,
         })
+        if (this.closed) return false
         await this.publish(ensureId)
         continue
       }
@@ -258,43 +369,112 @@ export class LifecycleCoordinator {
           kind: "manifest_claimed",
           agent_id: record.request.agent_id,
         })
+        if (this.closed) return false
         await this.publish(ensureId)
         continue
       }
 
       const workControl = await this.workControlFor(record)
+      if (this.closed) return false
       const prepared = await this.options.ports.launch.prepare({ record, source, workControl })
+      assertPreparedAuthority(prepared.finalReceiptAuthority, source)
       await this.options.ledger.bindFxFinalReceiptAuthority(ensureId, prepared.finalReceiptAuthority)
 
       if (record.stage === "manifest_claimed") {
-        if (await this.options.ports.cancellation.beginStart(ensureId) === "cancelled_before_start") {
+        if (this.closed) return false
+        const gate = await this.options.ports.cancellation.beginStart(ensureId)
+        if (gate.kind === "cancelled_before_start") {
+          await this.options.ledger.retainFxAdmissionDecision(ensureId, gate.decision)
+          if (this.closed) return false
+          await this.options.ports.retirement?.afterAdmissionCancellation?.(
+            ensureId,
+            gate.decision,
+          )
+          if (this.closed) return false
           await this.publish(ensureId)
-          return
+          return false
         }
+        if (this.closed) return false
         const effect = await this.options.ports.companion.start({ record, invocation: prepared.invocation })
         await this.options.ledger.advance(ensureId, {
           kind: "companion_started",
           session_name: effect.sessionName,
           pane_id: effect.paneId,
         })
+        if (this.closed) return false
         await this.publish(ensureId)
         continue
       }
 
-      const bytes = await this.options.sources.retrieve(sourceAuthority(source))
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.initialWork)
-      const admitted = await this.options.ports.workControl.admitInitial({ binding: workControl, text, source })
-      await this.options.ports.admission.import({
-        record,
-        admission: admitted.admission,
-        conversationId: admitted.conversationId,
+      const result = await this.withAdmissionGate(ensureId, async () => {
+        const current = await this.require(ensureId)
+        if (this.closed) return { kind: "stopped" as const }
+        if (current.fx_final.receipt !== null) {
+          return { kind: "final" as const, receipt: current.fx_final.receipt }
+        }
+
+        // A crash may happen after Fx's positive keyed winner is durable
+        // locally but before the final stage transition.  That winner is
+        // sufficient to finish recovery with the provider-reserved
+        // Conversation; replay must not submit initial Work-control again.
+        if (current.fx_admission_decision?.decision.kind === "admitted") {
+          await this.options.ledger.advance(ensureId, {
+            kind: "fx_started",
+            conversation_id: prepared.conversationId,
+          })
+          return { kind: "advanced" as const }
+        }
+
+        const bytes = await this.options.sources.retrieve(sourceAuthority(source))
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.initialWork)
+        if (this.closed) return { kind: "stopped" as const }
+        const delivered = await this.options.ports.workControl.admitInitial({
+          binding: workControl,
+          text,
+          source,
+        })
+        if (this.closed) return { kind: "stopped" as const }
+        const outcome = await this.options.ports.admission.import({
+          record: current,
+          delivered,
+          expectedConversationId: prepared.conversationId,
+        })
+        if (outcome.kind === "pending") return { kind: "pending" as const }
+        if (outcome.kind === "cancelled_before_start") {
+          await this.options.ledger.retainFxAdmissionDecision(ensureId, outcome.decision)
+          return { kind: "cancelled" as const, decision: outcome.decision }
+        }
+        assertAdmittedObservation(outcome, delivered, prepared.conversationId)
+        await this.options.ledger.retainFxAdmissionDecision(ensureId, outcome.decision)
+        await this.options.ledger.advance(ensureId, {
+          kind: "fx_started",
+          conversation_id: outcome.conversationId,
+        })
+        return { kind: "advanced" as const }
       })
-      await this.options.ledger.advance(ensureId, {
-        kind: "fx_started",
-        conversation_id: admitted.conversationId,
-      })
+
+      if (result.kind === "final") {
+        if (this.closed) return false
+        await this.options.ports.retirement?.afterFinalReceipt(ensureId, result.receipt)
+        if (this.closed) return false
+        await this.publish(ensureId)
+        return false
+      }
+      if (result.kind === "stopped") return false
+      if (result.kind === "pending") return true
+      if (result.kind === "cancelled") {
+        if (this.closed) return false
+        await this.options.ports.retirement?.afterAdmissionCancellation?.(
+          ensureId,
+          result.decision,
+        )
+        if (this.closed) return false
+        await this.publish(ensureId)
+        return false
+      }
+      if (this.closed) return false
       await this.publish(ensureId)
-      return
+      return false
     }
   }
 
@@ -306,11 +486,13 @@ export class LifecycleCoordinator {
 
   private async publish(ensureId: string): Promise<void> {
     const receipts = this.options.ports.receipts
-    if (!receipts) return
+    if (!receipts || this.closed) return
     const record = await this.require(ensureId)
+    if (this.closed) return
     const receipt = await receipts.ensure(record)
-    if (receipt === null) return
+    if (receipt === null || this.closed) return
     await this.options.ledger.retainEnsureReceipt(receipt)
+    if (this.closed) return
     await receipts.publish(receipt)
   }
 
@@ -318,6 +500,57 @@ export class LifecycleCoordinator {
     const record = await this.options.ledger.get(ensureId)
     if (record === null) throw new Error(`ensure ${ensureId} disappeared from its durable ledger`)
     return record
+  }
+
+  private async withAdmissionGate<T>(ensureId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.admissionGates.get(ensureId) ?? Promise.resolve()
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const tail = previous.then(() => held)
+    this.admissionGates.set(ensureId, tail)
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (this.admissionGates.get(ensureId) === tail) this.admissionGates.delete(ensureId)
+    }
+  }
+
+  private deferPendingRetry(ensureId: string): void {
+    if (this.closed) return
+    const attempts = (this.pendingRetries.get(ensureId)?.attempts ?? 0) + 1
+    this.clearPendingRetry(ensureId)
+    if (attempts >= this.pendingAdmissionAttempts) {
+      try {
+        this.options.ports.onError?.(
+          new Error(
+            `ensure ${ensureId} remains pending after ${attempts} bounded admission attempts`,
+          ),
+          ensureId,
+        )
+      } catch {
+        // Diagnostics cannot change durable pending state.
+      }
+      return
+    }
+    const retry = { attempts, timer: null as ReturnType<typeof setTimeout> | null }
+    const timer = setTimeout(() => {
+      retry.timer = null
+      if (this.pendingRetries.get(ensureId) !== retry || this.closed) return
+      this.schedule(ensureId, true)
+    }, this.pendingAdmissionRetryDelayMs)
+    timer.unref?.()
+    retry.timer = timer
+    this.pendingRetries.set(ensureId, retry)
+  }
+
+  private clearPendingRetry(ensureId: string): void {
+    const retry = this.pendingRetries.get(ensureId)
+    if (retry?.timer !== null && retry?.timer !== undefined) clearTimeout(retry.timer)
+    this.pendingRetries.delete(ensureId)
   }
 }
 
@@ -338,5 +571,35 @@ function sourceAuthority(source: InlineLaunchSourceRequest) {
     admission_key: source.admission_key,
     source_id: source.source_id,
     source_digest: source.source_digest,
+  }
+}
+
+function assertPreparedAuthority(
+  binding: FxFinalReceiptAuthorityBinding,
+  source: InlineLaunchSourceRequest,
+): void {
+  if (
+    binding.admission_key !== source.admission_key ||
+    binding.state_root !== source.launch_request.state_root
+  ) {
+    throw new Error("Fx launch provider changed the frozen admission authority")
+  }
+}
+
+function assertAdmittedObservation(
+  outcome: Extract<LifecycleAdmissionOutcome, { kind: "admitted" }>,
+  delivered: Readonly<{ admission: FxWorkControlResult; conversationId: string }> | null,
+  expectedConversationId: string,
+): void {
+  if (outcome.conversationId !== expectedConversationId) {
+    throw new Error("Fx admission changed the provider-reserved Conversation")
+  }
+  if (delivered === null) return
+  if (
+    delivered.conversationId !== outcome.conversationId ||
+    delivered.admission.turn_id !== outcome.decision.decision.turn_id ||
+    delivered.admission.disposition !== outcome.decision.decision.disposition
+  ) {
+    throw new Error("Fx admission decision conflicts with the exact Work-control observation")
   }
 }

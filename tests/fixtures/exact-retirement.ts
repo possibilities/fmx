@@ -5,6 +5,7 @@ import {
   type EnsureLifecycleMessage,
 } from "../../src/agentworkplace-contracts.ts"
 import type { EnsureLifecycleRecord, EnsureRequest } from "../../src/ensure-lifecycle-ledger.ts"
+import { deriveFxAdmissionDecisionDigest, type FxAdmissionDecision } from "../../src/ensure-lifecycle-ledger.ts"
 import type {
   CleanupReceipt,
   CleanupRequest,
@@ -52,18 +53,24 @@ export async function retirementFixture(
   const cleanupAcknowledgement = required<RetirementReceiptAcknowledgement>(messages, (message) =>
     message.message_type === "receipt_acknowledgement" && "receipt_kind" in message &&
     message.receipt_kind === "cleanup")
+  const fxStarted = ensureId === "ensure-a"
+  const admissionBinding = { admission_key: "retirement-admission", state_root: "/var/tmp/fmx-retirement-state" }
+  const admissionDecision = fxStarted
+    ? admissionDecisionFor(ensureRequest, admissionBinding)
+    : null
   return {
     ensure: {
       schema_id: "fmx.ensure-lifecycle-ledger",
-      schema_version: 2,
-      revision: 1,
+      schema_version: 3,
+      revision: fxStarted ? 7 : 1,
       request: structuredClone(ensureRequest),
       stage: ensureId === "ensure-a" ? "fx_started" : "manifest_claimed",
       effects: structuredClone(ensureReceipt.effects),
       receipts: [],
       acknowledgements: [],
+      fx_admission_decision: admissionDecision,
       fx_final: {
-        binding: null,
+        binding: fxStarted ? admissionBinding : null,
         receipt: null,
         acknowledgement: null,
         acknowledgement_applied: false,
@@ -76,6 +83,24 @@ export async function retirementFixture(
     cleanupReceipt: structuredClone(cleanupReceipt),
     cleanupAcknowledgement: structuredClone(cleanupAcknowledgement),
   }
+}
+
+function admissionDecisionFor(
+  request: EnsureRequest,
+  binding: { admission_key: string; state_root: string },
+): FxAdmissionDecision {
+  const decision = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "admission_decision",
+    receipt_id: "retirement-admission-receipt",
+    receipt_digest: "",
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    admission_key: binding.admission_key,
+    decision: { kind: "admitted", turn_id: "1", disposition: "queued" },
+  } as const
+  return { ...decision, receipt_digest: deriveFxAdmissionDecisionDigest(decision) }
 }
 
 function required<T extends EnsureLifecycleMessage>(

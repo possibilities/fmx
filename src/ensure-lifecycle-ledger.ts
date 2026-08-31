@@ -30,7 +30,7 @@ import {
 import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
 
 const LEDGER_SCHEMA_ID = "fmx.ensure-lifecycle-ledger"
-const LEDGER_SCHEMA_VERSION = 2
+const LEDGER_SCHEMA_VERSION = 3
 const LOCK_FILE = ".ensure-lifecycle.lock"
 const RECORD_FILE = /^[0-9a-f]{64}\.json$/u
 const TEMPORARY_FILE = /^[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{16}\.tmp$/u
@@ -65,6 +65,10 @@ export type EnsureReceiptAcknowledgement = LiteralMessage<
 export type FxFinalReceipt = LiteralMessage<
   Extract<FxLaunchAdmissionFinalMessage, { outcome: unknown }>,
   "final_receipt"
+>
+export type FxAdmissionDecision = LiteralMessage<
+  Extract<FxLaunchAdmissionFinalMessage, { decision: unknown }>,
+  "admission_decision"
 >
 export type FxFinalReceiptAcknowledgement = LiteralMessage<
   Extract<FxLaunchAdmissionFinalMessage, { acknowledgement_id: unknown }>,
@@ -101,6 +105,8 @@ export type EnsureLifecycleRecord = {
   effects: EnsureLifecycleEffects
   receipts: EnsureReceipt[]
   acknowledgements: EnsureReceiptAcknowledgement[]
+  /** Fx's immutable positive-or-negative keyed decision, retained locally forever. */
+  fx_admission_decision: FxAdmissionDecision | null
   fx_final: FxFinalReceiptTransaction
 }
 
@@ -214,6 +220,7 @@ const privateRecordSchema = z.strictObject({
   }),
   receipts: z.array(ensureLifecycleMessageSchema).max(4096),
   acknowledgements: z.array(ensureLifecycleMessageSchema).max(4096),
+  fx_admission_decision: z.unknown().nullable(),
   fx_final: z.strictObject({
     binding: fxFinalReceiptAuthorityBindingSchema.nullable(),
     receipt: z.unknown().nullable(),
@@ -297,6 +304,7 @@ export class EnsureLifecycleLedger {
         effects: effectsForClaim(request),
         receipts: [],
         acknowledgements: [],
+        fx_admission_decision: null,
         fx_final: emptyFxFinalReceiptTransaction(),
       }
       await this.writeRecord(record, guard, null)
@@ -324,6 +332,39 @@ export class EnsureLifecycleLedger {
       if (advanced === record) return copyRecord(record)
       await this.writeRecord(advanced, guard, requireRecordIdentity(index, ensureId))
       return copyRecord(advanced)
+    }))
+  }
+
+  /**
+   * Retain Fx's exact caller-keyed admission winner before interpreting it.
+   * A negative winner is the private terminal launch tombstone; recovery may
+   * retry retirement but can never re-enter the spawn path.
+   */
+  retainFxAdmissionDecision(
+    ensureId: string,
+    decisionInput: FxAdmissionDecision,
+  ): Promise<EnsureLifecycleRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const decision = parseFxAdmissionDecision(decisionInput)
+      const index = await this.readIndex(guard)
+      const record = requireRecord(index, ensureId)
+      if (record.fx_admission_decision !== null) {
+        if (!sameCanonical(record.fx_admission_decision, decision)) {
+          throw ledgerError(
+            "receipt_conflict",
+            `ensure ${ensureId} already retains another Fx admission decision`,
+          )
+        }
+        return copyRecord(record)
+      }
+      assertFxAdmissionDecisionCorrelation(record, decision, "receipt_conflict")
+      assertReceiptIdAvailable(index.records, decision.receipt_id)
+      const next = copyRecord(record)
+      next.revision++
+      next.fx_admission_decision = decision
+      validateRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyRecord(next)
     }))
   }
 
@@ -861,6 +902,33 @@ function parseFxFinalReceipt(input: FxFinalReceipt): FxFinalReceipt {
   return receipt
 }
 
+function parseFxAdmissionDecision(input: FxAdmissionDecision): FxAdmissionDecision {
+  const parsed = fxLaunchAdmissionFinalMessageSchema.safeParse(input)
+  if (
+    !parsed.success ||
+    parsed.data.message_type !== "admission_decision" ||
+    !("decision" in parsed.data)
+  ) {
+    throw ledgerError(
+      "receipt_conflict",
+      "retained Fx admission winner is not a strict admission_decision",
+    )
+  }
+  const decision = {
+    ...structuredClone(parsed.data),
+    message_type: "admission_decision" as const,
+  } as FxAdmissionDecision
+  const derived = deriveFxAdmissionDecisionDigest(decision)
+  if (derived !== decision.receipt_digest) {
+    throw ledgerError(
+      "receipt_conflict",
+      `Fx admission decision ${decision.receipt_id} has digest ${decision.receipt_digest}; ` +
+        `expected ${derived}`,
+    )
+  }
+  return decision
+}
+
 function parseFxFinalReceiptAcknowledgement(
   input: FxFinalReceiptAcknowledgement,
 ): FxFinalReceiptAcknowledgement {
@@ -888,12 +956,55 @@ export function deriveFxFinalReceiptDigest(receipt: FxFinalReceipt): string {
     .digest("hex")
 }
 
+export function deriveFxAdmissionDecisionDigest(decision: FxAdmissionDecision): string {
+  const { receipt_digest: _receiptDigest, ...specification } = decision
+  return createHash("sha256")
+    .update(encodeCanonicalJson(specification as unknown as JsonValue))
+    .digest("hex")
+}
+
+function assertFxAdmissionDecisionCorrelation(
+  record: EnsureLifecycleRecord,
+  decision: FxAdmissionDecision,
+  code: EnsureLifecycleLedgerErrorCode,
+): void {
+  const binding = record.fx_final.binding
+  if (binding === null) {
+    throw ledgerError(code, `ensure ${record.request.ensure_id} has no Fx admission authority`)
+  }
+  if (
+    decision.launch_id !== record.request.launch_id ||
+    decision.launch_digest !== record.request.launch_digest ||
+    decision.admission_key !== binding.admission_key
+  ) {
+    throw ledgerError(code, "Fx admission decision changed the exact launch correlation")
+  }
+  if (decision.decision.kind === "admitted") {
+    if (record.stage !== "companion_started" && record.stage !== "fx_started") {
+      throw ledgerError(
+        code,
+        `positive Fx admission cannot be retained at ensure stage ${record.stage}`,
+      )
+    }
+    return
+  }
+  if (record.stage !== "manifest_claimed" && record.stage !== "companion_started") {
+    throw ledgerError(
+      code,
+      `negative Fx admission cannot be retained at ensure stage ${record.stage}`,
+    )
+  }
+}
+
 function assertFxFinalReceiptCorrelation(
   record: EnsureLifecycleRecord,
   receipt: FxFinalReceipt,
   code: EnsureLifecycleLedgerErrorCode,
 ): void {
   const binding = record.fx_final.binding
+  if (record.fx_admission_decision?.decision.kind === "cancelled_before_start") {
+    throw ledgerError(code, "Fx cancellation winner cannot produce a final receipt")
+  }
   if (
     STAGES.indexOf(record.stage) < STAGES.indexOf("companion_started") ||
     record.effects.companion.status !== "started"
@@ -946,6 +1057,7 @@ function assertReceiptIdAvailable(
   for (const record of records) {
     if (
       record.receipts.some(({ receipt_id }) => receipt_id === receiptId) ||
+      record.fx_admission_decision?.receipt_id === receiptId ||
       record.fx_final.receipt?.receipt_id === receiptId
     ) {
       throw ledgerError("receipt_conflict", `receipt id ${receiptId} belongs to another receipt`)
@@ -1079,6 +1191,12 @@ function advanceRecord(
       }
       break
     case "fx_started":
+      if (record.fx_admission_decision?.decision.kind !== "admitted") {
+        throw ledgerError(
+          "invalid_transition",
+          `ensure ${record.request.ensure_id} cannot start Fx without a durable admitted decision`,
+        )
+      }
       if (!isAgentWorkplaceConversationId(transition.conversation_id)) {
         throw ledgerError("invalid_transition", "Fx start did not return a valid Conversation identity")
       }
@@ -1161,9 +1279,11 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
     throw ledgerError("corrupt_record", `${path} changed its ensure identity during parsing`)
   }
   validateStageEffects(record, path)
+  validateFxAdmissionDecision(record, path)
   validateFxFinalReceiptTransaction(record, path)
   const expectedRevision = 1 + STAGES.indexOf(record.stage) +
     record.receipts.length + record.acknowledgements.length +
+    (record.fx_admission_decision === null ? 0 : 1) +
     (record.fx_final.binding === null ? 0 : 1) +
     (record.fx_final.receipt === null ? 0 : 1) +
     (record.fx_final.acknowledgement === null ? 0 : 1) +
@@ -1196,6 +1316,15 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
       )
     }
     receiptIds.add(record.fx_final.receipt.receipt_id)
+  }
+  if (record.fx_admission_decision !== null) {
+    if (receiptIds.has(record.fx_admission_decision.receipt_id)) {
+      throw ledgerError(
+        "corrupt_record",
+        `${path} repeats receipt ${record.fx_admission_decision.receipt_id}`,
+      )
+    }
+    receiptIds.add(record.fx_admission_decision.receipt_id)
   }
   const acknowledgementIds = new Set<string>()
   const acknowledgedReceiptIds = new Set<string>()
@@ -1237,6 +1366,27 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
   }
 }
 
+function validateFxAdmissionDecision(record: EnsureLifecycleRecord, path: string): void {
+  if (record.fx_admission_decision === null) {
+    if (record.stage === "fx_started") {
+      throw ledgerError("corrupt_record", `${path} started Fx without its admission decision`)
+    }
+    return
+  }
+  try {
+    const decision = parseFxAdmissionDecision(record.fx_admission_decision)
+    assertFxAdmissionDecisionCorrelation(record, decision, "corrupt_record")
+    if (decision.decision.kind === "cancelled_before_start" && record.stage === "fx_started") {
+      throw ledgerError("corrupt_record", `${path} starts Fx after a negative admission decision`)
+    }
+  } catch (error) {
+    if (error instanceof EnsureLifecycleLedgerError && error.code === "corrupt_record") throw error
+    const wrapped = ledgerError("corrupt_record", `${path} contains invalid Fx admission state`)
+    wrapped.cause = error
+    throw wrapped
+  }
+}
+
 function validateFxFinalReceiptTransaction(
   record: EnsureLifecycleRecord,
   path: string,
@@ -1254,6 +1404,12 @@ function validateFxFinalReceiptTransaction(
       )
     }
     if (transaction.receipt !== null) {
+      if (record.fx_admission_decision?.decision.kind === "cancelled_before_start") {
+        throw ledgerError(
+          "corrupt_record",
+          `${path} retains an Fx final receipt after cancellation won admission`,
+        )
+      }
       const receipt = parseFxFinalReceipt(transaction.receipt)
       assertFxFinalReceiptCorrelation(record, receipt, "corrupt_record")
     }
@@ -1380,6 +1536,9 @@ function validateIndex(records: EnsureLifecycleRecord[]): void {
     assertUnique(agentIds, request.agent_id, "Agent id")
     assertUnique(directories, request.planned_worktree.directory, "Worktree directory")
     for (const receipt of record.receipts) assertUnique(receiptIds, receipt.receipt_id, "receipt id")
+    if (record.fx_admission_decision !== null) {
+      assertUnique(receiptIds, record.fx_admission_decision.receipt_id, "receipt id")
+    }
     if (record.fx_final.binding !== null) {
       assertUnique(admissionKeys, record.fx_final.binding.admission_key, "Fx admission key")
     }
@@ -1488,6 +1647,9 @@ async function readRecord(
     const binding = parsed.data.fx_final.binding === null
       ? null
       : parseFxFinalReceiptAuthorityBinding(parsed.data.fx_final.binding)
+    const admissionDecision = parsed.data.fx_admission_decision === null
+      ? null
+      : parseFxAdmissionDecision(parsed.data.fx_admission_decision as FxAdmissionDecision)
     const finalReceipt = parsed.data.fx_final.receipt === null
       ? null
       : parseFxFinalReceipt(parsed.data.fx_final.receipt as FxFinalReceipt)
@@ -1505,6 +1667,7 @@ async function readRecord(
       effects: parsed.data.effects,
       receipts,
       acknowledgements,
+      fx_admission_decision: admissionDecision,
       fx_final: {
         binding,
         receipt: finalReceipt,

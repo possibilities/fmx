@@ -12,6 +12,7 @@ import { encodeCanonicalJson } from "../src/contract-codec.ts"
 import {
   EnsureLifecycleLedger,
   deriveEnsureDigest,
+  deriveFxAdmissionDecisionDigest,
   deriveFxFinalReceiptDigest,
   type EnsureRequest,
   type FxFinalReceipt,
@@ -24,7 +25,12 @@ import {
   type FrozenLaunchRequest,
   type InlineLaunchSourceRequest,
 } from "../src/inline-launch-source.ts"
-import { LifecycleCoordinator, type LifecycleCoordinatorPorts } from "../src/lifecycle-coordinator.ts"
+import {
+  LifecycleCoordinator,
+  type AdmittedFxAdmissionDecision,
+  type CancelledFxAdmissionDecision,
+  type LifecycleCoordinatorPorts,
+} from "../src/lifecycle-coordinator.ts"
 
 const ROOT = join(import.meta.dir, "../contracts/agentworkplace/v1")
 const temporaryDirectories = new Set<string>()
@@ -67,6 +73,9 @@ describe("durable lifecycle coordinator", () => {
         manifest: { status: "claimed", agent_id: fixture.ensure.agent_id },
         companion: { status: "started", session_name: `fmx-${fixture.ensure.agent_id}` },
         fx: { status: "started", conversation_id: "conversation-main" },
+      },
+      fx_admission_decision: {
+        decision: { kind: "admitted", disposition: "queued", turn_id: "1" },
       },
       fx_final: { binding: { admission_key: fixture.source.admission_key } },
     })
@@ -131,14 +140,340 @@ describe("durable lifecycle coordinator", () => {
     })
     await ledger.advance(fixture.ensure.ensure_id, { kind: "manifest_claimed", agent_id: fixture.ensure.agent_id })
     const observed: string[] = []
-    const ports = fakePorts(observed, "cancelled_before_start")
+    const ports = fakePorts(
+      observed,
+      "cancelled_before_start",
+      undefined,
+      cancelledDecisionFor(fixture.ensure, fixture.source.admission_key),
+    )
     const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
 
     await coordinator.recover()
     await coordinator.settled()
 
     expect(observed).toEqual(["protect:" + fixture.ensure.agent_id, "prepare", "start-gate"])
-    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("manifest_claimed")
+    const cancelled = (await ledger.get(fixture.ensure.ensure_id))!
+    expect(cancelled).toMatchObject({
+      stage: "manifest_claimed",
+      fx_admission_decision: {
+        decision: { kind: "cancelled_before_start" },
+      },
+    })
+
+    const reopened = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const resumedObserved: string[] = []
+    const resumed = new LifecycleCoordinator({
+      ledger: reopened,
+      sources,
+      ports: fakePorts(resumedObserved),
+    })
+    await resumed.recover()
+    await resumed.settled()
+    expect(resumedObserved).toEqual(["protect:" + fixture.ensure.agent_id])
+    expect((await reopened.get(fixture.ensure.ensure_id))?.fx_admission_decision?.decision.kind)
+      .toBe("cancelled_before_start")
+  })
+
+  test("redrives a pending authoritative import until it converges in-runtime", async () => {
+    const fixture = await sourceFixture("pending-import")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    const importAdmission = ports.admission.import
+    let attempts = 0
+    ports.admission.import = async (input) => {
+      attempts++
+      if (attempts === 1) {
+        observed.push(`import-pending:${input.expectedConversationId}`)
+        return { kind: "pending" }
+      }
+      return importAdmission(input)
+    }
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: 0,
+    })
+
+    await coordinator.recover()
+    await waitFor(async () => (await ledger.get(fixture.ensure.ensure_id))?.stage === "fx_started")
+    await coordinator.settled()
+
+    expect(attempts).toBe(2)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_admission_decision?.decision.kind)
+      .toBe("admitted")
+    expect(observed).toContain("import-pending:conversation-main")
+  })
+
+  test("close cancels a deferred pending redrive and preserves durable pending work", async () => {
+    const fixture = await sourceFixture("pending-close")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    let attempts = 0
+    const ports = fakePorts([])
+    ports.admission.import = async () => {
+      attempts++
+      return { kind: "pending" }
+    }
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: 10_000,
+    })
+
+    await coordinator.recover()
+    // settled() drains active work only; the deferred timer is deliberately
+    // outside that promise and close() is required before fixture teardown.
+    await coordinator.settled()
+    coordinator.close()
+
+    expect(attempts).toBe(1)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("companion_started")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_admission_decision).toBeNull()
+  })
+
+  test("close cancels a fired retry paused before its first admission boundary", async () => {
+    const fixture = await sourceFixture("pending-close-race")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    let workControlSubmissions = 0
+    let retryPaused = false
+    let releaseRetry!: () => void
+    const retryBarrier = new Promise<void>((resolve) => {
+      releaseRetry = resolve
+    })
+    let admissionImports = 0
+    ports.workControl.admitInitial = async () => {
+      workControlSubmissions++
+      if (workControlSubmissions === 2) {
+        retryPaused = true
+        await retryBarrier
+      }
+      return null
+    }
+    ports.admission.import = async () => {
+      admissionImports++
+      return { kind: "pending" }
+    }
+    let retirementEffects = 0
+    let receiptBuilds = 0
+    let receiptPublishes = 0
+    ports.retirement = {
+      afterFinalReceipt: async () => { retirementEffects++ },
+      afterAdmissionCancellation: async () => { retirementEffects++ },
+    }
+    ports.receipts = {
+      ensure: async () => {
+        receiptBuilds++
+        return null
+      },
+      publish: async () => { receiptPublishes++ },
+    }
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionAttempts: 4,
+      pendingAdmissionRetryDelayMs: 0,
+    })
+
+    await coordinator.recover()
+    await waitFor(() => retryPaused)
+    expect(workControlSubmissions).toBe(2)
+    expect(admissionImports).toBe(1)
+    coordinator.close()
+    releaseRetry()
+    await coordinator.settled()
+
+    expect(workControlSubmissions).toBe(2)
+    expect(admissionImports).toBe(1)
+    expect(retirementEffects).toBe(0)
+    expect(receiptBuilds).toBe(0)
+    expect(receiptPublishes).toBe(0)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("companion_started")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_admission_decision).toBeNull()
+
+    const recovered = new LifecycleCoordinator({ ledger, sources, ports: fakePorts([]) })
+    await recovered.recover()
+    await recovered.settled()
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+  })
+
+  test("close after cancellation gate suppresses retirement and receipt publication", async () => {
+    const fixture = await sourceFixture("cancel-close-race")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await sources.claim(fixture.source)
+    await ledger.claim(fixture.ensure)
+    await sources.bindEnsureRequestForEnsure(fixture.ensure)
+    await ledger.advance(fixture.ensure.ensure_id, {
+      kind: "worktree_created",
+      directory: fixture.ensure.planned_worktree.directory,
+      head_commit: fixture.ensure.planned_worktree.base_commit,
+    })
+    await ledger.advance(fixture.ensure.ensure_id, {
+      kind: "manifest_claimed",
+      agent_id: fixture.ensure.agent_id,
+    })
+    const retirementCalls: string[] = []
+    let receiptBuilds = 0
+    let receiptPublishes = 0
+    const ports = fakePorts([])
+    const decision = cancelledDecisionFor(fixture.ensure, fixture.source.admission_key)
+    let coordinator!: LifecycleCoordinator
+    ports.cancellation.beginStart = async () => {
+      queueMicrotask(() => coordinator.close())
+      return { kind: "cancelled_before_start", decision }
+    }
+    ports.retirement = {
+      afterFinalReceipt: async () => { retirementCalls.push("final") },
+      afterAdmissionCancellation: async () => { retirementCalls.push("cancelled") },
+    }
+    ports.receipts = {
+      ensure: async () => {
+        receiptBuilds++
+        return null
+      },
+      publish: async () => { receiptPublishes++ },
+    }
+    coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+
+    await coordinator.recover()
+    await coordinator.settled()
+
+    const record = (await ledger.get(fixture.ensure.ensure_id))!
+    expect(record.stage).toBe("manifest_claimed")
+    expect(record.fx_admission_decision?.decision.kind).toBe("cancelled_before_start")
+    expect(retirementCalls).toEqual([])
+    expect(receiptBuilds).toBe(0)
+    expect(receiptPublishes).toBe(0)
+  })
+
+  test("bounds perpetual pending redrive and reports one terminal error without losing work", async () => {
+    const fixture = await sourceFixture("pending-perpetual")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    let attempts = 0
+    const errors: unknown[] = []
+    const ports = fakePorts([])
+    ports.admission.import = async () => {
+      attempts++
+      return { kind: "pending" }
+    }
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports: { ...ports, onError: (error) => errors.push(error) },
+      pendingAdmissionAttempts: 3,
+      pendingAdmissionRetryDelayMs: 0,
+    })
+
+    await coordinator.recover()
+    await coordinator.settled()
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("companion_started")
+    expect(attempts).toBeGreaterThanOrEqual(1)
+    await waitFor(() => attempts === 3)
+    await coordinator.settled()
+
+    expect(attempts).toBe(3)
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0])).toContain("bounded admission attempts")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("companion_started")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_admission_decision).toBeNull()
+    coordinator.close()
+  })
+
+  test("rejects invalid pending redrive options", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const ports = fakePorts([])
+    expect(() => new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionAttempts: 0,
+    })).toThrow("pendingAdmissionAttempts")
+    expect(() => new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionAttempts: 17,
+    })).toThrow("pendingAdmissionAttempts")
+    expect(() => new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: -1,
+    })).toThrow("pendingAdmissionRetryDelayMs")
+    expect(() => new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: 10_001,
+    })).toThrow("pendingAdmissionRetryDelayMs")
+  })
+
+  test("imports an authoritative decision after Work-control response loss", async () => {
+    const fixture = await sourceFixture("response-loss")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    ports.workControl.admitInitial = async () => {
+      observed.push("work-control-response-lost")
+      return null
+    }
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+
+    await coordinator.recover()
+    await coordinator.settled()
+
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_admission_decision?.decision.kind)
+      .toBe("admitted")
+    expect(observed).toContain("work-control-response-lost")
+  })
+
+  test("reuses a retained admitted decision without a second Work-control admission", async () => {
+    const fixture = await sourceFixture("admitted-retry")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    await ledger.retainFxAdmissionDecision(
+      fixture.ensure.ensure_id,
+      admissionDecisionFor(fixture.ensure, fixture.source.admission_key, "admitted-retry"),
+    )
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    ports.workControl.admitInitial = async () => {
+      throw new Error("retained admission must not resend Work-control")
+    }
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+
+    await coordinator.recover()
+    await coordinator.settled()
+
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+    expect(observed).not.toContain("work-control:hello λ")
   })
 
   test("a failed effect leaves its last durable boundary for a later recovery drain", async () => {
@@ -285,6 +620,10 @@ describe("durable lifecycle coordinator", () => {
       kind: "companion_started", session_name: `fmx-${fixture.ensure.agent_id}`,
       pane_id: `p_${fixture.ensure.agent_id}`,
     })
+    await ledger.retainFxAdmissionDecision(
+      fixture.ensure.ensure_id,
+      admissionDecisionFor(fixture.ensure, fixture.source.admission_key, "final-admission"),
+    )
     await ledger.advance(fixture.ensure.ensure_id, { kind: "fx_started", conversation_id: finalReceipt.conversation_id })
     let retained = false
     const ports = fakePorts([], "start", {
@@ -297,12 +636,131 @@ describe("durable lifecycle coordinator", () => {
     await coordinator.retainFinalReceipt(fixture.ensure.ensure_id, finalReceipt)
     expect(retained).toBe(true)
   })
+
+  test("replays retirement after a final receipt is durable despite a prior retirement failure", async () => {
+    const fixture = await sourceFixture("final-retry")
+    const finalReceipt = await finalFixture(fixture)
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    let retirementAttempts = 0
+    const observed: string[] = []
+    const ports = fakePorts(observed, "start", {
+      afterFinalReceipt: async () => {
+        retirementAttempts++
+        if (retirementAttempts === 1) throw new Error("retirement response lost")
+      },
+    })
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+
+    await expect(coordinator.retainFinalReceipt(fixture.ensure.ensure_id, finalReceipt))
+      .rejects.toThrow("retirement response lost")
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_final.receipt).toEqual(finalReceipt)
+
+    const recovered = new LifecycleCoordinator({ ledger, sources, ports })
+    await recovered.recover()
+    await recovered.settled()
+
+    expect(retirementAttempts).toBe(2)
+    expect(observed).toEqual(["protect:" + fixture.ensure.agent_id])
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("companion_started")
+  })
+
+  test("serializes final retention before concurrent admission can submit Work-control", async () => {
+    const fixture = await sourceFixture("final-admission-race")
+    const finalReceipt = await finalFixture(fixture)
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    let retirementEntered = false
+    let releaseRetirement!: () => void
+    const retirementBlocked = new Promise<void>((resolve) => {
+      releaseRetirement = resolve
+    })
+    let retirementCalls = 0
+    let workControlSubmissions = 0
+    const observed: string[] = []
+    const ports = fakePorts(observed, "start", {
+      afterFinalReceipt: async () => {
+        retirementCalls++
+        if (retirementCalls === 1) {
+          retirementEntered = true
+          await retirementBlocked
+        }
+      },
+    })
+    ports.workControl.admitInitial = async () => {
+      workControlSubmissions++
+      return null
+    }
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+    const finalRetention = coordinator.retainFinalReceipt(fixture.ensure.ensure_id, finalReceipt)
+    for (let attempt = 0; attempt < 100 && !retirementEntered; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    expect(retirementEntered).toBe(true)
+
+    await coordinator.recover()
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_final.receipt).toEqual(finalReceipt)
+    expect(workControlSubmissions).toBe(0)
+
+    releaseRetirement()
+    await finalRetention
+    await coordinator.settled()
+    expect(workControlSubmissions).toBe(0)
+    expect(retirementCalls).toBe(2)
+  })
+
+  test("rejects a launch provider authority mismatch before Companion or admission", async () => {
+    for (const mismatch of ["admission_key", "state_root"] as const) {
+      const fixture = await sourceFixture(`authority-${mismatch}`)
+      const root = await temporaryDirectory()
+      const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+      const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+      const observed: string[] = []
+      const ports = fakePorts(observed)
+      ports.launch.prepare = async ({ source }) => {
+        observed.push("prepare")
+        return {
+          invocation: { source: source.source_id },
+          conversationId: "conversation-main",
+          finalReceiptAuthority: {
+            admission_key: mismatch === "admission_key"
+              ? "different-admission"
+              : source.admission_key,
+            state_root: mismatch === "state_root"
+              ? "/var/tmp/different-state-root"
+              : source.launch_request.state_root,
+          },
+        }
+      }
+      const errors: unknown[] = []
+      const coordinator = new LifecycleCoordinator({
+        ledger,
+        sources,
+        ports: { ...ports, onError: (error) => errors.push(error) },
+      })
+
+      await coordinator.acceptInlineSource(fixture.source)
+      await coordinator.accept(fixture.ensure)
+      await coordinator.settled()
+
+      expect(errors).toHaveLength(1)
+      expect(String(errors[0])).toContain("changed the frozen admission authority")
+      expect(observed).toEqual(["worktree", "manifest", "prepare"])
+      expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("manifest_claimed")
+      expect((await ledger.get(fixture.ensure.ensure_id))?.fx_final.binding).toBeNull()
+    }
+  })
 })
 
 function fakePorts(
   observed: string[],
   cancellation: "start" | "cancelled_before_start" = "start",
   retirement?: NonNullable<LifecycleCoordinatorPorts["retirement"]>,
+  cancellationDecision?: CancelledFxAdmissionDecision,
 ): LifecycleCoordinatorPorts {
   const binding = { socketPath: "/tmp/fmx.test.fx", instanceId: "a".repeat(32), token: "token" }
   return {
@@ -319,6 +777,7 @@ function fakePorts(
       observed.push("prepare")
       return {
         invocation: { source: source.source_id },
+        conversationId: "conversation-main",
         finalReceiptAuthority: { admission_key: source.admission_key, state_root: source.launch_request.state_root },
       }
     } },
@@ -333,10 +792,93 @@ function fakePorts(
         conversationId: "conversation-main",
       }
     } },
-    admission: { import: async ({ conversationId }) => { observed.push(`import-admission:${conversationId}`) } },
-    cancellation: { beginStart: async () => { observed.push("start-gate"); return cancellation } },
+    admission: { import: async ({ record, expectedConversationId }) => {
+      observed.push(`import-admission:${expectedConversationId}`)
+      return {
+        kind: "admitted",
+        decision: admissionDecisionFor(
+          record.request,
+          record.fx_final.binding!.admission_key,
+          "coordinator-admission",
+        ),
+        conversationId: expectedConversationId,
+      }
+    } },
+    cancellation: { beginStart: async () => {
+      observed.push("start-gate")
+      if (cancellation === "cancelled_before_start") {
+        if (!cancellationDecision) throw new Error("missing cancellation decision fixture")
+        return { kind: cancellation, decision: cancellationDecision }
+      }
+      return { kind: "start" }
+    } },
     retirement,
   }
+}
+
+function admissionDecisionFor(
+  request: EnsureRequest,
+  admissionKey: string,
+  receiptId: string,
+): AdmittedFxAdmissionDecision {
+  const decision = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "admission_decision",
+    receipt_id: `${receiptId}-${request.ensure_id}`,
+    receipt_digest: "",
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    admission_key: admissionKey,
+    decision: { kind: "admitted", turn_id: "1", disposition: "queued" },
+  } as AdmittedFxAdmissionDecision
+  return { ...decision, receipt_digest: deriveFxAdmissionDecisionDigest(decision) }
+}
+
+function cancelledDecisionFor(
+  request: EnsureRequest,
+  admissionKey: string,
+): CancelledFxAdmissionDecision {
+  const decision = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "admission_decision",
+    receipt_id: "coordinator-cancelled",
+    receipt_digest: "",
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    admission_key: admissionKey,
+    decision: { kind: "cancelled_before_start", cancellation_request_id: "cancel-request" },
+  } as CancelledFxAdmissionDecision
+  return { ...decision, receipt_digest: deriveFxAdmissionDecisionDigest(decision) }
+}
+
+async function setupCompanion(
+  fixture: { ensure: EnsureRequest; source: InlineLaunchSourceRequest },
+  ledger: EnsureLifecycleLedger,
+  sources: InlineLaunchSourceLedger,
+): Promise<void> {
+  await sources.claim(fixture.source)
+  await ledger.claim(fixture.ensure)
+  await sources.bindEnsureRequestForEnsure(fixture.ensure)
+  await ledger.advance(fixture.ensure.ensure_id, {
+    kind: "worktree_created",
+    directory: fixture.ensure.planned_worktree.directory,
+    head_commit: fixture.ensure.planned_worktree.base_commit,
+  })
+  await ledger.advance(fixture.ensure.ensure_id, {
+    kind: "manifest_claimed",
+    agent_id: fixture.ensure.agent_id,
+  })
+  await ledger.bindFxFinalReceiptAuthority(fixture.ensure.ensure_id, {
+    admission_key: fixture.source.admission_key,
+    state_root: fixture.source.launch_request.state_root,
+  })
+  await ledger.advance(fixture.ensure.ensure_id, {
+    kind: "companion_started",
+    session_name: `fmx-${fixture.ensure.agent_id}`,
+    pane_id: `p_${fixture.ensure.agent_id}`,
+  })
 }
 
 async function sourceFixture(suffix: string): Promise<{ ensure: EnsureRequest; source: InlineLaunchSourceRequest }> {
@@ -416,4 +958,12 @@ async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(await realpath(tmpdir()), "fmx-lifecycle-coordinator-"))
   temporaryDirectories.add(directory)
   return directory
+}
+
+async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt++) {
+    if (await condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  throw new Error("timed out waiting for deterministic lifecycle condition")
 }
