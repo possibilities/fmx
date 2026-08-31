@@ -35,6 +35,7 @@ import {
   type LifecycleRuntimeMultiplexer,
   type LifecycleRuntimeOptions,
 } from "../src/lifecycle-runtime.ts"
+import type { AgentDefaults } from "../src/config.ts"
 import type { ManagedAgentClaim, ManagedAgentInvocation } from "../src/multiplexer.ts"
 
 const CONTRACTS = resolve(import.meta.dir, "../contracts/agentworkplace/v1")
@@ -79,8 +80,8 @@ describe("production lifecycle Runtime composition", () => {
         FX_ADE_INSTANCE_ID: fixture.ensure.agent_id,
         FX_INTERNAL_LAUNCH_CONVERSATION_ID: "conversation-runtime",
       })
-      expect(invocation.env.FX_MODEL).toBeUndefined()
-      expect(invocation.env.FX_EFFORT).toBeUndefined()
+      expect(invocation.env.FX_MODEL).toBe("fixture/model-default")
+      expect(invocation.env.FX_EFFORT).toBe("medium")
       expect(harness.workControl.requests).toEqual([{
         method: "work.queue",
         params: { text: "initial λ work" },
@@ -98,6 +99,104 @@ describe("production lifecycle Runtime composition", () => {
           launch_digest: fixture.ensure.launch_digest,
         },
       }])
+    } finally {
+      await harness.runtime.close()
+    }
+  })
+
+  test("composes full and partial Session defaults without changing frozen launch bytes", async () => {
+    const full = await lifecycleFixture("ensure-a", "launch-a", "defaults-full", {
+      model: null,
+      effort: null,
+    })
+    const fullHarness = await runtimeHarness(full, {
+      agentDefaults: { model: "session/model", effort: "high" },
+    })
+    try {
+      await fullHarness.runtime.acceptInlineSource(full.source)
+      await fullHarness.runtime.acceptLifecycle(full.ensure)
+      await fullHarness.runtime.recover()
+      expect(fullHarness.multiplexer.starts[0]!.env).toMatchObject({
+        FX_MODEL: "session/model",
+        FX_EFFORT: "high",
+      })
+      expect(full.source.launch_request.model).toBeUndefined()
+      expect(full.source.launch_request.effort).toBeUndefined()
+    } finally {
+      await fullHarness.runtime.close()
+    }
+
+    const partial = await lifecycleFixture("ensure-a", "launch-a", "defaults-partial", {
+      effort: null,
+    })
+    const partialHarness = await runtimeHarness(partial, {
+      agentDefaults: { model: "session/model", effort: "high" },
+    })
+    try {
+      await partialHarness.runtime.acceptInlineSource(partial.source)
+      await partialHarness.runtime.acceptLifecycle(partial.ensure)
+      await partialHarness.runtime.recover()
+      expect(partialHarness.multiplexer.starts[0]!.env).toMatchObject({
+        FX_MODEL: partial.source.launch_request.model,
+        FX_EFFORT: "high",
+      })
+    } finally {
+      await partialHarness.runtime.close()
+    }
+  })
+
+  test("does not apply a nonmatching Session default and preserves vanilla Fx absence", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "defaults-nonmatching", {
+      model: null,
+      effort: null,
+    })
+    // The startup resolver supplies only exact-session defaults. A nonmatching
+    // table entry therefore arrives here as no defaults at all.
+    const harness = await runtimeHarness(fixture)
+    try {
+      await harness.runtime.acceptInlineSource(fixture.source)
+      await harness.runtime.acceptLifecycle(fixture.ensure)
+      await harness.runtime.recover()
+      expect(harness.multiplexer.starts[0]!.env.FX_MODEL).toBeUndefined()
+      expect(harness.multiplexer.starts[0]!.env.FX_EFFORT).toBeUndefined()
+    } finally {
+      await harness.runtime.close()
+    }
+  })
+
+  test("fails closed when Fx disagrees with an explicit frozen model or effort", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "provider-conflict")
+    const harness = await runtimeHarness(fixture, {
+      providerEnvironment: {
+        FX_MODEL: "provider/different-model",
+        FX_EFFORT: "medium",
+      },
+    })
+    try {
+      await harness.runtime.acceptInlineSource(fixture.source)
+      await harness.runtime.acceptLifecycle(fixture.ensure)
+      await harness.runtime.recover()
+      expect(harness.multiplexer.starts).toHaveLength(0)
+      expect(harness.errors.map(String).join("\n")).toContain("explicit model")
+    } finally {
+      await harness.runtime.close()
+    }
+  })
+
+  test("fails closed when Fx disagrees with an explicit frozen effort", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "provider-effort-conflict")
+    const harness = await runtimeHarness(fixture, {
+      providerEnvironment: {
+        FX_MODEL: "fixture/model-default",
+        FX_EFFORT: "low",
+      },
+    })
+    try {
+      await harness.runtime.acceptInlineSource(fixture.source)
+      await harness.runtime.acceptLifecycle(fixture.ensure)
+      await harness.runtime.recover()
+      expect(harness.multiplexer.starts).toHaveLength(0)
+      expect(harness.errors.map(String).join("\n")).toContain("explicit effort")
     } finally {
       await harness.runtime.close()
     }
@@ -210,20 +309,32 @@ describe("production lifecycle Runtime composition", () => {
 
 async function runtimeHarness(
   fixture: Awaited<ReturnType<typeof lifecycleFixture>>,
-  choices: { cancellation?: boolean; delayedStart?: boolean } = {},
+  choices: {
+    cancellation?: boolean
+    delayedStart?: boolean
+    agentDefaults?: AgentDefaults
+    fmxSession?: string
+    providerEnvironment?: Record<string, string>
+  } = {},
 ) {
   const home = await temporaryDirectory()
   const manifest = AgentManifest.ephemeral("lifecycle-runtime-test")
   const runtimeSocketPath = `/tmp/fmx-lr-${process.pid}-${temporaryDirectories.length}.bus`
   const multiplexer = new FakeMultiplexer(manifest, choices.delayedStart ?? false)
   const workControl = new FakeWorkControl()
-  const provider = new FakeProvider(fixture, workControl, choices.cancellation ?? false)
+  const provider = new FakeProvider(
+    fixture,
+    workControl,
+    choices.cancellation ?? false,
+    choices.providerEnvironment,
+  )
   const receipts: Array<Record<string, any>> = []
   const errors: unknown[] = []
   const options = {
     home,
     homeId: "lifecycle-runtime-test",
-    fmxSession: fixture.ensure.fmx_session,
+    fmxSession: choices.fmxSession ?? fixture.ensure.fmx_session,
+    agentDefaults: choices.agentDefaults,
     fxPath: "/resolved/fmx-fx",
     runtimeSocketPath,
     adeBinding: { socketPath: join(home, "ade.sock"), instanceId: "ignored" },
@@ -330,6 +441,7 @@ class FakeProvider {
     private readonly fixture: Awaited<ReturnType<typeof lifecycleFixture>>,
     private readonly workControl: FakeWorkControl,
     private readonly cancellation: boolean,
+    private readonly providerEnvironment: Record<string, string> = {},
   ) {}
 
   async prepare() {
@@ -364,6 +476,7 @@ class FakeProvider {
         FX_INTERNAL_LAUNCH_DIGEST: this.fixture.ensure.launch_digest,
         FX_INTERNAL_LAUNCH_ID: this.fixture.ensure.launch_id,
         FX_INTERNAL_LAUNCH_CONVERSATION_ID: "conversation-runtime",
+        ...this.providerEnvironment,
       },
       conversationId: "conversation-runtime",
       mode: "initial" as const,
@@ -456,6 +569,7 @@ async function lifecycleFixture(
   ensureId: "ensure-a" | "ensure-b",
   launchId: "launch-a" | "launch-b",
   suffix = "launch",
+  launchOverrides: { model?: string | null; effort?: string | null } = {},
 ) {
   const ensures = await messages("ensure-lifecycle.jsonl", ensureLifecycleMessageSchema)
   const launches = await messages("fx-launch-admission-final.jsonl", fxLaunchAdmissionFinalMessageSchema)
@@ -482,6 +596,10 @@ async function lifecycleFixture(
   launch.admission_key = `runtime-admission-${ensureId}-${suffix}`
   launch.directory = ensure.planned_worktree.directory
   launch.state_root = `/var/tmp/fmx-lifecycle-provider-${ensureId}-${suffix}`
+  if (launchOverrides.model === null) delete launch.model
+  else if (launchOverrides.model !== undefined) launch.model = launchOverrides.model
+  if (launchOverrides.effort === null) delete launch.effort
+  else if (launchOverrides.effort !== undefined) launch.effort = launchOverrides.effort
   launch.initial_work_digest = encodeInlineSourceBytes(initial).sha256
   launch.remaining_launch_controls_digest = encodeInlineSourceBytes(controls).sha256
   launch.launch_digest = deriveFrozenLaunchDigest(launch)

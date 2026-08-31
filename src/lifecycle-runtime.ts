@@ -8,6 +8,7 @@ import {
 } from "./agent-manifest.ts"
 import type { AgentRemoval } from "./agent-reconcile.ts"
 import { CompanionConnection } from "./companion-client.ts"
+import type { AgentDefaults } from "./config.ts"
 import { encodeCanonicalJson, type JsonValue } from "./contract-codec.ts"
 import {
   EnsureLifecycleLedger,
@@ -117,6 +118,8 @@ export type LifecycleRuntimeOptions = {
   home: string | Readonly<{ directory: string }>
   homeId: string
   fmxSession: string
+  /** Immutable defaults from the accepted cold-Runtime startup snapshot. */
+  agentDefaults?: Readonly<AgentDefaults>
   fxPath: string
   runtimeSocketPath: string
   adeBinding: FxAdeBinding | ((agentId: string) => FxAdeBinding | null) | null
@@ -394,7 +397,7 @@ export class LifecycleRuntime {
           }
           this.preparedConversations.set(record.request.ensure_id, invocation.conversationId)
           return {
-            invocation: this.managedInvocation(record, workControl, invocation),
+            invocation: this.managedInvocation(record, source, workControl, invocation),
             conversationId: invocation.conversationId,
             finalReceiptAuthority: {
               admission_key: source.admission_key,
@@ -458,27 +461,52 @@ export class LifecycleRuntime {
 
   private managedInvocation(
     record: EnsureLifecycleRecord,
+    source: InlineLaunchSourceRequest,
     workControl: FxWorkControlBinding,
     provider: FxLaunchProviderInvocation,
   ): ManagedAgentInvocation {
     const entry = this.options.manifest.get(record.request.agent_id)
     if (entry === null) throw new Error(`managed Agent is not claimed: ${record.request.agent_id}`)
     const parent = { ...(this.options.environment ?? process.env) }
-    if (provider.env.FX_MODEL === undefined) delete parent.FX_MODEL
-    if (provider.env.FX_EFFORT === undefined) delete parent.FX_EFFORT
+    // Ambient process overrides are not part of this managed launch. When
+    // neither the frozen request nor the accepted Session defaults select a
+    // field, leave it absent so Fx's own profile/default remains authoritative.
+    delete parent.FX_MODEL
+    delete parent.FX_EFFORT
+    const model = source.launch_request.model ?? this.options.agentDefaults?.model
+    const effort = source.launch_request.effort ?? this.options.agentDefaults?.effort
+    if (
+      source.launch_request.model !== undefined &&
+      provider.env.FX_MODEL !== undefined &&
+      provider.env.FX_MODEL !== source.launch_request.model
+    ) {
+      throw new Error("Fx launch provider changed the explicit model")
+    }
+    if (
+      source.launch_request.effort !== undefined &&
+      provider.env.FX_EFFORT !== undefined &&
+      provider.env.FX_EFFORT !== source.launch_request.effort
+    ) {
+      throw new Error("Fx launch provider changed the explicit effort")
+    }
     const base = createFxEnvironment(
       parent,
       entry.displayId,
       provider.cwd,
       this.options.runtimeSocketPath,
-      null,
+      model === undefined && effort === undefined ? null : { model, effort },
       this.adeBinding(record.request.agent_id),
       workControl,
     )
+    const env = { ...base, ...provider.env }
+    // Session defaults outrank any provider/profile value. Frozen explicit
+    // values are checked above and likewise remain the final selected value.
+    if (model !== undefined) env.FX_MODEL = model
+    if (effort !== undefined) env.FX_EFFORT = effort
     return {
       command: [this.options.fxPath, ...provider.command],
       cwd: provider.cwd,
-      env: stringEnvironment({ ...base, ...provider.env }),
+      env: stringEnvironment(env),
     }
   }
 
