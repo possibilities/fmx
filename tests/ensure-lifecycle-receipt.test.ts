@@ -25,7 +25,7 @@ afterEach(async () => {
   await Promise.all(scratchRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-test("builds deterministic canonical partial and complete receipts, suppressing only an exact retained receipt", async () => {
+test("replays deterministic receipts until their exact durable acknowledgement", async () => {
   const ledger = await EnsureLifecycleLedger.open(await ledgerRoot())
   const request = await fixtureRequest()
   await ledger.claim(request)
@@ -44,10 +44,23 @@ test("builds deterministic canonical partial and complete receipts, suppressing 
 
   await ledger.retainEnsureReceipt(partial!)
   const retainedPartial = (await ledger.get(request.ensure_id))!
-  expect(buildEnsureLifecycleReceipt(retainedPartial)).toBeNull()
+  expect(buildEnsureLifecycleReceipt(retainedPartial)).toEqual(partial)
+
+  await ledger.acknowledgeEnsureReceipt({
+    schema_id: "fmx.ensure-lifecycle",
+    schema_version: 1,
+    message_type: "receipt_acknowledgement",
+    acknowledgement_id: "ensure-ack-generated-partial",
+    receipt_kind: "ensure",
+    ensure_id: request.ensure_id,
+    receipt_id: partial!.receipt_id,
+    receipt_digest: partial!.receipt_digest,
+  })
+  const acknowledgedPartial = (await ledger.get(request.ensure_id))!
+  expect(buildEnsureLifecycleReceipt(acknowledgedPartial)).toBeNull()
 
   const completeRecord: EnsureLifecycleRecord = {
-    ...retainedPartial,
+    ...acknowledgedPartial,
     stage: "fx_started",
     effects: {
       worktree: {

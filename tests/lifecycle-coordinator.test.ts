@@ -15,8 +15,10 @@ import {
   deriveFxAdmissionDecisionDigest,
   deriveFxFinalReceiptDigest,
   type EnsureRequest,
+  type EnsureReceipt,
   type FxFinalReceipt,
 } from "../src/ensure-lifecycle-ledger.ts"
+import { buildEnsureLifecycleReceipt } from "../src/ensure-lifecycle-receipt.ts"
 import {
   InlineLaunchSourceLedger,
   deriveFrozenLaunchDigest,
@@ -620,6 +622,102 @@ describe("durable lifecycle coordinator", () => {
     await coordinator.accept(fixture.ensure)
     await coordinator.settled()
     expect(observed).toEqual(["receipt:fx_started"])
+  })
+
+  test("recovery republishes an exact receipt retained before publication failed", async () => {
+    const fixture = await sourceFixture("receipt-loss")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const observed: string[] = []
+    const published: EnsureReceipt[] = []
+    let loseFirstPublication = true
+    const ports = fakePorts(observed)
+    ports.receipts = {
+      ensure: async (record) => buildEnsureLifecycleReceipt(record),
+      publish: async (receipt) => {
+        published.push(structuredClone(receipt))
+        if (loseFirstPublication) {
+          loseFirstPublication = false
+          throw new Error("receipt publication response lost")
+        }
+      },
+    }
+    const errors: unknown[] = []
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports: { ...ports, onError: (error) => errors.push(error) },
+    })
+
+    await coordinator.acceptInlineSource(fixture.source)
+    await coordinator.accept(fixture.ensure)
+    await coordinator.settled()
+    expect(errors).toHaveLength(1)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("worktree_created")
+    expect(published).toHaveLength(1)
+    const lost = structuredClone(published[0]!)
+
+    const recovered = new LifecycleCoordinator({ ledger, sources, ports })
+    await recovered.recover()
+    await recovered.settled()
+
+    expect(published[1]).toEqual(lost)
+    expect(observed.filter((effect) => effect === "worktree")).toHaveLength(1)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+  })
+
+  test("replays every historical unacknowledged receipt in durable order", async () => {
+    const fixture = await sourceFixture("receipt-history")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await sources.claim(fixture.source)
+    await ledger.claim(fixture.ensure)
+    await sources.bindEnsureRequestForEnsure(fixture.ensure)
+    const claimedReceipt = buildEnsureLifecycleReceipt(
+      (await ledger.get(fixture.ensure.ensure_id))!,
+    )!
+    await ledger.retainEnsureReceipt(claimedReceipt)
+    await ledger.advance(fixture.ensure.ensure_id, {
+      kind: "worktree_created",
+      directory: fixture.ensure.planned_worktree.directory,
+      head_commit: fixture.ensure.planned_worktree.base_commit,
+    })
+    const worktreeReceipt = buildEnsureLifecycleReceipt(
+      (await ledger.get(fixture.ensure.ensure_id))!,
+    )!
+    await ledger.retainEnsureReceipt(worktreeReceipt)
+
+    const published: EnsureReceipt[] = []
+    const ports = fakePorts([])
+    ports.receipts = {
+      ensure: async (record) => buildEnsureLifecycleReceipt(record),
+      publish: async (receipt) => { published.push(structuredClone(receipt)) },
+    }
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+    await coordinator.recover()
+    await coordinator.settled()
+
+    expect(published.slice(0, 2)).toEqual([claimedReceipt, worktreeReceipt])
+    for (const [index, receipt] of [claimedReceipt, worktreeReceipt].entries()) {
+      await coordinator.accept({
+        schema_id: "fmx.ensure-lifecycle",
+        schema_version: 1,
+        message_type: "receipt_acknowledgement",
+        acknowledgement_id: `ensure-history-ack-${index}`,
+        receipt_kind: "ensure",
+        ensure_id: fixture.ensure.ensure_id,
+        receipt_id: receipt.receipt_id,
+        receipt_digest: receipt.receipt_digest,
+      })
+    }
+    published.length = 0
+    await coordinator.accept(fixture.ensure)
+    await coordinator.settled()
+
+    expect(published.some(({ receipt_id }) => receipt_id === claimedReceipt.receipt_id)).toBe(false)
+    expect(published.some(({ receipt_id }) => receipt_id === worktreeReceipt.receipt_id)).toBe(false)
   })
 
   test("retains correlated Fx final receipts before handing manifest retirement to its owner", async () => {

@@ -18,8 +18,10 @@ export class EnsureLifecycleReceiptCollisionError extends Error {
  * includes the immutable correlation plus the stage and effects, so recovery
  * redrives the same receipt while a later transition gets another one.
  *
- * Returning null is deliberately narrow: only the same generated receipt
- * already retained by the ledger suppresses another publication attempt.
+ * Returning null is deliberately narrow: only a durable acknowledgement for
+ * the same generated receipt suppresses another publication attempt. Merely
+ * retaining a receipt is not enough because publication may have failed after
+ * that write and recovery must replay the exact bytes.
  */
 export function buildEnsureLifecycleReceipt(record: EnsureLifecycleRecord): EnsureReceipt | null {
   const withoutIdentity = receiptWithoutIdentity(record)
@@ -34,8 +36,14 @@ export function buildEnsureLifecycleReceipt(record: EnsureLifecycleRecord): Ensu
   }
   const retained = record.receipts.find((candidate) => candidate.receipt_id === receiptId)
   if (retained === undefined) return receipt
-  if (sameCanonical(retained, receipt)) return null
-  throw new EnsureLifecycleReceiptCollisionError(receiptId)
+  if (!sameCanonical(retained, receipt)) {
+    throw new EnsureLifecycleReceiptCollisionError(receiptId)
+  }
+  const acknowledged = record.acknowledgements.some((candidate) =>
+    candidate.receipt_id === receiptId &&
+    candidate.receipt_digest === receipt.receipt_digest
+  )
+  return acknowledged ? null : receipt
 }
 
 function receiptWithoutIdentity(record: EnsureLifecycleRecord): Omit<EnsureReceipt, "receipt_id" | "receipt_digest"> {

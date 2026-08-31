@@ -129,8 +129,9 @@ export type LifecycleCoordinatorPorts = {
     accept?(message: Exclude<RuntimeExtensionLifecycleInbound, EnsureRequest>): Promise<void>
   }
   receipts?: {
-    /** Build a correlated immutable receipt for this exact persisted state, or suppress publication. */
+    /** Build the correlated immutable receipt for this exact persisted state. */
     ensure(record: EnsureLifecycleRecord): Promise<EnsureReceipt | null>
+    /** Publish exact bytes at least once until their durable acknowledgement arrives. */
     publish(receipt: EnsureReceipt): Promise<void>
   }
   onError?: (error: unknown, ensureId: string) => void
@@ -494,11 +495,23 @@ export class LifecycleCoordinator {
     if (!receipts || this.closed) return
     const record = await this.require(ensureId)
     if (this.closed) return
-    const receipt = await receipts.ensure(record)
-    if (receipt === null || this.closed) return
-    await this.options.ledger.retainEnsureReceipt(receipt)
-    if (this.closed) return
-    await receipts.publish(receipt)
+    const pending = record.receipts.filter((receipt) =>
+      !record.acknowledgements.some((acknowledgement) =>
+        acknowledgement.receipt_id === receipt.receipt_id &&
+        acknowledgement.receipt_digest === receipt.receipt_digest
+      )
+    )
+    const current = await receipts.ensure(record)
+    if (current !== null) {
+      await this.options.ledger.retainEnsureReceipt(current)
+      if (!pending.some(({ receipt_id }) => receipt_id === current.receipt_id)) {
+        pending.push(current)
+      }
+    }
+    for (const receipt of pending) {
+      if (this.closed) return
+      await receipts.publish(receipt)
+    }
   }
 
   private async require(ensureId: string): Promise<EnsureLifecycleRecord> {
