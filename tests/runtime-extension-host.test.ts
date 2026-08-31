@@ -8,8 +8,11 @@ import {
 } from "../src/agentworkplace-contracts.ts"
 import type { RuntimeExtensionSurface } from "../src/multiplexer.ts"
 import { RuntimeExtensionSurfaceError } from "../src/multiplexer.ts"
-import { runtimeExtensionRequestHandler } from "../src/runtime-extension-host.ts"
-import { RuntimeExtensionHost } from "../src/runtime-extension-host.ts"
+import {
+  runtimeExtensionRequestHandler,
+  RuntimeExtensionHost,
+  RuntimeExtensionReceiptQueue,
+} from "../src/runtime-extension-host.ts"
 import type { RuntimeExtensionInboundRequest } from "../src/runtime-extension.ts"
 import type {
   RuntimeExtensionLifecycleInbound,
@@ -254,6 +257,49 @@ test("threads the injected lifecycle handler and asynchronous receipt publisher 
   }
 })
 
+test("queues same-chunk readiness receipts without blocking and flushes them in order", async () => {
+  const lifecycle = await frozenLifecycleMessages()
+  const request = lifecycle.find((message): message is RuntimeExtensionLifecycleRequest =>
+    message.message_type === "ensure_request" && "planned_worktree" in message)!
+  const receipts = lifecycle.filter((message) =>
+    message.message_type === "ensure_receipt" && message.ensure_id === request.ensure_id
+  ) as RuntimeExtensionLifecycleReceipt[]
+  const startup = structuredClone(STARTUP)
+  startup.association.members[1]!.fmx_session = request.fmx_session
+  startup.registration.argv = [process.execPath, PEER]
+  const publisher = new RuntimeExtensionReceiptQueue()
+  const acknowledgements: string[] = []
+  let lifecycleRequestObserved = false
+  await Promise.all(receipts.map((receipt) => publisher.publish(receipt)))
+  const host = await RuntimeExtensionHost.start(startup, surface().value, {
+    env: {
+      ...process.env,
+      FMX_SUPERVISOR_CHILD_MODE: "ready",
+      FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([request]),
+      FMX_SUPERVISOR_CHILD_ACK_LIFECYCLE: "1",
+    },
+    startupTimeoutMs: 1_000,
+    requestTimeoutMs: 1_000,
+    shutdownGraceMs: 50,
+    terminateGraceMs: 50,
+    onLifecycleMessage: (message) => {
+      if (message.message_type === "ensure_request") {
+        lifecycleRequestObserved = true
+      } else if (message.message_type === "receipt_acknowledgement") {
+        acknowledgements.push(message.receipt_id)
+      }
+    },
+  })
+  try {
+    await waitFor(() => lifecycleRequestObserved)
+    await publisher.bind(host)
+    await waitFor(() => acknowledgements.length === receipts.length)
+    expect(acknowledgements).toEqual(receipts.map(({ receipt_id }) => receipt_id))
+  } finally {
+    await host.close()
+  }
+})
+
 test("forwards lifecycle and inline-source callbacks in either child arrival order", async () => {
   const lifecycle = await frozenLifecycleMessages()
   const lifecycleRequest = lifecycle.find((message): message is RuntimeExtensionLifecycleRequest =>
@@ -330,6 +376,44 @@ test("recovers unrelated host operations after a callback failure using supervis
       card_revision: CARD.card_revision,
       action_id: CARD.action.action_id,
     })).toMatchObject({ ok: true, operation: "unavailable_slot_action" })
+    expect(host.state).toBe("ready")
+  } finally {
+    await host.close()
+  }
+})
+
+test("announces exact post-restart readiness once the replacement generation is usable", async () => {
+  const lifecycle = await frozenLifecycleMessages()
+  const lifecycleRequest = lifecycle.find((message): message is RuntimeExtensionLifecycleRequest =>
+    message.message_type === "ensure_request" && "planned_worktree" in message)!
+  const startup = structuredClone(STARTUP)
+  startup.association.members[1]!.fmx_session = lifecycleRequest.fmx_session
+  startup.registration.argv = [process.execPath, PEER]
+  let callbackAttempts = 0
+  const readyGenerations: number[] = []
+  let host: RuntimeExtensionHost | null = null
+  host = await RuntimeExtensionHost.start(startup, surface().value, {
+    env: {
+      ...process.env,
+      FMX_SUPERVISOR_CHILD_MODE: "reply",
+      FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([lifecycleRequest]),
+    },
+    startupTimeoutMs: 1_000,
+    requestTimeoutMs: 1_000,
+    shutdownGraceMs: 50,
+    terminateGraceMs: 50,
+    onLifecycleMessage: () => {
+      if (callbackAttempts++ === 0) throw new Error("restart for callback test")
+    },
+    onRestartReady: () => {
+      readyGenerations.push(host!.generation)
+      expect(host!.state).toBe("ready")
+    },
+  })
+  try {
+    await waitFor(() => readyGenerations.length === 1)
+    expect(readyGenerations).toEqual([2])
+    expect(host.generation).toBe(2)
     expect(host.state).toBe("ready")
   } finally {
     await host.close()

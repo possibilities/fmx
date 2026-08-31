@@ -257,6 +257,95 @@ test("reconciliation fails closed before removing an exited managed identity", a
   }
 })
 
+test("an exact preserve disposition retains the candidate without touching its residue", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  try {
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({
+      cwd: "/work",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 0,
+      identity: identityFor(ID_A),
+    })
+    const { companion, forgotten } = fakeCompanion([[session(ID_A, "exited")]])
+
+    const outcome = await reconcileAgents(manifest, companion, {
+      beforeRemove: () => "preserve",
+    })
+
+    expect(outcome.removed).toEqual([])
+    expect(outcome.preserved).toEqual([{
+      entry: manifestEntryForRemoval(ID_A, null),
+      reason: "exited",
+      session: session(ID_A, "exited"),
+    }])
+    expect(manifest.get(ID_A)).not.toBeNull()
+    expect(forgotten).toEqual([])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("startup isolation returns live survivors when another removal fails after finalization", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  try {
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({
+      cwd: "/work-a",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 0,
+      identity: identityFor(ID_A),
+    })
+    await manifest.beginCreate({
+      cwd: "/work-b",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 1,
+      identity: identityFor(ID_B),
+    })
+    const exited = session(ID_B, "exited")
+    const replacement = session(ID_B, "live", {
+      labels: ownershipLabels("foreign-home", ID_B),
+    })
+    const { companion, forgotten } = fakeCompanion([
+      [session(ID_A), exited],
+      [session(ID_A), replacement],
+    ])
+    const failures: Array<{ removal: unknown; error: string }> = []
+
+    const outcome = await reconcileAgents(manifest, companion, {
+      beforeRemove: async () => {},
+      continueAfterRemoveFailure: (removal, error) => {
+        failures.push({ removal, error: String(error) })
+      },
+    })
+
+    expect(outcome.attached.map(({ entry }) => entry.agentId)).toEqual([ID_A])
+    expect(outcome.preserved.map(({ entry }) => entry.agentId)).toEqual([ID_B])
+    expect(outcome.removed).toEqual([])
+    expect(manifest.get(ID_A)?.phase).toBe("running")
+    expect(manifest.get(ID_B)).not.toBeNull()
+    expect(failures).toEqual([{
+      removal: {
+        entry: {
+          ...manifestEntryForRemoval(ID_B, null),
+          displayId: 2,
+          cwd: "/work-b",
+          createdAt: 1,
+        },
+        reason: "exited",
+        session: exited,
+      },
+      error: `Error: Companion session ${identityFor(ID_B).zmxName} changed while its managed identity was finalized`,
+    }])
+    expect(forgotten).toEqual([])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("reconciliation revalidates after a managed finalizer and preserves a replacement session", async () => {
   const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
   const runtimeSocketPath = join(dir, "home.bus")

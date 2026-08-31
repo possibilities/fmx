@@ -92,6 +92,8 @@ export type ReconcileOutcome = {
   attached: ReconciledAgent[]
   adopted: ReconciledAgent[]
   removed: { entry: ManifestEntry; session: SessionEntry | null }[]
+  /** Entries deliberately retained by a removal authority or after an isolated startup failure. */
+  preserved: AgentRemoval[]
   /** Stale sockets cleared after the settle window: nothing held them, so nothing can come back. */
   cleared: SessionEntry[]
   /** Still unreachable after the settle window; left for the next start. */
@@ -118,7 +120,14 @@ export type ReconcileOptions = {
    * claim nor its Work-control endpoint is removed, so the next startup can
    * retry the same durable operation.
    */
-  beforeRemove?: (removal: AgentRemoval) => void | Promise<void>
+  beforeRemove?: (
+    removal: AgentRemoval,
+  ) => void | "preserve" | Promise<void | "preserve">
+  /**
+   * Startup-only isolation for a failed removal. Without this explicit hook,
+   * reconciliation retains its fail-fast behavior and rejects.
+   */
+  continueAfterRemoveFailure?: (removal: AgentRemoval, error: unknown) => void
 }
 
 export type AgentRemovalReason = "absent" | "exited" | "foreign" | "refused"
@@ -144,12 +153,13 @@ export async function reconcileAgents(
   const removeEntry = async (
     removal: AgentRemoval,
     actions: { removeResidue?: boolean; forgetExit?: boolean; clearRefused?: boolean } = {},
-  ) => {
-    await options.beforeRemove?.({
+  ): Promise<"removed" | "preserved"> => {
+    const candidate = {
       entry: structuredClone(removal.entry),
       reason: removal.reason,
       session: removal.session === null ? null : structuredClone(removal.session),
-    })
+    }
+    if (await options.beforeRemove?.(candidate) === "preserve") return "preserved"
     const revalidate = () => assertRemovalStillValid(companion, manifest.homeId, removal)
     if (actions.removeResidue !== false) {
       await revalidate()
@@ -172,8 +182,38 @@ export async function reconcileAgents(
       await revalidate()
     }
     await manifest.remove(removal.entry.agentId)
+    return "removed"
   }
-  const outcome: ReconcileOutcome = { attached: [], adopted: [], removed: [], cleared: [], unresolved: [], ignored: [] }
+  const outcome: ReconcileOutcome = {
+    attached: [],
+    adopted: [],
+    removed: [],
+    preserved: [],
+    cleared: [],
+    unresolved: [],
+    ignored: [],
+  }
+  const removeWithIsolation = async (
+    removal: AgentRemoval,
+    actions: { removeResidue?: boolean; forgetExit?: boolean; clearRefused?: boolean } = {},
+  ): Promise<"removed" | "preserved"> => {
+    try {
+      return await removeEntry(removal, actions)
+    } catch (error) {
+      if (options.continueAfterRemoveFailure === undefined) throw error
+      try {
+        options.continueAfterRemoveFailure({
+          entry: structuredClone(removal.entry),
+          reason: removal.reason,
+          session: removal.session === null ? null : structuredClone(removal.session),
+        }, error)
+      } catch {
+        // A startup diagnostic cannot turn an isolated fail-closed removal
+        // back into an all-Agent reconciliation failure.
+      }
+      return manifest.get(removal.entry.agentId) === null ? "removed" : "preserved"
+    }
+  }
 
   let sessions = await companion.list()
   let plan = reconcile(manifest.entries, sessions, manifest.homeId)
@@ -217,11 +257,12 @@ export async function reconcileAgents(
       reason: foreign !== null ? "foreign" : session?.state === "exited" ? "exited" : "absent",
       session: foreign ?? session,
     } satisfies AgentRemoval
-    await removeEntry(removal, {
+    const disposition = await removeWithIsolation(removal, {
       removeResidue: foreign === null,
       forgetExit: session?.state === "exited",
     })
-    outcome.removed.push({ entry, session })
+    if (disposition === "preserved") outcome.preserved.push(removal)
+    else outcome.removed.push({ entry, session })
   }
   for (const session of plan.forget) {
     try {
@@ -241,10 +282,15 @@ export async function reconcileAgents(
       continue
     }
     if (entry) {
-      await removeEntry(
-        { entry, reason: "refused", session },
+      const removal = { entry, reason: "refused", session } satisfies AgentRemoval
+      const disposition = await removeWithIsolation(
+        removal,
         { clearRefused: session.socketPath !== null },
       )
+      if (disposition === "preserved") {
+        outcome.preserved.push(removal)
+        continue
+      }
       outcome.removed.push({ entry, session })
     } else if (session.socketPath) await unlink(session.socketPath).catch(() => {})
     outcome.cleared.push(session)

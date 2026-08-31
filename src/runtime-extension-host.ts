@@ -44,6 +44,54 @@ export type RuntimeExtensionHostOptions = SupervisorOverrides & RuntimeExtension
   cwd?: string
   env?: Record<string, string | undefined>
   onDiagnostic?: (error: RuntimeExtensionError) => void
+  /** The replacement generation is exactly ready; replay durable host work now. */
+  onRestartReady?: () => void | Promise<void>
+}
+
+/**
+ * Bind lifecycle publication before the child exists. Pre-ready publication
+ * only queues immutable bytes in memory and returns immediately; the durable
+ * lifecycle ledgers remain the authority if this process disappears first.
+ */
+export class RuntimeExtensionReceiptQueue {
+  private host: RuntimeExtensionHost | null = null
+  private pending: RuntimeExtensionLifecycleReceipt[] = []
+  private tail: Promise<void> = Promise.resolve()
+  private bindOperation: Promise<void> | null = null
+
+  publish(receipt: RuntimeExtensionLifecycleReceipt): Promise<void> {
+    const exact = structuredClone(receipt)
+    if (this.host === null) {
+      this.pending.push(exact)
+      return Promise.resolve()
+    }
+    return this.enqueue(this.host, exact)
+  }
+
+  bind(host: RuntimeExtensionHost): Promise<void> {
+    if (this.host !== null && this.host !== host) {
+      return Promise.reject(new Error("Runtime-extension receipt queue is already bound"))
+    }
+    if (this.bindOperation !== null) return this.bindOperation
+    const pending = this.pending.splice(0)
+    let flush = this.tail
+    for (const receipt of pending) {
+      flush = flush.then(() => host.publishLifecycleReceipt(receipt))
+    }
+    this.host = host
+    this.tail = flush.catch(() => {})
+    this.bindOperation = flush
+    return flush
+  }
+
+  private enqueue(
+    host: RuntimeExtensionHost,
+    receipt: RuntimeExtensionLifecycleReceipt,
+  ): Promise<void> {
+    const operation = this.tail.then(() => host.publishLifecycleReceipt(receipt))
+    this.tail = operation.catch(() => {})
+    return operation
+  }
 }
 
 /**
@@ -134,6 +182,7 @@ export class RuntimeExtensionHost {
       cwd,
       env,
       onDiagnostic: _onDiagnostic,
+      onRestartReady: _onRestartReady,
       onLifecycleMessage,
       onInlineLaunchSourceRequest,
       ...supervisorOptions
@@ -190,6 +239,7 @@ export class RuntimeExtensionHost {
       await supervisor.restart()
       const revision = this.latestRevision
       if (!this.closing && revision !== null) await supervisor.invalidateSnapshot(revision)
+      if (!this.closing) await this.options.onRestartReady?.()
     } catch {
       // A failed restarted generation supplies its own exact disconnect
       // diagnostic. There is deliberately no crash-loop policy in fmx.
