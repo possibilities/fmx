@@ -8,6 +8,7 @@ import {
   type EnsureLifecycleMessage,
   type FxLaunchAdmissionFinalMessage,
 } from "../src/agentworkplace-contracts.ts"
+import { encodeCanonicalJson } from "../src/contract-codec.ts"
 import {
   EnsureLifecycleLedger,
   deriveEnsureDigest,
@@ -363,7 +364,9 @@ async function sourceFixture(suffix: string): Promise<{ ensure: EnsureRequest; s
   launchRequest.admission_key = `admission-${serial}`
   launchRequest.directory = ensure.planned_worktree.directory
   launchRequest.initial_work_digest = encodeInlineSourceBytes(Buffer.from("hello λ", "utf8")).sha256
-  launchRequest.remaining_launch_controls_digest = encodeInlineSourceBytes(Buffer.from("{}", "utf8")).sha256
+  launchRequest.remaining_launch_controls_digest = encodeInlineSourceBytes(
+    encodeCanonicalJson({ remaining_global_args: [] }),
+  ).sha256
   launchRequest.launch_digest = deriveFrozenLaunchDigest(launchRequest)
   ensure.launch_digest = launchRequest.launch_digest
   ensure.ensure_digest = deriveEnsureDigest(ensure)
@@ -384,7 +387,7 @@ async function sourceFixture(suffix: string): Promise<{ ensure: EnsureRequest; s
     source_id: `source-${serial}`,
     launch_request: launchRequest,
     initial_work: encodeInlineSourceBytes(Buffer.from("hello λ", "utf8")),
-    launch_controls: encodeInlineSourceBytes(Buffer.from("{}", "utf8")),
+    launch_controls: encodeInlineSourceBytes(encodeCanonicalJson({ remaining_global_args: [] })),
   } satisfies Omit<InlineLaunchSourceRequest, "source_digest">
   return { ensure, source: { ...source, source_digest: deriveInlineLaunchSourceDigest(source as InlineLaunchSourceRequest) } }
 }

@@ -26,6 +26,8 @@ import { deriveEnsureDigest } from "../src/ensure-lifecycle-ledger.ts"
 import {
   INLINE_INITIAL_WORK_MAX_BYTES,
   INLINE_LAUNCH_CONTROLS_MAX_BYTES,
+  INLINE_REMAINING_GLOBAL_ARG_MAX_BYTES,
+  INLINE_REMAINING_GLOBAL_ARGS_MAX_COUNT,
   INLINE_LAUNCH_SOURCE_SCHEMA_ID,
   INLINE_LAUNCH_SOURCE_SCHEMA_VERSION,
   InlineLaunchSourceError,
@@ -33,8 +35,10 @@ import {
   authorityFor,
   deriveFrozenLaunchDigest,
   deriveInlineLaunchSourceDigest,
+  encodeInlineLaunchControls,
   encodeInlineSourceBytes,
   inlineLaunchSourceRecordPath,
+  parseInlineLaunchControls,
   parseInlineLaunchSourceRequest,
   type FrozenEnsureRequest,
   type FrozenLaunchRequest,
@@ -57,12 +61,19 @@ describe("inline-v2 source validation", () => {
       0xef, 0xbb, 0xbf,
       ...Buffer.from("line one\r\nline two\nλ", "utf8"),
     )
-    const controls = encodeCanonicalJson({
-      argv: ["--name", "Worker λ"],
-      env: { FX_EFFORT: "high" },
-      schema: "fmx.launch-controls-json-v1",
-    })
+    const controls = encodeInlineLaunchControls([
+      "--no-default-skills",
+      "--skills-dir",
+      "/tmp/Worker λ",
+      "--tool=read_file",
+    ])
+    expect(Buffer.from(controls).toString("utf8")).toBe(
+      '{"remaining_global_args":["--no-default-skills","--skills-dir","/tmp/Worker λ","--tool=read_file"]}',
+    )
     const { request } = await sourceFixture({ initialWork, controls })
+    expect(request.launch_request.remaining_launch_controls_digest).toBe(
+      createHash("sha256").update(controls).digest("hex"),
+    )
     expect(parseInlineLaunchSourceRequest(request)).toEqual(request)
 
     const root = await temporaryDirectory("source-authority-")
@@ -114,20 +125,10 @@ describe("inline-v2 source validation", () => {
         request.source_digest = deriveInlineLaunchSourceDigest(request)
       }, "invalid_request"],
       ["noncanonical controls", (request) => {
-        const bytes = Buffer.from('{"z":1, "a":2}', "utf8")
-        request.launch_controls = encodeInlineSourceBytes(bytes)
-        request.launch_request.remaining_launch_controls_digest = request.launch_controls.sha256
-        request.launch_request.launch_digest = deriveFrozenLaunchDigest(request.launch_request)
-        request.launch_digest = request.launch_request.launch_digest
-        request.source_digest = deriveInlineLaunchSourceDigest(request)
+        replaceControls(request, Buffer.from('{ "remaining_global_args":[]}', "utf8"))
       }, "invalid_request"],
       ["duplicate control key", (request) => {
-        const bytes = Buffer.from('{"a":1,"a":2}', "utf8")
-        request.launch_controls = encodeInlineSourceBytes(bytes)
-        request.launch_request.remaining_launch_controls_digest = request.launch_controls.sha256
-        request.launch_request.launch_digest = deriveFrozenLaunchDigest(request.launch_request)
-        request.launch_digest = request.launch_request.launch_digest
-        request.source_digest = deriveInlineLaunchSourceDigest(request)
+        replaceControls(request, Buffer.from('{"remaining_global_args":[],"remaining_global_args":[]}', "utf8"))
       }, "invalid_request"],
       ["launch id drift", (request) => request.launch_id = "foreign-launch", "correlation_mismatch"],
       ["launch digest drift", (request) => request.launch_request.launch_digest = "f".repeat(64), "correlation_mismatch"],
@@ -152,7 +153,7 @@ describe("inline-v2 source validation", () => {
   test("accepts exact byte maxima and refuses either decoded bound above it", async () => {
     const maximum = await sourceFixture({
       initialWork: new Uint8Array(INLINE_INITIAL_WORK_MAX_BYTES).fill(0x61),
-      controls: encodeCanonicalJson("x".repeat(INLINE_LAUNCH_CONTROLS_MAX_BYTES - 2)),
+      controls: maximumControls(),
     })
     expect(parseInlineLaunchSourceRequest(maximum.request).initial_work.byte_length)
       .toBe(INLINE_INITIAL_WORK_MAX_BYTES)
@@ -179,6 +180,57 @@ describe("inline-v2 source validation", () => {
       request.launch_digest = request.launch_request.launch_digest
       request.source_digest = deriveInlineLaunchSourceDigest(request)
       await expectSourceError(Promise.resolve().then(() => parseInlineLaunchSourceRequest(request)), "invalid_request")
+    }
+  })
+
+  test("allows only the documented global-argument suffix and preserves every accepted string exactly", () => {
+    const valid: readonly string[][] = [
+      [],
+      ["--record"],
+      ["--no-default-skills", "--skills-dir", "/tmp/team λ"],
+      ["--append-system-prompt-file=/tmp/role.md", "--tool", "read_file"],
+      ["--context-limit=tool=4096", "--add-dir", "/tmp/extra", "--no-additional-dirs"],
+      ["--no-native-tools", "--no-project-instructions", "--permissions-file=/tmp/policy.json"],
+    ]
+    for (const remaining_global_args of valid) {
+      const bytes = controlsBytes(remaining_global_args)
+      expect(parseInlineLaunchControls(bytes)).toEqual({ remaining_global_args })
+    }
+
+    for (let length = 1; length <= 96; length++) {
+      const value = `/tmp/${"λ".repeat(length)}`
+      const bytes = controlsBytes(["--skills-dir", value])
+      expect(parseInlineLaunchControls(bytes).remaining_global_args).toEqual(["--skills-dir", value])
+    }
+  })
+
+  test("rejects unknown shape, positional/executable injection, provider authority, resume selection, controls, and argv bounds", async () => {
+    const invalid: Array<[string, Uint8Array]> = [
+      ["unknown field", encodeCanonicalJson({ remaining_global_args: [], unexpected: true })],
+      ["wrong field", encodeCanonicalJson({ argv: [] })],
+      ["positional executable", rawControlsBytes(["/private/bin/fx"])],
+      ["provider state root pair", rawControlsBytes(["--state-dir", "/foreign"])],
+      ["provider state root equals", rawControlsBytes(["--state-dir=/foreign"])],
+      ["provider conversation name", rawControlsBytes(["--name", "foreign"])],
+      ["duplicated model", rawControlsBytes(["--model", "foreign-model"])],
+      ["duplicated effort", rawControlsBytes(["--effort=high"])],
+      ["resume command", rawControlsBytes(["resume", "foreign-conversation"])],
+      ["resume option", rawControlsBytes(["--resume=foreign-conversation"])],
+      ["resume alias", rawControlsBytes(["-c"])],
+      ["argument separator", rawControlsBytes(["--"])],
+      ["unknown global flag", rawControlsBytes(["--future-flag"])],
+      ["missing option value", rawControlsBytes(["--skills-dir"])],
+      ["ambiguous option value", rawControlsBytes(["--skills-dir", "--name=/foreign"])],
+      ["empty equals value", rawControlsBytes(["--tool="])],
+      ["ASCII escape", rawControlsBytes(["--skills-dir", "/tmp/line\nnext"])],
+      ["ASCII DEL", rawControlsBytes(["--skills-dir", "/tmp/del\u007fpath"])],
+      ["too many argv entries", rawControlsBytes(Array.from({ length: INLINE_REMAINING_GLOBAL_ARGS_MAX_COUNT + 1 }, () => "--record"))],
+      ["oversized argv entry", rawControlsBytes([`--skills-dir=${"a".repeat(INLINE_REMAINING_GLOBAL_ARG_MAX_BYTES)}`])],
+    ]
+    for (const [label, controls] of invalid) {
+      const { request } = await sourceFixture({ controls })
+      await expectSourceError(Promise.resolve().then(() => parseInlineLaunchSourceRequest(request)), "invalid_request")
+      expect(() => parseInlineLaunchControls(controls), label).toThrow(InlineLaunchSourceError)
     }
   })
 })
@@ -365,11 +417,7 @@ async function sourceFixture(options: {
     (message) => message.message_type === "ensure_request",
   )) as FrozenEnsureRequest
   const initialWork = options.initialWork ?? Buffer.from("Private initial work\r\nexact bytes\n", "utf8")
-  const controls = options.controls ?? encodeCanonicalJson({
-    argv: [],
-    env: {},
-    schema: "fmx.launch-controls-json-v1",
-  })
+  const controls = options.controls ?? controlsBytes([])
   const initial = encodeInlineSourceBytes(initialWork)
   const launchControls = encodeInlineSourceBytes(controls)
 
@@ -415,6 +463,38 @@ async function sourceFixture(options: {
   } satisfies InlineLaunchSourceRequest
   request.source_digest = deriveInlineLaunchSourceDigest(request)
   return { request, ensure }
+}
+
+function controlsBytes(remaining_global_args: readonly string[]): Uint8Array {
+  return encodeInlineLaunchControls(remaining_global_args)
+}
+
+function rawControlsBytes(remaining_global_args: readonly string[]): Uint8Array {
+  return encodeCanonicalJson({ remaining_global_args: [...remaining_global_args] })
+}
+
+function maximumControls(): Uint8Array {
+  const prefix = "--append-system-prompt-file="
+  const args = Array.from({ length: INLINE_REMAINING_GLOBAL_ARGS_MAX_COUNT }, () => `${prefix}x`)
+  let controls = controlsBytes(args)
+  let remaining = INLINE_LAUNCH_CONTROLS_MAX_BYTES - controls.byteLength
+  for (let index = 0; remaining > 0 && index < args.length; index++) {
+    const capacity = INLINE_REMAINING_GLOBAL_ARG_MAX_BYTES - Buffer.byteLength(args[index], "utf8")
+    const add = Math.min(capacity, remaining)
+    args[index] += "a".repeat(add)
+    remaining -= add
+  }
+  controls = controlsBytes(args)
+  expect(controls.byteLength).toBe(INLINE_LAUNCH_CONTROLS_MAX_BYTES)
+  return controls
+}
+
+function replaceControls(request: InlineLaunchSourceRequest, controls: Uint8Array): void {
+  request.launch_controls = encodeInlineSourceBytes(controls)
+  request.launch_request.remaining_launch_controls_digest = request.launch_controls.sha256
+  request.launch_request.launch_digest = deriveFrozenLaunchDigest(request.launch_request)
+  request.launch_digest = request.launch_request.launch_digest
+  request.source_digest = deriveInlineLaunchSourceDigest(request)
 }
 
 async function fixtureLines(name: string): Promise<JsonValue[]> {

@@ -1020,11 +1020,7 @@ function inlineSourceRequest(
   overrides: Partial<InlineLaunchSourceRequest> = {},
 ): InlineLaunchSourceRequest {
   const initialWork = encodeInlineSourceBytes(Buffer.from("private transport initial work\n", "utf8"))
-  const launchControls = encodeInlineSourceBytes(encodeCanonicalJson({
-    argv: [],
-    env: {},
-    schema: "fmx.launch-controls-json-v1",
-  }))
+  const launchControls = encodeInlineSourceBytes(encodeCanonicalJson({ remaining_global_args: [] }))
   const launch = {
     schema_id: "fx.launch-admission-final",
     schema_version: 1,

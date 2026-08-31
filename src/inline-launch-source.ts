@@ -33,6 +33,44 @@ export const INLINE_LAUNCH_SOURCE_SCHEMA_VERSION = 2
 export const INLINE_INITIAL_WORK_MAX_BYTES = 512 * 1024
 export const INLINE_LAUNCH_CONTROLS_MAX_BYTES = 128 * 1024
 export const INLINE_SOURCE_COMBINED_MAX_BYTES = 640 * 1024
+/** The private controls payload cannot smuggle an unbounded argv through v2. */
+export const INLINE_REMAINING_GLOBAL_ARGS_MAX_COUNT = 128
+export const INLINE_REMAINING_GLOBAL_ARG_MAX_BYTES = 1024
+export const INLINE_REMAINING_GLOBAL_ARGS_VALUE_OPTIONS = [
+  "--system-prompt-file",
+  "--append-system-prompt-file",
+  "--skills-dir",
+  "--context-limit",
+  "--add-dir",
+  "--tool",
+  "--permissions-file",
+] as const
+export const INLINE_REMAINING_GLOBAL_ARGS_FLAG_OPTIONS = [
+  "--record",
+  "--no-additional-dirs",
+  "--no-native-tools",
+  "--no-default-skills",
+  "--no-project-instructions",
+] as const
+/** These are supplied only by the Fx launch provider, never by inline-v2. */
+export const INLINE_REMAINING_GLOBAL_ARGS_PROVIDER_OWNED_OPTIONS = [
+  "--state-dir",
+  "--name",
+  "--model",
+  "--effort",
+  "--resume",
+  "--resume-id",
+] as const
+/** All spelling families that would select or substitute Fx resume state. */
+export const INLINE_REMAINING_GLOBAL_ARGS_RESUME_SELECTIONS = [
+  "--",
+  "--resume-last",
+  "--continue",
+  "-c",
+  "-r",
+  "resume",
+] as const
+export const INLINE_REMAINING_GLOBAL_ARGS_RESUME_PREFIXES = ["--resume-"] as const
 
 const LEDGER_SCHEMA_ID = "fmx.inline-launch-source-ledger"
 const LEDGER_SCHEMA_VERSION = 1
@@ -123,6 +161,15 @@ export type InlineLaunchSourceRecord = {
 export type InlineLaunchSourceBytes = {
   initialWork: Uint8Array
   launchControls: Uint8Array
+}
+
+/**
+ * The only semantic shape accepted for `launch_controls` in private inline-v2.
+ * Its array is an exact argv suffix: entries are neither normalized nor
+ * reordered. Provider-owned invocation fields never enter this payload.
+ */
+export type InlineLaunchControls = {
+  remaining_global_args: string[]
 }
 
 export type InlineLaunchSourceMetadata = InlineLaunchSourceAuthorityKey & {
@@ -699,15 +746,7 @@ function validateSourceRequest(request: InlineLaunchSourceRequest): void {
   if (launch.remaining_launch_controls_digest !== request.launch_controls.sha256) {
     throw sourceError("correlation_mismatch", "launch-controls digest does not match frozen launch request")
   }
-  let controlsValue: JsonValue
-  try {
-    controlsValue = decodeStrictJson(launchControls)
-  } catch {
-    throw sourceError("invalid_request", "launch controls are not strict UTF-8 JSON")
-  }
-  if (!Buffer.from(encodeCanonicalJson(controlsValue)).equals(Buffer.from(launchControls))) {
-    throw sourceError("invalid_request", "launch controls are not exact canonical JSON bytes")
-  }
+  parseInlineLaunchControls(launchControls)
   if (initialWork.byteLength + launchControls.byteLength > INLINE_SOURCE_COMBINED_MAX_BYTES) {
     throw sourceError("invalid_request", "inline source exceeds the 640 KiB combined byte bound")
   }
@@ -718,6 +757,99 @@ function validateSourceRequest(request: InlineLaunchSourceRequest): void {
   if (payload.byteLength + CONTRACT_FRAME_HEADER_BYTES > CONTRACT_MAX_FRAME_BYTES) {
     throw sourceError("invalid_request", "complete inline source frame exceeds the 1 MiB bound")
   }
+}
+
+/**
+ * Parse the private controls payload without changing any byte or argv order.
+ * This stays separate from public contract codecs: its schema is owned only by
+ * inline-v2 and is intentionally not a new fmx MCP or Fx wire contract.
+ */
+export function parseInlineLaunchControls(bytes: Uint8Array): InlineLaunchControls {
+  if (bytes.byteLength === 0 || bytes.byteLength > INLINE_LAUNCH_CONTROLS_MAX_BYTES) {
+    throw sourceError("invalid_request", "launch controls exceed the 128 KiB byte bound")
+  }
+  let controlsValue: JsonValue
+  try {
+    controlsValue = decodeStrictJson(bytes)
+  } catch {
+    throw sourceError("invalid_request", "launch controls are not strict UTF-8 JSON")
+  }
+  if (!Buffer.from(encodeCanonicalJson(controlsValue)).equals(Buffer.from(bytes))) {
+    throw sourceError("invalid_request", "launch controls are not exact canonical JSON bytes")
+  }
+  if (controlsValue === null || Array.isArray(controlsValue) || typeof controlsValue !== "object") {
+    throw sourceError("invalid_request", "launch controls must be one strict remaining_global_args object")
+  }
+  const keys = Object.keys(controlsValue)
+  if (keys.length !== 1 || keys[0] !== "remaining_global_args") {
+    throw sourceError("invalid_request", "launch controls must contain only remaining_global_args")
+  }
+  const args = controlsValue.remaining_global_args
+  if (!Array.isArray(args) || !args.every((arg): arg is string => typeof arg === "string")) {
+    throw sourceError("invalid_request", "remaining_global_args must be an array of strings")
+  }
+  validateRemainingGlobalArgs(args)
+  return { remaining_global_args: [...args] }
+}
+
+/** Build the one canonical private controls object whose exact bytes are hashed. */
+export function encodeInlineLaunchControls(remainingGlobalArgs: readonly string[]): Uint8Array {
+  validateRemainingGlobalArgs(remainingGlobalArgs)
+  const bytes = encodeCanonicalJson({ remaining_global_args: [...remainingGlobalArgs] })
+  if (bytes.byteLength > INLINE_LAUNCH_CONTROLS_MAX_BYTES) {
+    throw sourceError("invalid_request", "launch controls exceed the 128 KiB byte bound")
+  }
+  return bytes
+}
+
+const VALUE_GLOBAL_OPTIONS = new Set<string>(INLINE_REMAINING_GLOBAL_ARGS_VALUE_OPTIONS)
+const FLAG_GLOBAL_OPTIONS = new Set<string>(INLINE_REMAINING_GLOBAL_ARGS_FLAG_OPTIONS)
+const RESUME_SELECTIONS = new Set<string>(INLINE_REMAINING_GLOBAL_ARGS_RESUME_SELECTIONS)
+
+function validateRemainingGlobalArgs(args: readonly string[]): void {
+  if (args.length > INLINE_REMAINING_GLOBAL_ARGS_MAX_COUNT) {
+    throw sourceError("invalid_request", "remaining_global_args exceeds the 128-entry bound")
+  }
+  for (const arg of args) {
+    const byteLength = Buffer.byteLength(arg, "utf8")
+    if (arg.length === 0 || byteLength > INLINE_REMAINING_GLOBAL_ARG_MAX_BYTES) {
+      throw sourceError("invalid_request", "remaining_global_args contains an empty or oversized entry")
+    }
+    if (/[\u0000-\u001f\u007f]/u.test(arg)) {
+      throw sourceError("invalid_request", "remaining_global_args contains an ASCII control byte")
+    }
+  }
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (isProviderOwnedArgument(arg)) {
+      throw sourceError("invalid_request", "remaining_global_args attempts to override provider-owned launch authority")
+    }
+    if (RESUME_SELECTIONS.has(arg) || INLINE_REMAINING_GLOBAL_ARGS_RESUME_PREFIXES.some((prefix) => arg.startsWith(prefix))) {
+      throw sourceError("invalid_request", "remaining_global_args attempts to select a resume target")
+    }
+    if (FLAG_GLOBAL_OPTIONS.has(arg)) continue
+    if (VALUE_GLOBAL_OPTIONS.has(arg)) {
+      const value = args[++index]
+      if (value === undefined || value.startsWith("-")) {
+        throw sourceError("invalid_request", "remaining_global_args has an ambiguous global-option value")
+      }
+      continue
+    }
+    const equals = arg.indexOf("=")
+    if (equals > 2 && VALUE_GLOBAL_OPTIONS.has(arg.slice(0, equals))) {
+      if (equals === arg.length - 1) {
+        throw sourceError("invalid_request", "remaining_global_args has an empty global-option value")
+      }
+      continue
+    }
+    throw sourceError("invalid_request", "remaining_global_args contains a non-global or unsupported argument")
+  }
+}
+
+function isProviderOwnedArgument(arg: string): boolean {
+  return INLINE_REMAINING_GLOBAL_ARGS_PROVIDER_OWNED_OPTIONS
+    .some((option) => arg === option || arg.startsWith(`${option}=`))
 }
 
 function validateInlineBytes(
