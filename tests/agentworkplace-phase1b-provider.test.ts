@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 import {
   PHASE1B_EVIDENCE_PATHS,
   PHASE1B_EXPECTED_SKIPS,
@@ -11,8 +14,10 @@ import {
   PHASE1B_REQUIRED_PASS_SCENARIOS,
   PHASE1B_TEST_PATHS,
   buildPhase1bProviderManifest,
+  buildFixture,
   canonicalPhase1bProviderJson,
   parsePhase1bGateLog,
+  verifyBundledFixture,
 } from "../scripts/generate-agentworkplace-phase1b-provider.ts"
 
 const PRODUCT_CHANGED_PATHS = [
@@ -53,7 +58,7 @@ function acceptedGateLog(): string {
   const passes = PHASE1B_REQUIRED_PASS_SCENARIOS.map((description) =>
     `(pass) Phase 1B provider evidence > ${description} [1.00ms]`
   ).join("\n")
-  return `${skips}\n${passes}\n\n 473 pass\n 20 skip\n 0 fail\n 2954 expect() calls\nRan 493 tests across 64 files.\n${PHASE1B_PTY_SCENARIOS.map((description) => `(pass) ${description} [1.00ms]`).join("\n")}\n\n 4 pass\n 0 fail\n 32 expect() calls\nRan 4 tests across 1 files.\n`
+  return `${skips}\n${passes}\n\n 473 pass\n 20 skip\n 0 fail\n 2954 expect() calls\nRan 493 tests across 64 files.\n${PHASE1B_PTY_SCENARIOS.map((description) => `(pass) ${description} [1.00ms]`).join("\n")}\n\n 4 pass\n 0 fail\n 32 expect() calls\nRan 4 tests across 1 file.\n`
 }
 
 describe("AgentWorkplace Phase 1B fmx provider", () => {
@@ -168,5 +173,16 @@ describe("AgentWorkplace Phase 1B fmx provider", () => {
   ]
 }
 `)
+  })
+
+  test("bundles and smokes the standalone Runtime-extension fixture", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "fmx-phase1b-provider-fixture-test-"))
+    try {
+      const fixture = join(directory, "runtime-extension-fixture.js")
+      expect((await buildFixture(resolve(import.meta.dir, ".."), fixture)).byteLength).toBeGreaterThan(0)
+      await verifyBundledFixture(fixture)
+    } finally {
+      await rm(directory, { recursive: true })
+    }
   })
 })

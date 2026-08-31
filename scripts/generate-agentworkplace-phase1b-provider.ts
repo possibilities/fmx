@@ -411,7 +411,7 @@ function evidence(file: IntendedFile): FileEvidence {
 
 function summaryMatches(log: string): readonly RegExpMatchArray[] {
   return [...log.matchAll(
-    /^\s*(\d+) pass\n(?:\s*(\d+) skip\n)?\s*(\d+) fail\n\s*(\d+) expect\(\) calls\nRan (\d+) tests across (\d+) files\./gmu,
+    /^\s*(\d+) pass\n(?:\s*(\d+) skip\n)?\s*(\d+) fail\n\s*(\d+) expect\(\) calls\nRan (\d+) tests across (\d+) files?\./gmu,
   )]
 }
 
@@ -567,7 +567,7 @@ async function runCanonicalGate(productRoot: string, logPath: string) {
   return { bytes, receipt: parsePhase1bGateLog(text) }
 }
 
-async function buildFixture(productRoot: string, output: string): Promise<Uint8Array> {
+export async function buildFixture(productRoot: string, output: string): Promise<Uint8Array> {
   const source = join(productRoot, "tests/fixtures/runtime-extension.ts")
   const result = Bun.spawnSync({
     cmd: ["bun", "build", source, "--target=bun", "--outfile", output],
@@ -583,7 +583,7 @@ async function buildFixture(productRoot: string, output: string): Promise<Uint8A
   return new Uint8Array(await readFile(output))
 }
 
-async function verifyBundledFixture(path: string): Promise<void> {
+export async function verifyBundledFixture(path: string): Promise<void> {
   const child = Bun.spawn([process.execPath, path], {
     env: environmentWithoutGitOverrides(),
     stdin: "pipe",
