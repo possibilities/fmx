@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -11,7 +12,7 @@ import {
   type EnsureLifecycleMessage,
 } from "../src/agentworkplace-contracts.ts"
 import { ContractFrameDecoder, encodeCanonicalJson, type JsonValue } from "../src/contract-codec.ts"
-import { deriveCleanupDigest, deriveEndDigest } from "../src/exact-retirement-ledger.ts"
+import { deriveCleanupDigest, deriveEndDigest, deriveLifecycleReceiptDigest } from "../src/exact-retirement-ledger.ts"
 import type { CleanupRequest, EndRequest } from "../src/exact-retirement-ledger.ts"
 import type { EnsureRequest } from "../src/ensure-lifecycle-ledger.ts"
 import { parseInlineLaunchSourceRequest, type InlineLaunchSourceRequest } from "../src/inline-launch-source.ts"
@@ -119,6 +120,36 @@ test("fails closed for foreign receipt authority and a restarted foreign associa
     .toContain("another Workplace")
 })
 
+test.each(["ensure", "end"])("fails closed for a digest-tampered correlated %s receipt", async (kind) => {
+  const harness = await start()
+  try {
+    const { ensure } = await initializeAndReadIntents(harness)
+    if (kind === "ensure") {
+      const receipt = completeEnsureReceipt(ensure)
+      const effects = receipt.effects as { worktree: { head_commit: string } }
+      effects.worktree.head_commit = "d".repeat(40)
+      harness.write(receipt)
+      expect(await harness.child.exited).toBe(1)
+      expect((await state(harness)).receipts).toEqual([])
+      return
+    }
+
+    await writeFile(harness.marker, "release\n", { mode: 0o600 })
+    harness.write(completeEnsureReceipt(ensure))
+    await harness.frames.nextLifecycle()
+    const end = await harness.frames.nextLifecycle() as EndRequest
+    const receipt = endedReceipt(end) as unknown as { proof: { exit_code: number } } & AgentWorkplaceMessage
+    receipt.proof.exit_code = 7
+    harness.write(receipt)
+    expect(await harness.child.exited).toBe(1)
+    const persisted = await state(harness)
+    expect(persisted.receipts.map((entry: { kind: string }) => entry.kind)).toEqual(["ensure"])
+    expect(persisted.cleanup).toBeNull()
+  } finally {
+    await harness.close(1)
+  }
+})
+
 test.each(["acknowledgement_intent_saved", "end_intent_saved"])(
   "replays exact acknowledgement and end intent after %s crash window",
   async (crashAfter) => {
@@ -163,6 +194,42 @@ test.each(["acknowledgement_intent_saved", "end_intent_saved"])(
     }
   },
 )
+
+test("replays byte-identical acknowledgement, end, and cleanup after cleanup intent crash", async () => {
+  const harness = await start(undefined, { env: { FMX_PHASE1C_FIXTURE_CRASH_AFTER: "cleanup_intent_saved" } })
+  try {
+    const { ensure } = await initializeAndReadIntents(harness)
+    await writeFile(harness.marker, "release\n", { mode: 0o600 })
+    harness.write(completeEnsureReceipt(ensure))
+    await harness.frames.nextLifecycle()
+    const end = await harness.frames.nextLifecycle() as EndRequest
+    harness.write(endedReceipt(end))
+    expect(await harness.child.exited).toBe(86)
+    const persisted = await state(harness)
+    expect(persisted.cleanup).toMatchObject({ message_type: "cleanup_request", cleanup_id: "phase1c-cleanup" })
+  } finally {
+    await harness.close(86)
+  }
+
+  const restarted = await start(harness.root)
+  try {
+    await restarted.initialize()
+    await restarted.frames.next()
+    await restarted.frames.nextInline()
+    await restarted.frames.nextLifecycle()
+    const ackEnsure = await restarted.frames.nextLifecycle()
+    const ackEnd = await restarted.frames.nextLifecycle()
+    const replayEnd = await restarted.frames.nextLifecycle()
+    const replayCleanup = await restarted.frames.nextLifecycle()
+    const persisted = await state(restarted)
+    expect(canonical(ackEnsure)).toEqual(canonical(persisted.receipts[0].acknowledgement))
+    expect(canonical(ackEnd)).toEqual(canonical(persisted.receipts[1].acknowledgement))
+    expect(canonical(replayEnd)).toEqual(canonical(persisted.end))
+    expect(canonical(replayCleanup)).toEqual(canonical(persisted.cleanup))
+  } finally {
+    await restarted.close()
+  }
+})
 
 test("restarts from persisted receipt evidence, replays only stable intents, then releases the withheld acknowledgement", async () => {
   const harness = await start()
@@ -310,13 +377,13 @@ type CompleteEnsureReceipt = AgentWorkplaceMessage & {
 type AssertableReceipt = AgentWorkplaceMessage & { receipt_id: string; receipt_digest: string }
 
 function completeEnsureReceipt(ensure: EnsureRequest): CompleteEnsureReceipt {
-  return ensureLifecycleMessageSchema.parse({
+  const receipt = ensureLifecycleMessageSchema.parse({
     schema_id: "fmx.ensure-lifecycle",
     schema_version: 1,
     message_type: "ensure_receipt",
     request_id: ensure.request_id,
     receipt_id: "phase1c-ensure-receipt",
-    receipt_digest: "1".repeat(64),
+    receipt_digest: "0".repeat(64),
     workplace_instance_id: ensure.workplace_instance_id,
     fmx_session: ensure.fmx_session,
     ensure_id: ensure.ensure_id,
@@ -333,16 +400,18 @@ function completeEnsureReceipt(ensure: EnsureRequest): CompleteEnsureReceipt {
       fx: { status: "started", conversation_id: "1788123456789-1788123456789000000-a1b2c3d4" },
     },
   }) as unknown as CompleteEnsureReceipt
+  receipt.receipt_digest = canonicalEnsureReceiptDigest(receipt)
+  return receipt
 }
 
 function endedReceipt(end: EndRequest): AssertableReceipt {
-  return ensureLifecycleMessageSchema.parse({
+  const receipt = ensureLifecycleMessageSchema.parse({
     schema_id: "fmx.ensure-lifecycle",
     schema_version: 1,
     message_type: "end_receipt",
     request_id: end.request_id,
     receipt_id: "phase1c-end-receipt",
-    receipt_digest: "2".repeat(64),
+    receipt_digest: "0".repeat(64),
     workplace_instance_id: end.workplace_instance_id,
     fmx_session: end.fmx_session,
     ensure_id: end.ensure_id,
@@ -364,16 +433,18 @@ function endedReceipt(end: EndRequest): AssertableReceipt {
       observed_at: "2026-08-30T20:00:00.000Z",
     },
   }) as AssertableReceipt
+  receipt.receipt_digest = deriveLifecycleReceiptDigest(receipt as never)
+  return receipt
 }
 
 function cleanupResult(cleanup: CleanupRequest): AssertableReceipt {
-  return ensureLifecycleMessageSchema.parse({
+  const receipt = ensureLifecycleMessageSchema.parse({
     schema_id: "fmx.ensure-lifecycle",
     schema_version: 1,
     message_type: "cleanup_receipt",
     request_id: cleanup.request_id,
     receipt_id: "phase1c-cleanup-receipt",
-    receipt_digest: "3".repeat(64),
+    receipt_digest: "0".repeat(64),
     workplace_instance_id: cleanup.workplace_instance_id,
     fmx_session: cleanup.fmx_session,
     ensure_id: cleanup.ensure_id,
@@ -391,6 +462,17 @@ function cleanupResult(cleanup: CleanupRequest): AssertableReceipt {
     outcome: { kind: "not_applicable" },
     observed_at: "2026-08-30T20:00:01.000Z",
   }) as AssertableReceipt
+  receipt.receipt_digest = deriveLifecycleReceiptDigest(receipt as never)
+  return receipt
+}
+
+function canonicalEnsureReceiptDigest(receipt: CompleteEnsureReceipt): string {
+  const { receipt_digest: _receiptDigest, ...content } = receipt
+  return createHash("sha256").update(encodeCanonicalJson(content as unknown as JsonValue)).digest("hex")
+}
+
+function canonical(value: unknown): Buffer {
+  return Buffer.from(encodeCanonicalJson(value as JsonValue))
 }
 
 async function state(harness: Harness) {

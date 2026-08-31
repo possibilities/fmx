@@ -22,7 +22,13 @@ import {
   type RuntimeExtensionMessage,
 } from "../../src/agentworkplace-contracts.ts"
 import { ContractFrameDecoder, encodeCanonicalJson, encodeContractFrame, type JsonValue } from "../../src/contract-codec.ts"
-import { deriveCleanupDigest, deriveEndDigest, type CleanupRequest, type EndRequest } from "../../src/exact-retirement-ledger.ts"
+import {
+  deriveCleanupDigest,
+  deriveEndDigest,
+  deriveLifecycleReceiptDigest,
+  type CleanupRequest,
+  type EndRequest,
+} from "../../src/exact-retirement-ledger.ts"
 import { deriveEnsureDigest, type EnsureRequest } from "../../src/ensure-lifecycle-ledger.ts"
 import {
   deriveFrozenLaunchDigest,
@@ -358,6 +364,7 @@ function assertExactFields(
 async function retainReceipt(receipt: LifecycleReceipt): Promise<void> {
   const kind: ReceiptEvidence["kind"] = "effects" in receipt ? "ensure" : "proof" in receipt ? "end" : "cleanup"
   assertAcceptedReceipt(receipt, kind)
+  assertReceiptDigest(receipt, kind)
   const existing = state.receipts.find(({ kind: savedKind, receipt_id }) =>
     savedKind === kind && receipt_id === receipt.receipt_id)
   if (existing !== undefined) {
@@ -377,6 +384,26 @@ async function retainReceipt(receipt: LifecycleReceipt): Promise<void> {
     acknowledgement: null,
   })
   await saveState()
+}
+
+function assertReceiptDigest(receipt: LifecycleReceipt, kind: ReceiptEvidence["kind"]): void {
+  if (kind === "ensure") {
+    if (!("effects" in receipt) || receipt.status !== "complete") {
+      throw new Error("phase1c fixture rejected ensure receipt without a complete authoritative effect")
+    }
+    if (deriveEnsureReceiptDigest(receipt) !== receipt.receipt_digest) {
+      throw new Error("phase1c fixture rejected ensure receipt with an invalid canonical digest")
+    }
+    return
+  }
+  if (deriveLifecycleReceiptDigest(receipt as never) !== receipt.receipt_digest) {
+    throw new Error(`phase1c fixture rejected ${kind} receipt with an invalid canonical digest`)
+  }
+}
+
+function deriveEnsureReceiptDigest(receipt: EnsureReceipt): string {
+  const { receipt_digest: _receiptDigest, ...content } = receipt
+  return createHash("sha256").update(encodeCanonicalJson(content as JsonValue)).digest("hex")
 }
 
 async function releasePending(): Promise<void> {
