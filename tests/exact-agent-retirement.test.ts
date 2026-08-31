@@ -51,7 +51,9 @@ function session(
     createdAt: 1,
     command: ["fx"],
     cwd: "/var/tmp/worktree",
-    labels: { owner: "fmx", home: HOME_ID, agent: agentId, pane: `p_${agentId}` },
+    labels: state === "live" || state === "exited"
+      ? { owner: "fmx", home: HOME_ID, agent: agentId, pane: `p_${agentId}` }
+      : {},
     exit: state === "exited"
       ? { code: 0, signal: 9, reason: "requested", endedAt: Date.parse("2026-08-30T20:00:00.000Z") / 1_000 }
       : null,
@@ -138,6 +140,7 @@ describe("exact started-Agent retirement", () => {
     const authority = fakeAuthority(
       [
         [session(agentId, "live")],
+        [session(agentId, "refused")],
         [session(agentId, "exited")],
       ],
       { kind: "closed", reason: { kind: "peer-closed" } },
@@ -147,13 +150,36 @@ describe("exact started-Agent retirement", () => {
       HOME_ID,
       COMPANION_DIRECTORY,
       authority,
-      { refusedReinspectionAttempts: 1 },
+      { refusedReinspectionAttempts: 2, refusedReinspectionDelayMs: 0 },
     )
     expect(await retirement.end(fixture.ensure, fixture.endRequest)).toMatchObject({
       proof: { kind: "ended", signal: 9, reason: "requested", observed_at: "2026-08-30T20:00:00.000Z" },
     })
     expect(authority.connections).toBe(1)
     expect(authority.closes).toBe(1)
+  })
+
+  test("entry replay polls label-less refused until only an exact labelled exit proves end", async () => {
+    const fixture = await retirementFixture("ensure-a")
+    const agentId = fixture.ensure.request.agent_id
+    const ledger = await ExactRetirementLedger.open(await ledgerRoot())
+    const authority = fakeAuthority(
+      [
+        [session(agentId, "refused")],
+        [session(agentId, "exited")],
+      ],
+      { kind: "timeout" },
+    )
+    const receipt = await new ExactAgentRetirement(
+      ledger,
+      HOME_ID,
+      COMPANION_DIRECTORY,
+      authority,
+      { refusedReinspectionAttempts: 2, refusedReinspectionDelayMs: 0 },
+    ).end(fixture.ensure, fixture.endRequest)
+    expect(receipt?.proof).toMatchObject({ kind: "ended", reason: "requested" })
+    expect(authority.connections).toBe(0)
+    expect(authority.kills).toEqual([])
   })
 
   test("lost Kill response with only unreachable recovery remains pending", async () => {
@@ -234,6 +260,11 @@ describe("exact started-Agent retirement", () => {
         label: "reused path",
         entry: [session(agentId, "live", { socketPath: join(COMPANION_DIRECTORY, "foreign") })],
         error: "session_mismatch",
+      },
+      {
+        label: "unlabelled exit",
+        entry: [session(agentId, "exited", { labels: {} })],
+        error: "ownership_mismatch",
       },
       { label: "unreachable", entry: [session(agentId, "unreachable")] },
       { label: "absent", entry: [] },

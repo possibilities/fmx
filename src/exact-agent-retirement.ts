@@ -113,7 +113,11 @@ export class ExactAgentRetirement {
     }
 
     await this.ledger.markKillIntent(request.ensure_id, canonicalNow(this.now))
-    const initial = await this.reinspectExact(request, false)
+    // A prior Kill may have reached the daemon before this process or response
+    // was lost. Real refused records carry no readable labels, so wait through
+    // the bounded drain window for the exact labelled retained Exit instead of
+    // treating the transient record as ownership authority.
+    const initial = await this.reinspectExact(request, true)
     if (initial.kind === "exit") return await this.retainExit(request, initial.exit)
     if (initial.kind !== "live") return null
 
@@ -229,6 +233,11 @@ function inspectInventory(
   }
   const session = named[0]
   if (!session || session.state === "absent") return { kind: "pending" }
+  // Companion cannot read labels from non-live sockets. These states are
+  // uncertainty only: refused is bounded-pollable, while unreachable remains
+  // pending. Neither can prove end or ownership.
+  if (session.state === "refused") return { kind: "refused" }
+  if (session.state === "unreachable") return { kind: "pending" }
   const expected = expectedOwnership(homeId, agentId)
   if (!labelsMatch(session.labels, expected)) {
     throw retirementError(
@@ -250,7 +259,6 @@ function inspectInventory(
     }
     return { kind: "live", socketPath: expectedSocket, sessionName: identity.zmxName }
   }
-  if (session.state === "refused") return { kind: "refused" }
   return { kind: "pending" }
 }
 

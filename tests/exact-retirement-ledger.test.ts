@@ -6,6 +6,7 @@ import {
   deriveLifecycleReceiptDigest,
   ExactRetirementLedger,
   retirementRecordPathFor,
+  type CleanupPrepare,
   type ExactRetirementLedgerErrorCode,
   type ExactRetirementLedgerFaultPoint,
 } from "../src/exact-retirement-ledger.ts"
@@ -106,6 +107,51 @@ describe("private exact retirement ledger", () => {
     reusedReceiptId.receipt_digest = deriveLifecycleReceiptDigest(reusedReceiptId)
     await expectLedgerError(ledger.retainCleanupReceipt(reusedReceiptId), "receipt_conflict")
     expect((await ledger.get(fixture.endRequest.ensure_id))?.end?.receipt).toEqual(fixture.endReceipt)
+  })
+
+  test("cleanup prepare durably retains every physical Worktree identity", async () => {
+    const fixture = await retirementFixture("ensure-a")
+    const root = await ledgerRoot()
+    let ledger = await ExactRetirementLedger.open(root)
+    await ledger.bindEnsure(fixture.ensure)
+    await ledger.beginEnd(fixture.endRequest)
+    await ledger.markKillIntent(fixture.endRequest.ensure_id, "2026-08-30T19:59:58.000Z")
+    await ledger.retainEndReceipt(fixture.endReceipt)
+    await ledger.beginCleanup(fixture.cleanupRequest)
+    const repository = fixture.ensure.request.planned_worktree.repository
+    const commonDirectory = join(repository, ".git")
+    const prepare: CleanupPrepare = {
+      repository,
+      worktree_directory: fixture.cleanupRequest.worktree_directory,
+      head_commit: fixture.ensure.effects.worktree.status === "created"
+        ? fixture.ensure.effects.worktree.head_commit
+        : fixture.ensure.request.planned_worktree.base_commit,
+      status_digest: "a".repeat(64),
+      physical_identity: {
+        repository_root: { device: "1", inode: "101" },
+        common_directory: commonDirectory,
+        common_directory_identity: { device: "1", inode: "102" },
+        worktree_root: { device: "1", inode: "103" },
+        git_marker: { device: "1", inode: "104" },
+        git_marker_digest: "b".repeat(64),
+        git_admin_directory: join(commonDirectory, "worktrees", "phase1c"),
+        git_admin_directory_identity: { device: "1", inode: "105" },
+      },
+      prepared_at: "2026-08-30T20:00:00.000Z",
+    }
+    const retained = await ledger.prepareCleanup(fixture.cleanupRequest.ensure_id, prepare)
+    expect(retained.cleanup?.prepare).toEqual(prepare)
+    expect(await ledger.prepareCleanup(fixture.cleanupRequest.ensure_id, structuredClone(prepare)))
+      .toEqual(retained)
+
+    ledger = await ExactRetirementLedger.open(root)
+    expect((await ledger.get(fixture.cleanupRequest.ensure_id))?.cleanup?.prepare).toEqual(prepare)
+    const replacement = structuredClone(prepare)
+    replacement.physical_identity.worktree_root.inode = "999"
+    await expectLedgerError(
+      ledger.prepareCleanup(fixture.cleanupRequest.ensure_id, replacement),
+      "invalid_transition",
+    )
   })
 
   test("never-started proof remains an injected retained source and sends no Kill", async () => {

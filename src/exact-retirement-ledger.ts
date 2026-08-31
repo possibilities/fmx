@@ -77,11 +77,28 @@ export type RetirementEnsureSnapshot = {
   effects: EnsureLifecycleRecord["effects"]
 }
 
+export type CleanupFileIdentity = {
+  device: string
+  inode: string
+}
+
+export type CleanupPhysicalIdentity = {
+  repository_root: CleanupFileIdentity
+  common_directory: string
+  common_directory_identity: CleanupFileIdentity
+  worktree_root: CleanupFileIdentity
+  git_marker: CleanupFileIdentity
+  git_marker_digest: string
+  git_admin_directory: string
+  git_admin_directory_identity: CleanupFileIdentity
+}
+
 export type CleanupPrepare = {
   repository: string
   worktree_directory: string
   head_commit: string
   status_digest: string
+  physical_identity: CleanupPhysicalIdentity
   prepared_at: string
 }
 
@@ -147,11 +164,25 @@ export class ExactRetirementLedgerError extends Error {
 }
 
 const timestampSchema = z.string().datetime({ offset: false })
+const cleanupFileIdentitySchema = z.strictObject({
+  device: z.string().regex(/^(?:0|[1-9][0-9]{0,31})$/u),
+  inode: z.string().regex(/^[1-9][0-9]{0,31}$/u),
+})
 const cleanupPrepareSchema = z.strictObject({
   repository: z.string(),
   worktree_directory: z.string(),
   head_commit: z.string().regex(GIT_OBJECT_ID),
   status_digest: z.string().regex(/^[0-9a-f]{64}$/u),
+  physical_identity: z.strictObject({
+    repository_root: cleanupFileIdentitySchema,
+    common_directory: z.string(),
+    common_directory_identity: cleanupFileIdentitySchema,
+    worktree_root: cleanupFileIdentitySchema,
+    git_marker: cleanupFileIdentitySchema,
+    git_marker_digest: z.string().regex(/^[0-9a-f]{64}$/u),
+    git_admin_directory: z.string(),
+    git_admin_directory_identity: cleanupFileIdentitySchema,
+  }),
   prepared_at: timestampSchema,
 })
 const privateRecordSchema = z.strictObject({
@@ -725,10 +756,18 @@ function parseAcknowledgement(
 
 function parsePrepare(input: CleanupPrepare): CleanupPrepare {
   const parsed = cleanupPrepareSchema.safeParse(input)
+  const physical = parsed.success ? parsed.data.physical_identity : null
   if (!parsed.success || !isAbsolute(parsed.data.repository) ||
     resolve(parsed.data.repository) !== parsed.data.repository ||
     !isAbsolute(parsed.data.worktree_directory) ||
-    resolve(parsed.data.worktree_directory) !== parsed.data.worktree_directory
+    resolve(parsed.data.worktree_directory) !== parsed.data.worktree_directory ||
+    parsed.data.repository === parsed.data.worktree_directory ||
+    !physical || !isAbsolute(physical.common_directory) ||
+    resolve(physical.common_directory) !== physical.common_directory ||
+    dirname(physical.common_directory) !== parsed.data.repository ||
+    !isAbsolute(physical.git_admin_directory) ||
+    resolve(physical.git_admin_directory) !== physical.git_admin_directory ||
+    !physical.git_admin_directory.startsWith(`${resolve(physical.common_directory, "worktrees")}/`)
   ) {
     throw ledgerError("invalid_transition", "cleanup prepare is not an exact bounded snapshot")
   }

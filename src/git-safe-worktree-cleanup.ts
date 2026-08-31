@@ -1,21 +1,28 @@
 import { createHash } from "node:crypto"
-import { lstat } from "node:fs/promises"
-import { dirname, isAbsolute, normalize, resolve } from "node:path"
+import { constants, type BigIntStats } from "node:fs"
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises"
+import { userInfo } from "node:os"
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path"
 import {
   CONTRACT_MAX_FRAME_BYTES,
+  decodeStrictJson,
   encodeCanonicalJson,
   type JsonValue,
 } from "./contract-codec.ts"
 import type { EnsureLifecycleRecord } from "./ensure-lifecycle-ledger.ts"
 import {
   deriveLifecycleReceiptDigest,
+  type CleanupPhysicalIdentity,
+  type CleanupPrepare,
   type CleanupReceipt,
   type CleanupRequest,
   type ExactRetirementLedger,
 } from "./exact-retirement-ledger.ts"
 
 const GIT_TIMEOUT_MS = 10_000
+const PREPARED_REMOVAL_TIMEOUT_MS = 90_000
 const GIT_OUTPUT_MAX_BYTES = 16 * 1024 * 1024
+const GIT_MARKER_MAX_BYTES = 4 * 1024
 const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
 
 export type GitWorktreeSnapshot = {
@@ -26,17 +33,27 @@ export type GitWorktreeSnapshot = {
   statusDigest: string
   trackedChanges: boolean
   untrackedPaths: string[]
+  physicalIdentity: CleanupPhysicalIdentity
 }
+
+export type GitRepositoryPhysicalIdentity = Pick<
+  CleanupPhysicalIdentity,
+  "repository_root" | "common_directory" | "common_directory_identity"
+>
 
 export type GitWorktreeInspection =
   | GitWorktreeSnapshot
-  | { kind: "absent" }
+  | { kind: "absent"; repositoryIdentity: GitRepositoryPhysicalIdentity }
   | { kind: "mismatch"; message: string }
 
 export type GitWorktreeAuthority = {
   inspect: (repository: string, worktreeDirectory: string) => Promise<GitWorktreeInspection>
-  remove: (repository: string, worktreeDirectory: string) => Promise<void>
+  compareAndRemove: (prepare: CleanupPrepare) => Promise<GitCompareRemoveResult>
 }
+
+export type GitCompareRemoveResult =
+  | { kind: "removed" }
+  | { kind: "refused"; inspection: Exclude<GitWorktreeInspection, { kind: "absent" }> }
 
 export type GitCommandResult = {
   exitCode: number
@@ -49,6 +66,11 @@ export type GitCommandRunner = (
   args: readonly string[],
   environment: Readonly<Record<string, string>>,
 ) => Promise<GitCommandResult>
+
+export type GitPreparedRemovalRunner = (
+  prepare: CleanupPrepare,
+  environment: Readonly<Record<string, string>>,
+) => Promise<GitCompareRemoveResult>
 
 export type GitSafeWorktreeCleanupOptions = {
   now?: () => Date
@@ -70,6 +92,7 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
   constructor(
     parentEnvironment: NodeJS.ProcessEnv = process.env,
     private readonly run: GitCommandRunner = runGit,
+    private readonly preparedRemoval: GitPreparedRemovalRunner = spawnPreparedRemovalOperation,
   ) {
     this.environment = scrubGitEnvironment(parentEnvironment)
   }
@@ -82,7 +105,10 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
     }
     const repositoryContext = await this.context(repository)
     if (!repositoryContext.ok) return mismatch(repositoryContext.message)
-    if (repositoryContext.root !== repository || repositoryContext.mainRoot !== repository) {
+    if (repositoryContext.root !== repository ||
+      repositoryContext.gitDirectory !== repositoryContext.commonDirectory ||
+      dirname(repositoryContext.commonDirectory) !== repository
+    ) {
       return mismatch("planned repository is not the exact main Worktree")
     }
 
@@ -100,9 +126,18 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
     if (registered.length > 1) return mismatch("Git repeats the exact Worktree registration")
     const pathExists = await existsWithoutFollowing(worktreeDirectory)
     if (registered.length === 0) {
-      return pathExists
-        ? mismatch("planned Worktree path exists without its exact Git registration")
-        : { kind: "absent" }
+      if (pathExists) return mismatch("planned Worktree path exists without its exact Git registration")
+      try {
+        return {
+          kind: "absent",
+          repositoryIdentity: await captureRepositoryPhysicalIdentity(
+            repository,
+            repositoryContext.commonDirectory,
+          ),
+        }
+      } catch (error) {
+        return mismatch(`cannot pin repository identity for absent Worktree: ${errorMessage(error)}`)
+      }
     }
     if (!pathExists) return mismatch("Git registration exists but its exact Worktree path is absent")
 
@@ -112,8 +147,24 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
     }
     const worktreeContext = await this.context(worktreeDirectory)
     if (!worktreeContext.ok) return mismatch(worktreeContext.message)
-    if (worktreeContext.root !== worktreeDirectory || worktreeContext.mainRoot !== repository) {
+    if (worktreeContext.root !== worktreeDirectory ||
+      worktreeContext.commonDirectory !== repositoryContext.commonDirectory ||
+      !worktreeContext.gitDirectory.startsWith(
+        `${resolve(repositoryContext.commonDirectory, "worktrees")}/`,
+      )
+    ) {
       return mismatch("Worktree path resolves to a different repository or checkout root")
+    }
+    let physicalIdentity: CleanupPhysicalIdentity
+    try {
+      physicalIdentity = await capturePhysicalIdentity(
+        repository,
+        worktreeDirectory,
+        repositoryContext.commonDirectory,
+        worktreeContext.gitDirectory,
+      )
+    } catch (error) {
+      return mismatch(`cannot pin exact physical Worktree identity: ${errorMessage(error)}`)
     }
     const head = await this.command(worktreeDirectory, ["rev-parse", "--verify", "HEAD"])
     if (head.exitCode !== 0) return mismatch(commandFailure("git rev-parse HEAD", head))
@@ -126,6 +177,7 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
       "--porcelain=v2",
       "-z",
       "--untracked-files=all",
+      "--ignored=matching",
     ])
     if (status.exitCode !== 0) {
       throw new GitCleanupTransientError(commandFailure("git status", status))
@@ -136,6 +188,19 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
     } catch (error) {
       return mismatch(`cannot represent exact Git status: ${errorMessage(error)}`)
     }
+    try {
+      const finalIdentity = await capturePhysicalIdentity(
+        repository,
+        worktreeDirectory,
+        repositoryContext.commonDirectory,
+        worktreeContext.gitDirectory,
+      )
+      if (!samePhysicalIdentity(physicalIdentity, finalIdentity)) {
+        return mismatch("physical Worktree identity changed during exact inspection")
+      }
+    } catch (error) {
+      return mismatch(`cannot revalidate exact physical Worktree identity: ${errorMessage(error)}`)
+    }
     return {
       kind: "present",
       repository,
@@ -144,28 +209,31 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
       statusDigest: sha256(status.stdout),
       trackedChanges: parsedStatus.trackedChanges,
       untrackedPaths: parsedStatus.untrackedPaths,
+      physicalIdentity,
     }
   }
 
-  async remove(repository: string, worktreeDirectory: string): Promise<void> {
-    if (!exactAbsolutePath(repository) || !exactAbsolutePath(worktreeDirectory)) {
-      throw new GitCleanupTransientError("refusing non-exact Git Worktree removal paths")
-    }
-    const removed = await this.command(repository, ["worktree", "remove", "--", worktreeDirectory])
-    if (removed.exitCode !== 0) {
-      throw new GitCleanupTransientError(commandFailure("git worktree remove", removed))
-    }
+  compareAndRemove(prepare: CleanupPrepare): Promise<GitCompareRemoveResult> {
+    // One operation-level runner owns the final comparison and effect. The
+    // parent never exposes an inspect-then-remove seam that a caller can race.
+    return this.preparedRemoval(structuredClone(prepare), this.environment)
   }
 
   private async context(
     cwd: string,
-  ): Promise<{ ok: true; mainRoot: string; root: string } | { ok: false; message: string }> {
+  ): Promise<{
+      ok: true
+      commonDirectory: string
+      gitDirectory: string
+      root: string
+    } | { ok: false; message: string }> {
     let result: GitCommandResult
     try {
       result = await this.command(cwd, [
         "rev-parse",
         "--path-format=absolute",
         "--git-common-dir",
+        "--git-dir",
         "--show-toplevel",
       ])
     } catch (error) {
@@ -178,10 +246,15 @@ export class GitSafeWorktreeAuthority implements GitWorktreeAuthority {
     } catch (error) {
       return { ok: false, message: `Git repository identity is ambiguous: ${errorMessage(error)}` }
     }
-    if (lines.length !== 2 || !exactAbsolutePath(lines[0]!) || !exactAbsolutePath(lines[1]!)) {
-      return { ok: false, message: "Git repository identity is not two exact absolute paths" }
+    if (lines.length !== 3 || lines.some((line) => !exactAbsolutePath(line))) {
+      return { ok: false, message: "Git repository identity is not three exact absolute paths" }
     }
-    return { ok: true, mainRoot: dirname(lines[0]!), root: lines[1]! }
+    return {
+      ok: true,
+      commonDirectory: lines[0]!,
+      gitDirectory: lines[1]!,
+      root: lines[2]!,
+    }
   }
 
   private command(cwd: string, args: readonly string[]): Promise<GitCommandResult> {
@@ -220,11 +293,20 @@ export class GitSafeWorktreeCleanup {
     }
     const repository = record.ensure.request.planned_worktree.repository
     const directory = request.worktree_directory
-    let inspection = await this.git.inspect(repository, directory)
+    const inspection = await this.git.inspect(repository, directory)
     const retainedPrepare = record.cleanup!.prepare
 
     if (retainedPrepare) {
       if (inspection.kind === "absent") {
+        if (!sameRepositoryPhysicalIdentity(
+          inspection.repositoryIdentity,
+          repositoryPhysicalIdentity(retainedPrepare.physical_identity),
+        )) {
+          return await this.retain(request, {
+            kind: "refused_mismatch",
+            message: "repository identity changed before absent Worktree recovery",
+          })
+        }
         return await this.retain(request, {
           kind: "removed",
           head_commit: retainedPrepare.head_commit,
@@ -249,42 +331,45 @@ export class GitSafeWorktreeCleanup {
         worktree_directory: directory,
         head_commit: inspection.headCommit,
         status_digest: inspection.statusDigest,
+        physical_identity: structuredClone(inspection.physicalIdentity),
         prepared_at: canonicalNow(this.now),
       })
     }
 
     const prepare = record.cleanup!.prepare!
-    // Immediate second inspection closes repository/path/registration/HEAD
-    // and dirt races before invoking Git's own final non-force guard.
-    inspection = await this.git.inspect(repository, directory)
-    if (inspection.kind === "absent") {
-      return await this.retain(request, { kind: "removed", head_commit: prepare.head_commit })
-    }
-    const refused = dispositionForInspection(inspection, prepare)
-    if (refused) return await this.retain(request, refused)
-
+    let effect: GitCompareRemoveResult
     try {
-      await this.git.remove(repository, directory)
+      effect = await this.git.compareAndRemove(prepare)
     } catch (error) {
       const recovered = await this.git.inspect(repository, directory)
       if (recovered.kind === "absent") {
+        if (!sameRepositoryPhysicalIdentity(
+          recovered.repositoryIdentity,
+          repositoryPhysicalIdentity(prepare.physical_identity),
+        )) {
+          return await this.retain(request, {
+            kind: "refused_mismatch",
+            message: "repository identity changed during prepared removal recovery",
+          })
+        }
         return await this.retain(request, { kind: "removed", head_commit: prepare.head_commit })
       }
       const postFailure = dispositionForInspection(recovered, prepare)
       if (postFailure) return await this.retain(request, postFailure)
       throw error
     }
+    if (effect.kind === "refused") {
+      const refused = dispositionForInspection(effect.inspection, prepare)
+      if (refused) return await this.retain(request, refused)
+      throw new GitCleanupTransientError(
+        "prepared removal runner refused an unchanged clean Worktree without a reason",
+      )
+    }
     // Deliberately outside the Git failure recovery: an injected crash here
     // models process/output loss. The next process uses the durable prepare
     // marker plus absent path/registration and never removes twice.
     await this.afterRemove?.()
-    const verified = await this.git.inspect(repository, directory)
-    if (verified.kind === "absent") {
-      return await this.retain(request, { kind: "removed", head_commit: prepare.head_commit })
-    }
-    const postSuccess = dispositionForInspection(verified, prepare)
-    if (postSuccess) return await this.retain(request, postSuccess)
-    throw new GitCleanupTransientError("git worktree remove reported success but the exact Worktree remains")
+    return await this.retain(request, { kind: "removed", head_commit: prepare.head_commit })
   }
 
   private async retain(
@@ -299,7 +384,7 @@ export class GitSafeWorktreeCleanup {
 
 function dispositionForInspection(
   inspection: Exclude<GitWorktreeInspection, { kind: "absent" }>,
-  prepare: { repository: string; worktree_directory: string; head_commit: string; status_digest: string } | null,
+  prepare: CleanupPrepare | null,
 ): CleanupReceipt["outcome"] | null {
   if (inspection.kind === "mismatch") {
     return { kind: "refused_mismatch", message: boundedMessage(inspection.message) }
@@ -307,7 +392,8 @@ function dispositionForInspection(
   if (prepare && (
     inspection.repository !== prepare.repository ||
     inspection.worktreeDirectory !== prepare.worktree_directory ||
-    inspection.headCommit !== prepare.head_commit
+    inspection.headCommit !== prepare.head_commit ||
+    !samePhysicalIdentity(inspection.physicalIdentity, prepare.physical_identity)
   )) {
     return { kind: "refused_mismatch", message: "Worktree identity changed after durable cleanup preparation" }
   }
@@ -416,12 +502,10 @@ export function parsePorcelainV2Status(bytes: Uint8Array): ParsedStatus {
       if (index >= records.length || records[index] === "") {
         throw new Error("renamed Git status record lacks its original path")
       }
-    } else if (record.startsWith("? ")) {
+    } else if (record.startsWith("? ") || record.startsWith("! ")) {
       const path = record.slice(2)
-      if (!exactRelativePath(path)) throw new Error("untracked path cannot be represented exactly")
+      if (!exactRelativePath(path)) throw new Error("nontracked path cannot be represented exactly")
       untrackedPaths.push(path)
-    } else if (record.startsWith("! ")) {
-      continue
     } else {
       throw new Error(`unknown Git status record type ${JSON.stringify(type)}`)
     }
@@ -430,6 +514,475 @@ export function parsePorcelainV2Status(bytes: Uint8Array): ParsedStatus {
   if (unique.length !== untrackedPaths.length) throw new Error("Git status repeats an untracked path")
   if (unique.length > 4_096) throw new Error("Git status exceeds 4096 untracked paths")
   return { trackedChanges, untrackedPaths: unique }
+}
+
+type PhysicalPathKind = "directory" | "marker"
+
+type PinnedPhysicalPath = {
+  path: string
+  kind: PhysicalPathKind
+  handle: FileHandle
+  identity: { device: string; inode: string }
+}
+
+type PinnedPhysicalAuthority = {
+  identity: CleanupPhysicalIdentity
+  paths: PinnedPhysicalPath[]
+  close: () => Promise<void>
+  revalidate: () => Promise<void>
+}
+
+async function captureRepositoryPhysicalIdentity(
+  repository: string,
+  commonDirectory: string,
+): Promise<GitRepositoryPhysicalIdentity> {
+  if (!exactAbsolutePath(repository) || !exactAbsolutePath(commonDirectory) ||
+    await realpath(repository) !== repository || await realpath(commonDirectory) !== commonDirectory
+  ) {
+    throw new Error("repository paths are not exact canonical physical paths")
+  }
+  const root = await openPinnedPhysicalPath(repository, "directory")
+  let common: PinnedPhysicalPath | null = null
+  try {
+    common = await openPinnedPhysicalPath(commonDirectory, "directory")
+    return {
+      repository_root: structuredClone(root.identity),
+      common_directory: commonDirectory,
+      common_directory_identity: structuredClone(common.identity),
+    }
+  } finally {
+    await Promise.allSettled([root.handle.close(), ...(common ? [common.handle.close()] : [])])
+  }
+}
+
+async function capturePhysicalIdentity(
+  repository: string,
+  worktreeDirectory: string,
+  commonDirectory: string,
+  gitAdminDirectory: string,
+): Promise<CleanupPhysicalIdentity> {
+  const pinned = await openPhysicalAuthority(
+    repository,
+    worktreeDirectory,
+    commonDirectory,
+    gitAdminDirectory,
+  )
+  try {
+    return structuredClone(pinned.identity)
+  } finally {
+    await pinned.close()
+  }
+}
+
+async function openPhysicalAuthority(
+  repository: string,
+  worktreeDirectory: string,
+  commonDirectory: string,
+  gitAdminDirectory: string,
+): Promise<PinnedPhysicalAuthority> {
+  const markerPath = join(worktreeDirectory, ".git")
+  const specifications: Array<{ path: string; kind: PhysicalPathKind }> = [
+    { path: repository, kind: "directory" },
+    { path: commonDirectory, kind: "directory" },
+    { path: worktreeDirectory, kind: "directory" },
+    { path: markerPath, kind: "marker" },
+    { path: gitAdminDirectory, kind: "directory" },
+  ]
+  for (const specification of specifications) {
+    if (!exactAbsolutePath(specification.path) || await realpath(specification.path) !== specification.path) {
+      throw new Error(`${specification.path} is not one exact canonical physical path`)
+    }
+  }
+
+  const paths: PinnedPhysicalPath[] = []
+  try {
+    for (const specification of specifications) {
+      paths.push(await openPinnedPhysicalPath(specification.path, specification.kind))
+    }
+    const marker = paths[3]!
+    const markerBytes = await readPinnedMarker(marker)
+    const markerText = new TextDecoder("utf-8", { fatal: true }).decode(markerBytes)
+    if (markerText !== `gitdir: ${gitAdminDirectory}\n`) {
+      throw new Error("linked Worktree .git marker does not name its exact Git admin directory")
+    }
+    const identity: CleanupPhysicalIdentity = {
+      repository_root: structuredClone(paths[0]!.identity),
+      common_directory: commonDirectory,
+      common_directory_identity: structuredClone(paths[1]!.identity),
+      worktree_root: structuredClone(paths[2]!.identity),
+      git_marker: structuredClone(marker.identity),
+      git_marker_digest: sha256(markerBytes),
+      git_admin_directory: gitAdminDirectory,
+      git_admin_directory_identity: structuredClone(paths[4]!.identity),
+    }
+    let closed = false
+    const close = async () => {
+      if (closed) return
+      closed = true
+      const results = await Promise.allSettled(paths.map(({ handle }) => handle.close()))
+      const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected")
+      if (failed) throw failed.reason
+    }
+    return {
+      identity,
+      paths,
+      close,
+      revalidate: async () => {
+        for (const path of paths) {
+          const stats = await path.handle.stat({ bigint: true })
+          assertPhysicalKind(path.path, path.kind, stats)
+          if (!sameFileIdentity(path.identity, identityFromStats(stats))) {
+            throw new Error(`${path.path} changed through its retained physical pin`)
+          }
+        }
+        const current = await capturePhysicalIdentity(
+          repository,
+          worktreeDirectory,
+          commonDirectory,
+          gitAdminDirectory,
+        )
+        if (!samePhysicalIdentity(identity, current)) {
+          throw new Error("physical Worktree paths no longer resolve to the retained pins")
+        }
+      },
+    }
+  } catch (error) {
+    await Promise.allSettled(paths.map(({ handle }) => handle.close()))
+    throw error
+  }
+}
+
+async function openPinnedPhysicalPath(
+  path: string,
+  kind: PhysicalPathKind,
+): Promise<PinnedPhysicalPath> {
+  const directoryFlag = kind === "directory" ? constants.O_DIRECTORY : 0
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | directoryFlag)
+  try {
+    const stats = await handle.stat({ bigint: true })
+    assertPhysicalKind(path, kind, stats)
+    return { path, kind, handle, identity: identityFromStats(stats) }
+  } catch (error) {
+    await handle.close()
+    throw error
+  }
+}
+
+function assertPhysicalKind(path: string, kind: PhysicalPathKind, stats: BigIntStats): void {
+  if (kind === "directory" ? !stats.isDirectory() : !stats.isFile()) {
+    throw new Error(`${path} is not the required physical ${kind}`)
+  }
+  if (stats.uid !== BigInt(userInfo().uid)) {
+    throw new Error(`${path} is not owned by the current user`)
+  }
+  if (kind === "marker" && stats.nlink !== 1n) {
+    throw new Error(`${path} linked Worktree marker has more than one physical name`)
+  }
+  if (stats.ino <= 0n || stats.dev < 0n) throw new Error(`${path} has no exact physical identity`)
+}
+
+async function readPinnedMarker(path: PinnedPhysicalPath): Promise<Uint8Array> {
+  const stats = await path.handle.stat({ bigint: true })
+  if (stats.size <= 0n || stats.size > BigInt(GIT_MARKER_MAX_BYTES)) {
+    throw new Error("linked Worktree .git marker exceeds its exact bound")
+  }
+  const bytes = new Uint8Array(await path.handle.readFile())
+  if (bytes.byteLength !== Number(stats.size)) {
+    throw new Error("linked Worktree .git marker changed while being read")
+  }
+  return bytes
+}
+
+function identityFromStats(stats: BigIntStats): { device: string; inode: string } {
+  return { device: stats.dev.toString(10), inode: stats.ino.toString(10) }
+}
+
+function sameFileIdentity(
+  left: { device: string; inode: string },
+  right: { device: string; inode: string },
+): boolean {
+  return left.device === right.device && left.inode === right.inode
+}
+
+function samePhysicalIdentity(
+  left: CleanupPhysicalIdentity,
+  right: CleanupPhysicalIdentity,
+): boolean {
+  const leftBytes = encodeCanonicalJson(left as unknown as JsonValue)
+  const rightBytes = encodeCanonicalJson(right as unknown as JsonValue)
+  return leftBytes.byteLength === rightBytes.byteLength &&
+    leftBytes.every((byte, index) => byte === rightBytes[index])
+}
+
+function sameRepositoryPhysicalIdentity(
+  left: GitRepositoryPhysicalIdentity,
+  right: GitRepositoryPhysicalIdentity,
+): boolean {
+  return sameFileIdentity(left.repository_root, right.repository_root) &&
+    left.common_directory === right.common_directory &&
+    sameFileIdentity(left.common_directory_identity, right.common_directory_identity)
+}
+
+function repositoryPhysicalIdentity(
+  physical: CleanupPhysicalIdentity,
+): GitRepositoryPhysicalIdentity {
+  return {
+    repository_root: structuredClone(physical.repository_root),
+    common_directory: physical.common_directory,
+    common_directory_identity: structuredClone(physical.common_directory_identity),
+  }
+}
+
+/** One private helper process owns every final comparison and the exact effect. */
+export async function spawnPreparedRemovalOperation(
+  prepare: CleanupPrepare,
+  environment: Readonly<Record<string, string>>,
+): Promise<GitCompareRemoveResult> {
+  const helper = resolve(import.meta.dir, "git-safe-worktree-cleanup-runner.ts")
+  const child = Bun.spawn([process.execPath, helper], {
+    env: scrubGitEnvironment(environment),
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  child.stdin.write(encodeCanonicalJson(prepare as unknown as JsonValue))
+  child.stdin.end()
+  const timer = setTimeout(() => child.kill(), PREPARED_REMOVAL_TIMEOUT_MS)
+  try {
+    const [stdout, stderrBytes, exitCode] = await Promise.all([
+      readBounded(child.stdout, CONTRACT_MAX_FRAME_BYTES, () => child.kill()),
+      readBounded(child.stderr, 64 * 1024, () => child.kill()),
+      child.exited,
+    ])
+    const stderr = new TextDecoder().decode(stderrBytes).trim()
+    if (exitCode !== 0) {
+      throw new GitCleanupTransientError(
+        boundedMessage(`prepared Git removal helper failed (exit ${exitCode})${stderr ? `: ${stderr}` : ""}`),
+      )
+    }
+    return parseCompareRemoveResult(decodeStrictJson(stdout))
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Entry used only by the one-shot helper; it defensively re-scrubs Git state. */
+export async function executePreparedRemovalOperation(
+  prepareInput: unknown,
+  parentEnvironment: NodeJS.ProcessEnv = process.env,
+): Promise<GitCompareRemoveResult> {
+  const prepare = parseCleanupPrepareDocument(prepareInput)
+  const environment = scrubGitEnvironment(parentEnvironment)
+  const authority = new GitSafeWorktreeAuthority(
+    { ...environment },
+    runGit,
+    async () => { throw new Error("nested prepared removal is unavailable") },
+  )
+  const initial = await authority.inspect(prepare.repository, prepare.worktree_directory)
+  if (initial.kind === "absent") {
+    return sameRepositoryPhysicalIdentity(
+      initial.repositoryIdentity,
+      repositoryPhysicalIdentity(prepare.physical_identity),
+    )
+      ? { kind: "removed" }
+      : {
+          kind: "refused",
+          inspection: mismatch("repository identity changed before absent Worktree recovery"),
+        }
+  }
+  const initialRefusal = dispositionForInspection(initial, prepare)
+  if (initialRefusal) return { kind: "refused", inspection: initial }
+
+  let pinned: PinnedPhysicalAuthority
+  try {
+    pinned = await openPhysicalAuthority(
+      prepare.repository,
+      prepare.worktree_directory,
+      prepare.physical_identity.common_directory,
+      prepare.physical_identity.git_admin_directory,
+    )
+    if (!samePhysicalIdentity(pinned.identity, prepare.physical_identity)) {
+      await pinned.close()
+      return { kind: "refused", inspection: mismatch("physical Worktree authority changed after prepare") }
+    }
+  } catch (error) {
+    return {
+      kind: "refused",
+      inspection: mismatch(`cannot reopen prepared physical Worktree authority: ${errorMessage(error)}`),
+    }
+  }
+
+  let closed = false
+  const closePins = async () => {
+    if (closed) return
+    closed = true
+    await pinned.close()
+  }
+  try {
+    const finalInspection = await authority.inspect(prepare.repository, prepare.worktree_directory)
+    if (finalInspection.kind === "absent") {
+      return sameRepositoryPhysicalIdentity(
+        finalInspection.repositoryIdentity,
+        repositoryPhysicalIdentity(prepare.physical_identity),
+      )
+        ? { kind: "removed" }
+        : {
+            kind: "refused",
+            inspection: mismatch("repository identity changed before absent Worktree recovery"),
+          }
+    }
+    const finalRefusal = dispositionForInspection(finalInspection, prepare)
+    if (finalRefusal) return { kind: "refused", inspection: finalInspection }
+    try {
+      await pinned.revalidate()
+    } catch (error) {
+      return {
+        kind: "refused",
+        inspection: mismatch(`prepared physical Worktree pin changed before removal: ${errorMessage(error)}`),
+      }
+    }
+
+    const removed = await runGit(
+      prepare.repository,
+      ["worktree", "remove", "--", prepare.worktree_directory],
+      environment,
+    )
+    await closePins()
+    const verified = await authority.inspect(prepare.repository, prepare.worktree_directory)
+    if (verified.kind === "absent") {
+      return sameRepositoryPhysicalIdentity(
+        verified.repositoryIdentity,
+        repositoryPhysicalIdentity(prepare.physical_identity),
+      )
+        ? { kind: "removed" }
+        : {
+            kind: "refused",
+            inspection: mismatch("repository identity changed after prepared Worktree removal"),
+          }
+    }
+    const postEffectRefusal = dispositionForInspection(verified, prepare)
+    if (postEffectRefusal) return { kind: "refused", inspection: verified }
+    if (removed.exitCode !== 0) {
+      throw new GitCleanupTransientError(commandFailure("git worktree remove", removed))
+    }
+    throw new GitCleanupTransientError(
+      "git worktree remove reported success but the exact prepared Worktree remains",
+    )
+  } finally {
+    await closePins()
+  }
+}
+
+function parseCleanupPrepareDocument(input: unknown): CleanupPrepare {
+  if (!isPlainRecord(input) || !hasExactKeys(input, [
+    "head_commit",
+    "physical_identity",
+    "prepared_at",
+    "repository",
+    "status_digest",
+    "worktree_directory",
+  ]) || typeof input.repository !== "string" || !exactAbsolutePath(input.repository) ||
+    typeof input.worktree_directory !== "string" || !exactAbsolutePath(input.worktree_directory) ||
+    typeof input.head_commit !== "string" || !GIT_OBJECT_ID.test(input.head_commit) ||
+    typeof input.status_digest !== "string" || !/^[0-9a-f]{64}$/u.test(input.status_digest) ||
+    typeof input.prepared_at !== "string" || Number.isNaN(Date.parse(input.prepared_at)) ||
+    new Date(input.prepared_at).toISOString() !== input.prepared_at ||
+    !isCleanupPhysicalIdentity(input.physical_identity)
+  ) {
+    throw new GitCleanupTransientError("prepared Git removal input is not one exact private snapshot")
+  }
+  const prepare = structuredClone(input) as CleanupPrepare
+  if (prepare.repository === prepare.worktree_directory ||
+    dirname(prepare.physical_identity.common_directory) !== prepare.repository ||
+    !prepare.physical_identity.git_admin_directory.startsWith(
+      `${resolve(prepare.physical_identity.common_directory, "worktrees")}/`,
+    )
+  ) {
+    throw new GitCleanupTransientError("prepared Git removal paths do not form one exact linked Worktree")
+  }
+  return prepare
+}
+
+function isCleanupPhysicalIdentity(input: unknown): input is CleanupPhysicalIdentity {
+  if (!isPlainRecord(input) || !hasExactKeys(input, [
+    "common_directory",
+    "common_directory_identity",
+    "git_admin_directory",
+    "git_admin_directory_identity",
+    "git_marker",
+    "git_marker_digest",
+    "repository_root",
+    "worktree_root",
+  ]) || typeof input.common_directory !== "string" || !exactAbsolutePath(input.common_directory) ||
+    typeof input.git_admin_directory !== "string" || !exactAbsolutePath(input.git_admin_directory) ||
+    typeof input.git_marker_digest !== "string" || !/^[0-9a-f]{64}$/u.test(input.git_marker_digest)
+  ) return false
+  return [
+    input.repository_root,
+    input.common_directory_identity,
+    input.worktree_root,
+    input.git_marker,
+    input.git_admin_directory_identity,
+  ].every(isCleanupFileIdentity)
+}
+
+function isCleanupFileIdentity(input: unknown): boolean {
+  return isPlainRecord(input) && hasExactKeys(input, ["device", "inode"]) &&
+    typeof input.device === "string" && /^(?:0|[1-9][0-9]{0,31})$/u.test(input.device) &&
+    typeof input.inode === "string" && /^[1-9][0-9]{0,31}$/u.test(input.inode)
+}
+
+function parseCompareRemoveResult(input: JsonValue): GitCompareRemoveResult {
+  if (!isPlainRecord(input) || typeof input.kind !== "string") {
+    throw new GitCleanupTransientError("prepared Git removal helper returned no exact outcome")
+  }
+  if (input.kind === "removed" && hasExactKeys(input, ["kind"])) return { kind: "removed" }
+  if (input.kind !== "refused" || !hasExactKeys(input, ["inspection", "kind"]) ||
+    !isPlainRecord(input.inspection)
+  ) {
+    throw new GitCleanupTransientError("prepared Git removal helper returned an invalid outcome")
+  }
+  const inspection = input.inspection
+  if (inspection.kind === "mismatch" && hasExactKeys(inspection, ["kind", "message"]) &&
+    typeof inspection.message === "string"
+  ) {
+    return { kind: "refused", inspection: mismatch(inspection.message) }
+  }
+  if (inspection.kind !== "present" || !hasExactKeys(inspection, [
+    "headCommit",
+    "kind",
+    "physicalIdentity",
+    "repository",
+    "statusDigest",
+    "trackedChanges",
+    "untrackedPaths",
+    "worktreeDirectory",
+  ]) || typeof inspection.repository !== "string" ||
+    !exactAbsolutePath(inspection.repository) ||
+    typeof inspection.worktreeDirectory !== "string" ||
+    !exactAbsolutePath(inspection.worktreeDirectory) ||
+    typeof inspection.headCommit !== "string" || !GIT_OBJECT_ID.test(inspection.headCommit) ||
+    typeof inspection.statusDigest !== "string" || !/^[0-9a-f]{64}$/u.test(inspection.statusDigest) ||
+    typeof inspection.trackedChanges !== "boolean" ||
+    !Array.isArray(inspection.untrackedPaths) ||
+    !inspection.untrackedPaths.every((path) => typeof path === "string" && exactRelativePath(path)) ||
+    new Set(inspection.untrackedPaths).size !== inspection.untrackedPaths.length ||
+    !isCleanupPhysicalIdentity(inspection.physicalIdentity)
+  ) {
+    throw new GitCleanupTransientError("prepared Git removal helper returned an invalid refusal")
+  }
+  return { kind: "refused", inspection: structuredClone(inspection) as GitWorktreeSnapshot }
+}
+
+function isPlainRecord(input: unknown): input is Record<string, unknown> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return false
+  const prototype = Object.getPrototypeOf(input)
+  return prototype === Object.prototype || prototype === null
+}
+
+function hasExactKeys(input: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(input).sort()
+  return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index])
 }
 
 async function runGit(
