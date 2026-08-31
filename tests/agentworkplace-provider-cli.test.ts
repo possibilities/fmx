@@ -15,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, join, relative, sep } from "node:path"
+import { basename, join, relative } from "node:path"
 import {
   canonicalProviderJson,
   FMX_EXPECTED_SKIPS,
@@ -135,12 +135,27 @@ async function createFixture(): Promise<CliFixture> {
   const root = await mkdtemp(join(tmpdir(), "fmx-provider-cli-test-"))
   temporaryRoots.push(root)
   const repository = join(root, "repository")
+  const tracked = new Set<string>()
+  const trackedBytes = gitBytes(REPOSITORY_ROOT, ["ls-files", "-z"])
+  let start = 0
+  for (let index = 0; index <= trackedBytes.length; index += 1) {
+    if (index !== trackedBytes.length && trackedBytes[index] !== 0) continue
+    const file = decoder.decode(trackedBytes.subarray(start, index))
+    start = index + 1
+    if (file.length === 0) continue
+    let current = file
+    while (true) {
+      tracked.add(current)
+      const separator = current.lastIndexOf("/")
+      if (separator < 0) break
+      current = current.slice(0, separator)
+    }
+  }
   await cp(REPOSITORY_ROOT, repository, {
     filter: (source) => {
       const path = relative(REPOSITORY_ROOT, source)
       if (path.length === 0) return true
-      const first = path.split(sep)[0]
-      return first !== ".git" && first !== "node_modules" && first !== "dist"
+      return tracked.has(path)
     },
     recursive: true,
   })
