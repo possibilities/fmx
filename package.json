@@ -10,6 +10,7 @@
   },
   "scripts": {
     "contracts:check": "bun scripts/check-agentworkplace-contracts.ts",
+    "contracts:phase1a-provider": "bun scripts/generate-agentworkplace-phase1a-provider.ts",
     "contracts:provider": "bun scripts/generate-agentworkplace-provider.ts",
     "gallery": "bun ui-gallery/cli.ts",
     "gallery:check": "bun ui-gallery/cli.ts --check",
