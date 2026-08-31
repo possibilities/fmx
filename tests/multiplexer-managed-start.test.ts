@@ -45,6 +45,11 @@ class ProbeTransport implements AgentTransport {
   detach(): void {
     this.detached = true
   }
+
+  exit(status: AgentExit): void {
+    if (!this.handlers) throw new Error("transport is not bound")
+    this.handlers.exit(status)
+  }
 }
 
 class ManagedTransportFactory implements AgentTransportFactory {
@@ -196,6 +201,57 @@ test("a concurrent managed start waits for the exact claim write before creating
     expect(h.transport.starts).toHaveLength(1)
   } finally {
     claimWrite.resolve()
+    await h.multiplexer.shutdown()
+  }
+})
+
+test("a projection paused on its save cannot return after definitive finalization starts", async () => {
+  const manifest = AgentManifest.ephemeral("managed-projection-finalization-race")
+  const finalizerEntered = Promise.withResolvers<void>()
+  const releaseFinalizer = Promise.withResolvers<void>()
+  const h = await harness(manifest, {
+    beforeDefinitiveAgentForget: async () => {
+      finalizerEntered.resolve()
+      await releaseFinalizer.promise
+    },
+  })
+  const invocation = { command: [FX, "--managed"], cwd: CWD, env: {} }
+  try {
+    await h.multiplexer.projectManagedAgent(claim())
+    await h.multiplexer.startManagedAgent(AGENT_ID, invocation)
+
+    const originalEnsureClaim = manifest.ensureClaim.bind(manifest)
+    const replaySave = Promise.withResolvers<void>()
+    manifest.ensureClaim = (params: CreateParams & { identity: AgentIdentity }) => {
+      const pending = originalEnsureClaim(params)
+      return { result: pending.result, saved: pending.saved.then(() => replaySave.promise) }
+    }
+    const replay = h.multiplexer.projectManagedAgent(claim())
+    const replayFailure = replay.catch((error: unknown) => error)
+    expect(h.setup.renderer.root.findDescendantById("fx-1")).toBeDefined()
+
+    h.transport.transports[0]!.exit({ code: 0, signal: 0 })
+    await Promise.race([
+      finalizerEntered.promise,
+      Bun.sleep(1_000).then(() => {
+        throw new Error("finalizer did not start")
+      }),
+    ])
+    expect(h.setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
+    expect(h.manifest.get(AGENT_ID)?.phase).toBe("running")
+
+    replaySave.resolve()
+    expect(await replayFailure).toMatchObject({
+      message: expect.stringContaining("being definitively finalized"),
+    })
+    expect(h.setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
+    expect(h.transport.starts).toHaveLength(1)
+
+    releaseFinalizer.resolve()
+    await Bun.sleep(10)
+    expect(h.manifest.get(AGENT_ID)).toBeNull()
+  } finally {
+    releaseFinalizer.resolve()
     await h.multiplexer.shutdown()
   }
 })

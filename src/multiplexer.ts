@@ -917,6 +917,7 @@ export class Multiplexer {
       this.addAgent(entry, entry.cwd, claim.focus ?? false)
     }
     await saved
+    this.assertManagedAgentNotFinalizing(entry.agentId)
     return this.options.manifest.get(entry.agentId) ?? entry
   }
 
