@@ -414,6 +414,7 @@ describe("production lifecycle Runtime composition", () => {
       ])
       expect(harness.multiplexer.removals).toEqual([fixture.ensure.agent_id])
       expect(harness.manifest.get(fixture.ensure.agent_id)).toBeNull()
+      expect(harness.multiplexer.revisionRefreshes).toEqual([fixture.ensure.agent_id])
     } finally {
       await harness.runtime.close()
     }
@@ -626,6 +627,7 @@ class FakeMultiplexer implements LifecycleRuntimeMultiplexer {
   readonly claims: ManagedAgentClaim[] = []
   readonly starts: ManagedAgentInvocation[] = []
   readonly removals: string[] = []
+  readonly revisionRefreshes: string[] = []
 
   private readonly startGate = Promise.withResolvers<void>()
 
@@ -660,6 +662,13 @@ class FakeMultiplexer implements LifecycleRuntimeMultiplexer {
   async removeManagedAgentProjection(agentId: string): Promise<void> {
     this.removals.push(agentId)
     await this.manifest.remove(agentId)
+  }
+
+  refreshManagedAgentProjection(agentId: string): void {
+    if (this.manifest.get(agentId) !== null) {
+      throw new Error("projection revision refreshed before Manifest removal")
+    }
+    this.revisionRefreshes.push(agentId)
   }
 
   releaseStart(): void {

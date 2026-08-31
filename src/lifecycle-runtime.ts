@@ -94,6 +94,8 @@ export type LifecycleRuntimeMultiplexer = {
   ): Promise<ManagedAgentStartResult>
   /** Remove an inert managed projection after exact never-started retirement. */
   removeManagedAgentProjection(agentId: string): Promise<void>
+  /** Publish the projection revision after the durable claim is gone. */
+  refreshManagedAgentProjection(agentId: string): void
 }
 
 export type LifecycleReceiptPublisher = (
@@ -678,9 +680,11 @@ export class LifecycleRuntime {
       if (current === null || current.stage !== "manifest_claimed") return
       const entry = this.options.manifest.get(current.request.agent_id)
       if (entry === null) return
-      await this.requireMultiplexer().removeManagedAgentProjection(entry.agentId)
+      const app = this.requireMultiplexer()
+      await app.removeManagedAgentProjection(entry.agentId)
       await removeFxWorkControlResidue(entry.workControl, this.options.runtimeSocketPath)
       await this.options.manifest.remove(entry.agentId)
+      app.refreshManagedAgentProjection(entry.agentId)
     })
   }
 

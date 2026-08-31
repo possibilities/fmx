@@ -979,6 +979,14 @@ export class Multiplexer {
     this.removeAgent(agent)
   }
 
+  /** Refresh extension membership only after the Runtime removed its claim. */
+  refreshManagedAgentProjection(agentId: string): void {
+    if (this.options.manifest.get(agentId) !== null) {
+      throw new Error(`managed Agent ${agentId} is still claimed during projection refresh`)
+    }
+    this.refreshExtensionRevision()
+  }
+
   private async runManagedAgentStart(
     agent: FxAgent,
     invocation: ManagedAgentInvocation,
