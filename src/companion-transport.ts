@@ -7,6 +7,7 @@ import {
   AgentEndedError,
   AgentStartConflictError,
   AgentUnreachableError,
+  type AgentAttachOptions,
   type AgentStart,
   type AgentTransport,
   type AgentTransportFactory,
@@ -58,7 +59,7 @@ export class CompanionTransportFactory implements AgentTransportFactory {
   async start(request: AgentStart): Promise<AgentTransport> {
     const { entry } = request
     let socketPath: string
-    let recovered = false
+    let validateOwnership = request.recoverExisting === true
     try {
       const created = await this.companion.create({
         name: entry.zmxName,
@@ -87,7 +88,20 @@ export class CompanionTransportFactory implements AgentTransportFactory {
         // drop the claim; this one leaves it for the recovery path.
         throw new AgentUnreachableError(entry, caught instanceof Error ? caught : new Error(String(caught)))
       }
-      if (session.state === "exited" || session.state === "absent") throw error
+      if (session.state === "exited" || session.state === "absent") {
+        if (!request.recoverExisting) throw error
+        if (session.state === "exited") {
+          if (ownedAgentId(session, this.homeId) !== entry.agentId) {
+            throw new AgentStartConflictError(entry, error)
+          }
+          await this.companion.forget(entry.zmxName).catch(() => {})
+          throw new AgentEndedError(
+            entry,
+            session.exit ? { code: session.exit.code, signal: session.exit.signal } : null,
+          )
+        }
+        throw new AgentEndedError(entry, null)
+      }
       if (session.state !== "live" || !session.socketPath) {
         throw new AgentUnreachableError(entry, error)
       }
@@ -95,13 +109,13 @@ export class CompanionTransportFactory implements AgentTransportFactory {
         throw new AgentStartConflictError(entry, error)
       }
       socketPath = session.socketPath
-      recovered = true
+      validateOwnership = true
     }
     // From here fx is running whatever happens: a failure to reach it is
     // the transport's, and the Agent is recovered, never removed.
     try {
-      return recovered
-        ? await this.connectRecoveredStart(entry, socketPath, request.size)
+      return validateOwnership
+        ? await this.connectValidatedStart(entry, socketPath, request.size)
         : await this.connect(entry, socketPath, request.size)
     } catch (error) {
       if (error instanceof AgentStartConflictError) throw error
@@ -109,7 +123,11 @@ export class CompanionTransportFactory implements AgentTransportFactory {
     }
   }
 
-  async attach(entry: ManifestEntry, size: TerminalSize): Promise<AgentTransport> {
+  async attach(
+    entry: ManifestEntry,
+    size: TerminalSize,
+    options: AgentAttachOptions = {},
+  ): Promise<AgentTransport> {
     const hint = this.attachHints.get(entry.agentId)
     this.attachHints.delete(entry.agentId)
     if (
@@ -118,7 +136,7 @@ export class CompanionTransportFactory implements AgentTransportFactory {
       ownedAgentId(hint, this.homeId) === entry.agentId
     ) {
       try {
-        return await this.connectOwned(entry, hint.socketPath, size)
+        return await this.connectOwned(entry, hint.socketPath, size, options.foreignAsConflict)
       } catch (error) {
         if (error instanceof AgentEndedError) throw error
         // The session may have ended since reconciliation. Inspecting now
@@ -144,8 +162,13 @@ export class CompanionTransportFactory implements AgentTransportFactory {
     if (session.state !== "live" || !session.socketPath) {
       throw new Error(`Companion session ${entry.zmxName} is ${session.state}${session.detail ? ` (${session.detail})` : ""}`)
     }
-    if (ownedAgentId(session, this.homeId) !== entry.agentId) throw new AgentEndedError(entry, null)
-    return this.connectOwned(entry, session.socketPath, size)
+    if (ownedAgentId(session, this.homeId) !== entry.agentId) {
+      if (options.foreignAsConflict) {
+        throw new AgentStartConflictError(entry, new Error("Companion session labels do not match"))
+      }
+      throw new AgentEndedError(entry, null)
+    }
+    return this.connectOwned(entry, session.socketPath, size, options.foreignAsConflict)
   }
 
   private async connect(
@@ -162,17 +185,25 @@ export class CompanionTransportFactory implements AgentTransportFactory {
   }
 
   /** Connect, then prove that exact daemon still owns the Manifest Agent before attaching. */
-  private async connectOwned(entry: ManifestEntry, socketPath: string, size: TerminalSize): Promise<AgentTransport> {
+  private async connectOwned(
+    entry: ManifestEntry,
+    socketPath: string,
+    size: TerminalSize,
+    foreignAsConflict = false,
+  ): Promise<AgentTransport> {
     try {
       return await this.connect(entry, socketPath, size, ownershipLabels(this.homeId, entry.agentId))
     } catch (error) {
-      if (error instanceof CompanionOwnershipError) throw new AgentEndedError(entry, null)
+      if (error instanceof CompanionOwnershipError) {
+        if (foreignAsConflict) throw new AgentStartConflictError(entry, error)
+        throw new AgentEndedError(entry, null)
+      }
       throw error
     }
   }
 
-  /** A recovered start revalidates ownership in-band before exposing Fx. */
-  private async connectRecoveredStart(
+  /** Every managed or recovered start revalidates ownership in-band before exposing Fx. */
+  private async connectValidatedStart(
     entry: ManifestEntry,
     socketPath: string,
     size: TerminalSize,

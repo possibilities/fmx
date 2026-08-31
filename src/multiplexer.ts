@@ -71,6 +71,7 @@ import {
 } from "./fx-work-control.ts"
 import {
   AgentEndedError,
+  AgentStartConflictError,
   AgentUnreachableError,
   type AgentExit,
   type AgentStart,
@@ -514,6 +515,8 @@ export class Multiplexer {
   private readonly adeStaleRecords = new Map<string, number>()
   /** Managed finalization which shutdown must not strand before Manifest removal. */
   private readonly definitiveAgentFinalizations = new Set<Promise<void>>()
+  /** A projected managed claim is not startable until this exact write lands. */
+  private readonly managedAgentClaimSaves = new Map<string, Promise<void>>()
   /** One exact managed start effect may be in flight for each stable Agent. */
   private readonly managedAgentStarts = new Map<
     string,
@@ -897,6 +900,16 @@ export class Multiplexer {
       createdAt: existing?.createdAt ?? claim.createdAt ?? Date.now(),
       workControl: claim.workControl,
     })
+    this.managedAgentClaimSaves.set(entry.agentId, saved)
+    const clearSaved = () => {
+      if (this.managedAgentClaimSaves.get(entry.agentId) === saved) {
+        this.managedAgentClaimSaves.delete(entry.agentId)
+      }
+    }
+    // A failed write remains the start barrier until an exact projection
+    // replay replaces it with a new save. Dropping a rejected barrier would
+    // expose the in-memory-only claim again.
+    void saved.then(clearSaved, () => {})
     if (!this.agents.some((candidate) => candidate.entry.agentId === entry.agentId)) {
       this.addAgent(entry, entry.cwd, claim.focus ?? false)
     }
@@ -917,6 +930,7 @@ export class Multiplexer {
     if (this.shuttingDown) {
       throw new ControlFailure("shutting_down", "fmx is shutting down")
     }
+    await this.managedAgentClaimSaves.get(agentId)
     const entry = this.options.manifest.get(agentId)
     if (!entry) throw new Error(`managed Agent is not claimed: ${agentId}`)
     assertManagedInvocation(entry, invocation)
@@ -953,17 +967,18 @@ export class Multiplexer {
     const entry = this.options.manifest.get(agent.entry.agentId)
     if (!entry) throw new Error(`managed Agent is not claimed: ${agent.entry.agentId}`)
     const size = agent.currentSize()
-    const transport = entry.phase === "running"
-      ? await this.options.transport.attach(entry, size)
-      : await this.options.transport.start({
-        entry,
-        command: [...invocation.command],
-        cwd: invocation.cwd,
-        env: { ...invocation.env },
-        size,
-        recoverExisting: true,
-      })
+    let transport: AgentTransport | null = null
     try {
+      transport = entry.phase === "running"
+        ? await this.options.transport.attach(entry, size, { foreignAsConflict: true })
+        : await this.options.transport.start({
+          entry,
+          command: [...invocation.command],
+          cwd: invocation.cwd,
+          env: { ...invocation.env },
+          size,
+          recoverExisting: true,
+        })
       // Queue this write even when an earlier failed write already changed
       // the in-memory phase. Replay must repair the durable snapshot before
       // any risky fmx adoption or renderer operation.
@@ -975,7 +990,22 @@ export class Multiplexer {
       this.refreshAgentNavigation()
       return { sessionName: running.zmxName, paneId: running.paneId }
     } catch (error) {
-      transport.detach()
+      transport?.detach()
+      if (error instanceof AgentStartConflictError) {
+        // A foreign process may have taken both the Companion name and the
+        // filesystem endpoint. Remove only fmx's stale claim; neither that
+        // session nor the persisted Work-control path is ours to touch.
+        await this.options.manifest.remove(entry.agentId)
+        if (!this.shuttingDown) this.removeAgent(agent)
+        this.refreshExtensionRevision()
+      } else if (error instanceof AgentEndedError) {
+        // This is the same definitive proof used by restored attach and live
+        // Exit. Managed finalization owns receipt retention and safe residue
+        // cleanup before the Manifest identity is forgotten.
+        this.markAgentDefinitivelyEnded(entry.agentId)
+        if (!this.shuttingDown) this.removeAgent(agent)
+        await this.finalizeDefinitiveAgentExit(entry, error.exit)
+      }
       throw error
     }
   }

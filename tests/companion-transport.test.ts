@@ -196,6 +196,33 @@ test("a stale endpoint never falls through to a foreign session under the Agent'
   expect(paths).toEqual([hint.socketPath!])
 })
 
+test("a managed attach classifies foreign ownership as a collision without connecting", async () => {
+  const entry = restoredEntry("9".repeat(32))
+  const foreign = {
+    ...liveSession(entry, "/tmp/foreign-managed-attach"),
+    labels: ownershipLabels("stranger", entry.agentId),
+  }
+  let connections = 0
+  const factory = new CompanionTransportFactory(
+    { settle: async () => foreign } as unknown as CompanionCommand,
+    HOME,
+    {
+      connect: async () => {
+        connections += 1
+        return inertTransport
+      },
+    },
+  )
+
+  const failure = await factory.attach(
+    entry,
+    { cols: 80, rows: 24 },
+    { foreignAsConflict: true },
+  ).catch((error: unknown) => error)
+  expect(failure).toBeInstanceOf(AgentStartConflictError)
+  expect(connections).toBe(0)
+})
+
 const claim = async (): Promise<ManifestEntry> =>
   manifest.beginCreate({ cwd: dir, fxPath: "/bin/sh", fxArgs: ["-c", CHILD_SCRIPT], createdAt: Date.now() })
 
@@ -395,6 +422,39 @@ test("a Companion lookup that fails after a create timeout keeps the Agent's cla
   expect(failure).toBeInstanceOf(AgentUnreachableError)
 })
 
+test("a successful managed create revalidates ownership in-band while an ordinary create stays unchanged", async () => {
+  const entry = restoredEntry("0".repeat(32))
+  const ownership: Array<Record<string, string> | undefined> = []
+  const factory = new CompanionTransportFactory(
+    {
+      create: async () => ({
+        name: entry.zmxName,
+        socketPath: "/tmp/fresh-managed",
+        pid: 1,
+        createdAt: 1,
+      }),
+    } as unknown as CompanionCommand,
+    HOME,
+    {
+      connect: async (_path, _size, options) => {
+        ownership.push(options?.ownership)
+        return inertTransport
+      },
+    },
+  )
+  const request = {
+    entry,
+    command: [entry.fxPath],
+    cwd: entry.cwd,
+    env: {},
+    size: { cols: 80, rows: 24 },
+  }
+
+  expect(await factory.start({ ...request, recoverExisting: true })).toBe(inertTransport)
+  expect(await factory.start(request)).toBe(inertTransport)
+  expect(ownership).toEqual([ownershipLabels(HOME, entry.agentId), undefined])
+})
+
 test("a lost create response inspects and reuses the exact live owned session", async () => {
   const entry = restoredEntry("1".repeat(32))
   const session = liveSession(entry, "/tmp/lost-create-owned")
@@ -513,4 +573,41 @@ test("managed replay refuses a foreign live session without connecting to or cha
   expect(failure).toBeInstanceOf(AgentStartConflictError)
   expect(connections).toBe(0)
   expect(observed).toEqual(foreign)
+})
+
+test("managed replay reports an owned exit terminally and consumes only its exit record", async () => {
+  const entry = restoredEntry("4".repeat(32))
+  const ended: SessionEntry = {
+    ...liveSession(entry, "/tmp/replayed-ended"),
+    state: "exited",
+    socketPath: null,
+    clients: null,
+    exit: { code: 9, signal: 0, reason: "natural", endedAt: 2 },
+  }
+  const forgotten: string[] = []
+  const factory = new CompanionTransportFactory(
+    {
+      create: async () => {
+        throw new CompanionCreateError("AlreadyExists", "exit record occupies name", null)
+      },
+      settle: async () => ended,
+      forget: async (name: string) => {
+        forgotten.push(name)
+      },
+    } as unknown as CompanionCommand,
+    HOME,
+    { connect: async () => inertTransport },
+  )
+
+  const failure = await factory.start({
+    entry,
+    command: [entry.fxPath],
+    cwd: entry.cwd,
+    env: {},
+    size: { cols: 80, rows: 24 },
+    recoverExisting: true,
+  }).catch((error: unknown) => error)
+  expect(failure).toBeInstanceOf(AgentEndedError)
+  expect((failure as AgentEndedError).exit).toEqual({ code: 9, signal: 0 })
+  expect(forgotten).toEqual([entry.zmxName])
 })

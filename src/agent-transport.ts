@@ -52,6 +52,11 @@ export type AgentExit = {
 
 export type TerminalSize = { cols: number; rows: number }
 
+export type AgentAttachOptions = {
+  /** Managed lifecycle must distinguish a foreign name collision from an ended owned Agent. */
+  foreignAsConflict?: boolean
+}
+
 /** Everything needed to start fx for an Agent the Manifest has already claimed. */
 export type AgentStart = {
   entry: ManifestEntry
@@ -87,7 +92,11 @@ export interface AgentTransportFactory {
    * fx has ended — with its status, when that is known — and with anything
    * else when it could not be reached, which says nothing about fx.
    */
-  attach(entry: ManifestEntry, size: TerminalSize): Promise<AgentTransport>
+  attach(
+    entry: ManifestEntry,
+    size: TerminalSize,
+    options?: AgentAttachOptions,
+  ): Promise<AgentTransport>
 }
 
 export class AgentEndedError extends Error {
