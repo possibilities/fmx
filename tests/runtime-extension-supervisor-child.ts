@@ -10,7 +10,18 @@ import {
   encodeAgentWorkplaceFrame,
   type AgentWorkplaceMessage,
 } from "../src/agentworkplace-contracts.ts"
-import { CONTRACT_MAX_FRAME_BYTES, ContractFrameDecoder } from "../src/contract-codec.ts"
+import {
+  CONTRACT_MAX_FRAME_BYTES,
+  ContractFrameDecoder,
+  encodeCanonicalJson,
+  encodeContractFrame,
+  type JsonValue,
+} from "../src/contract-codec.ts"
+import {
+  INLINE_LAUNCH_SOURCE_SCHEMA_ID,
+  parseInlineLaunchSourceRequest,
+  type InlineLaunchSourceRequest,
+} from "../src/inline-launch-source.ts"
 
 type Mode =
   | "ready"
@@ -282,16 +293,16 @@ function accepted(
 }
 
 function write(message: object): void {
-  process.stdout.write(Buffer.from(encodeAgentWorkplaceFrame(message as AgentWorkplaceMessage)))
+  process.stdout.write(Buffer.from(encodeWireFrame(message)))
 }
 
 function writeMany(messages: object[]): void {
   process.stdout.write(Buffer.concat(messages.map((message) =>
-    Buffer.from(encodeAgentWorkplaceFrame(message as AgentWorkplaceMessage))
+    Buffer.from(encodeWireFrame(message))
   )))
 }
 
-function readScript(value: string | undefined): AgentWorkplaceMessage[] {
+function readScript(value: string | undefined): Array<AgentWorkplaceMessage | InlineLaunchSourceRequest> {
   if (value === undefined) return []
   let parsed: unknown
   try {
@@ -300,7 +311,24 @@ function readScript(value: string | undefined): AgentWorkplaceMessage[] {
     throw new Error("supervisor-child script is not JSON", { cause: error })
   }
   if (!Array.isArray(parsed)) throw new Error("supervisor-child script must be an array")
-  return parsed.map((message) => agentWorkplaceMessageSchema.parse(message))
+  return parsed.map((message) => {
+    if (
+      typeof message === "object" && message !== null &&
+      "schema_id" in message && message.schema_id === INLINE_LAUNCH_SOURCE_SCHEMA_ID
+    ) {
+      return parseInlineLaunchSourceRequest(message)
+    }
+    return agentWorkplaceMessageSchema.parse(message)
+  })
+}
+
+function encodeWireFrame(message: object): Uint8Array {
+  if ("schema_id" in message && message.schema_id === INLINE_LAUNCH_SOURCE_SCHEMA_ID) {
+    return encodeContractFrame(encodeCanonicalJson(
+      parseInlineLaunchSourceRequest(message) as unknown as JsonValue,
+    ))
+  }
+  return encodeAgentWorkplaceFrame(message as AgentWorkplaceMessage)
 }
 
 async function record(message: WireMessage): Promise<void> {

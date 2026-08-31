@@ -21,6 +21,16 @@ import {
   type RuntimeExtensionSupervisorOptions,
 } from "../src/runtime-extension.ts"
 import type { RuntimeExtensionStartup } from "../src/runtime-startup.ts"
+import { encodeCanonicalJson } from "../src/contract-codec.ts"
+import {
+  INLINE_LAUNCH_SOURCE_SCHEMA_ID,
+  INLINE_LAUNCH_SOURCE_SCHEMA_VERSION,
+  deriveFrozenLaunchDigest,
+  deriveInlineLaunchSourceDigest,
+  encodeInlineSourceBytes,
+  type FrozenLaunchRequest,
+  type InlineLaunchSourceRequest,
+} from "../src/inline-launch-source.ts"
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/runtime-extension.ts", import.meta.url))
 const PEER = fileURLToPath(new URL("./runtime-extension-supervisor-child.ts", import.meta.url))
@@ -398,6 +408,80 @@ describe("Runtime-extension ensure-lifecycle transport", () => {
       expect(error.code, label).toBe("protocol_error")
     }
     expect(supervisor.state).toBe("ready")
+  })
+})
+
+describe("Runtime-extension private inline-source transport", () => {
+  test("admits the one fully verified private request child-to-host without a synthetic response", async () => {
+    const directory = await temporaryDirectory()
+    const log = join(directory, "inline-source.log")
+    const request = inlineSourceRequest()
+    const handled = deferred<InlineLaunchSourceRequest>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      env: {
+        FMX_SUPERVISOR_CHILD_LOG: log,
+        FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([request]),
+      },
+      onInlineLaunchSourceRequest: (source) => handled.resolve(source),
+    })
+    expect(await withTestTimeout(handled.promise, 1_000, "inline source was not admitted")).toEqual(request)
+    const received = await waitForMessages(log, (messages) =>
+      messages.some((message) => message.message_type === "initialize"),
+    )
+    expect(received.filter((message) => message.message_type === "response")).toEqual([])
+    expect(supervisor.state).toBe("ready")
+  })
+
+  test("requires the narrow handler and exact Workplace/Session link identity", async () => {
+    const request = inlineSourceRequest()
+    for (const [label, scripted, handler, diagnostic] of [
+      ["missing handler", request, undefined, "without an installed inline-source handler"],
+      [
+        "foreign Workplace",
+        inlineSourceRequest({ workplace_instance_id: "foreign-workplace" }),
+        () => {},
+        "names Workplace foreign-workplace",
+      ],
+      [
+        "foreign Session",
+        inlineSourceRequest({ fmx_session: "session-alpha" }),
+        () => {},
+        "names fmx Session session-alpha",
+      ],
+    ] as const) {
+      const disconnected = deferred<RuntimeExtensionError>()
+      const supervisor = await startSupervisor(PEER, "ready", {
+        env: { FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([scripted]) },
+        onInlineLaunchSourceRequest: handler,
+        onDisconnect: disconnected.resolve,
+      })
+      const error = await withTestTimeout(disconnected.promise, 1_000, `${label} was not rejected`)
+      expect(error.code, label).toBe("protocol_error")
+      expect(error.message, label).toContain(diagnostic)
+      expect(error.message, label).not.toContain(scripted.initial_work.data)
+      await supervisor.close()
+      supervisors.delete(supervisor)
+    }
+  })
+
+  test("bounds and aborts a stuck private source handler", async () => {
+    const request = inlineSourceRequest()
+    const started = deferred<AbortSignal>()
+    const disconnected = deferred<RuntimeExtensionError>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      env: { FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([request]) },
+      requestTimeoutMs: 30,
+      onInlineLaunchSourceRequest: (_source, signal) => {
+        started.resolve(signal)
+        return new Promise<void>(() => {})
+      },
+      onDisconnect: disconnected.resolve,
+    })
+    const signal = await withTestTimeout(started.promise, 1_000, "inline source handler did not start")
+    const error = await withTestTimeout(disconnected.promise, 1_000, "inline source handler did not time out")
+    expect(error.code).toBe("request_timeout")
+    expect(signal.aborted).toBe(true)
+    expect(supervisor.state).toBe("degraded")
   })
 })
 
@@ -930,6 +1014,56 @@ function snapshotGet(requestId: string, afterRevision: string | null = null) {
 
 function nextRevision(after: string | null): string {
   return after === null ? "0" : String(BigInt(after) + 1n)
+}
+
+function inlineSourceRequest(
+  overrides: Partial<InlineLaunchSourceRequest> = {},
+): InlineLaunchSourceRequest {
+  const initialWork = encodeInlineSourceBytes(Buffer.from("private transport initial work\n", "utf8"))
+  const launchControls = encodeInlineSourceBytes(encodeCanonicalJson({
+    argv: [],
+    env: {},
+    schema: "fmx.launch-controls-json-v1",
+  }))
+  const launch = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "launch_request",
+    request_id: "transport-fx-launch-request",
+    launch_id: "transport-launch",
+    launch_digest: "0".repeat(64),
+    admission_key: "transport-admission",
+    conversation_name: "Transport fixture",
+    resume: { mode: "fresh" },
+    state_root: "/var/tmp/fmx-transport-state",
+    directory: "/var/tmp/fmx-transport-worktree",
+    initial_work_digest: initialWork.sha256,
+    remaining_launch_controls_digest: launchControls.sha256,
+  } satisfies FrozenLaunchRequest
+  launch.launch_digest = deriveFrozenLaunchDigest(launch)
+  const request = {
+    schema_id: INLINE_LAUNCH_SOURCE_SCHEMA_ID,
+    schema_version: INLINE_LAUNCH_SOURCE_SCHEMA_VERSION,
+    message_type: "source_request",
+    request_id: "transport-source-request",
+    workplace_instance_id: "fixture-workplace",
+    fmx_session: "session-beta",
+    ensure_id: "transport-ensure",
+    ensure_digest: "e".repeat(64),
+    worktree_id: "transport-worktree",
+    agent_id: "1234567890abcdef1234567890abcdef",
+    launch_id: launch.launch_id,
+    launch_digest: launch.launch_digest,
+    admission_key: launch.admission_key,
+    source_id: "transport-source",
+    source_digest: "0".repeat(64),
+    launch_request: launch,
+    initial_work: initialWork,
+    launch_controls: launchControls,
+    ...overrides,
+  } satisfies InlineLaunchSourceRequest
+  request.source_digest = deriveInlineLaunchSourceDigest(request)
+  return request
 }
 
 async function frozenLifecycleMessages(): Promise<EnsureLifecycleMessage[]> {

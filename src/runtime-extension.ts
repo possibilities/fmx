@@ -4,7 +4,6 @@ import {
   ENSURE_LIFECYCLE_SCHEMA_ID,
   RUNTIME_EXTENSION_CAPABILITIES,
   RUNTIME_EXTENSION_SCHEMA_ID,
-  decodeAgentWorkplacePayload,
   encodeAgentWorkplaceFrame,
   ensureLifecycleMessageSchema,
   runtimeExtensionMessageSchema,
@@ -12,7 +11,18 @@ import {
   type EnsureLifecycleMessage,
   type RuntimeExtensionMessage,
 } from "./agentworkplace-contracts.ts"
-import { CONTRACT_MAX_FRAME_BYTES, ContractFrameDecoder } from "./contract-codec.ts"
+import {
+  CONTRACT_MAX_FRAME_BYTES,
+  ContractFrameDecoder,
+  decodeStrictJson,
+  encodeCanonicalJson,
+  type JsonValue,
+} from "./contract-codec.ts"
+import {
+  INLINE_LAUNCH_SOURCE_SCHEMA_ID,
+  parseInlineLaunchSourceRequest,
+  type InlineLaunchSourceRequest,
+} from "./inline-launch-source.ts"
 import type {
   RuntimeAssociationMessage,
   RuntimeExtensionStartup,
@@ -175,9 +185,16 @@ export type RuntimeExtensionLifecycleHandler = (
   signal: AbortSignal,
 ) => void | Promise<void>
 
+/** Admit only the separately-versioned private inline source request. */
+export type RuntimeExtensionInlineSourceHandler = (
+  request: InlineLaunchSourceRequest,
+  signal: AbortSignal,
+) => void | Promise<void>
+
 export type RuntimeExtensionSupervisorOptions = {
   onRequest: RuntimeExtensionRequestHandler
   onLifecycleMessage?: RuntimeExtensionLifecycleHandler
+  onInlineLaunchSourceRequest?: RuntimeExtensionInlineSourceHandler
   onDisconnect?: (error: RuntimeExtensionError) => void | Promise<void>
   cwd?: string
   env?: Record<string, string | undefined>
@@ -201,6 +218,7 @@ type ResolvedStartup = {
 type NormalizedOptions = {
   onRequest: RuntimeExtensionRequestHandler
   onLifecycleMessage?: RuntimeExtensionLifecycleHandler
+  onInlineLaunchSourceRequest?: RuntimeExtensionInlineSourceHandler
   onDisconnect?: (error: RuntimeExtensionError) => void | Promise<void>
   cwd?: string
   env?: Record<string, string | undefined>
@@ -632,7 +650,7 @@ export class RuntimeExtensionSupervisor {
           if (generation.phase === "stopping" || generation.failure !== null) return
           let message: unknown
           try {
-            message = decodeAgentWorkplacePayload(payload)
+            message = decodeRuntimeLinkPayload(payload)
           } catch (error) {
             throw {
               code: "protocol_error",
@@ -648,6 +666,20 @@ export class RuntimeExtensionSupervisor {
           const lifecycle = ensureLifecycleMessageSchema.safeParse(message)
           if (lifecycle.success) {
             this.handleLifecycleMessage(generation, lifecycle.data as EnsureLifecycleMessage)
+            continue
+          }
+          if (schemaIdOf(message) === INLINE_LAUNCH_SOURCE_SCHEMA_ID) {
+            let source: InlineLaunchSourceRequest
+            try {
+              source = parseInlineLaunchSourceRequest(message)
+            } catch (error) {
+              throw {
+                code: "protocol_error",
+                message: `invalid private inline source request: ${boundedErrorMessage(error)}`,
+                cause: error,
+              } satisfies Failure
+            }
+            this.handleInlineSourceRequest(generation, source)
             continue
           }
           throw {
@@ -746,6 +778,33 @@ export class RuntimeExtensionSupervisor {
           message: `child sent ${message.message_type} in the extension-to-Runtime direction`,
         } satisfies Failure
     }
+  }
+
+  private handleInlineSourceRequest(
+    generation: Generation,
+    request: InlineLaunchSourceRequest,
+  ): void {
+    if (generation.phase === "starting") {
+      throw {
+        code: "protocol_error",
+        message: `child sent ${request.message_type} before exact readiness`,
+      } satisfies Failure
+    }
+    if (generation.phase !== "ready") return
+    if (request.workplace_instance_id !== this.startup.association.workplace_instance_id) {
+      throw {
+        code: "protocol_error",
+        message: `inline source names Workplace ${request.workplace_instance_id}; ` +
+          `expected ${this.startup.association.workplace_instance_id}`,
+      } satisfies Failure
+    }
+    if (request.fmx_session !== this.startup.fmxSession) {
+      throw {
+        code: "protocol_error",
+        message: `inline source names fmx Session ${request.fmx_session}; expected ${this.startup.fmxSession}`,
+      } satisfies Failure
+    }
+    this.acceptInlineSourceInbound(generation, request)
   }
 
   private acceptReadiness(generation: Generation, ready: RuntimeExtensionReady): void {
@@ -883,6 +942,34 @@ export class RuntimeExtensionSupervisor {
     void this.dispatchLifecycleInbound(generation, message, inboundKey, requestId, abort)
   }
 
+  private acceptInlineSourceInbound(
+    generation: Generation,
+    request: InlineLaunchSourceRequest,
+  ): void {
+    if (this.options.onInlineLaunchSourceRequest === undefined) {
+      throw {
+        code: "protocol_error",
+        message: "child sent source_request without an installed inline-source handler",
+      } satisfies Failure
+    }
+    if (generation.activeRequestIds.has(request.request_id)) {
+      throw {
+        code: "protocol_error",
+        message: `child reused Runtime-extension request id ${request.request_id}`,
+      } satisfies Failure
+    }
+    if (generation.inbound.size >= this.options.maxPendingRequests) {
+      throw {
+        code: "request_limit",
+        message: `child exceeded ${this.options.maxPendingRequests} concurrent Runtime-extension request(s)`,
+      } satisfies Failure
+    }
+    generation.activeRequestIds.add(request.request_id)
+    const abort = new AbortController()
+    generation.inbound.set(request.request_id, { abort })
+    void this.dispatchInlineSourceInbound(generation, request, abort)
+  }
+
   private async dispatchInboundRequest(
     generation: Generation,
     request: RuntimeExtensionInboundRequest,
@@ -955,6 +1042,44 @@ export class RuntimeExtensionSupervisor {
     } finally {
       generation.inbound.delete(inboundKey)
       if (requestId !== null) generation.activeRequestIds.delete(requestId)
+    }
+  }
+
+  private async dispatchInlineSourceInbound(
+    generation: Generation,
+    request: InlineLaunchSourceRequest,
+    abort: AbortController,
+  ): Promise<void> {
+    try {
+      await withTimeout(
+        (async () => {
+          const result = await Promise.resolve(
+            this.options.onInlineLaunchSourceRequest!(request, abort.signal),
+          )
+          if (result !== undefined) {
+            throw {
+              code: "handler_failed",
+              message: "inline source handler must not return a link response",
+            } satisfies Failure
+          }
+        })(),
+        this.options.requestTimeoutMs,
+        () => ({
+          code: "request_timeout",
+          message: `Inline source handler for ${request.request_id} timed out after ` +
+            `${this.options.requestTimeoutMs}ms`,
+        } satisfies Failure),
+      )
+    } catch (error) {
+      if (this.active !== generation || generation.phase === "stopping") return
+      this.recordFailure(generation, asFailure(
+        error,
+        "handler_failed",
+        `Inline source handler failed for ${request.request_id}`,
+      ))
+    } finally {
+      generation.inbound.delete(request.request_id)
+      generation.activeRequestIds.delete(request.request_id)
     }
   }
 
@@ -1254,6 +1379,7 @@ function normalizeOptions(options: RuntimeExtensionSupervisorOptions): Normalize
   const normalized: NormalizedOptions = {
     onRequest: options.onRequest,
     onLifecycleMessage: options.onLifecycleMessage,
+    onInlineLaunchSourceRequest: options.onInlineLaunchSourceRequest,
     onDisconnect: options.onDisconnect,
     cwd: options.cwd,
     env: options.env,
@@ -1294,6 +1420,20 @@ function assertRuntimeMessage(message: unknown, label: string): void {
       `${label} is invalid${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}: ${issue?.message ?? "unknown error"}`,
     )
   }
+}
+
+function decodeRuntimeLinkPayload(payload: Uint8Array): JsonValue {
+  const value = decodeStrictJson(payload)
+  if (!Buffer.from(encodeCanonicalJson(value)).equals(Buffer.from(payload))) {
+    throw new Error("Runtime-extension payload is not canonical JSON")
+  }
+  return value
+}
+
+function schemaIdOf(message: unknown): string | null {
+  if (typeof message !== "object" || message === null || !("schema_id" in message)) return null
+  const value = (message as { schema_id?: unknown }).schema_id
+  return typeof value === "string" ? value : null
 }
 
 function assertLifecycleReceipt(
