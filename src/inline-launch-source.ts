@@ -294,6 +294,41 @@ export class InlineLaunchSourceLedger {
     }))
   }
 
+  /**
+   * Complete the source→ensure binding after a Runtime crash between the two
+   * durable intents. Secondary identities are unique, so the frozen ensure
+   * identifies at most one source without a new coordinator-owned index.
+   */
+  bindEnsureRequestForEnsure(ensureInput: FrozenEnsureRequest): Promise<InlineLaunchSourceRequest> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const ensure = parseFrozenEnsureRequest(ensureInput)
+      const index = await this.readIndex(guard)
+      const matches = index.records.filter((record) => sourceMatchesEnsure(record.request, ensure))
+      if (matches.length !== 1) {
+        throw sourceError("unauthorized", `no exact inline source is available for ensure ${ensure.ensure_id}`)
+      }
+      const current = matches[0]
+      if (current.bound_ensure_request !== null) {
+        if (!sameCanonical(current.bound_ensure_request, ensure)) {
+          throw sourceError("conflicting_claim", `source ${current.request.source_id} is bound to another ensure request`)
+        }
+        return structuredClone(current.request)
+      }
+      const next = copyRecord(current)
+      next.revision = 2
+      next.bound_ensure_request = ensure
+      validateRecord(next, recordPathFor(this.root, current.request.source_id))
+      await this.writeRecord(
+        next,
+        guard,
+        requireRecordIdentity(index, current.request.source_id),
+        "bind_ensure",
+      )
+      await this.inject("after_commit_before_return", "bind_ensure", next)
+      return structuredClone(next.request)
+    }))
+  }
+
   /** Return decoded bytes only to a caller presenting the complete authority. */
   retrieve(authorityInput: InlineLaunchSourceAuthorityKey): Promise<InlineLaunchSourceBytes> {
     return this.serial(() => this.withLock(async (guard) => {
@@ -319,6 +354,19 @@ export class InlineLaunchSourceLedger {
         launch_controls_sha256: record.request.launch_controls.sha256,
         ensure_bound: record.bound_ensure_request !== null,
       }
+    }))
+  }
+
+  /** Return the exact durable source only after its matching ensure is bound. */
+  sourceForEnsure(ensureInput: FrozenEnsureRequest): Promise<InlineLaunchSourceRequest | null> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const ensure = parseFrozenEnsureRequest(ensureInput)
+      const matches = (await this.readIndex(guard)).records.filter((record) =>
+        record.bound_ensure_request !== null && sameCanonical(record.bound_ensure_request, ensure))
+      if (matches.length > 1) {
+        throw sourceError("corrupt_record", `multiple inline sources are bound to ensure ${ensure.ensure_id}`)
+      }
+      return matches[0] ? structuredClone(matches[0].request) : null
     }))
   }
 
@@ -710,6 +758,23 @@ function assertEnsureCorrelation(
   ) {
     throw sourceError("correlation_mismatch", "frozen ensure request changed launch target identity")
   }
+}
+
+function sourceMatchesEnsure(
+  source: InlineLaunchSourceRequest,
+  ensure: FrozenEnsureRequest,
+): boolean {
+  return [
+    "workplace_instance_id",
+    "fmx_session",
+    "ensure_id",
+    "ensure_digest",
+    "worktree_id",
+    "agent_id",
+    "launch_id",
+    "launch_digest",
+  ].every((field) => source[field as keyof InlineLaunchSourceRequest] ===
+    ensure[field as keyof FrozenEnsureRequest])
 }
 
 function validateRecord(record: InlineLaunchSourceRecord, path: string): void {
