@@ -16,7 +16,7 @@ import {
   type FxWorkControlResult,
 } from "../src/fx-work-control.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
-import { fmxTerminalTitle, Multiplexer } from "../src/multiplexer.ts"
+import { fmxTerminalTitle, Multiplexer, RuntimeExtensionSurfaceError } from "../src/multiplexer.ts"
 import { instanceIdForPane, record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
@@ -443,6 +443,101 @@ test("focuses by position, id, and name, and refuses while something is open", a
     expect(busy.code).toBe("busy")
     expect(busy.data).toEqual({ surface: { kind: "help" } })
   } finally {
+    await h.close()
+  }
+})
+
+test("publishes authoritative member snapshots and presents through modal-safe selection", async () => {
+  const h = await harness("runtime-extension-surface")
+  const revisions: string[] = []
+  const unsubscribe = h.multiplexer.extension.subscribeInvalidation((revision) => revisions.push(revision))
+  try {
+    expect(revisions).toEqual(["1"])
+    await h.start()
+    await h.start({ directory: join(h.code, "beta"), focus: false })
+    const orientation = (await h.control("orient")) as Snapshot
+    const [first, second] = orientation.agents
+    await h.report("p_1", "working")
+
+    const snapshot = await h.multiplexer.extension.snapshot()
+    expect(snapshot.revision).toMatch(/^[1-9]\d*$/u)
+    expect(revisions.at(-1)).toBe(snapshot.revision)
+    expect(snapshot.selected_agent_id).toBe(first!.agent_id)
+    expect(snapshot.agents).toEqual([
+      {
+        agent_id: first!.agent_id,
+        pane_id: first!.pane_id,
+        display_id: 1,
+        created_at_ms: expect.any(Number),
+        lifecycle: "running",
+        state: "working",
+        attention: null,
+        directory: join(h.code, "alpha"),
+        worktree: false,
+        fx_conversation: null,
+        correlation: null,
+      },
+      {
+        agent_id: second!.agent_id,
+        pane_id: second!.pane_id,
+        display_id: 2,
+        created_at_ms: expect.any(Number),
+        lifecycle: "running",
+        state: "unknown",
+        attention: null,
+        directory: join(h.code, "beta"),
+        worktree: false,
+        fx_conversation: null,
+        correlation: null,
+      },
+    ])
+
+    h.multiplexer.extension.present(second!.agent_id, false)
+    const presentedWithoutFocus = await h.multiplexer.extension.snapshot()
+    expect(presentedWithoutFocus.selected_agent_id).toBe(second!.agent_id)
+    expect(BigInt(presentedWithoutFocus.revision)).toBeGreaterThan(BigInt(snapshot.revision))
+    expect(terminal(h.setup, 2).visible).toBe(true)
+    expect(terminal(h.setup, 2).focused).toBe(false)
+    h.multiplexer.extension.present(first!.agent_id, true)
+    expect(terminal(h.setup, 1).focused).toBe(true)
+
+    const semanticRevisionCount = revisions.length
+    h.multiplexer.setTheme({ theme: "light", background: "#ffffff", source: "osc11", explicit: false })
+    await h.control("tray", { width: 31, hidden: true })
+    expect(revisions).toHaveLength(semanticRevisionCount)
+
+    h.setup.mockInput.pressKey("b", { ctrl: true })
+    h.setup.mockInput.pressKey("?")
+    await h.setup.renderOnce()
+    h.multiplexer.extension.present(second!.agent_id, false)
+    const presented = await h.multiplexer.extension.snapshot()
+    expect(presented.selected_agent_id).toBe(second!.agent_id)
+    expect(BigInt(presented.revision)).toBeGreaterThan(BigInt(presentedWithoutFocus.revision))
+    expect(revisions.at(-1)).toBe(presented.revision)
+    expect(terminal(h.setup, 2).focused).toBe(false)
+    expect(() => h.multiplexer.extension.present(first!.agent_id, true)).toThrow(RuntimeExtensionSurfaceError)
+    try {
+      h.multiplexer.extension.present(first!.agent_id, true)
+    } catch (error) {
+      expect(error).toMatchObject({ code: "busy" })
+    }
+    h.setup.mockInput.pressKey("?")
+    await h.setup.renderOnce()
+    h.multiplexer.extension.present(first!.agent_id, true)
+    expect((await h.multiplexer.extension.snapshot()).selected_agent_id).toBe(first!.agent_id)
+    expect(() => h.multiplexer.extension.present("f".repeat(32), false)).toThrow("no switchable Agent")
+
+    const duplicateConversation = "1787362101399-1787362101399156000-2897385323da2699"
+    await h.session("p_1", duplicateConversation)
+    await h.session("p_2", duplicateConversation)
+    try {
+      await h.multiplexer.extension.snapshot()
+      throw new Error("expected duplicate Fx Conversation validation to fail")
+    } catch (error) {
+      expect(error).toMatchObject({ code: "snapshot_unavailable" })
+    }
+  } finally {
+    unsubscribe()
     await h.close()
   }
 })

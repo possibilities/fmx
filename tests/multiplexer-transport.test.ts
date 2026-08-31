@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AdeSocket } from "../src/ade-events.ts"
+import { AgentManifest, identityFor } from "../src/agent-manifest.ts"
 import type { AgentTransport, TerminalSize, TransportHandlers } from "../src/agent-transport.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
@@ -88,6 +92,84 @@ class PaletteProbeTransport implements AgentTransport {
     return this.writes.map((bytes) => new TextDecoder().decode(bytes)).join("")
   }
 }
+
+test("keeps the Runtime-extension surface behind restored startup publication", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+  const options = agentOptions()
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...options,
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+  })
+  try {
+    expect(() => multiplexer.extension.subscribeInvalidation(() => {})).toThrow("startup is not complete")
+    expect(() => multiplexer.extension.present("f".repeat(32), false)).toThrow("startup is not complete")
+    try {
+      await multiplexer.extension.snapshot()
+      throw new Error("expected the pre-start snapshot to fail")
+    } catch (error) {
+      expect(error).toMatchObject({ code: "starting_up" })
+    }
+
+    await multiplexer.start()
+    const revisions: string[] = []
+    const unsubscribe = multiplexer.extension.subscribeInvalidation((revision) => revisions.push(revision))
+    expect(revisions).toEqual(["1"])
+    expect(await multiplexer.extension.snapshot()).toMatchObject({ revision: "1", agents: [] })
+    unsubscribe()
+  } finally {
+    await multiplexer.shutdown()
+  }
+})
+
+test("refuses a legacy Manifest member that cannot satisfy the v1 snapshot", async () => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "fmx-extension-snapshot-"))
+  const manifestPath = join(temporaryDirectory, "manifest.json")
+  const identity = identityFor("f".repeat(32))
+  await writeFile(manifestPath, `${JSON.stringify({
+    version: 1,
+    homeId: "legacy-snapshot",
+    nextDisplayId: 2,
+    agents: [{
+      ...identity,
+      displayId: 1,
+      cwd: process.cwd(),
+      fxPath: FAKE_FX,
+      fxArgs: [],
+      createdAt: -1,
+      fxSessionId: null,
+      agentStatus: null,
+      workControl: null,
+      phase: "running",
+    }],
+  }, null, 2)}\n`)
+  const manifest = await AgentManifest.open(manifestPath, "legacy-snapshot")
+  const survivor = manifest.entries[0]!
+  const options = agentOptions()
+  options.transport.attachBehavior = () => new PaletteProbeTransport()
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+  const multiplexer = new Multiplexer(setup.renderer, {
+    ...options,
+    manifest,
+    fxPath: FAKE_FX,
+    cwd: process.cwd(),
+    keybindings: resolveKeybindings().keybindings,
+    survivors: [survivor],
+  })
+  try {
+    await multiplexer.start()
+    try {
+      await multiplexer.extension.snapshot()
+      throw new Error("expected the malformed legacy member to fail")
+    } catch (error) {
+      expect(error).toMatchObject({ code: "snapshot_unavailable" })
+    }
+  } finally {
+    await multiplexer.shutdown()
+    await rm(temporaryDirectory, { recursive: true, force: true })
+  }
+})
 
 test("a transport adopted after the layout pass is told the terminal's real size", async () => {
   const h = await harness("size")
@@ -362,6 +444,49 @@ test("a lost transport whose Agent has ended is removed like an exit", async () 
   }
 })
 
+test("a background Agent exit invalidates membership before asynchronous Manifest removal", async () => {
+  const h = await harness("background-ended")
+  let releaseRemoval = () => {}
+  let unsubscribe = () => {}
+  try {
+    await createAgent(h.multiplexer)
+    await createAgent(h.multiplexer, process.cwd(), false)
+    await waitFor(() =>
+      h.options.transport.started.length === 2 &&
+      h.options.manifest.entries.every((entry) => entry.phase === "running")
+    )
+    const [first, second] = h.options.manifest.entries
+    const before = await h.multiplexer.extension.snapshot()
+    const revisions: string[] = []
+    unsubscribe = h.multiplexer.extension.subscribeInvalidation((revision) => revisions.push(revision))
+
+    const originalRemove = h.options.manifest.remove.bind(h.options.manifest)
+    const removalGate = new Promise<void>((resolve) => {
+      releaseRemoval = resolve
+    })
+    h.options.manifest.remove = async (agentId: string) => {
+      await removalGate
+      await originalRemove(agentId)
+    }
+
+    ;(h.options.transport.started[1] as PtyTransport).write(Uint8Array.of(3, 3))
+    await waitFor(() => h.setup.renderer.root.findDescendantById("fx-2") === undefined)
+    const whileRemovalBlocked = await h.multiplexer.extension.snapshot()
+    expect(whileRemovalBlocked.agents.map((agent) => agent.agent_id)).toEqual([first!.agentId])
+    expect(BigInt(whileRemovalBlocked.revision)).toBeGreaterThan(BigInt(before.revision))
+    expect(revisions.at(-1)).toBe(whileRemovalBlocked.revision)
+    expect(h.options.manifest.get(second!.agentId)).not.toBeNull()
+
+    releaseRemoval()
+    releaseRemoval = () => {}
+    await waitFor(() => h.options.manifest.get(second!.agentId) === null)
+  } finally {
+    releaseRemoval()
+    unsubscribe()
+    await h.close()
+  }
+})
+
 test("a lost transport that cannot be reached again leaves the screen but keeps its claim", async () => {
   const h = await harness("unreachable")
   try {
@@ -376,6 +501,18 @@ test("a lost transport that cannot be reached again leaves the screen but keeps 
     expect(h.options.manifest.get(entry.agentId)?.phase).toBe("running")
     expect(h.modal.visible).toBe(true)
     expect(h.setup.captureCharFrame()).toContain("lost agent 1")
+    expect(await h.multiplexer.extension.snapshot()).toMatchObject({
+      selected_agent_id: null,
+      agents: [{
+        agent_id: entry.agentId,
+        pane_id: entry.paneId,
+        display_id: entry.displayId,
+        lifecycle: "unreachable",
+        directory: entry.cwd,
+        correlation: null,
+      }],
+    })
+    expect(() => h.multiplexer.extension.present(entry.agentId, false)).toThrow("no switchable Agent")
   } finally {
     await h.close()
   }

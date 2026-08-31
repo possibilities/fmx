@@ -13,14 +13,20 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import { homedir } from "node:os"
-import { basename, resolve } from "node:path"
+import { basename, isAbsolute, normalize, resolve } from "node:path"
 import {
+  type AgentAttention,
   AgentRegistry,
   type DisplayState,
   displayStateFor,
   shortSessionId,
 } from "./agent-registry.ts"
 import { AgentPicker } from "./agent-picker.ts"
+import {
+  AGENTWORKPLACE_CONTRACT_VERSION,
+  RUNTIME_EXTENSION_SCHEMA_ID,
+  runtimeExtensionMessageSchema,
+} from "./agentworkplace-contracts.ts"
 import type { AdeEventSource, AdeRecord } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
 import { DEFAULT_WORKTREE_ROOT, type AgentDefaults } from "./config.ts"
@@ -183,6 +189,44 @@ export type AgentCreateRequest = {
   worktree?: boolean
   focus?: boolean
   startLevel?: FxStartLevel | null
+}
+
+export type RuntimeMemberAgentSnapshot = {
+  agent_id: string
+  pane_id: string
+  display_id: number
+  created_at_ms: number
+  lifecycle: "creating" | "running" | "unreachable"
+  state: DisplayState
+  attention: AgentAttention | null
+  directory: string
+  worktree: boolean
+  fx_conversation: { conversation_id: string; name: string | null } | null
+  /** Phase 1C supplies exact ensure/launch correlation. */
+  correlation: null
+}
+
+export type RuntimeMemberSnapshot = {
+  revision: string
+  selected_agent_id: string | null
+  agents: RuntimeMemberAgentSnapshot[]
+}
+
+export type RuntimeExtensionSurface = {
+  /** Emits semantic revisions; the framed-link supervisor coalesces them into one pending wire level. */
+  subscribeInvalidation(listener: (revision: string) => void): () => void
+  snapshot(): Promise<RuntimeMemberSnapshot>
+  present(agentId: string, focus: boolean): void
+}
+
+export class RuntimeExtensionSurfaceError extends Error {
+  constructor(
+    readonly code: "busy" | "not_found" | "shutting_down" | "snapshot_unavailable" | "starting_up",
+    message: string,
+  ) {
+    super(message)
+    this.name = "RuntimeExtensionSurfaceError"
+  }
 }
 
 const DEFAULT_THEME: FxnkThemeResolution = {
@@ -423,9 +467,20 @@ export class Multiplexer {
   private readonly swallowedReleases = new Set<string>()
   private readonly fxWorkControl: FxWorkControlRequester
   private creationTail: Promise<void> = Promise.resolve()
+  private extensionRevision = 1n
+  private extensionProjectionKey = ""
+  private extensionProjectionReady = false
+  private readonly extensionInvalidationListeners = new Set<(revision: string) => void>()
+  private readonly definitivelyEndedAgentIds = new Set<string>()
   /** The small Runtime surface fmx-mcp drives. */
   readonly control: ControlSurface = {
     handle: (method, params, signal) => this.handleControl(method, params, signal),
+  }
+  /** Capability-limited implementation-private Runtime-extension surface. */
+  readonly extension: RuntimeExtensionSurface = {
+    subscribeInvalidation: (listener) => this.subscribeExtensionInvalidation(listener),
+    snapshot: () => this.runtimeMemberSnapshot(),
+    present: (agentId, focus) => this.presentAgent(agentId, focus),
   }
   private readonly donePromise: Promise<void>
   private resolveDone!: () => void
@@ -605,7 +660,10 @@ export class Multiplexer {
     // Subscribe only after their stable Manifest identities exist so replay
     // can fold them instead of discarding them as unknown instances.
     this.subscribeAde()
-    if (restoring.length === 0) return
+    if (restoring.length === 0) {
+      this.publishExtensionSurface()
+      return
+    }
 
     const savedIndex = restoring.findIndex(
       (agent) => agent.entry.agentId === this.options.initialActiveAgentId,
@@ -637,6 +695,7 @@ export class Multiplexer {
     this.sessionList.root.visible = true
     this.agentPicker.setPublished(true)
     this.refreshAgentNavigation()
+    this.publishExtensionSurface()
   }
 
   setTheme(resolution: FxnkThemeResolution): void {
@@ -659,6 +718,7 @@ export class Multiplexer {
   async shutdown(exitCode = 0): Promise<void> {
     if (this.shuttingDown) return this.donePromise
     this.shuttingDown = true
+    this.extensionInvalidationListeners.clear()
     this.cancelPrefix()
     if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
     this.exitConfirmationTimer = null
@@ -766,9 +826,11 @@ export class Multiplexer {
         // fx is running; only the way to it failed. It is recovered like a
         // lost transport, never removed — the Manifest says so first.
         await this.options.manifest.markRunning(entry.agentId).catch(() => {})
+        this.refreshExtensionRevision()
         void this.recoverAgent(agent, error)
         return agent
       }
+      this.markAgentDefinitivelyEnded(entry.agentId)
       this.removeAgent(agent)
       // A write that fails here is the same disk that failed above; the
       // reason the start failed is the one to show.
@@ -784,6 +846,7 @@ export class Multiplexer {
       return null
     }
     agent.adopt(transport)
+    this.refreshAgentNavigation()
     return agent
   }
 
@@ -818,7 +881,9 @@ export class Multiplexer {
         return
       }
       agent.adopt(transport)
+      this.refreshAgentNavigation()
     } catch (error) {
+      if (error instanceof AgentEndedError) this.markAgentDefinitivelyEnded(entry.agentId)
       this.removeAgent(agent)
       if (error instanceof AgentEndedError) {
         await this.forgetAgent(entry).catch(() => {})
@@ -841,7 +906,10 @@ export class Multiplexer {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
       },
       onExit: (candidate) => this.handleAgentExit(candidate),
-      onLost: (candidate, error) => void this.recoverAgent(candidate, error),
+      onLost: (candidate, error) => {
+        this.refreshExtensionRevision()
+        void this.recoverAgent(candidate, error)
+      },
     })
     this.agents.push(agent)
     this.content.add(agent.terminal)
@@ -860,6 +928,7 @@ export class Multiplexer {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
+    this.markAgentDefinitivelyEnded(agent.entry.agentId)
     void this.forgetAgent(agent.entry).catch(() => {})
     if (this.shuttingDown) return
     this.removeAgent(agent)
@@ -884,6 +953,7 @@ export class Multiplexer {
           return
         }
         agent.adopt(transport)
+        this.refreshAgentNavigation()
         return
       } catch (caught) {
         if (caught instanceof AgentEndedError) {
@@ -920,6 +990,7 @@ export class Multiplexer {
       this.switchTo(Math.min(index, this.agents.length - 1))
     } else if (index < this.activeIndex) {
       this.activeIndex -= 1
+      this.refreshAgentNavigation()
     }
     return true
   }
@@ -927,9 +998,11 @@ export class Multiplexer {
   private async forgetAgent(entry: ManifestEntry): Promise<void> {
     await removeFxWorkControlResidue(entry.workControl, this.options.runtimeSocketPath ?? null)
     await this.options.manifest.remove(entry.agentId)
+    this.definitivelyEndedAgentIds.delete(entry.agentId)
+    this.refreshExtensionRevision()
   }
 
-  private switchTo(index: number): void {
+  private switchTo(index: number, focus = true): void {
     this.renderer.clearSelection()
     if (this.agents.length === 0) {
       this.activeIndex = -1
@@ -952,7 +1025,7 @@ export class Multiplexer {
     active.terminal.setHostSelectionEnabled(true)
     // A surface drawn over fx keeps the keys; it hands them back when it
     // closes, so an agent shown behind it must not take them now.
-    if (!this.modalKind && !this.agentPicker.open) this.restoreFocus()
+    if (focus && !this.modalKind && !this.agentPicker.open) this.restoreFocus()
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshAgentNavigation()
@@ -963,11 +1036,248 @@ export class Multiplexer {
   }
 
   private refreshAgentNavigation(): void {
+    this.refreshExtensionRevision()
     if (this.navigationPublicationHeld) return
     void this.syncSubagentParents()
     const entries = this.sessionEntries()
     this.sessionList.render(buildTree(entries), this.trayWidth)
     this.agentPicker.setEntries(entries)
+  }
+
+  private subscribeExtensionInvalidation(listener: (revision: string) => void): () => void {
+    if (this.shuttingDown) {
+      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
+    }
+    this.assertExtensionReady()
+    this.extensionInvalidationListeners.add(listener)
+    try {
+      listener(this.extensionRevision.toString())
+    } catch (error) {
+      this.extensionInvalidationListeners.delete(listener)
+      throw error
+    }
+    return () => this.extensionInvalidationListeners.delete(listener)
+  }
+
+  private publishExtensionSurface(): void {
+    if (this.extensionProjectionReady || this.shuttingDown) return
+    this.extensionProjectionKey = this.runtimeMemberProjectionKey()
+    this.extensionProjectionReady = true
+  }
+
+  private assertExtensionReady(): void {
+    if (!this.extensionProjectionReady) {
+      throw new RuntimeExtensionSurfaceError("starting_up", "fmx startup is not complete")
+    }
+  }
+
+  private markAgentDefinitivelyEnded(agentId: string): void {
+    if (this.definitivelyEndedAgentIds.has(agentId)) return
+    this.definitivelyEndedAgentIds.add(agentId)
+    this.refreshExtensionRevision()
+  }
+
+  private refreshExtensionRevision(): void {
+    if (!this.extensionProjectionReady || this.shuttingDown) return
+    const projection = this.runtimeMemberProjectionKey()
+    if (projection === this.extensionProjectionKey) return
+    this.extensionProjectionKey = projection
+    this.extensionRevision += 1n
+    const revision = this.extensionRevision.toString()
+    for (const listener of this.extensionInvalidationListeners) {
+      try {
+        listener(revision)
+      } catch {
+        // One extension callback cannot interrupt Agent/UI state mutation.
+      }
+    }
+  }
+
+  /** A cheap semantic projection makes broad UI refresh calls harmless. */
+  private runtimeMemberProjectionKey(): string {
+    const activeAgentId = this.activeAgent()?.entry.agentId ?? null
+    const liveById = new Map(this.agents.map((agent) => [agent.entry.agentId, agent]))
+    return JSON.stringify({
+      selected_agent_id: activeAgentId,
+      agents: this.runtimeManifestEntries().map((entry) => {
+        const live = liveById.get(entry.agentId) ?? null
+        const record = live ? this.registry.get(live.paneId) : null
+        const sessionId = live ? this.sessionIdOf(live) : entry.fxSessionId
+        const git = this.gitContexts.get(entry.cwd) ?? null
+        return {
+          agent_id: entry.agentId,
+          display_id: entry.displayId,
+          created_at_ms: entry.createdAt,
+          directory: entry.cwd,
+          lifecycle: this.runtimeLifecycle(entry, live),
+          state: live
+            ? displayStateFor(record, this.seenSeq.get(live.id) ?? 0)
+            : displayStateForCheckpoint(entry),
+          attention: live ? record?.attention ?? null : entry.agentStatus?.attention ?? null,
+          conversation_id: sessionId,
+          conversation_name: sessionId ? this.sessionNames.nameFor(sessionId) : null,
+          git: git ? [git.root, git.mainRoot] : null,
+        }
+      }),
+    })
+  }
+
+  private runtimeManifestEntries(): ManifestEntry[] {
+    return this.options.manifest.entries
+      .filter((entry) => !this.definitivelyEndedAgentIds.has(entry.agentId))
+      .sort((left, right) => left.displayId - right.displayId)
+  }
+
+  private runtimeLifecycle(
+    entry: ManifestEntry,
+    live: FxAgent | null,
+  ): RuntimeMemberAgentSnapshot["lifecycle"] {
+    if (!live) return "unreachable"
+    if (live.connected) return "running"
+    return entry.phase === "creating" ? "creating" : "unreachable"
+  }
+
+  private async runtimeMemberSnapshot(): Promise<RuntimeMemberSnapshot> {
+    if (this.shuttingDown) {
+      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
+    }
+    this.assertExtensionReady()
+
+    // New Agents can arrive while a required Git query is in flight. Repeat
+    // until every member in one synchronous capture has exact Worktree facts.
+    let entries: ManifestEntry[] = []
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      entries = this.runtimeManifestEntries()
+      const missing = [...new Set(
+        entries.filter((entry) => !this.gitContexts.has(entry.cwd)).map((entry) => entry.cwd),
+      )]
+      if (missing.length === 0) break
+      const contexts = await Promise.all(missing.map((cwd) => this.loadGitContext(cwd)))
+      const failed = contexts.findIndex((context) => context === null)
+      if (failed !== -1) {
+        throw new RuntimeExtensionSurfaceError(
+          "snapshot_unavailable",
+          `Git context is unavailable for ${missing[failed]}`,
+        )
+      }
+      if (attempt === 3) {
+        throw new RuntimeExtensionSurfaceError(
+          "snapshot_unavailable",
+          "Agent membership kept changing while the snapshot was prepared",
+        )
+      }
+    }
+
+    entries = this.runtimeManifestEntries()
+    if (entries.some((entry) => !this.gitContexts.has(entry.cwd))) {
+      throw new RuntimeExtensionSurfaceError(
+        "snapshot_unavailable",
+        "an Agent has no exact Git context",
+      )
+    }
+    for (const entry of entries) {
+      if (entry.fxSessionId) this.sessionNames.recover(entry.fxSessionId)
+    }
+    this.refreshExtensionRevision()
+    const liveById = new Map(this.agents.map((agent) => [agent.entry.agentId, agent]))
+    const snapshot: RuntimeMemberSnapshot = {
+      revision: this.extensionRevision.toString(),
+      selected_agent_id: this.activeAgent()?.entry.agentId ?? null,
+      agents: entries.map((entry) => this.runtimeMemberAgentSnapshot(entry, liveById.get(entry.agentId) ?? null)),
+    }
+    this.validateRuntimeMemberSnapshot(snapshot)
+    return snapshot
+  }
+
+  private validateRuntimeMemberSnapshot(snapshot: RuntimeMemberSnapshot): void {
+    const result = runtimeExtensionMessageSchema.safeParse({
+      schema_id: RUNTIME_EXTENSION_SCHEMA_ID,
+      schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
+      message_type: "snapshot_result",
+      request_id: "fmx-snapshot-validation",
+      fmx_session: this.options.fmxName ?? "default",
+      ...snapshot,
+    })
+    if (result.success) return
+    const issue = result.error.issues[0]
+    const at = issue?.path.length ? ` at ${issue.path.join(".")}` : ""
+    throw new RuntimeExtensionSurfaceError(
+      "snapshot_unavailable",
+      `Runtime member snapshot violates the v1 contract: ${issue?.message ?? "invalid snapshot"}${at}`,
+    )
+  }
+
+  private runtimeMemberAgentSnapshot(
+    entry: ManifestEntry,
+    live: FxAgent | null,
+  ): RuntimeMemberAgentSnapshot {
+    const git = this.gitContexts.get(entry.cwd)
+    if (!git) {
+      throw new RuntimeExtensionSurfaceError(
+        "snapshot_unavailable",
+        `Git context is unavailable for Agent ${entry.displayId}`,
+      )
+    }
+    const record = live ? this.registry.get(live.paneId) : null
+    const state = live
+      ? displayStateFor(record, this.seenSeq.get(live.id) ?? 0)
+      : displayStateForCheckpoint(entry)
+    const attention = live ? record?.attention ?? null : entry.agentStatus?.attention ?? null
+    if ((state === "blocked") !== (attention !== null)) {
+      throw new RuntimeExtensionSurfaceError(
+        "snapshot_unavailable",
+        `Agent ${entry.displayId} has inconsistent attention state`,
+      )
+    }
+    if (!Number.isSafeInteger(entry.createdAt) || entry.createdAt < 0) {
+      throw new RuntimeExtensionSurfaceError(
+        "snapshot_unavailable",
+        `Agent ${entry.displayId} has an invalid creation time`,
+      )
+    }
+    if (!isAbsolute(entry.cwd) || normalize(entry.cwd) !== entry.cwd || entry.cwd === "/") {
+      throw new RuntimeExtensionSurfaceError(
+        "snapshot_unavailable",
+        `Agent ${entry.displayId} has an invalid directory`,
+      )
+    }
+    const sessionId = live ? this.sessionIdOf(live) : entry.fxSessionId
+    if (sessionId !== null && !isSessionId(sessionId)) {
+      throw new RuntimeExtensionSurfaceError(
+        "snapshot_unavailable",
+        `Agent ${entry.displayId} has an invalid Fx Conversation identity`,
+      )
+    }
+    return {
+      agent_id: entry.agentId,
+      pane_id: entry.paneId,
+      display_id: entry.displayId,
+      created_at_ms: entry.createdAt,
+      lifecycle: this.runtimeLifecycle(entry, live),
+      state,
+      attention,
+      directory: entry.cwd,
+      worktree: git.root !== git.mainRoot,
+      fx_conversation: sessionId === null
+        ? null
+        : { conversation_id: sessionId, name: this.sessionNames.nameFor(sessionId) },
+      correlation: null,
+    }
+  }
+
+  private presentAgent(agentId: string, focus: boolean): void {
+    if (this.shuttingDown) {
+      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
+    }
+    this.assertExtensionReady()
+    const agent = this.agents.find((candidate) => candidate.entry.agentId === agentId)
+    if (!agent) {
+      throw new RuntimeExtensionSurfaceError("not_found", `no switchable Agent ${agentId}`)
+    }
+    if (focus && (this.modalKind || this.agentPicker.open)) {
+      throw new RuntimeExtensionSurfaceError("busy", "something is already open")
+    }
+    this.selectAgent(agent.id, focus)
   }
 
   private syncSubagentParents(): Promise<void> {
@@ -1109,10 +1419,14 @@ export class Multiplexer {
     }).catch(() => {})
   }
 
-  private selectAgent(agentId: number): void {
+  private selectAgent(agentId: number, focus = true): void {
     const index = this.agents.findIndex((agent) => agent.id === agentId)
-    if (index === -1 || index === this.activeIndex) return
-    this.switchTo(index)
+    if (index === -1) return
+    if (index === this.activeIndex) {
+      if (focus) this.restoreFocus()
+      return
+    }
+    this.switchTo(index, focus)
   }
 
   private acceptAdeRecord(record: AdeRecord): void {
@@ -1892,6 +2206,13 @@ function resolveStartLevel(
   const model = explicit?.model ?? defaults?.model
   const effort = explicit?.effort ?? defaults?.effort
   return model === undefined && effort === undefined ? null : { model, effort }
+}
+
+function displayStateForCheckpoint(entry: ManifestEntry): DisplayState {
+  const checkpoint = entry.agentStatus
+  if (!checkpoint) return "unknown"
+  if (checkpoint.state === "idle") return checkpoint.seen ? "idle" : "done"
+  return checkpoint.state
 }
 
 function wrapText(value: string, width: number): string[] {
