@@ -56,6 +56,37 @@ export type ExitListener = (status: Exit) => void
 export type CloseListener = (reason: CloseReason) => void
 export type FrameListener = (frame: Frame) => void
 
+export type CompanionOwnership = Readonly<{
+  owner: string
+  home: string
+  agent: string
+  pane: string
+}>
+
+export type OwnedKillObservation =
+  | { kind: "exit"; status: Exit }
+  | { kind: "closed"; reason: CloseReason }
+  | { kind: "timeout" }
+
+export type OwnedKillOptions = {
+  /** Bound the in-band identity query on this exact connection. */
+  labelTimeoutMs?: number
+  /** Bound observation only; a timeout is not evidence that the child ended. */
+  outcomeTimeoutMs?: number
+  /** Persist that the Kill frame reached the socket before waiting for an outcome. */
+  afterFlush?: () => void | Promise<void>
+}
+
+export class CompanionOwnershipMismatchError extends Error {
+  constructor(
+    readonly expected: CompanionOwnership,
+    readonly actual: Readonly<Record<string, string>>,
+  ) {
+    super("Companion labels do not match the exact Agent ownership")
+    this.name = "CompanionOwnershipMismatchError"
+  }
+}
+
 /**
  * One negotiated connection to a Companion daemon's socket.
  *
@@ -174,6 +205,54 @@ export class CompanionConnection {
 
   resize(size: Resize): void {
     this.send(Tag.Resize, encodeResize(size))
+  }
+
+  /**
+   * Verify ownership and request termination on this one negotiated
+   * connection. This is deliberately not a by-name command: a session name
+   * may be reused between an inspection and a second lookup.
+   *
+   * Kill has no acknowledgement in protocol v1. Exit is exact proof; close
+   * and timeout are only indeterminate observations for a durable caller to
+   * reconcile against the Companion's unfiltered session inventory.
+   */
+  async killIfOwned(
+    expected: CompanionOwnership,
+    options: OwnedKillOptions = {},
+  ): Promise<OwnedKillObservation> {
+    const actual = await this.labels(options.labelTimeoutMs)
+    if (Object.entries(expected).some(([key, value]) => actual[key] !== value)) {
+      throw new CompanionOwnershipMismatchError(expected, actual)
+    }
+
+    let settled: OwnedKillObservation | null = null
+    let settle!: (observation: OwnedKillObservation) => void
+    const outcome = new Promise<OwnedKillObservation>((resolve) => {
+      settle = (observation) => {
+        if (settled) return
+        settled = observation
+        resolve(observation)
+      }
+    })
+    const removeExit = this.onExit((status) => settle({ kind: "exit", status }))
+    const removeClose = this.onClose((reason) => settle({ kind: "closed", reason }))
+    const timer = setTimeout(
+      () => settle({ kind: "timeout" }),
+      options.outcomeTimeoutMs ?? 5_000,
+    )
+    try {
+      // onExit/onClose replay an already-observed terminal state
+      // synchronously. Never send another frame after either one.
+      if (settled) return settled
+      this.send(Tag.Kill)
+      await this.flushed()
+      await options.afterFlush?.()
+      return await outcome
+    } finally {
+      clearTimeout(timer)
+      removeExit()
+      removeClose()
+    }
   }
 
   /** Tell the daemon this client is leaving, then close. The child keeps running. */

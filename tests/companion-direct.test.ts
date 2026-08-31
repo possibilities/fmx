@@ -2,7 +2,10 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { join } from "node:path"
-import { CompanionConnection } from "../src/companion-client.ts"
+import {
+  CompanionConnection,
+  CompanionOwnershipMismatchError,
+} from "../src/companion-client.ts"
 import {
   decodeWelcome,
   encodeFrame,
@@ -20,9 +23,10 @@ import {
  * Needs the fork binary: set FMX_ZMX_PATH to it (the development override the
  * shipped Companion will also honor). Sessions live in a private short ZMX_DIR
  * under /tmp so nothing here can see or touch the user's own zmx sessions.
- * Only sessions this file created are ever killed, and only by name through
- * the Companion in that private directory; the run ends by proving the
- * directory holds no sessions and removing it.
+ * Only sessions this file created are ever killed, either by the exact
+ * label-verified connection under test or by-name during private-directory
+ * cleanup; the run ends by proving the directory holds no sessions and
+ * removing it.
  */
 const ZMX = process.env.FMX_ZMX_PATH
 const ENABLED = Boolean(ZMX && existsSync(ZMX))
@@ -493,4 +497,86 @@ test.skipIf(!ENABLED)("create answers on readiness, with labels the session is b
     expect((await zmx("forget", name)).code).toBe(0)
     expect(await inspect(name)).toEqual({ name, state: "absent" })
   }
+})
+
+test.skipIf(!ENABLED)("owned Kill close recovers the cooperative child's exact retained exit record", async () => {
+  const name = "s9"
+  const agent = "9".repeat(32)
+  const pane = `p_${agent}`
+  sessions.push(name)
+  const created = await create(
+    name,
+    ["sh", "-c", "while :; do sleep 1; done"],
+    `owner=fmx home=direct agent=${agent} pane=${pane}`,
+  )
+  expect(created.ok).toBe(true)
+  const connection = await CompanionConnection.connect(join(dir, name), { client: "owned-kill" })
+  const outcome = await connection.killIfOwned(
+    { owner: "fmx", home: "direct", agent, pane },
+    { outcomeTimeoutMs: 5_000 },
+  )
+  expect(outcome.kind).toBe("closed")
+  expect(await waitFor(async () => (await inspect(name)).state === "exited", 10_000)).toBe(true)
+  expect(await inspect(name)).toMatchObject({
+    state: "exited",
+    labels: { owner: "fmx", home: "direct", agent, pane },
+    exit: { code: 0, signal: 1, reason: "requested" },
+  })
+  expect((await zmx("forget", name)).code).toBe(0)
+  sessions = sessions.filter((session) => session !== name)
+})
+
+test.skipIf(!ENABLED)("owned Kill close without Exit recovers from the exact HUP-resistant exit record", async () => {
+  const name = "s10"
+  const agent = "a".repeat(32)
+  const pane = `p_${agent}`
+  sessions.push(name)
+  const created = await create(
+    name,
+    [
+      "/usr/bin/python3",
+      "-c",
+      "import signal,time; signal.signal(signal.SIGHUP, signal.SIG_IGN); signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+    ],
+    `owner=fmx home=direct agent=${agent} pane=${pane}`,
+  )
+  expect(created.ok).toBe(true)
+  // create proves exec, not that Python installed its signal dispositions.
+  await sleep(300)
+  const connection = await CompanionConnection.connect(join(dir, name), { client: "owned-kill-resistant" })
+  const outcome = await connection.killIfOwned(
+    { owner: "fmx", home: "direct", agent, pane },
+    { outcomeTimeoutMs: 6_000 },
+  )
+  expect(outcome.kind).toBe("closed")
+  expect(await waitFor(async () => (await inspect(name)).state === "exited", 10_000)).toBe(true)
+  expect(await inspect(name)).toMatchObject({
+    state: "exited",
+    labels: { owner: "fmx", home: "direct", agent, pane },
+    exit: { code: 0, signal: 9, reason: "requested" },
+  })
+  expect((await zmx("forget", name)).code).toBe(0)
+  sessions = sessions.filter((session) => session !== name)
+})
+
+test.skipIf(!ENABLED)("owned Kill leaves a foreign-labelled session alive", async () => {
+  const name = "s11"
+  const agent = "b".repeat(32)
+  const pane = `p_${agent}`
+  sessions.push(name)
+  const created = await create(
+    name,
+    ["sh", "-c", "while :; do sleep 1; done"],
+    `owner=foreign home=direct agent=${agent} pane=${pane}`,
+  )
+  expect(created.ok).toBe(true)
+  const pid = created.pid as number
+  const connection = await CompanionConnection.connect(join(dir, name), { client: "foreign-kill" })
+  await expect(connection.killIfOwned(
+    { owner: "fmx", home: "direct", agent, pane },
+    { outcomeTimeoutMs: 1_000 },
+  )).rejects.toBeInstanceOf(CompanionOwnershipMismatchError)
+  connection.close()
+  expect(alive(pid)).toBe(true)
+  expect(await inspect(name)).toMatchObject({ state: "live", labels: { owner: "foreign" } })
 })
