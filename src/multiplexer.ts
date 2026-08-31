@@ -195,6 +195,15 @@ type MultiplexerOptions = {
   onRecoveryCardAction?: (correlation: RecoveryCardActionCorrelation) => void
   /** One exact durable ensure/launch correlation view per member snapshot. */
   runtimeMemberCorrelationSource?: RuntimeMemberCorrelationSource
+  /**
+   * Persist exact managed-lifecycle finalization before a definitive Agent
+   * end is allowed to remove its Manifest claim and Work-control binding.
+   * Rejecting keeps those durable identities for startup recovery.
+   */
+  beforeDefinitiveAgentForget?: (
+    entry: ManifestEntry,
+    exit: AgentExit | null,
+  ) => void | Promise<void>
   /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
   initialTheme?: FxnkThemeResolution
 }
@@ -468,6 +477,8 @@ export class Multiplexer {
   private readonly adeStoppedInstances = new Set<string>()
   /** Consecutive records refused as non-increasing, per Fx instance. */
   private readonly adeStaleRecords = new Map<string, number>()
+  /** Managed finalization which shutdown must not strand before Manifest removal. */
+  private readonly definitiveAgentFinalizations = new Set<Promise<void>>()
   private readonly sessionList: SessionList
   private readonly agentPicker: AgentPicker
   private readonly pickerMode: boolean
@@ -782,6 +793,7 @@ export class Multiplexer {
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const agent of this.agents) agent.destroy()
+      await Promise.all([...this.definitiveAgentFinalizations])
     } finally {
       this.agents.length = 0
       this.renderer.destroy()
@@ -931,7 +943,7 @@ export class Multiplexer {
       if (error instanceof AgentEndedError) this.markAgentDefinitivelyEnded(entry.agentId)
       this.removeAgent(agent)
       if (error instanceof AgentEndedError) {
-        await this.forgetAgent(entry).catch(() => {})
+        await this.finalizeDefinitiveAgentExit(entry, error.exit)
         return
       }
       // Unreachable is not ended: the claim stays for the next start.
@@ -950,7 +962,7 @@ export class Multiplexer {
       onTitleChange: (candidate) => {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
       },
-      onExit: (candidate) => this.handleAgentExit(candidate),
+      onExit: (candidate, exit) => this.handleAgentExit(candidate, exit),
       onLost: (candidate, error) => {
         this.refreshExtensionRevision()
         void this.recoverAgent(candidate, error)
@@ -968,17 +980,44 @@ export class Multiplexer {
   }
 
   /**
-   * fx ended: the Agent, its claim, and whatever the Companion recorded
-   * all go.
+   * Fx ended: remove it from the live projection immediately, then forget
+   * its durable identities only after managed finalization succeeds.
    */
-  private handleAgentExit(agent: FxAgent): void {
+  private handleAgentExit(agent: FxAgent, exit: AgentExit | null): void {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
     this.markAgentDefinitivelyEnded(agent.entry.agentId)
-    void this.forgetAgent(agent.entry).catch(() => {})
-    if (this.shuttingDown) return
-    this.removeAgent(agent)
+    if (!this.shuttingDown) this.removeAgent(agent)
+    this.queueDefinitiveAgentFinalization(agent.entry, exit)
+  }
+
+  private queueDefinitiveAgentFinalization(
+    entry: ManifestEntry,
+    exit: AgentExit | null,
+  ): void {
+    const operation = this.finalizeDefinitiveAgentExit(entry, exit)
+    this.definitiveAgentFinalizations.add(operation)
+    void operation.finally(() => this.definitiveAgentFinalizations.delete(operation))
+  }
+
+  private async finalizeDefinitiveAgentExit(
+    entry: ManifestEntry,
+    exit: AgentExit | null,
+  ): Promise<void> {
+    try {
+      const durableEntry = this.options.manifest.get(entry.agentId) ?? entry
+      await this.options.beforeDefinitiveAgentForget?.(
+        structuredClone(durableEntry),
+        exit === null ? null : { ...exit },
+      )
+      await this.forgetAgent(durableEntry)
+    } catch (error) {
+      // The Agent is definitively gone from the live projection, but its
+      // durable identity must survive when managed finalization did not.
+      // Startup reconciliation replays the same hook before removal.
+      if (!this.shuttingDown) this.showError(`could not finalize agent ${entry.displayId}`, error)
+    }
   }
 
   /**
@@ -1004,7 +1043,7 @@ export class Multiplexer {
         return
       } catch (caught) {
         if (caught instanceof AgentEndedError) {
-          this.handleAgentExit(agent)
+          this.handleAgentExit(agent, caught.exit)
           return
         }
         error = caught

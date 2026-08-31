@@ -201,14 +201,58 @@ test("reconciliation never unlinks an endpoint beside a live foreign session", a
     })
     const foreign = session(ID_A, "live", { labels: ownershipLabels("other", ID_A) })
     const { companion } = fakeCompanion([[foreign]])
+    const removals: unknown[] = []
 
-    const outcome = await reconcileAgents(manifest, companion, { runtimeSocketPath })
+    const outcome = await reconcileAgents(manifest, companion, {
+      runtimeSocketPath,
+      beforeRemove: (removal) => {
+        removals.push(removal)
+      },
+    })
     expect(outcome.removed.map((item) => item.entry.agentId)).toEqual([ID_A])
     expect(outcome.ignored).toEqual([foreign])
+    expect(removals).toEqual([{ entry: manifestEntryForRemoval(ID_A, binding), reason: "foreign", session: foreign }])
     expect(manifest.entries).toEqual([])
     expect(await unixSocketExists(binding.socketPath)).toBe(true)
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("reconciliation fails closed before removing an exited managed identity", async () => {
+  const dir = await mkdtemp("/tmp/fmx-reconcile-test-")
+  try {
+    const manifest = await AgentManifest.open(join(dir, "m.json"), HOME)
+    await manifest.beginCreate({
+      cwd: "/work",
+      fxPath: "/fx",
+      fxArgs: [],
+      createdAt: 0,
+      identity: identityFor(ID_A),
+    })
+    const exited = session(ID_A, "exited")
+    const { companion, forgotten } = fakeCompanion([[exited]])
+    let removal: unknown = null
+
+    await expect(reconcileAgents(manifest, companion, {
+      beforeRemove: (candidate) => {
+        removal = candidate
+        throw new Error("final receipt persistence failed")
+      },
+    })).rejects.toThrow("final receipt persistence failed")
+
+    expect(removal).toEqual({ entry: manifestEntryForRemoval(ID_A, null), reason: "exited", session: exited })
+    expect(manifest.get(ID_A)).not.toBeNull()
+    expect(forgotten).toEqual([])
+
+    const retry = await reconcileAgents(manifest, companion, {
+      beforeRemove: () => {},
+    })
+    expect(retry.removed.map(({ entry }) => entry.agentId)).toEqual([ID_A])
+    expect(manifest.get(ID_A)).toBeNull()
+    expect(forgotten).toEqual([identityFor(ID_A).zmxName])
+  } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
@@ -304,5 +348,15 @@ async function unixSocketExists(path: string): Promise<boolean> {
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return false
     throw error
+  }
+}
+
+function manifestEntryForRemoval(
+  agentId: string,
+  workControl: ManifestEntry["workControl"],
+): ManifestEntry {
+  return {
+    ...entry(agentId, "creating"),
+    workControl,
   }
 }

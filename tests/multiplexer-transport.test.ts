@@ -6,8 +6,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AdeSocket } from "../src/ade-events.ts"
-import { AgentManifest, identityFor } from "../src/agent-manifest.ts"
-import type { AgentTransport, TerminalSize, TransportHandlers } from "../src/agent-transport.ts"
+import { AgentManifest, identityFor, type ManifestEntry } from "../src/agent-manifest.ts"
+import type { AgentExit, AgentTransport, TerminalSize, TransportHandlers } from "../src/agent-transport.ts"
 import type { Snapshot } from "../src/control-protocol.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { Multiplexer } from "../src/multiplexer.ts"
@@ -23,7 +23,15 @@ import { agentOptions, type PtyTransport } from "./fixtures/pty-transport.ts"
 const FAKE_FX = fileURLToPath(new URL("./fixtures/fake-fx.ts", import.meta.url))
 const NEVER = new AbortController().signal
 
-async function harness(name: string) {
+async function harness(
+  name: string,
+  lifecycle: {
+    beforeDefinitiveAgentForget?: (
+      entry: ManifestEntry,
+      exit: AgentExit | null,
+    ) => void | Promise<void>
+  } = {},
+) {
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const adeSocket = new TestAdeSocket(`/tmp/fmx-transport-test-${name}-${process.pid}.ade.sock`)
   const options = agentOptions()
@@ -33,6 +41,7 @@ async function harness(name: string) {
     cwd: process.cwd(),
     keybindings: resolveKeybindings().keybindings,
     adeSocket,
+    ...lifecycle,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -483,6 +492,60 @@ test("a background Agent exit invalidates membership before asynchronous Manifes
   } finally {
     releaseRemoval()
     unsubscribe()
+    await h.close()
+  }
+})
+
+test("a definitive exit waits for durable managed finalization before forgetting its identities", async () => {
+  const observed: { entry: ManifestEntry; exit: AgentExit | null }[] = []
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const h = await harness("managed-exit", {
+    beforeDefinitiveAgentForget: async (entry, exit) => {
+      observed.push({ entry, exit })
+      await gate
+    },
+  })
+  try {
+    await createAgent(h.multiplexer)
+    await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
+    const entry = h.options.manifest.entries[0]!
+
+    ;(h.options.transport.started[0] as PtyTransport).write(Uint8Array.of(3, 3))
+    await waitFor(() => observed.length === 1 && h.setup.renderer.root.findDescendantById("fx-1") === undefined)
+    expect(observed).toHaveLength(1)
+    expect(observed[0]?.entry).toEqual(entry)
+    expect(observed[0]?.exit).toEqual({ code: expect.any(Number), signal: expect.any(Number) })
+    expect(h.options.manifest.get(entry.agentId)).not.toBeNull()
+
+    release()
+    await waitFor(() => h.options.manifest.get(entry.agentId) === null)
+  } finally {
+    release()
+    await h.close()
+  }
+})
+
+test("a failed managed exit finalization keeps the Manifest claim for startup recovery", async () => {
+  const h = await harness("managed-exit-failure", {
+    beforeDefinitiveAgentForget: async () => {
+      throw new Error("durable final receipt unavailable")
+    },
+  })
+  try {
+    await createAgent(h.multiplexer)
+    await waitFor(() => h.options.transport.started.length === 1 && h.options.manifest.entries[0]?.phase === "running")
+    const entry = h.options.manifest.entries[0]!
+
+    ;(h.options.transport.started[0] as PtyTransport).write(Uint8Array.of(3, 3))
+    await waitFor(() => h.setup.renderer.root.findDescendantById("fx-1") === undefined)
+    await waitFor(() => h.modal.visible)
+    await h.setup.renderOnce()
+    expect(h.options.manifest.get(entry.agentId)).not.toBeNull()
+    expect(h.setup.captureCharFrame()).toContain("could not finalize agent 1")
+  } finally {
     await h.close()
   }
 })

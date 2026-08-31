@@ -112,6 +112,21 @@ export type ReconcileOptions = {
   now?: () => number
   /** Exact Runtime path used to validate dead Agents' work-control residue. */
   runtimeSocketPath?: string
+  /**
+   * Persist any external correlation/finalization which must precede removal
+   * of this exact Manifest identity. A rejection is fail-closed: neither the
+   * claim nor its Work-control endpoint is removed, so the next startup can
+   * retry the same durable operation.
+   */
+  beforeRemove?: (removal: AgentRemoval) => void | Promise<void>
+}
+
+export type AgentRemovalReason = "absent" | "exited" | "foreign" | "refused"
+
+export type AgentRemoval = {
+  entry: ManifestEntry
+  reason: AgentRemovalReason
+  session: SessionEntry | null
 }
 
 /**
@@ -126,11 +141,16 @@ export async function reconcileAgents(
 ): Promise<ReconcileOutcome> {
   const settleMs = options.settleMs ?? 3000
   const now = options.now ?? Date.now
-  const removeEntry = async (entry: ManifestEntry, removeResidue = true) => {
+  const removeEntry = async (removal: AgentRemoval, removeResidue = true) => {
+    await options.beforeRemove?.({
+      entry: structuredClone(removal.entry),
+      reason: removal.reason,
+      session: removal.session === null ? null : structuredClone(removal.session),
+    })
     if (removeResidue) {
-      await removeFxWorkControlResidue(entry.workControl, options.runtimeSocketPath ?? null)
+      await removeFxWorkControlResidue(removal.entry.workControl, options.runtimeSocketPath ?? null)
     }
-    await manifest.remove(entry.agentId)
+    await manifest.remove(removal.entry.agentId)
   }
   const outcome: ReconcileOutcome = { attached: [], adopted: [], removed: [], cleared: [], unresolved: [], ignored: [] }
 
@@ -165,12 +185,17 @@ export async function reconcileAgents(
       session,
     })
   }
-  const ignoredNames = new Set(plan.ignored.map((session) => session.name))
+  const ignoredByName = new Map(plan.ignored.map((session) => [session.name, session]))
   for (const { entry, session } of plan.remove) {
     // A live foreign session under our old name is left wholly alone: it may
     // have taken the filesystem endpoint too. Absence, exit, and a dead
     // refused socket prove no process remains to own the old endpoint.
-    await removeEntry(entry, !ignoredNames.has(entry.zmxName))
+    const foreign = ignoredByName.get(entry.zmxName) ?? null
+    await removeEntry({
+      entry,
+      reason: foreign !== null ? "foreign" : session?.state === "exited" ? "exited" : "absent",
+      session: foreign ?? session,
+    }, foreign === null)
     if (session?.state === "exited") {
       try {
         await companion.forget(session.name)
@@ -198,7 +223,7 @@ export async function reconcileAgents(
       continue
     }
     if (entry) {
-      await removeEntry(entry)
+      await removeEntry({ entry, reason: "refused", session })
       outcome.removed.push({ entry, session })
     }
     if (session.socketPath) await unlink(session.socketPath).catch(() => {})
