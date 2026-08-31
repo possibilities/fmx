@@ -423,8 +423,8 @@ function decodeResponse(bytes: Uint8Array, instanceId: string, requestId: string
   } catch {
     throw invalidResponse("Fx returned invalid launch-provider JSON")
   }
-  if (!Buffer.from(encodeCanonicalJson(value)).equals(Buffer.from(bytes)) || !isRecord(value) ||
-    value.schema_id !== FX_LAUNCH_PROVIDER_SCHEMA_ID || value.schema_version !== FX_LAUNCH_PROVIDER_SCHEMA_VERSION ||
+  if (!isRecord(value) || value.schema_id !== FX_LAUNCH_PROVIDER_SCHEMA_ID ||
+    value.schema_version !== FX_LAUNCH_PROVIDER_SCHEMA_VERSION ||
     value.instance_id !== instanceId || value.request_id !== requestId || typeof value.ok !== "boolean") {
     throw invalidResponse("Fx returned an uncorrelated launch-provider response")
   }

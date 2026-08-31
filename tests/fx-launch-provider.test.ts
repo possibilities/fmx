@@ -7,7 +7,7 @@ import {
   encodeAgentWorkplacePayload,
   type FxLaunchAdmissionFinalMessage,
 } from "../src/agentworkplace-contracts.ts"
-import { decodeStrictJson, encodeCanonicalJson, type JsonValue } from "../src/contract-codec.ts"
+import { decodeStrictJson } from "../src/contract-codec.ts"
 import {
   encodeLaunchControls,
   FxLaunchProviderClient,
@@ -213,7 +213,9 @@ function fakeProvider(responder: (request: Record<string, unknown>) => FakeRespo
           return
         }
         if (!("value" in response)) return
-        const payload = Buffer.from(encodeCanonicalJson(response.value as JsonValue))
+        // The provider freezes exact fields and strict JSON, not private-envelope
+        // key order. Mirror its deliberately non-canonical success ordering.
+        const payload = Buffer.from(JSON.stringify(response.value))
         const header = Buffer.alloc(4)
         header.writeUInt32BE(payload.byteLength, 0)
         socket.end(response.kind === "trailing" ? Buffer.concat([header, payload, Buffer.from("x")]) : Buffer.concat([header, payload]))
@@ -269,11 +271,11 @@ function invalidResponse(kind: "malformed" | "oversized" | "trailing" | "uncorre
 
 function envelope(request: Record<string, unknown>): Record<string, unknown> {
   return {
+    instance_id: request.instance_id,
+    ok: true,
+    request_id: request.request_id,
     schema_id: "fx.private-launch-provider",
     schema_version: 1,
-    instance_id: request.instance_id,
-    request_id: request.request_id,
-    ok: true,
   }
 }
 
@@ -318,7 +320,9 @@ function receive(socket: Socket, callback: (request: Record<string, unknown>) =>
 }
 
 async function withRuntime(run: (runtimeDirectory: string) => Promise<void>): Promise<void> {
-  const directory = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "fmx-launch-provider-"))
+  // Keep the socket pathname below macOS's ~104-byte AF_UNIX ceiling even
+  // when the caller's ordinary TMPDIR is the long /var/folders location.
+  const directory = await mkdtemp("/tmp/fmx-launch-provider-")
   try {
     await run(directory)
   } finally {
