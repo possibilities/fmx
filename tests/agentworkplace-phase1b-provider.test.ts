@@ -3,6 +3,7 @@ import {
   PHASE1B_EVIDENCE_PATHS,
   PHASE1B_EXPECTED_SKIPS,
   PHASE1B_FEATURE_INVENTORY,
+  PHASE1B_MATERIALIZED_REPOSITORY_NAME,
   PHASE1B_PRODUCT_COMMIT,
   PHASE1B_PRODUCT_PARENTS,
   PHASE1B_PRODUCT_TREE,
@@ -63,6 +64,7 @@ describe("AgentWorkplace Phase 1B fmx provider", () => {
       "53e5bc20531353325a96dcf3c2f2a2fc3b3ffdb6",
       "10b7c878615814b07ab7ae3955786a501a188a57",
     ])
+    expect(PHASE1B_MATERIALIZED_REPOSITORY_NAME).toBe("fmx")
     expect(new Set(PHASE1B_EVIDENCE_PATHS).size).toBe(PHASE1B_EVIDENCE_PATHS.length)
     for (const path of PRODUCT_CHANGED_PATHS) expect(PHASE1B_EVIDENCE_PATHS).toContain(path)
     expect(PHASE1B_TEST_PATHS).toContain("tests/runtime-startup.test.ts")

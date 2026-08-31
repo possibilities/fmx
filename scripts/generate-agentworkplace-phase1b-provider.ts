@@ -56,6 +56,7 @@ const GENERATION_EVIDENCE_PATH = "generation-evidence.json"
 const GATE_LOG_PATH = "local-gate.log"
 const FIXTURE_BUNDLE_PATH = "artifacts/runtime-extension-fixture.js"
 const SOURCE_ROOT_PREFIX = "fmx-phase1b-provider-source-"
+export const PHASE1B_MATERIALIZED_REPOSITORY_NAME = "fmx"
 const decoder = new TextDecoder("utf-8", { fatal: true })
 const encoder = new TextEncoder()
 
@@ -795,7 +796,7 @@ async function main(): Promise<void> {
   const sourceRoot = await mkdtemp(join(tmpdir(), SOURCE_ROOT_PREFIX))
   await chmod(sourceRoot, DIRECTORY_MODE)
   const sourceFacts = await lstat(sourceRoot, { bigint: true })
-  const productRoot = join(sourceRoot, "product")
+  const productRoot = join(sourceRoot, PHASE1B_MATERIALIZED_REPOSITORY_NAME)
   let primaryError: unknown
   try {
     const product = await materializeProduct(provider, args.productCommit, args.productTree, productRoot)
