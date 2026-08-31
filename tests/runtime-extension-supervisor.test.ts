@@ -260,7 +260,7 @@ describe("Runtime-extension correlated requests and bounds", () => {
 
   test("bounds an unanswered outbound request and reaps the degraded child", async () => {
     const disconnected = deferred<RuntimeExtensionError>()
-    const supervisor = await startSupervisor(FIXTURE, "ready", {
+    const supervisor = await startSupervisor(PEER, "ready", {
       requestTimeoutMs: 30,
       onDisconnect: disconnected.resolve,
     })

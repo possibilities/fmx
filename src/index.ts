@@ -7,6 +7,7 @@ import { AdeSocket, HomeActiveError } from "./ade-events.ts"
 import { parseArgs, usage, VERSION } from "./cli.ts"
 import { loadConfig } from "./config.ts"
 import { RuntimeBridge } from "./runtime-bridge.ts"
+import { RuntimeExtensionHost } from "./runtime-extension-host.ts"
 import { doctor } from "./doctor.ts"
 import { resolveFx } from "./executable.ts"
 import { AgentManifest } from "./agent-manifest.ts"
@@ -139,6 +140,7 @@ async function main(): Promise<void> {
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const adeSocket = new AdeSocket({ homeId: home.id })
   let runtimeBridge: RuntimeBridge | null = null
+  let runtimeExtensionHost: RuntimeExtensionHost | null = null
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
@@ -270,6 +272,9 @@ async function main(): Promise<void> {
         }
         persistState()
       },
+      onRecoveryCardAction: (correlation) => {
+        void runtimeExtensionHost?.forwardRecoveryAction(correlation)
+      },
     })
 
     for (const [signal, exitCode] of [
@@ -286,9 +291,18 @@ async function main(): Promise<void> {
     // The complete theme was fixed above, before the renderer can expose an
     // empty or partially restored application. Multiplexer holds the restored
     // Session list until every durable source and discovered identity is read.
-    const startup = app.start()
+    await app.start()
+    if (acceptedStartup.runtimeExtension !== null) {
+      runtimeExtensionHost = await RuntimeExtensionHost.start(
+        acceptedStartup.runtimeExtension,
+        app.extension,
+        {
+          cwd: workspace,
+          env: stringEnvironment(process.env),
+        },
+      )
+    }
     renderer.start()
-    await startup
 
     // The implementation-private MCP bridge lives beside the ADE feed under
     // its Home singleton. Do not accept control requests until
@@ -307,12 +321,13 @@ async function main(): Promise<void> {
     throw error
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
+    runtimeBridge?.close()
+    await runtimeExtensionHost?.close()
     // Nothing the Companion is still being asked about is waited for; what
     // is not consumed is the next start's. The Manifest's last write is.
     transport?.close()
     await manifest?.settled()
     await stateSave
-    runtimeBridge?.close()
     adeSocket.close()
     themeMonitor?.dispose()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)

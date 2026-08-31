@@ -8,6 +8,12 @@ if (process.argv[2] === "--fxnk-version") {
 }
 
 recordLifecycle("start", process.argv.slice(2))
+if (process.env.FMX_TEST_RECORD_LAUNCH_ENV === "1") {
+  recordLifecycle("launch-defaults", [
+    process.env.FX_MODEL ?? "",
+    process.env.FX_EFFORT ?? "",
+  ])
+}
 process.stdout.write("\u001b]2;fx · fake session\u0007")
 if (process.env.FMX_TEST_KEYBOARD_MODE === "1") process.stdout.write("\u001b[>4;2m\u001b[>1u")
 process.stdout.write("fake fx ready\r\n")
