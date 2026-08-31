@@ -17,6 +17,11 @@ import {
 } from "../src/fx-work-control.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
 import { fmxTerminalTitle, Multiplexer, RuntimeExtensionSurfaceError } from "../src/multiplexer.ts"
+import type {
+  RuntimeMemberCorrelation,
+  RuntimeMemberCorrelationEntry,
+  RuntimeMemberCorrelationSource,
+} from "../src/runtime-member-correlation.ts"
 import { instanceIdForPane, record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
@@ -65,6 +70,27 @@ class FakeWorkControl implements FxWorkControlRequester {
   }
 }
 
+class FakeRuntimeMemberCorrelationSource implements RuntimeMemberCorrelationSource {
+  calls = 0
+  entries: RuntimeMemberCorrelationEntry[] = []
+  failure: Error | null = null
+
+  async snapshot(): Promise<readonly RuntimeMemberCorrelationEntry[]> {
+    this.calls++
+    if (this.failure) throw this.failure
+    return structuredClone(this.entries)
+  }
+}
+
+function memberCorrelation(index: number): RuntimeMemberCorrelation {
+  return {
+    ensure_id: `ensure-${index}`,
+    ensure_digest: index.toString(16).padStart(64, "0"),
+    launch_id: `launch-${index}`,
+    launch_digest: (index + 16).toString(16).padStart(64, "0"),
+  }
+}
+
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-control-")))
   const code = join(home, "code")
@@ -74,7 +100,12 @@ async function workspace(): Promise<{ home: string; code: string }> {
   return { home, code }
 }
 
-async function harness(name: string, fmxName?: string, agentDefaults?: AgentDefaults) {
+async function harness(
+  name: string,
+  fmxName?: string,
+  agentDefaults?: AgentDefaults,
+  runtimeMemberCorrelationSource?: RuntimeMemberCorrelationSource,
+) {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const adeSocket = new TestAdeSocket(`/tmp/fmx-control-test-${name}-${process.pid}.ade.sock`)
@@ -92,6 +123,7 @@ async function harness(name: string, fmxName?: string, agentDefaults?: AgentDefa
     projectRoots: [code],
     agentDefaults,
     fxWorkControl,
+    runtimeMemberCorrelationSource,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -538,6 +570,125 @@ test("publishes authoritative member snapshots and presents through modal-safe s
     }
   } finally {
     unsubscribe()
+    await h.close()
+  }
+})
+
+test("keeps ordinary fmx Agents uncorrelated without a durable correlation source", async () => {
+  const h = await harness("runtime-member-correlation-null")
+  try {
+    await h.start()
+    expect((await h.multiplexer.extension.snapshot()).agents).toMatchObject([
+      { correlation: null },
+    ])
+  } finally {
+    await h.close()
+  }
+})
+
+test("joins one correlation-source snapshot to exact Agent identities independent of order", async () => {
+  const source = new FakeRuntimeMemberCorrelationSource()
+  const h = await harness(
+    "runtime-member-correlation-exact",
+    undefined,
+    undefined,
+    source,
+  )
+  try {
+    await h.start()
+    await h.start({ directory: join(h.code, "beta"), focus: false })
+    const [first, second] = ((await h.control("orient")) as Snapshot).agents
+    const firstCorrelation = memberCorrelation(1)
+    const secondCorrelation = memberCorrelation(2)
+    source.entries = [
+      { agent_id: second!.agent_id, correlation: secondCorrelation },
+      { agent_id: first!.agent_id, correlation: firstCorrelation },
+    ]
+
+    const snapshot = await h.multiplexer.extension.snapshot()
+    expect(source.calls).toBe(1)
+    expect(snapshot.agents.map(({ agent_id, correlation }) => [agent_id, correlation])).toEqual([
+      [first!.agent_id, firstCorrelation],
+      [second!.agent_id, secondCorrelation],
+    ])
+  } finally {
+    await h.close()
+  }
+})
+
+test("refuses conflicting injected correlation data instead of choosing a record", async () => {
+  const source = new FakeRuntimeMemberCorrelationSource()
+  const h = await harness(
+    "runtime-member-correlation-conflict",
+    undefined,
+    undefined,
+    source,
+  )
+  try {
+    await h.start()
+    const [agent] = ((await h.control("orient")) as Snapshot).agents
+    source.entries = [
+      { agent_id: agent!.agent_id, correlation: memberCorrelation(1) },
+      { agent_id: agent!.agent_id, correlation: memberCorrelation(2) },
+    ]
+
+    await expect(h.multiplexer.extension.snapshot()).rejects.toMatchObject({
+      name: "RuntimeExtensionSurfaceError",
+      code: "snapshot_unavailable",
+    })
+    expect(source.calls).toBe(1)
+  } finally {
+    await h.close()
+  }
+})
+
+test("refuses invalid injected correlation data even when its Agent exists", async () => {
+  const source = new FakeRuntimeMemberCorrelationSource()
+  const h = await harness(
+    "runtime-member-correlation-invalid",
+    undefined,
+    undefined,
+    source,
+  )
+  try {
+    await h.start()
+    const [agent] = ((await h.control("orient")) as Snapshot).agents
+    source.entries = [{
+      agent_id: agent!.agent_id,
+      correlation: {
+        ...memberCorrelation(1),
+        ensure_digest: "not-a-digest",
+      },
+    }]
+
+    await expect(h.multiplexer.extension.snapshot()).rejects.toMatchObject({
+      name: "RuntimeExtensionSurfaceError",
+      code: "snapshot_unavailable",
+    })
+    expect(source.calls).toBe(1)
+  } finally {
+    await h.close()
+  }
+})
+
+test("fails the whole member snapshot when its correlation source fails", async () => {
+  const source = new FakeRuntimeMemberCorrelationSource()
+  source.failure = new Error("ledger read failed")
+  const h = await harness(
+    "runtime-member-correlation-failure",
+    undefined,
+    undefined,
+    source,
+  )
+  try {
+    await h.start()
+    await expect(h.multiplexer.extension.snapshot()).rejects.toMatchObject({
+      name: "RuntimeExtensionSurfaceError",
+      code: "snapshot_unavailable",
+      message: "Runtime member correlation is unavailable",
+    })
+    expect(source.calls).toBe(1)
+  } finally {
     await h.close()
   }
 })

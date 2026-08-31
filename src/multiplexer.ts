@@ -73,6 +73,11 @@ import {
 } from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
 import {
+  indexRuntimeMemberCorrelations,
+  type RuntimeMemberCorrelation,
+  type RuntimeMemberCorrelationSource,
+} from "./runtime-member-correlation.ts"
+import {
   type FxnkThemeResolution,
   fxnkRamp,
   type Ramp,
@@ -188,6 +193,8 @@ type MultiplexerOptions = {
   fxWorkControl?: FxWorkControlRequester
   /** Opaque human recovery actions forwarded by the Runtime-extension supervisor. */
   onRecoveryCardAction?: (correlation: RecoveryCardActionCorrelation) => void
+  /** One exact durable ensure/launch correlation view per member snapshot. */
+  runtimeMemberCorrelationSource?: RuntimeMemberCorrelationSource
   /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
   initialTheme?: FxnkThemeResolution
 }
@@ -210,14 +217,23 @@ export type RuntimeMemberAgentSnapshot = {
   directory: string
   worktree: boolean
   fx_conversation: { conversation_id: string; name: string | null } | null
-  /** Phase 1C supplies exact ensure/launch correlation. */
-  correlation: null
+  correlation: RuntimeMemberCorrelation | null
 }
 
 export type RuntimeMemberSnapshot = {
   revision: string
   selected_agent_id: string | null
   agents: RuntimeMemberAgentSnapshot[]
+}
+
+function runtimeMemberIdentity(entries: readonly ManifestEntry[]): string {
+  return JSON.stringify(entries.map((entry) => [
+    entry.agentId,
+    entry.paneId,
+    entry.displayId,
+    entry.createdAt,
+    entry.cwd,
+  ]))
 }
 
 export type RuntimeExtensionSurface = {
@@ -1252,6 +1268,30 @@ export class Multiplexer {
         "an Agent has no exact Git context",
       )
     }
+
+    let correlations: ReadonlyMap<string, RuntimeMemberCorrelation> = new Map()
+    const correlationSource = this.options.runtimeMemberCorrelationSource
+    if (correlationSource) {
+      const membership = runtimeMemberIdentity(entries)
+      try {
+        correlations = indexRuntimeMemberCorrelations(await correlationSource.snapshot())
+      } catch (error) {
+        const unavailable = new RuntimeExtensionSurfaceError(
+          "snapshot_unavailable",
+          "Runtime member correlation is unavailable",
+        )
+        unavailable.cause = error
+        throw unavailable
+      }
+      const currentEntries = this.runtimeManifestEntries()
+      if (runtimeMemberIdentity(currentEntries) !== membership) {
+        throw new RuntimeExtensionSurfaceError(
+          "snapshot_unavailable",
+          "Agent membership changed while Runtime member correlation was read",
+        )
+      }
+      entries = currentEntries
+    }
     for (const entry of entries) {
       if (entry.fxSessionId) this.sessionNames.recover(entry.fxSessionId)
     }
@@ -1260,7 +1300,11 @@ export class Multiplexer {
     const snapshot: RuntimeMemberSnapshot = {
       revision: this.extensionRevision.toString(),
       selected_agent_id: this.activeAgent()?.entry.agentId ?? null,
-      agents: entries.map((entry) => this.runtimeMemberAgentSnapshot(entry, liveById.get(entry.agentId) ?? null)),
+      agents: entries.map((entry) => this.runtimeMemberAgentSnapshot(
+        entry,
+        liveById.get(entry.agentId) ?? null,
+        correlations.get(entry.agentId) ?? null,
+      )),
     }
     this.validateRuntimeMemberSnapshot(snapshot)
     return snapshot
@@ -1287,6 +1331,7 @@ export class Multiplexer {
   private runtimeMemberAgentSnapshot(
     entry: ManifestEntry,
     live: FxAgent | null,
+    correlation: RuntimeMemberCorrelation | null,
   ): RuntimeMemberAgentSnapshot {
     const git = this.gitContexts.get(entry.cwd)
     if (!git) {
@@ -1338,7 +1383,7 @@ export class Multiplexer {
       fx_conversation: sessionId === null
         ? null
         : { conversation_id: sessionId, name: this.sessionNames.nameFor(sessionId) },
-      correlation: null,
+      correlation,
     }
   }
 
