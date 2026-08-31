@@ -55,7 +55,7 @@ test("withholds exact receipt acknowledgement until its marker releases derived 
     harness.write(ensureReceipt)
     await Bun.sleep(40)
     expect(await state(harness)).toMatchObject({
-      receipts: [{ kind: "ensure", receipt_id: ensureReceipt.receipt_id, receipt_digest: ensureReceipt.receipt_digest, acknowledgement_id: null }],
+      receipts: [{ kind: "ensure", receipt_id: ensureReceipt.receipt_id, receipt_digest: ensureReceipt.receipt_digest, acknowledgement: null }],
     })
 
     await writeFile(harness.marker, "release\n", { mode: 0o600 })
@@ -98,6 +98,72 @@ test("withholds exact receipt acknowledgement until its marker releases derived 
   }
 })
 
+test("fails closed for foreign receipt authority and a restarted foreign association", async () => {
+  const harness = await start()
+  try {
+    const { ensure } = await initializeAndReadIntents(harness)
+    const foreign = { ...completeEnsureReceipt(ensure), fmx_session: "session-foreign" }
+    harness.write(foreign)
+    expect(await harness.child.exited).toBe(1)
+    expect((await state(harness)).receipts).toEqual([])
+  } finally {
+    await harness.close(1)
+  }
+
+  const foreignRestart = await start(harness.root, {
+    initialize: { ...initializeMessage(), workplace_instance_id: "foreign-workplace" },
+  })
+  await foreignRestart.initialize()
+  expect(await foreignRestart.child.exited).toBe(1)
+  expect(await new Response(foreignRestart.child.stderr as ReadableStream<Uint8Array>).text())
+    .toContain("another Workplace")
+})
+
+test.each(["acknowledgement_intent_saved", "end_intent_saved"])(
+  "replays exact acknowledgement and end intent after %s crash window",
+  async (crashAfter) => {
+    const harness = await start(undefined, { env: { FMX_PHASE1C_FIXTURE_CRASH_AFTER: crashAfter } })
+    let ensure: EnsureRequest
+    let receipt: CompleteEnsureReceipt
+    try {
+      ({ ensure } = await initializeAndReadIntents(harness))
+      receipt = completeEnsureReceipt(ensure)
+      await writeFile(harness.marker, "release\n", { mode: 0o600 })
+      harness.write(receipt)
+      expect(await harness.child.exited).toBe(86)
+      const persisted = await state(harness)
+      expect(persisted.receipts[0]).toMatchObject({
+        receipt_id: receipt.receipt_id,
+        receipt_digest: receipt.receipt_digest,
+        acknowledgement: expect.objectContaining({ receipt_id: receipt.receipt_id, receipt_digest: receipt.receipt_digest }),
+      })
+      if (crashAfter === "end_intent_saved") expect(persisted.end).toMatchObject({ end_id: "phase1c-end" })
+    } finally {
+      await harness.close(86)
+    }
+
+    const restarted = await start(harness.root)
+    try {
+      await restarted.initialize()
+      expect(await restarted.frames.next()).toMatchObject({ message_type: "ready" })
+      await restarted.frames.nextInline()
+      expect(await restarted.frames.nextLifecycle()).toMatchObject({ message_type: "ensure_request", ensure_id: ensure!.ensure_id })
+      expect(await restarted.frames.nextLifecycle()).toMatchObject({
+        message_type: "receipt_acknowledgement",
+        receipt_id: receipt!.receipt_id,
+        receipt_digest: receipt!.receipt_digest,
+      })
+      expect(await restarted.frames.nextLifecycle()).toMatchObject({
+        message_type: "end_request",
+        end_id: "phase1c-end",
+        end_digest: expect.any(String),
+      })
+    } finally {
+      await restarted.close()
+    }
+  },
+)
+
 test("restarts from persisted receipt evidence, replays only stable intents, then releases the withheld acknowledgement", async () => {
   const harness = await start()
   let ensure: EnsureRequest
@@ -131,7 +197,10 @@ test("restarts from persisted receipt evidence, replays only stable intents, the
   }
 })
 
-async function start(root?: string): Promise<Harness> {
+async function start(
+  root?: string,
+  options: { env?: Record<string, string>; initialize?: InitializeMessage } = {},
+): Promise<Harness> {
   const directory = root ?? await mkdtemp(join(tmpdir(), "fmx-phase1c-runtime-extension-"))
   if (root === undefined) temporaryDirectories.push(directory)
   const statePath = join(directory, "fixture-state.json")
@@ -143,6 +212,7 @@ async function start(root?: string): Promise<Harness> {
       FMX_PHASE1C_FIXTURE_STATE: statePath,
       FMX_PHASE1C_FIXTURE_RELEASE_MARKER: marker,
       FMX_PHASE1C_FIXTURE_LOG: log,
+      ...options.env,
     },
     stdin: "pipe",
     stdout: "pipe",
@@ -156,15 +226,16 @@ async function start(root?: string): Promise<Harness> {
     child,
     frames: new FrameReader(child.stdout),
     initialize: async () => {
-      child.stdin.write(encodeAgentWorkplaceFrame(initializeMessage()))
+      child.stdin.write(encodeAgentWorkplaceFrame(options.initialize ?? initializeMessage()))
       await child.stdin.flush()
     },
     write: (message: AgentWorkplaceMessage) => child.stdin.write(encodeAgentWorkplaceFrame(message)),
-    close: async () => {
+    close: async (expectedExitCode = 0) => {
       child.stdin.end()
       const code = await child.exited
-      expect(code).toBe(0)
-      expect(await new Response(child.stderr).text()).toBe("")
+      const stderr = await new Response(child.stderr).text()
+      if (code !== expectedExitCode) throw new Error(`fixture exit ${code}; stderr: ${stderr}`)
+      if (expectedExitCode === 0) expect(stderr).toBe("")
     },
   }
 }
@@ -178,7 +249,7 @@ type Harness = {
   frames: FrameReader
   initialize(): Promise<void>
   write(message: AgentWorkplaceMessage): void
-  close(): Promise<void>
+  close(expectedExitCode?: number): Promise<void>
 }
 
 async function initializeAndReadIntents(harness: Harness) {
@@ -190,7 +261,20 @@ async function initializeAndReadIntents(harness: Harness) {
   return { source, ensure: ensure as EnsureRequest }
 }
 
-function initializeMessage() {
+type InitializeMessage = {
+  schema_id: "fmx.runtime-extension"
+  schema_version: 1
+  message_type: "initialize"
+  request_id: string
+  workplace_instance_id: string
+  extension_id: string
+  configuration_id: string
+  placement_id: string
+  fmx_session: string
+  protocol_version: 1
+}
+
+function initializeMessage(): InitializeMessage {
   return {
     schema_id: "fmx.runtime-extension",
     schema_version: 1,
@@ -202,7 +286,7 @@ function initializeMessage() {
     placement_id: "phase1c-placement",
     fmx_session: "session-beta",
     protocol_version: 1,
-  } as const
+  }
 }
 
 function releaseProbe() {

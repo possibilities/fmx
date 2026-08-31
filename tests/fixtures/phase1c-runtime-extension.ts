@@ -52,21 +52,32 @@ type ReceiptEvidence = {
   kind: "ensure" | "end" | "cleanup"
   receipt_id: string
   receipt_digest: string
-  acknowledgement_id: string | null
   conversation_id: string | null
+  acknowledgement: ReceiptAcknowledgement | null
+}
+
+type ReceiptAcknowledgement = Extract<EnsureLifecycleMessage, { acknowledgement_id: unknown }>
+
+type FixtureAuthority = Pick<EnsureRequest,
+  "workplace_instance_id" | "fmx_session" | "ensure_id" | "ensure_digest" | "launch_id" |
+  "launch_digest" | "worktree_id" | "agent_id"> & {
+  source_id: string
+  source_digest: string
+  admission_key: string
 }
 
 type FixtureState = {
-  schema_version: 1
+  schema_version: 2
+  authority: FixtureAuthority | null
   receipts: ReceiptEvidence[]
-  end_conversation_id: string | null
-  end_requested: boolean
-  cleanup_requested: boolean
+  end: EndRequest | null
+  cleanup: CleanupRequest | null
 }
 
 const statePath = requiredEnvironment("FMX_PHASE1C_FIXTURE_STATE")
 const releaseMarker = process.env.FMX_PHASE1C_FIXTURE_RELEASE_MARKER
 const logPath = process.env.FMX_PHASE1C_FIXTURE_LOG
+const crashAfter = process.env.FMX_PHASE1C_FIXTURE_CRASH_AFTER
 const decoder = new ContractFrameDecoder()
 let initialized = false
 let state = await readState(statePath)
@@ -74,6 +85,8 @@ let fixture: FixtureMessages | null = null
 let releaseTail: Promise<void> = Promise.resolve()
 let endSent = false
 let cleanupSent = false
+let crashed = false
+const acknowledgementSent = new Set<string>()
 const releaseWatcher = releaseMarker === undefined ? null : watchReleaseMarker(releaseMarker)
 
 for await (const chunk of Bun.stdin.stream()) {
@@ -86,6 +99,7 @@ for await (const chunk of Bun.stdin.stream()) {
       }
       initialized = true
       fixture = buildFixture(parsed.data as unknown as Initialize)
+      await bindAuthority(fixture)
       writeRuntime(readyFor(parsed.data as unknown as Initialize))
       writeInline(fixture.source)
       writeLifecycle(fixture.ensure)
@@ -109,6 +123,54 @@ type FixtureMessages = {
   ensure: EnsureRequest
   end: (conversationId: string) => EndRequest
   cleanup: (conversationId: string) => CleanupRequest
+}
+
+async function bindAuthority(current: FixtureMessages): Promise<void> {
+  const authority = authorityFor(current)
+  if (state.authority === null) {
+    state.authority = authority
+    await saveState()
+  } else if (!sameCanonical(state.authority, authority)) {
+    throw new Error("phase1c fixture state belongs to another Workplace, Session, or lifecycle authority")
+  }
+  assertPersistedIntents(current)
+}
+
+function authorityFor(current: FixtureMessages): FixtureAuthority {
+  return {
+    workplace_instance_id: current.ensure.workplace_instance_id,
+    fmx_session: current.ensure.fmx_session,
+    ensure_id: current.ensure.ensure_id,
+    ensure_digest: current.ensure.ensure_digest,
+    launch_id: current.ensure.launch_id,
+    launch_digest: current.ensure.launch_digest,
+    worktree_id: current.ensure.worktree_id,
+    agent_id: current.ensure.agent_id,
+    source_id: current.source.source_id,
+    source_digest: current.source.source_digest,
+    admission_key: current.source.admission_key,
+  }
+}
+
+function assertPersistedIntents(current: FixtureMessages): void {
+  if (state.end !== null) {
+    if (state.end.conversation_id === null || !sameCanonical(state.end, current.end(state.end.conversation_id))) {
+      throw new Error("phase1c fixture retained end intent is not the exact bound authority")
+    }
+  }
+  if (state.cleanup !== null) {
+    if (state.end === null || state.end.conversation_id === null ||
+      !sameCanonical(state.cleanup, current.cleanup(state.end.conversation_id))) {
+      throw new Error("phase1c fixture retained cleanup intent is not the exact bound authority")
+    }
+  }
+  for (const receipt of state.receipts) {
+    if (receipt.acknowledgement === null) continue
+    const expected = acknowledgementFor(receipt)
+    if (!sameCanonical(receipt.acknowledgement, expected)) {
+      throw new Error(`phase1c fixture retained acknowledgement ${receipt.acknowledgement.acknowledgement_id} changed authority`)
+    }
+  }
 }
 
 function buildFixture(initialize: Initialize): FixtureMessages {
@@ -265,8 +327,37 @@ function isReceipt(message: EnsureLifecycleMessage): message is LifecycleReceipt
     ("effects" in message || "proof" in message || "outcome" in message)
 }
 
+function assertAcceptedReceipt(receipt: LifecycleReceipt, kind: ReceiptEvidence["kind"]): void {
+  if (fixture === null || state.authority === null) throw new Error("phase1c fixture receipt arrived before authority binding")
+  const expected = kind === "ensure" ? fixture.ensure : kind === "end" ? state.end : state.cleanup
+  if (expected === null) throw new Error(`phase1c fixture received ${kind} receipt before its exact intent`)
+  const fields = [
+    "schema_id", "schema_version", "request_id", "workplace_instance_id", "fmx_session", "ensure_id",
+    "ensure_digest", "launch_id", "launch_digest", "worktree_id", "agent_id",
+    ...(kind === "end" || kind === "cleanup" ? ["end_id", "end_digest", "conversation_id"] : []),
+    ...(kind === "cleanup" ? ["cleanup_id", "cleanup_digest", "worktree_directory"] : []),
+  ]
+  assertExactFields(receipt, expected, fields, `${kind} receipt`)
+}
+
+function assertExactFields(
+  received: object,
+  expected: object,
+  fields: readonly string[],
+  label: string,
+): void {
+  const actual = received as Record<string, unknown>
+  const authority = expected as Record<string, unknown>
+  for (const field of fields) {
+    if (actual[field] !== authority[field]) {
+      throw new Error(`phase1c fixture rejected ${label}: ${field} does not match bound authority`)
+    }
+  }
+}
+
 async function retainReceipt(receipt: LifecycleReceipt): Promise<void> {
   const kind: ReceiptEvidence["kind"] = "effects" in receipt ? "ensure" : "proof" in receipt ? "end" : "cleanup"
+  assertAcceptedReceipt(receipt, kind)
   const existing = state.receipts.find(({ kind: savedKind, receipt_id }) =>
     savedKind === kind && receipt_id === receipt.receipt_id)
   if (existing !== undefined) {
@@ -282,8 +373,8 @@ async function retainReceipt(receipt: LifecycleReceipt): Promise<void> {
     kind,
     receipt_id: receipt.receipt_id,
     receipt_digest: receipt.receipt_digest,
-    acknowledgement_id: null,
     conversation_id: conversation,
+    acknowledgement: null,
   })
   await saveState()
 }
@@ -296,27 +387,16 @@ async function releasePending(): Promise<void> {
 async function releaseAvailable(): Promise<void> {
   if (fixture === null || releaseMarker === undefined || !existsSync(releaseMarker)) return
   for (const receipt of state.receipts) {
-    if (receipt.acknowledgement_id !== null) continue
-    receipt.acknowledgement_id = acknowledgementId(receipt)
-    await saveState()
-    writeLifecycle({
-      schema_id: ENSURE_LIFECYCLE_SCHEMA_ID,
-      schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
-      message_type: "receipt_acknowledgement",
-      acknowledgement_id: receipt.acknowledgement_id,
-      receipt_kind: receipt.kind,
-      receipt_id: receipt.receipt_id,
-      receipt_digest: receipt.receipt_digest,
-      ensure_id: fixture.ensure.ensure_id,
-    })
-    await evidence("outbound", {
-      message_type: "receipt_acknowledgement",
-      acknowledgement_id: receipt.acknowledgement_id,
-      receipt_kind: receipt.kind,
-      receipt_id: receipt.receipt_id,
-      receipt_digest: receipt.receipt_digest,
-      ensure_id: fixture.ensure.ensure_id,
-    })
+    if (receipt.acknowledgement === null) {
+      receipt.acknowledgement = acknowledgementFor(receipt)
+      await saveState()
+      crashAt("acknowledgement_intent_saved")
+    }
+    if (!acknowledgementSent.has(receiptKey(receipt))) {
+      writeLifecycle(receipt.acknowledgement)
+      await evidence("outbound", receipt.acknowledgement)
+      acknowledgementSent.add(receiptKey(receipt))
+    }
     await deriveAfterAcknowledgement(receipt)
   }
   await replayDerivedIntents()
@@ -324,37 +404,56 @@ async function releaseAvailable(): Promise<void> {
 
 async function deriveAfterAcknowledgement(receipt: ReceiptEvidence): Promise<void> {
   if (fixture === null) return
-  if (receipt.kind === "ensure" && receipt.conversation_id !== null && !state.end_requested) {
-    state.end_conversation_id = receipt.conversation_id
-    state.end_requested = true
+  if (receipt.kind === "ensure" && receipt.conversation_id !== null && state.end === null) {
+    state.end = fixture.end(receipt.conversation_id)
     await saveState()
+    crashAt("end_intent_saved")
   }
-  if (receipt.kind === "end" && state.end_conversation_id !== null && !state.cleanup_requested) {
-    state.cleanup_requested = true
+  if (receipt.kind === "end" && state.end !== null && state.cleanup === null) {
+    state.cleanup = fixture.cleanup(state.end.conversation_id!)
     await saveState()
+    crashAt("cleanup_intent_saved")
   }
 }
 
 async function replayDerivedIntents(): Promise<void> {
-  if (fixture === null || state.end_conversation_id === null) return
-  if (state.end_requested && !endSent) {
-    const end = fixture.end(state.end_conversation_id)
-    writeLifecycle(end)
-    await evidence("outbound", end)
+  if (state.end !== null && !endSent) {
+    writeLifecycle(state.end)
+    await evidence("outbound", state.end)
     endSent = true
   }
-  if (state.cleanup_requested && !cleanupSent) {
-    const cleanup = fixture.cleanup(state.end_conversation_id)
-    writeLifecycle(cleanup)
-    await evidence("outbound", cleanup)
+  if (state.cleanup !== null && !cleanupSent) {
+    writeLifecycle(state.cleanup)
+    await evidence("outbound", state.cleanup)
     cleanupSent = true
   }
 }
 
-function acknowledgementId(receipt: ReceiptEvidence): string {
-  return `phase1c-ack-${createHash("sha256")
+function acknowledgementFor(receipt: ReceiptEvidence): ReceiptAcknowledgement {
+  if (fixture === null) throw new Error("phase1c fixture has no initialized authority")
+  return {
+    schema_id: ENSURE_LIFECYCLE_SCHEMA_ID,
+    schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
+    message_type: "receipt_acknowledgement",
+    acknowledgement_id: `phase1c-ack-${createHash("sha256")
     .update(`${receipt.kind}\u0000${receipt.receipt_id}\u0000${receipt.receipt_digest}`)
-    .digest("hex").slice(0, 40)}`
+    .digest("hex").slice(0, 40)}`,
+    receipt_kind: receipt.kind,
+    receipt_id: receipt.receipt_id,
+    receipt_digest: receipt.receipt_digest,
+    ensure_id: fixture.ensure.ensure_id,
+  } as ReceiptAcknowledgement
+}
+
+function receiptKey(receipt: ReceiptEvidence): string {
+  return `${receipt.kind}\u0000${receipt.receipt_id}\u0000${receipt.receipt_digest}`
+}
+
+function crashAt(point: string): void {
+  if (!crashed && crashAfter === point) {
+    crashed = true
+    process.exit(86)
+  }
 }
 
 function writeRuntime(message: RuntimeExtensionMessage): void {
@@ -393,15 +492,18 @@ function watchReleaseMarker(path: string): FSWatcher {
 async function readState(path: string): Promise<FixtureState> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8")) as FixtureState
-    if (parsed.schema_version !== 1 || !Array.isArray(parsed.receipts) ||
-      typeof parsed.end_conversation_id !== "string" && parsed.end_conversation_id !== null ||
-      typeof parsed.end_requested !== "boolean" || typeof parsed.cleanup_requested !== "boolean") {
+    if (parsed.schema_version !== 2 || !Array.isArray(parsed.receipts) ||
+      parsed.authority !== null && (typeof parsed.authority !== "object" ||
+        parsed.authority === null || !isAuthority(parsed.authority)) ||
+      parsed.end !== null && typeof parsed.end !== "object" ||
+      parsed.cleanup !== null && typeof parsed.cleanup !== "object" ||
+      !parsed.receipts.every(isReceiptEvidence)) {
       throw new Error("invalid state")
     }
     return parsed
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { schema_version: 1, receipts: [], end_conversation_id: null, end_requested: false, cleanup_requested: false }
+      return { schema_version: 2, authority: null, receipts: [], end: null, cleanup: null }
     }
     throw new Error(`phase1c fixture cannot read state: ${String(error)}`)
   }
@@ -418,4 +520,27 @@ function requiredEnvironment(name: string): string {
   const value = process.env[name]
   if (value === undefined || value.length === 0) throw new Error(`${name} is required`)
   return value
+}
+
+function isAuthority(value: object): value is FixtureAuthority {
+  const input = value as Record<string, unknown>
+  return [
+    "workplace_instance_id", "fmx_session", "ensure_id", "ensure_digest", "launch_id", "launch_digest",
+    "worktree_id", "agent_id", "source_id", "source_digest", "admission_key",
+  ].every((key) => typeof input[key] === "string")
+}
+
+function isReceiptEvidence(value: unknown): value is ReceiptEvidence {
+  if (typeof value !== "object" || value === null) return false
+  const input = value as Record<string, unknown>
+  return (input.kind === "ensure" || input.kind === "end" || input.kind === "cleanup") &&
+    typeof input.receipt_id === "string" && typeof input.receipt_digest === "string" &&
+    (typeof input.conversation_id === "string" || input.conversation_id === null) &&
+    (input.acknowledgement === null || typeof input.acknowledgement === "object")
+}
+
+function sameCanonical(left: unknown, right: unknown): boolean {
+  return Buffer.from(encodeCanonicalJson(left as JsonValue)).equals(
+    Buffer.from(encodeCanonicalJson(right as JsonValue)),
+  )
 }
