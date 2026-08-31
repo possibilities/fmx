@@ -57,6 +57,7 @@ test("an inherited Herdr integration never reaches fx", () => {
       FX_WORK_CONTROL_TOKEN: "outer-token",
       FMX_RUNTIME_PROCESS: "1",
       FMX_RUNTIME_BOOTSTRAP_PATH: "/tmp/runtime-ready",
+      FMX_RUNTIME_STARTUP_SNAPSHOT: "accepted-runtime-authority",
     },
     3,
     "/work",
@@ -76,6 +77,7 @@ test("an inherited Herdr integration never reaches fx", () => {
   expect(env.FX_WORK_CONTROL_TOKEN).toBeUndefined()
   expect(env.FMX_RUNTIME_PROCESS).toBeUndefined()
   expect(env.FMX_RUNTIME_BOOTSTRAP_PATH).toBeUndefined()
+  expect(env.FMX_RUNTIME_STARTUP_SNAPSHOT).toBeUndefined()
 })
 
 test("fmx never enables Herdr while installing its ADE feed", () => {

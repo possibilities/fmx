@@ -33,6 +33,21 @@ export type RuntimeSessionRequest = {
   agentPicker?: boolean
   /** An explicit picker behavior; false accepts either behavior on an existing picker Runtime. */
   hideSingleAgentPicker?: boolean
+  /**
+   * Cold-create-only startup authority. A live Runtime is joined before this
+   * callback runs, so later disk edits cannot make its accepted snapshot
+   * unjoinable.
+   */
+  prepareCreation?: () => Promise<RuntimeSessionPreparation>
+}
+
+export type RuntimeSessionPreparation = {
+  /** Additional immutable environment accepted by the new Runtime. */
+  env?: Record<string, string>
+  /** Internal accepted-startup facts; never compared against later Clients. */
+  labels?: Record<string, string>
+  /** Associated Runtimes opt out after their ordinary terminal bootstrap. */
+  exitOnLastClient?: boolean
 }
 
 /** One deterministic Companion session is the shared fmx Runtime for a Home. */
@@ -83,8 +98,25 @@ export async function ensureRuntimeSession(
   // A marker from an earlier Runtime must never let a new child start before
   // its first terminal has actually attached.
   await unlink(identity.bootstrapPath).catch(() => {})
+  let preparation: RuntimeSessionPreparation = {}
+  if (request.prepareCreation) {
+    try {
+      preparation = await request.prepareCreation()
+    } catch (error) {
+      // Another valid creator may have won while this Client resolved its
+      // cold-start snapshot. Its live accepted Runtime wins over stale disk.
+      try {
+        session = await companion.settle(identity.name)
+        if (session.state === "live") return attachedRuntime(identity, session)
+      } catch {
+        // Preserve the causal preparation failure below.
+      }
+      throw error
+    }
+  }
   const runtimeEnvironment = {
     ...request.env,
+    ...preparation.env,
     [RUNTIME_PROCESS_ENV_VAR]: "1",
     [RUNTIME_BOOTSTRAP_ENV_VAR]: identity.bootstrapPath,
   }
@@ -95,8 +127,8 @@ export async function ensureRuntimeSession(
       command: request.command,
       cwd: request.cwd,
       env: runtimeEnvironment,
-      labels: identity.labels,
-      exitOnLastClient: true,
+      labels: { ...identity.labels, ...preparation.labels },
+      exitOnLastClient: preparation.exitOnLastClient ?? true,
     })
     return { socketPath: created.socketPath, bootstrapPath: identity.bootstrapPath }
   } catch (error) {

@@ -2,7 +2,12 @@ import { expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { configPath, loadConfig } from "../src/config.ts"
+import {
+  agentDefaultsFor,
+  configPath,
+  loadConfig,
+  workplaceMembershipFor,
+} from "../src/config.ts"
 import { actionForKey } from "../src/keybindings.ts"
 import type { KeyEvent } from "@opentui/core"
 
@@ -116,6 +121,122 @@ test("falls back on malformed TOML and diagnoses unknown keys", async () => {
     const unknownConfig = await loadConfig(unknown)
     expect(unknownConfig.diagnostics).toContain("unknown config key keys.close_tab; ignoring key")
     expect(unknownConfig.diagnostics).toContain("unknown config section [theme]; ignoring section")
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("resolves exact two-member Workplace association and independent Session defaults", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-config-workplace-"))
+  const path = join(directory, "config.toml")
+  await writeFile(
+    path,
+    [
+      "[agent_defaults.workers]",
+      'state_dir = "~/.local/state/worker"',
+      'model = "fixture/model"',
+      'effort = "medium"',
+      "",
+      "[agent_defaults.default]",
+      'effort = "high"',
+      "",
+      "[workplace_instances.personal_software]",
+      "schema_version = 1",
+      'extension = "agentworkplace"',
+      'configuration = "software"',
+      "",
+      "[workplace_instances.personal_software.role_surfaces]",
+      'worker = "workers"',
+      'manager = "managers"',
+      "",
+    ].join("\n"),
+  )
+
+  try {
+    const loaded = await loadConfig(path, "/Users/example")
+    expect(loaded.runtimeConfigurationErrors).toEqual([])
+    expect(workplaceMembershipFor(loaded, "workers")).toEqual({
+      workplaceInstanceId: "personal_software",
+      extensionId: "agentworkplace",
+      configurationId: "software",
+      placementId: "worker",
+      fmxSession: "workers",
+      members: [
+        { placementId: "manager", fmxSession: "managers" },
+        { placementId: "worker", fmxSession: "workers" },
+      ],
+    })
+    expect(workplaceMembershipFor(loaded, "default")).toBeNull()
+    expect(agentDefaultsFor(loaded, "workers")).toEqual({
+      stateDir: "/Users/example/.local/state/worker",
+      model: "fixture/model",
+      effort: "medium",
+    })
+    expect(agentDefaultsFor(loaded, "default")).toEqual({ effort: "high" })
+    expect(agentDefaultsFor(loaded, "managers")).toEqual({})
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("rejects invalid association and Agent-default contracts instead of falling back to plain fmx", async () => {
+  const cases = [
+    {
+      name: "one member",
+      source: `[workplace_instances.office]\nschema_version = 1\nextension = "ext"\nconfiguration = "cfg"\n[workplace_instances.office.role_surfaces]\none = "alpha"\n`,
+      message: "exactly two members",
+    },
+    {
+      name: "same member twice",
+      source: `[workplace_instances.office]\nschema_version = 1\nextension = "ext"\nconfiguration = "cfg"\n[workplace_instances.office.role_surfaces]\none = "alpha"\ntwo = "alpha"\n`,
+      message: "two distinct",
+    },
+    {
+      name: "unknown association field",
+      source: `[workplace_instances.office]\nschema_version = 1\nextension = "ext"\nconfiguration = "cfg"\npolicy = "role"\n[workplace_instances.office.role_surfaces]\none = "alpha"\ntwo = "beta"\n`,
+      message: "unknown field policy",
+    },
+    {
+      name: "duplicate membership",
+      source: `[workplace_instances.one]\nschema_version = 1\nextension = "ext"\nconfiguration = "a"\n[workplace_instances.one.role_surfaces]\na = "alpha"\nb = "beta"\n[workplace_instances.two]\nschema_version = 1\nextension = "ext"\nconfiguration = "b"\n[workplace_instances.two.role_surfaces]\nc = "alpha"\nd = "gamma"\n`,
+      message: "belongs to both",
+    },
+    {
+      name: "relative state directory",
+      source: `[agent_defaults.alpha]\nstate_dir = "relative/state"\n`,
+      message: "safe absolute or ~/ directory",
+    },
+    {
+      name: "unknown default field",
+      source: `[agent_defaults.alpha]\nrole = "worker"\n`,
+      message: "unknown field role",
+    },
+  ] as const
+  const directory = await mkdtemp(join(tmpdir(), "fmx-config-invalid-workplace-"))
+  try {
+    for (const [index, entry] of cases.entries()) {
+      const path = join(directory, `${index}.toml`)
+      await writeFile(path, entry.source)
+      const loaded = await loadConfig(path, "/Users/example")
+      expect(loaded.runtimeConfigurationErrors.join("\n"), entry.name).toContain(entry.message)
+      expect(() => workplaceMembershipFor(loaded, "alpha"), entry.name).toThrow(
+        "invalid Runtime configuration",
+      )
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("a TOML failure mentioning a new contract fails Runtime resolution while legacy malformed config stays legacy", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-config-malformed-contract-"))
+  const contract = join(directory, "contract.toml")
+  const legacy = join(directory, "legacy.toml")
+  await writeFile(contract, "[workplace_instances.office\n")
+  await writeFile(legacy, "[keys\n")
+  try {
+    expect((await loadConfig(contract)).runtimeConfigurationErrors.join("\n")).toContain("config parse error")
+    expect((await loadConfig(legacy)).runtimeConfigurationErrors).toEqual([])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

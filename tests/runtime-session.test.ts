@@ -52,6 +52,69 @@ test("Runtime identity is stable per Home and creation requests final-Client own
   })
 })
 
+test("cold preparation can retain an associated Runtime while plain creation remains unchanged", async () => {
+  const identity = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-associated-test")
+  const created: CreateRequest[] = []
+  const companion = {
+    directory: "/tmp/fmx-runtime-associated-test",
+    settle: async () => session(identity.name, "absent", {}),
+    create: async (request: CreateRequest) => {
+      created.push(request)
+      return { name: request.name, socketPath: `/tmp/${request.name}`, pid: 4, createdAt: 5 }
+    },
+  } as unknown as CompanionCommand
+
+  await ensureRuntimeSession(companion, {
+    homeId: HOME,
+    cwd: "/work",
+    command: ["fmx"],
+    env: { PATH: "/bin" },
+    prepareCreation: async () => ({
+      env: { FMX_RUNTIME_STARTUP_SNAPSHOT: "accepted" },
+      labels: { extension: "fixture", workplace: "office" },
+      exitOnLastClient: false,
+    }),
+  })
+  expect(created[0]).toMatchObject({
+    exitOnLastClient: false,
+    labels: { ...identity.labels, extension: "fixture", workplace: "office" },
+    env: {
+      PATH: "/bin",
+      FMX_RUNTIME_STARTUP_SNAPSHOT: "accepted",
+      FMX_RUNTIME_PROCESS: "1",
+      FMX_RUNTIME_BOOTSTRAP_PATH: identity.bootstrapPath,
+    },
+  })
+})
+
+test("a live Runtime joins without consulting later cold-start configuration", async () => {
+  const identity = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-stale-config-test")
+  let prepared = false
+  const companion = {
+    directory: "/tmp/fmx-runtime-stale-config-test",
+    settle: async () => session(identity.name, "live", {
+      ...identity.labels,
+      extension: "accepted-extension",
+      workplace: "accepted-workplace",
+    }),
+  } as unknown as CompanionCommand
+
+  expect(await ensureRuntimeSession(companion, {
+    homeId: HOME,
+    cwd: "/work",
+    command: ["fmx"],
+    env: {},
+    prepareCreation: async () => {
+      prepared = true
+      throw new Error("stale disk config")
+    },
+  })).toEqual({
+    socketPath: `/tmp/${identity.name}`,
+    bootstrapPath: identity.bootstrapPath,
+  })
+  expect(prepared).toBe(false)
+})
+
 test("a live owned Runtime is joined and a label impostor is refused", async () => {
   const identity = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
   const makeCompanion = (labels: Record<string, string>) =>

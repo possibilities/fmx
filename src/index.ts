@@ -13,7 +13,7 @@ import { AgentManifest } from "./agent-manifest.ts"
 import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
-import { resolveFmxHome, type FmxHome } from "./home.ts"
+import { DEFAULT_FMX_NAME, resolveFmxHome, type FmxHome } from "./home.ts"
 import {
   type FxnkThemeResolution,
   FxnkThemeMonitor,
@@ -31,6 +31,12 @@ import {
   RUNTIME_BOOTSTRAP_ENV_VAR,
   waitForRuntimeBootstrap,
 } from "./runtime-session.ts"
+import {
+  decodeRuntimeStartupSnapshot,
+  resolveRuntimeStartupSnapshot,
+  RUNTIME_STARTUP_SNAPSHOT_ENV_VAR,
+  runtimeStartupEnvironment,
+} from "./runtime-startup.ts"
 import { concealClientCursor, revealClientCursor, runTerminalClient } from "./terminal-client.ts"
 import {
   beginSynchronizedFrame,
@@ -113,6 +119,11 @@ async function main(): Promise<void> {
     throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${home.configPath}`)
   }
   const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
+  const fmxSession = home.name ?? DEFAULT_FMX_NAME
+  const encodedStartup = process.env[RUNTIME_STARTUP_SNAPSHOT_ENV_VAR]
+  const acceptedStartup = encodedStartup
+    ? decodeRuntimeStartupSnapshot(encodedStartup, fmxSession)
+    : await resolveRuntimeStartupSnapshot(loadedConfig, home)
   const fxPath = await resolveFx()
   const companionPath = await resolveCompanion()
   const persistedState = await loadState(home.statePath)
@@ -230,6 +241,7 @@ async function main(): Promise<void> {
       adeSocket,
       worktreeRoot: loadedConfig.worktreeRoot,
       projectRoots: loadedConfig.projectRoots,
+      agentDefaults: acceptedStartup.agentDefaults,
       runtimeSocketPath,
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
@@ -335,6 +347,19 @@ async function startTerminalClient(
     env: stringEnvironment(process.env),
     agentPicker,
     hideSingleAgentPicker,
+    prepareCreation: async () => {
+      const startup = await resolveRuntimeStartupSnapshot(loadedConfig, home)
+      return {
+        env: runtimeStartupEnvironment(startup),
+        exitOnLastClient: startup.runtimeExtension === null,
+        labels: startup.runtimeExtension === null
+          ? undefined
+          : {
+              extension: startup.runtimeExtension.registration.extension_id,
+              workplace: startup.runtimeExtension.association.workplace_instance_id,
+            },
+      }
+    },
   })
   process.exitCode = await runTerminalClient({
     socketPath: runtime.socketPath,

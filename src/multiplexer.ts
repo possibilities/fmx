@@ -23,7 +23,7 @@ import {
 import { AgentPicker } from "./agent-picker.ts"
 import type { AdeEventSource, AdeRecord } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
-import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
+import { DEFAULT_WORKTREE_ROOT, type AgentDefaults } from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
@@ -170,6 +170,8 @@ type MultiplexerOptions = {
   runtimeSocketPath?: string
   /** Configured discovery roots used when MCP creation has no caller or directory. */
   projectRoots?: readonly string[]
+  /** Exact current fmx Session's independent launch defaults. */
+  agentDefaults?: AgentDefaults
   /** The per-Fx semantic work requester; replaceable only for deterministic tests. */
   fxWorkControl?: FxWorkControlRequester
   /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
@@ -724,10 +726,14 @@ export class Multiplexer {
     const workControl = this.options.runtimeSocketPath
       ? mintFxWorkControlBinding(this.options.runtimeSocketPath, identity.agentId)
       : null
+    const resolvedStartLevel = resolveStartLevel(startLevel, this.options.agentDefaults)
+    const fxArgs = this.options.agentDefaults?.stateDir === undefined
+      ? []
+      : ["--state-dir", this.options.agentDefaults.stateDir]
     const { result: entry, saved } = this.options.manifest.claim({
       cwd,
       fxPath: this.options.fxPath,
-      fxArgs: [],
+      fxArgs,
       createdAt: Date.now(),
       identity,
       workControl,
@@ -748,7 +754,7 @@ export class Multiplexer {
             entry.displayId,
             cwd,
             this.options.runtimeSocketPath ?? null,
-            startLevel,
+            resolvedStartLevel,
             this.adeBinding(entry.agentId),
             entry.workControl,
           ),
@@ -1877,6 +1883,15 @@ function emptyStateContent(): string {
 
 function bindingLabel(bindings: ResolvedBinding[]): string {
   return bindings.map((binding) => binding.label).join(" / ") || "unset"
+}
+
+function resolveStartLevel(
+  explicit: FxStartLevel | null,
+  defaults: AgentDefaults | undefined,
+): FxStartLevel | null {
+  const model = explicit?.model ?? defaults?.model
+  const effort = explicit?.effort ?? defaults?.effort
+  return model === undefined && effort === undefined ? null : { model, effort }
 }
 
 function wrapText(value: string, width: number): string[] {

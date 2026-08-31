@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { AdeAgentState, AdeAttentionKind, AdeRecord } from "../src/ade-events.ts"
+import type { AgentDefaults } from "../src/config.ts"
 import { ControlFailure, type Snapshot } from "../src/control-protocol.ts"
 import {
   FxWorkControlError,
@@ -73,7 +74,7 @@ async function workspace(): Promise<{ home: string; code: string }> {
   return { home, code }
 }
 
-async function harness(name: string, fmxName?: string) {
+async function harness(name: string, fmxName?: string, agentDefaults?: AgentDefaults) {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const adeSocket = new TestAdeSocket(`/tmp/fmx-control-test-${name}-${process.pid}.ade.sock`)
@@ -89,6 +90,7 @@ async function harness(name: string, fmxName?: string) {
     adeSocket,
     runtimeSocketPath: RUNTIME_PATH,
     projectRoots: [code],
+    agentDefaults,
     fxWorkControl,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
@@ -263,6 +265,32 @@ test("creates background Agents from explicit, caller, and configured projects",
       expect(entry.workControl?.token).toMatch(/^[0-9a-f]{64}$/u)
     }
     expect(first.agent).not.toHaveProperty("workControl")
+  } finally {
+    await h.close()
+  }
+})
+
+test("applies exact Session defaults field by field beneath explicit launch values", async () => {
+  const h = await harness("defaults", undefined, {
+    stateDir: "/var/tmp/fmx-session-state",
+    model: "fixture/default-model",
+    effort: "medium",
+  })
+  try {
+    await h.control("agent.create", { effort: "max" })
+    await h.control("agent.create", { model: "fixture/explicit-model" })
+    expect(h.options.transport.started[0]?.request).toMatchObject({
+      command: [FAKE_FX, "--state-dir", "/var/tmp/fmx-session-state"],
+      env: { FX_MODEL: "fixture/default-model", FX_EFFORT: "max" },
+    })
+    expect(h.options.transport.started[1]?.request).toMatchObject({
+      command: [FAKE_FX, "--state-dir", "/var/tmp/fmx-session-state"],
+      env: { FX_MODEL: "fixture/explicit-model", FX_EFFORT: "medium" },
+    })
+    expect(h.options.manifest.entries.map((entry) => entry.fxArgs)).toEqual([
+      ["--state-dir", "/var/tmp/fmx-session-state"],
+      ["--state-dir", "/var/tmp/fmx-session-state"],
+    ])
   } finally {
     await h.close()
   }
