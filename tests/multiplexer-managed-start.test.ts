@@ -356,3 +356,70 @@ test("a proven ended managed Agent follows definitive finalization and removes s
     await unlink(binding.socketPath).catch(() => {})
   }
 })
+
+test("definitive finalization gates same-id projection and start, then remains fail-closed", async () => {
+  const runtimeSocketPath = `/tmp/fmx-managed-finalizing-${process.pid}.bus`
+  const binding = mintFxWorkControlBinding(runtimeSocketPath, AGENT_ID, "34".repeat(32))
+  await unlink(binding.socketPath).catch(() => {})
+  const endpoint = Bun.listen({
+    unix: binding.socketPath,
+    socket: { data() {} },
+  })
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const h = await harness(AgentManifest.ephemeral("managed-finalizing"), {
+    runtimeSocketPath,
+    beforeDefinitiveAgentForget: async () => {
+      entered.resolve()
+      await release.promise
+      throw new Error("durable terminal receipt unavailable")
+    },
+  })
+  try {
+    await h.multiplexer.projectManagedAgent({ ...claim(), workControl: binding })
+    await h.manifest.markRunning(AGENT_ID)
+    h.transport.attachBehavior = (entry) => {
+      throw new AgentEndedError(entry, { code: 8, signal: 0 })
+    }
+    const ending = h.multiplexer.startManagedAgent(AGENT_ID, {
+      command: [FX, "--managed"],
+      cwd: CWD,
+      env: {},
+    }).catch((error: unknown) => error)
+    await entered.promise
+
+    expect(h.setup.renderer.root.findDescendantById("fx-1")).toBeUndefined()
+    expect(h.manifest.get(AGENT_ID)?.phase).toBe("running")
+    await expect(h.multiplexer.projectManagedAgent({ ...claim(), workControl: binding })).rejects.toThrow(
+      "being definitively finalized",
+    )
+    await expect(h.multiplexer.startManagedAgent(AGENT_ID, {
+      command: [FX, "--managed"],
+      cwd: CWD,
+      env: {},
+    })).rejects.toThrow("being definitively finalized")
+    expect(h.manifest.entries).toHaveLength(1)
+    expect(h.transport.attaches).toHaveLength(1)
+    expect(h.transport.starts).toHaveLength(0)
+
+    release.resolve()
+    expect(await ending).toBeInstanceOf(AgentEndedError)
+    expect(h.manifest.get(AGENT_ID)?.phase).toBe("running")
+    expect(existsSync(binding.socketPath)).toBe(true)
+    await expect(h.multiplexer.projectManagedAgent({ ...claim(), workControl: binding })).rejects.toThrow(
+      "being definitively finalized",
+    )
+    await expect(h.multiplexer.startManagedAgent(AGENT_ID, {
+      command: [FX, "--managed"],
+      cwd: CWD,
+      env: {},
+    })).rejects.toThrow("being definitively finalized")
+    expect(h.manifest.entries).toHaveLength(1)
+    expect(h.transport.attaches).toHaveLength(1)
+  } finally {
+    release.resolve()
+    await h.multiplexer.shutdown()
+    endpoint.stop(true)
+    await unlink(binding.socketPath).catch(() => {})
+  }
+})

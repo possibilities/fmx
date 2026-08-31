@@ -515,6 +515,8 @@ export class Multiplexer {
   private readonly adeStaleRecords = new Map<string, number>()
   /** Managed finalization which shutdown must not strand before Manifest removal. */
   private readonly definitiveAgentFinalizations = new Set<Promise<void>>()
+  /** Exact Agent identities whose terminal durable finalization still owns their claim. */
+  private readonly definitiveAgentFinalizationsById = new Map<string, Promise<void>>()
   /** A projected managed claim is not startable until this exact write lands. */
   private readonly managedAgentClaimSaves = new Map<string, Promise<void>>()
   /** One exact managed start effect may be in flight for each stable Agent. */
@@ -880,6 +882,7 @@ export class Multiplexer {
       throw new ControlFailure("shutting_down", "fmx is shutting down")
     }
     assertManagedClaim(claim)
+    this.assertManagedAgentNotFinalizing(claim.agentId)
     if (this.options.runtimeSocketPath) {
       const expected = mintFxWorkControlBinding(
         this.options.runtimeSocketPath,
@@ -930,7 +933,9 @@ export class Multiplexer {
     if (this.shuttingDown) {
       throw new ControlFailure("shutting_down", "fmx is shutting down")
     }
+    this.assertManagedAgentNotFinalizing(agentId)
     await this.managedAgentClaimSaves.get(agentId)
+    this.assertManagedAgentNotFinalizing(agentId)
     const entry = this.options.manifest.get(agentId)
     if (!entry) throw new Error(`managed Agent is not claimed: ${agentId}`)
     assertManagedInvocation(entry, invocation)
@@ -1004,7 +1009,7 @@ export class Multiplexer {
         // cleanup before the Manifest identity is forgotten.
         this.markAgentDefinitivelyEnded(entry.agentId)
         if (!this.shuttingDown) this.removeAgent(agent)
-        await this.finalizeDefinitiveAgentExit(entry, error.exit)
+        await this.trackDefinitiveAgentFinalization(entry, error.exit)
       }
       throw error
     }
@@ -1126,7 +1131,7 @@ export class Multiplexer {
       if (error instanceof AgentEndedError) this.markAgentDefinitivelyEnded(entry.agentId)
       this.removeAgent(agent)
       if (error instanceof AgentEndedError) {
-        await this.finalizeDefinitiveAgentExit(entry, error.exit)
+        await this.trackDefinitiveAgentFinalization(entry, error.exit)
         return
       }
       // Unreachable is not ended: the claim stays for the next start.
@@ -1179,9 +1184,39 @@ export class Multiplexer {
     entry: ManifestEntry,
     exit: AgentExit | null,
   ): void {
-    const operation = this.finalizeDefinitiveAgentExit(entry, exit)
+    void this.trackDefinitiveAgentFinalization(entry, exit)
+  }
+
+  private trackDefinitiveAgentFinalization(
+    entry: ManifestEntry,
+    exit: AgentExit | null,
+  ): Promise<void> {
+    this.markAgentDefinitivelyEnded(entry.agentId)
+    const active = this.definitiveAgentFinalizationsById.get(entry.agentId)
+    if (active) return active
+    // Install the identity gate before invoking an external finalizer: it may
+    // synchronously re-enter the managed projection surface before its first
+    // await otherwise.
+    const operation = Promise.resolve().then(() => this.finalizeDefinitiveAgentExit(entry, exit))
+    this.definitiveAgentFinalizationsById.set(entry.agentId, operation)
     this.definitiveAgentFinalizations.add(operation)
-    void operation.finally(() => this.definitiveAgentFinalizations.delete(operation))
+    const clear = () => {
+      this.definitiveAgentFinalizations.delete(operation)
+      if (this.definitiveAgentFinalizationsById.get(entry.agentId) === operation) {
+        this.definitiveAgentFinalizationsById.delete(entry.agentId)
+      }
+    }
+    void operation.then(clear, clear)
+    return operation
+  }
+
+  private assertManagedAgentNotFinalizing(agentId: string): void {
+    if (
+      this.definitiveAgentFinalizationsById.has(agentId) ||
+      this.definitivelyEndedAgentIds.has(agentId)
+    ) {
+      throw new Error(`managed Agent is being definitively finalized: ${agentId}`)
+    }
   }
 
   private async finalizeDefinitiveAgentExit(
