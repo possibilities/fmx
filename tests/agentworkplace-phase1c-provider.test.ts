@@ -5,6 +5,7 @@ import { join, resolve } from "node:path"
 import {
   PHASE1C_EVIDENCE_PATHS,
   PHASE1C_FIXTURE_PATH,
+  PHASE1C_FX_CONTRACT_PATH,
   PHASE1C_GATE_INPUT_PATH,
   PHASE1C_IMPLEMENTATION_BASE_COMMIT,
   PHASE1C_REAL_PROCESS_INPUT_PATH,
@@ -32,6 +33,10 @@ describe("AgentWorkplace Phase 1C fmx provider", () => {
   test("keeps the implementation base distinct from parameterized final identities", () => {
     expect(PHASE1C_IMPLEMENTATION_BASE_COMMIT).toBe("e52e6be1685afe77f6ab924001a71fee833751e5")
     expect(PHASE1C_EVIDENCE_PATHS).toContain("tests/phase1c-lifecycle-restart-acceptance.test.ts")
+    expect(PHASE1C_EVIDENCE_PATHS).toContain("tests/phase1c-real-process-composition-acceptance.test.ts")
+    expect(PHASE1C_EVIDENCE_PATHS).toContain("tests/phase1c-real-process-evidence.test.ts")
+    expect(PHASE1C_EVIDENCE_PATHS).toContain("scripts/phase1c-real-process-composition-acceptance.sh")
+    expect(PHASE1C_EVIDENCE_PATHS).toContain("scripts/phase1c-real-process-evidence.ts")
     expect(PHASE1C_EVIDENCE_PATHS).toContain("src/fx-launch-provider.ts")
     expect(PHASE1C_EVIDENCE_PATHS).toContain("src/git-safe-worktree-cleanup.ts")
     expect(PHASE1C_GATE_INPUT_PATH).not.toContain("phase1b")
@@ -95,9 +100,15 @@ describe("AgentWorkplace Phase 1C fmx provider", () => {
     const realProcess = artifact(PHASE1C_REAL_PROCESS_INPUT_PATH, "7")
     const sources = [artifact("artifacts/source/src/lifecycle-runtime.ts", "8")]
     const providerSources = [artifact("artifacts/provider-source/scripts/generate-agentworkplace-phase1c-provider.ts", "9")]
+    const fxSources = [artifact(PHASE1C_FX_CONTRACT_PATH, "5")]
     const bundledFixture = artifact(PHASE1C_FIXTURE_PATH, "a", "0700")
     const manifest = buildPhase1cProviderManifest({
-      authorityCommit: commit("b"),
+      authority: {
+        commit: commit("b"),
+        tree: commit("a"),
+        plan_path: "agentworkplace-implementation-plan.md",
+        plan_sha256: digest("b"),
+      },
       product: { commit: commit("c"), tree: commit("d"), parents: [commit("e"), commit("f")] },
       provider: { commit: commit("1"), tree: commit("2") },
       fx: {
@@ -106,6 +117,7 @@ describe("AgentWorkplace Phase 1C fmx provider", () => {
         privateProviderContractSha256: digest("5"),
         clientSha256: digest("6"),
         pinSha256: digest("7"),
+        sourceTree: commit("8"),
       },
       contracts: {
         manifestSha256: digest("8"),
@@ -121,7 +133,8 @@ describe("AgentWorkplace Phase 1C fmx provider", () => {
       realProcessInput: realProcess,
       sources,
       providerSources,
-      artifacts: [...sources, ...providerSources, bundledFixture, gate, realProcess],
+      fxSources,
+      artifacts: [...sources, ...providerSources, ...fxSources, bundledFixture, gate, realProcess],
     })
     const parsed = Phase1cProviderManifestV1Schema.parse(manifest)
     expect(parsed.schema_id).toBe("fmx.phase1c-provider")
@@ -129,6 +142,9 @@ describe("AgentWorkplace Phase 1C fmx provider", () => {
       phase: "1c",
       plan: "AgentWorkplace Plan Revision 1",
       commit: commit("b"),
+      tree: commit("a"),
+      plan_path: "agentworkplace-implementation-plan.md",
+      plan_sha256: digest("b"),
       source: "frozen-phase1c-handoff",
     })
     expect(parsed.product_repository.parents).toEqual([commit("e"), commit("f")])

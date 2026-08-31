@@ -14,7 +14,7 @@ import {
   rm,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { z } from "zod"
 import {
   AGENTWORKPLACE_CONTRACT_VERSION,
@@ -50,6 +50,8 @@ export const PHASE1C_GATE_INPUT_PATH =
   "evidence-inputs/local-gate.json" as const
 export const PHASE1C_REAL_PROCESS_INPUT_PATH =
   "evidence-inputs/real-process.json" as const
+export const PHASE1C_FX_CONTRACT_PATH =
+  "artifacts/fx-source/src/core/control/launch_provider.md" as const
 export const PHASE1C_PROVIDER_MANIFEST_PATH = "phase1c-provider.json" as const
 export const PHASE1C_GENERATION_EVIDENCE_PATH =
   "generation-evidence.json" as const
@@ -68,7 +70,10 @@ const usage = `Usage: scripts/generate-agentworkplace-phase1c-provider.ts \\
   --output <existing-empty-private-directory> \\
   --product-commit <40-hex-commit> \\
   --product-tree <40-hex-tree> \\
+  --authority-repository <git-repository> \\
   --authority-commit <40-hex-commit> \\
+  --fx-repository <git-repository> \\
+  --installed-fx <absolute-installed-fmx-fx> \\
   --gate-evidence <canonical-json-file> \\
   --real-process-evidence <canonical-json-file>
 
@@ -115,6 +120,19 @@ const fxEvidenceSchema = z.strictObject({
   commit: commitSchema,
   binary_sha256: digestSchema,
   private_provider_contract_sha256: digestSchema,
+})
+const authorityIdentitySchema = repositorySchema.extend({
+  plan_path: z.literal("agentworkplace-implementation-plan.md"),
+  plan_sha256: digestSchema,
+})
+const fxDerivationSchema = z.strictObject({
+  binary: z.strictObject({ digest: digestSchema, probe: z.literal("passed") }),
+  contract: z.strictObject({
+    digest: digestSchema,
+    fx_path: z.literal("src/core/control/launch_provider.md"),
+    artifact: z.literal(PHASE1C_FX_CONTRACT_PATH),
+  }),
+  source_repository: repositorySchema,
 })
 
 export const PHASE1C_REQUIRED_GATE_SCENARIOS = [
@@ -213,6 +231,9 @@ export const Phase1cProviderManifestV1Schema = z
       phase: z.literal("1c"),
       plan: z.literal("AgentWorkplace Plan Revision 1"),
       commit: commitSchema,
+      tree: commitSchema,
+      plan_path: z.literal("agentworkplace-implementation-plan.md"),
+      plan_sha256: digestSchema,
       source: z.literal("frozen-phase1c-handoff"),
     }),
     product_repository: repositorySchema.extend({ parents: z.array(commitSchema).min(1).max(8), name: z.literal("fmx") }),
@@ -223,6 +244,8 @@ export const Phase1cProviderManifestV1Schema = z
       private_provider_contract_sha256: digestSchema,
       fmx_client_sha256: digestSchema,
       pin_sha256: digestSchema,
+      source_tree: commitSchema,
+      contract_artifact: z.literal(PHASE1C_FX_CONTRACT_PATH),
       schema_id: z.literal("fx.private-launch-provider"),
       schema_version: z.literal(1),
     }),
@@ -243,6 +266,7 @@ export const Phase1cProviderManifestV1Schema = z
     features: z.array(featureSchema).min(1).max(64),
     source_inventory: z.array(artifactSchema).min(1).max(256),
     provider_source_inventory: z.array(artifactSchema).min(1).max(16),
+    fx_source_inventory: z.array(artifactSchema).length(1),
     artifacts: z.array(artifactSchema).min(1).max(512),
   })
   .superRefine((value, context) => {
@@ -250,6 +274,7 @@ export const Phase1cProviderManifestV1Schema = z
       ["feature ids", value.features.map(({ id }) => id)],
       ["source paths", value.source_inventory.map(({ path }) => path)],
       ["provider source paths", value.provider_source_inventory.map(({ path }) => path)],
+      ["Fx source paths", value.fx_source_inventory.map(({ path }) => path)],
       ["artifact paths", value.artifacts.map(({ path }) => path)],
     ] as const) {
       if (new Set(paths).size !== paths.length) {
@@ -263,6 +288,7 @@ export const Phase1cGenerationEvidenceV1Schema = z.strictObject({
   schema_version: z.literal(1),
   accepted: z.literal(true),
   authority_commit: commitSchema,
+  authority_repository: authorityIdentitySchema,
   product_repository: repositorySchema,
   provider_repository: repositorySchema,
   generator: z.strictObject({ path: pathSchema, digest: digestSchema }),
@@ -270,15 +296,21 @@ export const Phase1cGenerationEvidenceV1Schema = z.strictObject({
   gate_input: artifactSchema,
   real_process_input: artifactSchema,
   fixture: z.strictObject({ digest: digestSchema, smoke: z.literal("passed") }),
+  fx_derivation: fxDerivationSchema,
   output_inventory: z.array(artifactSchema).min(1).max(512),
 })
 
 export const PHASE1C_EVIDENCE_PATHS = [
   "CONTEXT.md",
+  "README.md",
   "docs/inline-launch-controls-v2.md",
   "fx.json",
   "companion.json",
   "package.json",
+  "scripts/local-gate.sh",
+  "scripts/phase1c-real-process-cleanup.ts",
+  "scripts/phase1c-real-process-composition-acceptance.sh",
+  "scripts/phase1c-real-process-evidence.ts",
   "src/agent-manifest.ts",
   "src/agent-reconcile.ts",
   "src/agent-transport.ts",
@@ -301,9 +333,12 @@ export const PHASE1C_EVIDENCE_PATHS = [
   "src/lifecycle-coordinator.ts",
   "src/lifecycle-runtime.ts",
   "src/multiplexer.ts",
+  "src/private-directory.ts",
   "src/runtime-extension-host.ts",
   "src/runtime-extension.ts",
   "src/runtime-member-correlation.ts",
+  "src/zmx-command.ts",
+  "src/zmx-environment.ts",
   "tests/agent-manifest.test.ts",
   "tests/agent-reconcile.test.ts",
   "tests/companion-client.test.ts",
@@ -322,6 +357,8 @@ export const PHASE1C_EVIDENCE_PATHS = [
   "tests/lifecycle-runtime.test.ts",
   "tests/multiplexer-managed-start.test.ts",
   "tests/phase1c-lifecycle-restart-acceptance.test.ts",
+  "tests/phase1c-real-process-composition-acceptance.test.ts",
+  "tests/phase1c-real-process-evidence.test.ts",
   "tests/phase1c-runtime-extension-fixture.test.ts",
   "tests/runtime-member-correlation.test.ts",
 ] as const
@@ -330,7 +367,7 @@ export const PHASE1C_FEATURES = [
   { id: "durable-ensure-lifecycle", contract: "ensure intent and authoritative effects replay without duplicating creation or admission", tests: ["tests/ensure-lifecycle-ledger.test.ts", "tests/lifecycle-runtime.test.ts"] },
   { id: "durable-inline-launch-source", contract: "immutable work and launch controls bind once to exact ensure authority", tests: ["tests/inline-launch-source.test.ts", "tests/lifecycle-runtime.test.ts"] },
   { id: "exact-worktree-creation", contract: "one exact repository, base commit, branch, and Worktree survive crash recovery", tests: ["tests/exact-worktree-creation.test.ts", "tests/phase1c-lifecycle-restart-acceptance.test.ts"] },
-  { id: "private-fx-launch-provider", contract: "fmx delegates native launch admission and final authority to the pinned private Fx provider", tests: ["tests/fx-launch-provider.test.ts", "tests/lifecycle-runtime.test.ts"] },
+  { id: "private-fx-launch-provider", contract: "fmx delegates native launch admission and final authority to the pinned private Fx provider", tests: ["tests/fx-launch-provider.test.ts", "tests/lifecycle-runtime.test.ts", "tests/phase1c-real-process-composition-acceptance.test.ts"] },
   { id: "exact-agent-retirement", contract: "end receipts and final Fx authority are retained and acknowledged exactly", tests: ["tests/exact-agent-retirement.test.ts", "tests/exact-retirement-ledger.test.ts"] },
   { id: "compare-and-remove-cleanup", contract: "cleanup removes only the originally proven Worktree and preserves a foreign replacement", tests: ["tests/git-safe-worktree-cleanup.test.ts", "tests/phase1c-lifecycle-restart-acceptance.test.ts"] },
   { id: "runtime-restart-replay", contract: "stable lifecycle intents and acknowledgements replay byte-identically across Runtime generations", tests: ["tests/phase1c-runtime-extension-fixture.test.ts", "tests/phase1c-lifecycle-restart-acceptance.test.ts"] },
@@ -343,7 +380,10 @@ type Arguments = {
   readonly output: string
   readonly productCommit: string
   readonly productTree: string
+  readonly authorityRepository: string
   readonly authorityCommit: string
+  readonly fxRepository: string
+  readonly installedFx: string
   readonly gateEvidence: string
   readonly realProcessEvidence: string
 }
@@ -357,7 +397,10 @@ function parseArguments(argv: readonly string[]): Arguments {
     "--output",
     "--product-commit",
     "--product-tree",
+    "--authority-repository",
     "--authority-commit",
+    "--fx-repository",
+    "--installed-fx",
     "--gate-evidence",
     "--real-process-evidence",
   ])
@@ -385,7 +428,10 @@ function parseArguments(argv: readonly string[]): Arguments {
     output: resolve(required("--output")),
     productCommit,
     productTree,
+    authorityRepository: resolve(required("--authority-repository")),
     authorityCommit,
+    fxRepository: resolve(required("--fx-repository")),
+    installedFx: required("--installed-fx"),
     gateEvidence: resolve(required("--gate-evidence")),
     realProcessEvidence: resolve(required("--real-process-evidence")),
   }
@@ -424,6 +470,107 @@ function git(repository: string, args: readonly string[]): string {
   })
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${decoder.decode(result.stderr).trim()}`)
   return decoder.decode(result.stdout).trim()
+}
+
+function gitBytes(repository: string, args: readonly string[]): Uint8Array {
+  const result = Bun.spawnSync({
+    cmd: ["git", "--no-replace-objects", ...args],
+    cwd: repository,
+    env: environmentWithoutGitOverrides(),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${decoder.decode(result.stderr).trim()}`)
+  return new Uint8Array(result.stdout)
+}
+
+async function requireAuthority(repository: string, commit: string): Promise<z.infer<typeof authorityIdentitySchema>> {
+  const root = await realpath(repository)
+  const facts = await lstat(root)
+  if (!facts.isDirectory()) throw new Error("authority repository must be one real Git repository")
+  const resolved = git(root, ["rev-parse", "--verify", `${commit}^{commit}`])
+  if (resolved !== commit) throw new Error("authority commit does not exist in the explicit authority repository")
+  const tree = git(root, ["rev-parse", "--verify", `${commit}^{tree}`])
+  const planPath = "agentworkplace-implementation-plan.md" as const
+  const plan = gitBytes(root, ["show", `${commit}:${planPath}`])
+  if (plan.byteLength === 0) throw new Error("authority commit has no frozen AgentWorkplace plan")
+  return authorityIdentitySchema.parse({
+    commit,
+    tree,
+    plan_path: planPath,
+    plan_sha256: sha256(plan),
+  })
+}
+
+async function requireInstalledFx(path: string): Promise<{ bytes: Uint8Array; path: string }> {
+  if (!isAbsolute(path)) throw new Error("--installed-fx must be an absolute path")
+  const physical = await realpath(path)
+  if (physical !== path) throw new Error("--installed-fx must name its canonical path")
+  const facts = await lstat(physical)
+  if (!facts.isFile() || facts.isSymbolicLink() || (facts.mode & 0o111) === 0) {
+    throw new Error("--installed-fx must be one executable regular file")
+  }
+  await Bun.file(physical).exists()
+  return { bytes: new Uint8Array(await readFile(physical)), path: physical }
+}
+
+function probeInstalledFx(path: string, fxnk: string): void {
+  const version = Bun.spawnSync({
+    cmd: [path, "--fxnk-version"],
+    env: environmentWithoutGitOverrides(),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const stdout = decoder.decode(version.stdout)
+  if (version.exitCode !== 0 || version.stderr.byteLength !== 0 || !stdout.startsWith(`fxnk ${fxnk} (fx `) || !stdout.endsWith(")\n")) {
+    throw new Error("installed fmx-fx failed the exact pinned fxnk version probe")
+  }
+  const provider = Bun.spawnSync({
+    cmd: [path, "--internal-launch-provider"],
+    env: environmentWithoutGitOverrides(),
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  if (provider.exitCode === 0 || provider.stdout.byteLength !== 0 || !decoder.decode(provider.stderr).includes("IncompleteLaunchProviderConfiguration")) {
+    throw new Error("installed fmx-fx failed the private launch-provider probe")
+  }
+}
+
+async function deriveFxAuthority(productRoot: string, fxRepository: string, installedFx: string): Promise<{
+  readonly evidence: z.infer<typeof fxEvidenceSchema>
+  readonly derivation: z.infer<typeof fxDerivationSchema>
+  readonly contractBytes: Uint8Array
+}> {
+  const fxPinBytes = new Uint8Array(await readFile(join(productRoot, "fx.json")))
+  const fxPin = z.strictObject({
+    repository: z.string().url(),
+    branch: z.string().min(1),
+    commit: commitSchema,
+    fxnk: z.string().min(1),
+  }).parse(JSON.parse(decoder.decode(fxPinBytes)))
+  const repository = await realpath(fxRepository)
+  const commit = git(repository, ["rev-parse", "--verify", `${fxPin.commit}^{commit}`])
+  if (commit !== fxPin.commit) throw new Error("frozen fmx Fx pin is absent from the explicit Fx repository")
+  const tree = git(repository, ["rev-parse", "--verify", `${commit}^{tree}`])
+  const fxContractPath = "src/core/control/launch_provider.md" as const
+  const fxContract = gitBytes(repository, ["show", `${commit}:${fxContractPath}`])
+  const binary = await requireInstalledFx(installedFx)
+  probeInstalledFx(binary.path, fxPin.fxnk)
+  const contractDigest = sha256(fxContract)
+  const binaryDigest = sha256(binary.bytes)
+  return {
+    evidence: {
+      commit,
+      binary_sha256: binaryDigest,
+      private_provider_contract_sha256: contractDigest,
+    },
+    derivation: {
+      binary: { digest: binaryDigest, probe: "passed" },
+      contract: { digest: contractDigest, fx_path: fxContractPath, artifact: PHASE1C_FX_CONTRACT_PATH },
+      source_repository: { commit, tree },
+    },
+    contractBytes: fxContract,
+  }
 }
 
 function requireProduct(provider: RepositorySnapshot, productCommit: string, productTree: string): readonly string[] {
@@ -565,7 +712,11 @@ export async function verifyPhase1cFixture(path: string): Promise<void> {
   }
 }
 
-async function productFiles(productRoot: string, additionalPaths: readonly string[]): Promise<IntendedFile[]> {
+async function productFiles(
+  productRoot: string,
+  additionalPaths: readonly string[],
+  contractPaths: readonly string[],
+): Promise<IntendedFile[]> {
   const files: IntendedFile[] = []
   const sourcePaths = [...new Set([...PHASE1C_EVIDENCE_PATHS, ...additionalPaths])].sort()
   for (const sourcePath of sourcePaths) {
@@ -575,13 +726,7 @@ async function productFiles(productRoot: string, additionalPaths: readonly strin
       path: join("artifacts/source", sourcePath),
     })
   }
-  for (const fixture of [
-    "manifest.json",
-    "agent-defaults.jsonl",
-    "ensure-lifecycle.jsonl",
-    "fx-launch-admission-final.jsonl",
-    "runtime-extension.jsonl",
-  ] as const) {
+  for (const fixture of [...new Set(["manifest.json", ...contractPaths])].sort()) {
     files.push({
       bytes: new Uint8Array(await readFile(join(productRoot, "contracts/agentworkplace/v1", fixture))),
       mode: FILE_MODE,
@@ -606,7 +751,7 @@ async function writeExclusive(root: string, file: IntendedFile): Promise<void> {
 }
 
 export function buildPhase1cProviderManifest(input: {
-  readonly authorityCommit: string
+  readonly authority: z.infer<typeof authorityIdentitySchema>
   readonly product: { readonly commit: string; readonly tree: string; readonly parents: readonly string[] }
   readonly provider: { readonly commit: string; readonly tree: string }
   readonly fx: {
@@ -615,6 +760,7 @@ export function buildPhase1cProviderManifest(input: {
     readonly privateProviderContractSha256: string
     readonly clientSha256: string
     readonly pinSha256: string
+    readonly sourceTree: string
   }
   readonly contracts: { readonly manifestSha256: string; readonly fixtures: readonly { path: string; schema_id: string; sha256: string }[] }
   readonly fixtureDigest: string
@@ -622,13 +768,19 @@ export function buildPhase1cProviderManifest(input: {
   readonly realProcessInput: Artifact
   readonly sources: readonly Artifact[]
   readonly providerSources: readonly Artifact[]
+  readonly fxSources: readonly Artifact[]
   readonly artifacts: readonly Artifact[]
 }): JsonValue {
   return Phase1cProviderManifestV1Schema.parse({
     schema_id: "fmx.phase1c-provider",
     schema_version: 1,
     package: { name: "fmx.phase1c-provider", version: "1" },
-    authority: { phase: "1c", plan: "AgentWorkplace Plan Revision 1", commit: input.authorityCommit, source: "frozen-phase1c-handoff" },
+    authority: {
+      phase: "1c",
+      plan: "AgentWorkplace Plan Revision 1",
+      ...input.authority,
+      source: "frozen-phase1c-handoff",
+    },
     product_repository: { name: "fmx", ...input.product },
     provider_repository: { name: "fmx", ...input.provider },
     fx_provider: {
@@ -637,6 +789,8 @@ export function buildPhase1cProviderManifest(input: {
       private_provider_contract_sha256: input.fx.privateProviderContractSha256,
       fmx_client_sha256: input.fx.clientSha256,
       pin_sha256: input.fx.pinSha256,
+      source_tree: input.fx.sourceTree,
+      contract_artifact: PHASE1C_FX_CONTRACT_PATH,
       schema_id: FX_LAUNCH_PROVIDER_SCHEMA_ID,
       schema_version: FX_LAUNCH_PROVIDER_SCHEMA_VERSION,
     },
@@ -646,6 +800,7 @@ export function buildPhase1cProviderManifest(input: {
     features: PHASE1C_FEATURES,
     source_inventory: input.sources,
     provider_source_inventory: input.providerSources,
+    fx_source_inventory: input.fxSources,
     artifacts: input.artifacts,
   }) as unknown as JsonValue
 }
@@ -655,13 +810,11 @@ async function main(): Promise<void> {
   const provider = await captureCleanRepositorySnapshot(REPOSITORY_ROOT)
   const productParents = requireProduct(provider, args.productCommit, args.productTree)
   const output = await validateOutput(args.output, provider)
+  const authority = await requireAuthority(args.authorityRepository, args.authorityCommit)
   const gate = await readCanonicalEvidence(args.gateEvidence, Phase1cGateEvidenceV1Schema, "Phase 1C gate evidence")
   const realProcess = await readCanonicalEvidence(args.realProcessEvidence, Phase1cRealProcessEvidenceV1Schema, "Phase 1C real-process evidence")
   for (const [label, identity] of [["gate", gate.value.product_repository], ["real-process", realProcess.value.product_repository]] as const) {
     if (identity.commit !== args.productCommit || identity.tree !== args.productTree) throw new Error(`${label} evidence names another product`)
-  }
-  if (JSON.stringify(gate.value.fx) !== JSON.stringify(realProcess.value.fx)) {
-    throw new Error("gate and real-process evidence do not name the same final Fx provider")
   }
 
   const sourceRoot = await mkdtemp(join(tmpdir(), "fmx-phase1c-provider-source-"))
@@ -671,8 +824,12 @@ async function main(): Promise<void> {
     const productSnapshot = await materializeProduct(provider, args.productCommit, args.productTree, productRoot)
     await materializeProductDependencies(productRoot)
     const fxPinBytes = new Uint8Array(await readFile(join(productRoot, "fx.json")))
-    const fxPin = JSON.parse(decoder.decode(fxPinBytes)) as { commit?: unknown }
-    if (fxPin.commit !== realProcess.value.fx.commit) throw new Error("real-process Fx commit does not match the frozen fmx Fx pin")
+    const fxAuthority = await deriveFxAuthority(productRoot, args.fxRepository, args.installedFx)
+    for (const [label, identity] of [["gate", gate.value.fx], ["real-process", realProcess.value.fx]] as const) {
+      if (JSON.stringify(identity) !== JSON.stringify(fxAuthority.evidence)) {
+        throw new Error(`${label} evidence Fx identity does not match the independently derived installed provider`)
+      }
+    }
 
     const contractVerification = await verifyAgentWorkplaceContracts(join(productRoot, "contracts/agentworkplace/v1"))
     const fixtureOutput = join(sourceRoot, "phase1c-runtime-extension-fixture.js")
@@ -682,12 +839,17 @@ async function main(): Promise<void> {
     const artifacts = await productFiles(productRoot, [
       ...gate.value.source_paths,
       ...realProcess.value.source_paths,
-    ])
+    ], contractVerification.fixtures.map(({ path }) => path))
     const generatorBytes = new Uint8Array(await readFile(join(REPOSITORY_ROOT, "scripts/generate-agentworkplace-phase1c-provider.ts")))
     artifacts.push({
       bytes: generatorBytes,
       mode: FILE_MODE,
       path: "artifacts/provider-source/scripts/generate-agentworkplace-phase1c-provider.ts",
+    })
+    artifacts.push({
+      bytes: fxAuthority.contractBytes,
+      mode: FILE_MODE,
+      path: PHASE1C_FX_CONTRACT_PATH,
     })
     artifacts.push({ bytes: fixtureBytes, mode: EXECUTABLE_MODE, path: PHASE1C_FIXTURE_PATH })
     artifacts.push({ bytes: gate.bytes, mode: FILE_MODE, path: PHASE1C_GATE_INPUT_PATH })
@@ -695,6 +857,7 @@ async function main(): Promise<void> {
     const artifactRecords = artifacts.map(artifact).sort((left, right) => left.path.localeCompare(right.path))
     const sourceRecords = artifactRecords.filter(({ path }) => path.startsWith("artifacts/source/"))
     const providerSourceRecords = artifactRecords.filter(({ path }) => path.startsWith("artifacts/provider-source/"))
+    const fxSourceRecords = artifactRecords.filter(({ path }) => path.startsWith("artifacts/fx-source/"))
     const gateInput = artifactRecords.find(({ path }) => path === PHASE1C_GATE_INPUT_PATH)!
     const realProcessInput = artifactRecords.find(({ path }) => path === PHASE1C_REAL_PROCESS_INPUT_PATH)!
     const fixtureRecords = contractVerification.fixtures.map((entry) => ({
@@ -703,15 +866,16 @@ async function main(): Promise<void> {
       sha256: `sha256:${entry.sha256}`,
     }))
     const manifestValue = buildPhase1cProviderManifest({
-      authorityCommit: args.authorityCommit,
+      authority,
       product: { commit: args.productCommit, tree: args.productTree, parents: productParents },
       provider: { commit: provider.headSha, tree: provider.headTree },
       fx: {
-        commit: realProcess.value.fx.commit,
-        binarySha256: realProcess.value.fx.binary_sha256,
-        privateProviderContractSha256: realProcess.value.fx.private_provider_contract_sha256,
+        commit: fxAuthority.evidence.commit,
+        binarySha256: fxAuthority.evidence.binary_sha256,
+        privateProviderContractSha256: fxAuthority.evidence.private_provider_contract_sha256,
         clientSha256: sha256(await readFile(join(productRoot, "src/fx-launch-provider.ts"))),
         pinSha256: sha256(fxPinBytes),
+        sourceTree: fxAuthority.derivation.source_repository.tree,
       },
       contracts: { manifestSha256: `sha256:${contractVerification.manifest_sha256}`, fixtures: fixtureRecords },
       fixtureDigest: sha256(fixtureBytes),
@@ -719,6 +883,7 @@ async function main(): Promise<void> {
       realProcessInput,
       sources: sourceRecords,
       providerSources: providerSourceRecords,
+      fxSources: fxSourceRecords,
       artifacts: artifactRecords,
     })
     const manifest: IntendedFile = {
@@ -731,6 +896,7 @@ async function main(): Promise<void> {
       schema_version: 1,
       accepted: true,
       authority_commit: args.authorityCommit,
+      authority_repository: authority,
       product_repository: { commit: args.productCommit, tree: args.productTree },
       provider_repository: { commit: provider.headSha, tree: provider.headTree },
       generator: { path: "scripts/generate-agentworkplace-phase1c-provider.ts", digest: sha256(generatorBytes) },
@@ -738,6 +904,7 @@ async function main(): Promise<void> {
       gate_input: gateInput,
       real_process_input: realProcessInput,
       fixture: { digest: sha256(fixtureBytes), smoke: "passed" },
+      fx_derivation: fxAuthority.derivation,
       output_inventory: [...artifactRecords, artifact(manifest)].sort((left, right) => left.path.localeCompare(right.path)),
     })
     const generation: IntendedFile = {
@@ -759,7 +926,7 @@ async function main(): Promise<void> {
       product_tree: args.productTree,
       provider_commit: provider.headSha,
       provider_tree: provider.headTree,
-      fx_commit: realProcess.value.fx.commit,
+      fx_commit: fxAuthority.evidence.commit,
       real_process_evidence_digest: realProcessInput.digest,
     })}\n`)
   } finally {
