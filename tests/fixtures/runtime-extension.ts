@@ -26,11 +26,19 @@ type FixtureMode =
 const mode = (process.env.FMX_FIXTURE_EXTENSION_MODE ?? "ready") as FixtureMode
 const logPath = process.env.FMX_FIXTURE_EXTENSION_LOG
 const scripted = readScript(process.env.FMX_FIXTURE_EXTENSION_SCRIPT)
+const autoSnapshot = process.env.FMX_FIXTURE_EXTENSION_AUTO_SNAPSHOT === "1"
+const presentFocus = readOptionalBoolean(process.env.FMX_FIXTURE_EXTENSION_PRESENT_FOCUS)
+const presentDelayMs = readBoundedDelay(process.env.FMX_FIXTURE_EXTENSION_PRESENT_DELAY_MS)
+const clearAfterAction = process.env.FMX_FIXTURE_EXTENSION_CLEAR_AFTER_ACTION === "1"
 const stderrText = process.env.FMX_FIXTURE_EXTENSION_STDERR
 if (stderrText) process.stderr.write(stderrText)
 
 const decoder = new ContractFrameDecoder()
 let initialized = false
+let requestSequence = 0
+let snapshotRequestPending = false
+let lastSnapshotRevision: string | null = null
+let presentSent = false
 
 type InitializeMessage = {
   request_id: string
@@ -41,6 +49,10 @@ type InitializeMessage = {
   fmx_session: string
   protocol_version: 1
 }
+
+type SnapshotInvalidatedMessage = Extract<RuntimeExtensionMessage, { revision: unknown }>
+type SnapshotResultMessage = Extract<RuntimeExtensionMessage, { agents: unknown }>
+type RecoveryCardActionMessage = Extract<RuntimeExtensionMessage, { action_id: unknown }>
 
 for await (const chunk of Bun.stdin.stream()) {
   for (const payload of decoder.push(chunk)) {
@@ -57,6 +69,7 @@ for await (const chunk of Bun.stdin.stream()) {
       await initialize(message as unknown as InitializeMessage)
       continue
     }
+    await handleRuntimeMessage(message)
   }
 }
 decoder.finish()
@@ -110,8 +123,76 @@ async function initialize(
   }
 }
 
+async function handleRuntimeMessage(message: RuntimeExtensionMessage): Promise<void> {
+  switch (message.message_type) {
+    case "snapshot_invalidated": {
+      const invalidation = message as SnapshotInvalidatedMessage
+      if (!autoSnapshot || snapshotRequestPending) return
+      snapshotRequestPending = true
+      write({
+        schema_id: RUNTIME_EXTENSION_SCHEMA_ID,
+        schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
+        message_type: "snapshot_get",
+        request_id: requestId("snapshot"),
+        fmx_session: invalidation.fmx_session,
+        after_revision: lastSnapshotRevision,
+      })
+      return
+    }
+    case "snapshot_result": {
+      const snapshot = message as SnapshotResultMessage
+      snapshotRequestPending = false
+      lastSnapshotRevision = snapshot.revision
+      if (presentFocus === null || presentSent || snapshot.agents.length === 0) return
+      presentSent = true
+      if (presentDelayMs > 0) await Bun.sleep(presentDelayMs)
+      write({
+        schema_id: RUNTIME_EXTENSION_SCHEMA_ID,
+        schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
+        message_type: "present",
+        request_id: requestId("present"),
+        fmx_session: snapshot.fmx_session,
+        agent_id: snapshot.agents[0]!.agent_id,
+        focus: presentFocus,
+      })
+      return
+    }
+    case "unavailable_slot_action": {
+      const action = message as RecoveryCardActionMessage
+      write({
+        schema_id: RUNTIME_EXTENSION_SCHEMA_ID,
+        schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
+        message_type: "response",
+        request_id: action.request_id,
+        operation: "unavailable_slot_action",
+        ok: true,
+        status: "accepted",
+      })
+      if (clearAfterAction) {
+        write({
+          schema_id: RUNTIME_EXTENSION_SCHEMA_ID,
+          schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
+          message_type: "unavailable_slot_clear",
+          request_id: requestId("clear"),
+          fmx_session: action.fmx_session,
+          slot_id: action.slot_id,
+          card_revision: action.card_revision,
+        })
+      }
+      return
+    }
+    default:
+      return
+  }
+}
+
 function write(message: AgentWorkplaceMessage): void {
   process.stdout.write(Buffer.from(encodeAgentWorkplaceFrame(message)))
+}
+
+function requestId(kind: string): string {
+  requestSequence += 1
+  return `fixture-${kind}-${requestSequence}`
 }
 
 async function record(message: RuntimeExtensionMessage): Promise<void> {
@@ -140,4 +221,23 @@ function readScript(value: string | undefined): AgentWorkplaceMessage[] {
     }
     return message
   })
+}
+
+function readOptionalBoolean(value: string | undefined): boolean | null {
+  if (value === undefined) return null
+  if (value === "true") return true
+  if (value === "false") return false
+  throw new Error("FMX_FIXTURE_EXTENSION_PRESENT_FOCUS must be true or false")
+}
+
+function readBoundedDelay(value: string | undefined): number {
+  if (value === undefined) return 0
+  if (!/^(?:0|[1-9]\d*)$/u.test(value)) {
+    throw new Error("FMX_FIXTURE_EXTENSION_PRESENT_DELAY_MS must be a nonnegative integer")
+  }
+  const delay = Number(value)
+  if (!Number.isSafeInteger(delay) || delay > 5_000) {
+    throw new Error("FMX_FIXTURE_EXTENSION_PRESENT_DELAY_MS must not exceed 5000")
+  }
+  return delay
 }
