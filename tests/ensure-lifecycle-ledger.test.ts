@@ -234,14 +234,15 @@ async function fxFinalFor(
   receipt: FxFinalReceipt
   acknowledgement: FxFinalReceiptAcknowledgement
 }> {
-  if (record.effects.fx.status !== "started") throw new Error("Fx must be started")
   const fixture = await fixtureFxFinal()
   const receipt = structuredClone(fixture.receipt)
   receipt.receipt_id = `fx-final-receipt-${index}`
   receipt.admission_key = binding.admission_key
   receipt.launch_id = record.request.launch_id
   receipt.launch_digest = record.request.launch_digest
-  receipt.conversation_id = record.effects.fx.conversation_id
+  receipt.conversation_id = record.effects.fx.status === "started"
+    ? record.effects.fx.conversation_id
+    : CONVERSATION_ID
   receipt.receipt_digest = deriveFxFinalReceiptDigest(receipt)
   const acknowledgement = structuredClone(fixture.acknowledgement)
   acknowledgement.acknowledgement_id = `fx-final-ack-${index}`
@@ -378,13 +379,10 @@ async function completedFxFinalLedger(index: number): Promise<{
 }> {
   const setup = await startedFinalLedger(index)
   await setup.ledger.retainFxFinalReceipt(setup.request.ensure_id, setup.receipt)
-  await setup.ledger.prepareFxFinalReceiptAcknowledgement(
+  const record = await setup.ledger.acknowledgeFxFinalReceipt(
     setup.request.ensure_id,
     setup.acknowledgement,
-  )
-  const record = await setup.ledger.markFxFinalReceiptAcknowledgementApplied(
-    setup.request.ensure_id,
-    setup.acknowledgement.acknowledgement_id,
+    { acknowledge: async () => {} },
   )
   return {
     path: recordPathFor(setup.root, setup.request.ensure_id),
@@ -464,6 +462,25 @@ describe("private recoverable ensure lifecycle ledger", () => {
       stage: "claimed",
     })
     expect(await ledger.list()).toHaveLength(2)
+  })
+
+  test("writes the unpublished private ledger as v2 and refuses v1 without migration", async () => {
+    const { ledger, request, root } = await populatedLedger(142)
+    const claimed = (await ledger.get(request.ensure_id))!
+    expect(claimed).toMatchObject({
+      schema_id: "fmx.ensure-lifecycle-ledger",
+      schema_version: 2,
+      revision: 1,
+    })
+    const path = recordPathFor(root, request.ensure_id)
+    const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, JsonValue>
+    expect(persisted.schema_version).toBe(2)
+    persisted.schema_version = 1
+    await writeFile(path, Buffer.concat([
+      Buffer.from(encodeCanonicalJson(persisted)),
+      Buffer.from("\n"),
+    ]), { mode: 0o600 })
+    await expectLedgerError(EnsureLifecycleLedger.open(root), "corrupt_record")
   })
 
   test("advances exact effects monotonically and makes every completed step replay-safe", async () => {
@@ -684,25 +701,31 @@ describe("private recoverable ensure lifecycle ledger", () => {
       fixture.request.ensure_id,
       structuredClone(fxFinal.acknowledgement),
     )).toEqual(prepared)
-    await expectLedgerError(
-      ledger.markFxFinalReceiptAcknowledgementApplied(
-        fixture.request.ensure_id,
-        "another-acknowledgement",
-      ),
-      "invalid_acknowledgement",
-    )
-    const applied = await ledger.markFxFinalReceiptAcknowledgementApplied(
+    const authorityCalls: FxFinalReceiptAcknowledgement[] = []
+    const authority = {
+      acknowledge: async (
+        _binding: Readonly<FxFinalReceiptAuthorityBinding>,
+        acknowledgement: Readonly<FxFinalReceiptAcknowledgement>,
+      ) => {
+        authorityCalls.push(structuredClone(acknowledgement))
+      },
+    }
+    const applied = await ledger.acknowledgeFxFinalReceipt(
       fixture.request.ensure_id,
-      fxFinal.acknowledgement.acknowledgement_id,
+      fxFinal.acknowledgement,
+      authority,
     )
     expect(applied).toMatchObject({
       revision: 9,
       fx_final: { acknowledgement_applied: true },
     })
-    expect(await ledger.markFxFinalReceiptAcknowledgementApplied(
+    expect(authorityCalls).toEqual([fxFinal.acknowledgement])
+    expect(await ledger.acknowledgeFxFinalReceipt(
       fixture.request.ensure_id,
-      fxFinal.acknowledgement.acknowledgement_id,
+      fxFinal.acknowledgement,
+      authority,
     )).toEqual(applied)
+    expect(authorityCalls).toHaveLength(1)
 
     const volatileManifest = join(scratch, "runtime-manifest.json")
     await writeFile(volatileManifest, "{}\n", { mode: 0o600 })
@@ -713,6 +736,113 @@ describe("private recoverable ensure lifecycle ledger", () => {
       fixture.request.ensure_id,
       fxFinal.binding,
     )).toEqual(applied)
+  })
+
+  test("retains exec failure and fast-exit receipts when the local Fx start response is absent", async () => {
+    {
+      const { ledger, request, root } = await populatedLedger(140)
+      const transitions = transitionsFor(request)
+      await ledger.advance(request.ensure_id, transitions[0]!)
+      await ledger.advance(request.ensure_id, transitions[1]!)
+      const binding = fxFinalBindingFor(140)
+      await ledger.bindFxFinalReceiptAuthority(request.ensure_id, binding)
+      const companion = await ledger.advance(request.ensure_id, transitions[2]!)
+      const final = await fxFinalFor(companion, 140, binding)
+      final.receipt.outcome = {
+        kind: "exec_failed",
+        message: "fixture exec failed before the local start response",
+      }
+      final.receipt.receipt_digest = deriveFxFinalReceiptDigest(final.receipt)
+      final.acknowledgement.receipt_digest = final.receipt.receipt_digest
+
+      const faulted = await EnsureLifecycleLedger.open(root, {
+        fault: (point, record) => {
+          if (point === "before_rename" && record.fx_final.receipt !== null) {
+            throw new Error("exec-failed receipt crashed before durable rename")
+          }
+        },
+      })
+      await expect(faulted.retainFxFinalReceipt(
+        request.ensure_id,
+        final.receipt,
+      )).rejects.toThrow("exec-failed receipt crashed before durable rename")
+      const reopened = await EnsureLifecycleLedger.open(root)
+      expect(await reopened.get(request.ensure_id)).toMatchObject({
+        revision: 5,
+        stage: "companion_started",
+        fx_final: { receipt: null },
+      })
+      const retained = await reopened.retainFxFinalReceipt(request.ensure_id, final.receipt)
+      expect(retained).toMatchObject({
+        schema_version: 2,
+        revision: 6,
+        stage: "companion_started",
+        effects: { fx: { status: "pending" } },
+        fx_final: { receipt: final.receipt },
+      })
+      expect(await reopened.retainFxFinalReceipt(request.ensure_id, final.receipt)).toEqual(retained)
+      const applied = await reopened.acknowledgeFxFinalReceipt(
+        request.ensure_id,
+        final.acknowledgement,
+        { acknowledge: async () => {} },
+      )
+      expect(applied).toMatchObject({
+        revision: 8,
+        stage: "companion_started",
+        fx_final: { acknowledgement_applied: true },
+      })
+    }
+
+    {
+      const { ledger, request, root } = await populatedLedger(141)
+      const transitions = transitionsFor(request)
+      await ledger.advance(request.ensure_id, transitions[0]!)
+      await ledger.advance(request.ensure_id, transitions[1]!)
+      const binding = fxFinalBindingFor(141)
+      await ledger.bindFxFinalReceiptAuthority(request.ensure_id, binding)
+      const companion = await ledger.advance(request.ensure_id, transitions[2]!)
+      const final = await fxFinalFor(companion, 141, binding)
+      const faulted = await EnsureLifecycleLedger.open(root, {
+        fault: (point, record) => {
+          if (point === "after_rename" && record.fx_final.receipt !== null) {
+            throw new Error("lost final-receipt response after durable rename")
+          }
+        },
+      })
+      await expect(faulted.retainFxFinalReceipt(
+        request.ensure_id,
+        final.receipt,
+      )).rejects.toThrow("lost final-receipt response after durable rename")
+
+      const recovered = await EnsureLifecycleLedger.open(root)
+      const durable = (await recovered.get(request.ensure_id))!
+      expect(durable).toMatchObject({
+        revision: 6,
+        stage: "companion_started",
+        effects: { fx: { status: "pending" } },
+        fx_final: { receipt: final.receipt },
+      })
+      expect(await recovered.retainFxFinalReceipt(request.ensure_id, final.receipt)).toEqual(durable)
+      await expectLedgerError(
+        recovered.advance(request.ensure_id, {
+          kind: "fx_started",
+          conversation_id: "1788999999999-1788999999999000000-deadbeef",
+        }),
+        "invalid_transition",
+      )
+      const correlated = await recovered.advance(request.ensure_id, {
+        kind: "fx_started",
+        conversation_id: final.receipt.conversation_id,
+      })
+      expect(correlated).toMatchObject({
+        revision: 7,
+        stage: "fx_started",
+        effects: {
+          fx: { status: "started", conversation_id: final.receipt.conversation_id },
+        },
+        fx_final: { receipt: final.receipt },
+      })
+    }
   })
 
   test("rejects every changed Fx final receipt and acknowledgement correlation", async () => {
@@ -928,6 +1058,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
         let finalRevision = 1
         let finalStage: EnsureLifecycleRecord["stage"] = "claimed"
         let apply: (ledger: EnsureLifecycleLedger) => Promise<EnsureLifecycleRecord>
+        let fxAppliedCalls: string[] | null = null
 
         if (family === "claim") {
           apply = (ledger) => ledger.claim(request)
@@ -1003,9 +1134,21 @@ describe("private recoverable ensure lifecycle ledger", () => {
                 beforeRevision = 8
                 finalRevision = 9
                 finalStage = "fx_started"
-                apply = (ledger) => ledger.markFxFinalReceiptAcknowledgementApplied(
+                fxAppliedCalls = []
+                const authority = {
+                  acknowledge: async (
+                    _binding: Readonly<FxFinalReceiptAuthorityBinding>,
+                    acknowledgement: Readonly<FxFinalReceiptAcknowledgement>,
+                  ) => {
+                    fxAppliedCalls!.push(Buffer.from(encodeCanonicalJson(
+                      acknowledgement as unknown as JsonValue,
+                    )).toString("hex"))
+                  },
+                }
+                apply = (ledger) => ledger.acknowledgeFxFinalReceipt(
                   request.ensure_id,
-                  final.acknowledgement.acknowledgement_id,
+                  final.acknowledgement,
+                  authority,
                 )
               }
             }
@@ -1032,6 +1175,10 @@ describe("private recoverable ensure lifecycle ledger", () => {
         const replayed = await apply(recovered)
         expect(replayed, marker).toMatchObject({ revision: finalRevision, stage: finalStage })
         expect(await apply(recovered), marker).toEqual(replayed)
+        if (fxAppliedCalls !== null) {
+          expect(fxAppliedCalls, marker).toHaveLength(boundary.committed ? 1 : 2)
+          expect(new Set(fxAppliedCalls).size, marker).toBe(1)
+        }
         expect(await recovered.list()).toHaveLength(1)
       }
     }
@@ -1389,18 +1536,34 @@ describe("private recoverable ensure lifecycle ledger", () => {
         ),
       ])
       expect(prepared[0]).toEqual(prepared[1])
+      const authorityCalls: FxFinalReceiptAcknowledgement[] = []
+      const authority = {
+        acknowledge: async (
+          _binding: Readonly<FxFinalReceiptAuthorityBinding>,
+          acknowledgement: Readonly<FxFinalReceiptAcknowledgement>,
+        ) => {
+          authorityCalls.push(structuredClone(acknowledgement))
+        },
+      }
       const applied = await Promise.all([
-        first.markFxFinalReceiptAcknowledgementApplied(
+        first.acknowledgeFxFinalReceipt(
           setup.request.ensure_id,
-          setup.acknowledgement.acknowledgement_id,
+          setup.acknowledgement,
+          authority,
         ),
-        second.markFxFinalReceiptAcknowledgementApplied(
+        second.acknowledgeFxFinalReceipt(
           setup.request.ensure_id,
-          setup.acknowledgement.acknowledgement_id,
+          setup.acknowledgement,
+          authority,
         ),
       ])
       expect(applied[0]).toEqual(applied[1])
       expect(applied[0]).toMatchObject({ revision: 9, fx_final: { acknowledgement_applied: true } })
+      expect(authorityCalls.length).toBeGreaterThanOrEqual(1)
+      expect(authorityCalls.every((acknowledgement) =>
+        Buffer.from(encodeCanonicalJson(acknowledgement as unknown as JsonValue)).equals(
+          Buffer.from(encodeCanonicalJson(setup.acknowledgement as unknown as JsonValue)),
+        ))).toBe(true)
     }
 
     {

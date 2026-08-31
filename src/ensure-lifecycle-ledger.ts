@@ -30,7 +30,7 @@ import {
 import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
 
 const LEDGER_SCHEMA_ID = "fmx.ensure-lifecycle-ledger"
-const LEDGER_SCHEMA_VERSION = 1
+const LEDGER_SCHEMA_VERSION = 2
 const LOCK_FILE = ".ensure-lifecycle.lock"
 const RECORD_FILE = /^[0-9a-f]{64}\.json$/u
 const TEMPORARY_FILE = /^[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{16}\.tmp$/u
@@ -438,7 +438,7 @@ export class EnsureLifecycleLedger {
   }
 
   /** Record that the exact durable Fx authority accepted the retained acknowledgement. */
-  markFxFinalReceiptAcknowledgementApplied(
+  private markFxFinalReceiptAcknowledgementApplied(
     ensureId: string,
     acknowledgementId: string,
   ): Promise<EnsureLifecycleRecord> {
@@ -894,8 +894,11 @@ function assertFxFinalReceiptCorrelation(
   code: EnsureLifecycleLedgerErrorCode,
 ): void {
   const binding = record.fx_final.binding
-  if (record.stage !== "fx_started" || record.effects.fx.status !== "started") {
-    throw ledgerError(code, `ensure ${record.request.ensure_id} has no durably started Fx`)
+  if (
+    STAGES.indexOf(record.stage) < STAGES.indexOf("companion_started") ||
+    record.effects.companion.status !== "started"
+  ) {
+    throw ledgerError(code, `ensure ${record.request.ensure_id} has no durably started Companion`)
   }
   if (binding === null) {
     throw ledgerError(code, `ensure ${record.request.ensure_id} has no Fx final-receipt authority`)
@@ -903,10 +906,15 @@ function assertFxFinalReceiptCorrelation(
   if (
     receipt.launch_id !== record.request.launch_id ||
     receipt.launch_digest !== record.request.launch_digest ||
-    receipt.admission_key !== binding.admission_key ||
+    receipt.admission_key !== binding.admission_key
+  ) {
+    throw ledgerError(code, "Fx final receipt changed the exact launch correlation")
+  }
+  if (
+    record.effects.fx.status === "started" &&
     receipt.conversation_id !== record.effects.fx.conversation_id
   ) {
-    throw ledgerError(code, `Fx final receipt changed the exact launch or Conversation correlation`)
+    throw ledgerError(code, "Fx final receipt changed the durably started Conversation")
   }
 }
 
@@ -1073,6 +1081,15 @@ function advanceRecord(
     case "fx_started":
       if (!isAgentWorkplaceConversationId(transition.conversation_id)) {
         throw ledgerError("invalid_transition", "Fx start did not return a valid Conversation identity")
+      }
+      if (
+        record.fx_final.receipt !== null &&
+        transition.conversation_id !== record.fx_final.receipt.conversation_id
+      ) {
+        throw ledgerError(
+          "invalid_transition",
+          "Fx start changed the Conversation in the retained final receipt",
+        )
       }
       next.effects.fx = { status: "started", conversation_id: transition.conversation_id }
       break
