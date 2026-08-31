@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   symlink,
   unlink,
@@ -148,6 +149,7 @@ function distinctRequest(base: EnsureRequest, index: number): EnsureRequest {
 function transitionsFor(
   request: EnsureRequest,
   headCommit: string = HEAD_COMMIT,
+  conversationId: string = CONVERSATION_ID,
 ): EnsureLifecycleTransition[] {
   return [
     {
@@ -161,8 +163,58 @@ function transitionsFor(
       session_name: `fmx-${request.agent_id}`,
       pane_id: `p_${request.agent_id}`,
     },
-    { kind: "fx_started", conversation_id: CONVERSATION_ID },
+    { kind: "fx_started", conversation_id: conversationId },
   ]
+}
+
+function receiptFor(record: EnsureLifecycleRecord, receiptId: string): EnsureReceipt {
+  const status = record.stage === "fx_started" ? "complete" : "in_progress"
+  const withoutDigest = {
+    schema_id: "fmx.ensure-lifecycle",
+    schema_version: 1,
+    message_type: "ensure_receipt",
+    request_id: record.request.request_id,
+    receipt_id: receiptId,
+    workplace_instance_id: record.request.workplace_instance_id,
+    fmx_session: record.request.fmx_session,
+    ensure_id: record.request.ensure_id,
+    ensure_digest: record.request.ensure_digest,
+    launch_id: record.request.launch_id,
+    launch_digest: record.request.launch_digest,
+    worktree_id: record.request.worktree_id,
+    agent_id: record.request.agent_id,
+    status,
+    effects: structuredClone(record.effects),
+  } as const
+  return {
+    ...withoutDigest,
+    receipt_digest: createHash("sha256")
+      .update(encodeCanonicalJson(withoutDigest as unknown as JsonValue))
+      .digest("hex"),
+  }
+}
+
+function acknowledgementFor(
+  receipt: EnsureReceipt,
+  acknowledgementId: string,
+): EnsureReceiptAcknowledgement {
+  return {
+    schema_id: "fmx.ensure-lifecycle",
+    schema_version: 1,
+    message_type: "receipt_acknowledgement",
+    acknowledgement_id: acknowledgementId,
+    receipt_kind: "ensure",
+    receipt_id: receipt.receipt_id,
+    receipt_digest: receipt.receipt_digest,
+    ensure_id: receipt.ensure_id,
+  }
+}
+
+async function writeCanonicalRecord(path: string, record: EnsureLifecycleRecord): Promise<void> {
+  const canonical = encodeCanonicalJson(record as unknown as JsonValue)
+  await writeFile(path, Buffer.concat([Buffer.from(canonical), Buffer.from("\n")]), {
+    mode: 0o600,
+  })
 }
 
 async function populatedLedger(index: number): Promise<{
@@ -177,6 +229,34 @@ async function populatedLedger(index: number): Promise<{
   const ledger = await EnsureLifecycleLedger.open(root)
   await ledger.claim(request)
   return { ledger, request, root, scratch }
+}
+
+async function completedFixtureLedger(): Promise<{
+  path: string
+  record: EnsureLifecycleRecord
+  root: string
+}> {
+  const fixture = await fixtureA()
+  const { root } = await newLedgerRoot()
+  const ledger = await EnsureLifecycleLedger.open(root)
+  await ledger.claim(fixture.request)
+  const [worktree, manifest, companion, fx] = transitionsFor(
+    fixture.request,
+    fixture.request.planned_worktree.base_commit,
+  )
+  await ledger.advance(fixture.request.ensure_id, worktree!)
+  await ledger.advance(fixture.request.ensure_id, manifest!)
+  await ledger.retainEnsureReceipt(fixture.partialReceipt)
+  await ledger.acknowledgeEnsureReceipt(fixture.partialAcknowledgement)
+  await ledger.advance(fixture.request.ensure_id, companion!)
+  await ledger.advance(fixture.request.ensure_id, fx!)
+  await ledger.retainEnsureReceipt(fixture.completeReceipt)
+  const record = await ledger.acknowledgeEnsureReceipt(fixture.completeAcknowledgement)
+  return {
+    path: recordPathFor(root, fixture.request.ensure_id),
+    record,
+    root,
+  }
 }
 
 describe("private recoverable ensure lifecycle ledger", () => {
@@ -194,7 +274,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
     const changedRequestId = structuredClone(request)
     changedRequestId.request_id = "ensure-request-same-digest-different-call"
     expect(changedRequestId.ensure_digest).toBe(request.ensure_digest)
-    await expectLedgerError(ledger.claim(changedRequestId), "conflicting_claim")
+    expect(await ledger.claim(changedRequestId)).toEqual(claimed)
 
     const changedClaim = structuredClone(request)
     changedClaim.fx_conversation.name = "same-ensure-different-conversation"
@@ -209,12 +289,6 @@ describe("private recoverable ensure lifecycle ledger", () => {
       label: string
       mutate: (candidate: EnsureRequest) => void
     }> = [
-      {
-        label: "request id",
-        mutate: (candidate) => {
-          candidate.request_id = request.request_id
-        },
-      },
       {
         label: "launch id",
         mutate: (candidate) => {
@@ -247,14 +321,29 @@ describe("private recoverable ensure lifecycle ledger", () => {
       await expectLedgerError(ledger.claim(candidate), "conflicting_claim")
       expect(await ledger.list(), collision.label).toHaveLength(1)
     }
+
+    const reusedRequestId = distinctRequest(fixtureRequest, 19)
+    reusedRequestId.request_id = request.request_id
+    reusedRequestId.ensure_digest = deriveEnsureDigest(reusedRequestId)
+    await expect(ledger.claim(reusedRequestId)).resolves.toMatchObject({
+      request: reusedRequestId,
+      stage: "claimed",
+    })
+    expect(await ledger.list()).toHaveLength(2)
   })
 
   test("advances exact effects monotonically and makes every completed step replay-safe", async () => {
     const { ledger, request } = await populatedLedger(20)
-    const transitions = transitionsFor(request)
+    const transitions = transitionsFor(request, HEAD_COMMIT, "conversation-alpha")
 
     await expectLedgerError(ledger.advance(request.ensure_id, transitions[1]!), "invalid_transition")
     for (const [index, transition] of transitions.entries()) {
+      if (transition.kind === "fx_started") {
+        await expectLedgerError(ledger.advance(request.ensure_id, {
+          kind: "fx_started",
+          conversation_id: "invalid/conversation",
+        }), "invalid_transition")
+      }
       const advanced = await ledger.advance(request.ensure_id, transition)
       expect(advanced.revision).toBe(index + 2)
       expect(advanced.stage).toBe(transition.kind)
@@ -278,7 +367,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
         worktree: { status: "created", head_commit: HEAD_COMMIT },
         manifest: { status: "claimed", agent_id: request.agent_id },
         companion: { status: "started" },
-        fx: { status: "started", conversation_id: CONVERSATION_ID },
+        fx: { status: "started", conversation_id: "conversation-alpha" },
       },
     })
   })
@@ -334,7 +423,7 @@ describe("private recoverable ensure lifecycle ledger", () => {
     expect(await reopened.acknowledgeEnsureReceipt(fixture.completeAcknowledgement)).toEqual(complete)
   })
 
-  test("recovers only renamed records across every deterministic durability boundary", async () => {
+  test("recovers every mutation family across every deterministic durability boundary", async () => {
     const { request: fixtureRequest } = await fixtureA()
     const cases: Array<{
       point: EnsureLifecycleLedgerFaultPoint
@@ -347,26 +436,158 @@ describe("private recoverable ensure lifecycle ledger", () => {
       { point: "after_directory_sync", committed: true },
     ]
 
-    for (const [index, boundary] of cases.entries()) {
-      const request = distinctRequest(fixtureRequest, 30 + index)
-      const { root } = await newLedgerRoot()
-      const marker = `fault at ${boundary.point}`
-      const faulted = await EnsureLifecycleLedger.open(root, {
-        fault: (point) => {
-          if (point === boundary.point) throw new Error(marker)
+    const families = ["claim", "advance", "receipt", "acknowledgement"] as const
+    for (const [familyIndex, family] of families.entries()) {
+      for (const [pointIndex, boundary] of cases.entries()) {
+        const request = distinctRequest(fixtureRequest, 30 + familyIndex * 10 + pointIndex)
+        const { root } = await newLedgerRoot()
+        const clean = await EnsureLifecycleLedger.open(root)
+        let beforeRevision: number | null = null
+        let beforeStage: EnsureLifecycleRecord["stage"] | null = null
+        let finalRevision = 1
+        let finalStage: EnsureLifecycleRecord["stage"] = "claimed"
+        let apply: (ledger: EnsureLifecycleLedger) => Promise<EnsureLifecycleRecord>
+
+        if (family === "claim") {
+          apply = (ledger) => ledger.claim(request)
+        } else {
+          await clean.claim(request)
+          beforeRevision = 1
+          beforeStage = "claimed"
+          const worktree = transitionsFor(request)[0]!
+          if (family === "advance") {
+            finalRevision = 2
+            finalStage = "worktree_created"
+            apply = (ledger) => ledger.advance(request.ensure_id, worktree)
+          } else {
+            await clean.advance(request.ensure_id, worktree)
+            await clean.advance(request.ensure_id, transitionsFor(request)[1]!)
+            const current = (await clean.get(request.ensure_id))!
+            const receipt = receiptFor(current, `receipt-${familyIndex}-${pointIndex}`)
+            beforeRevision = 3
+            beforeStage = "manifest_claimed"
+            if (family === "receipt") {
+              finalRevision = 4
+              finalStage = "manifest_claimed"
+              apply = (ledger) => ledger.retainEnsureReceipt(receipt)
+            } else {
+              await clean.retainEnsureReceipt(receipt)
+              const acknowledgement = acknowledgementFor(
+                receipt,
+                `acknowledgement-${familyIndex}-${pointIndex}`,
+              )
+              beforeRevision = 4
+              finalRevision = 5
+              finalStage = "manifest_claimed"
+              apply = (ledger) => ledger.acknowledgeEnsureReceipt(acknowledgement)
+            }
+          }
+        }
+
+        const marker = `${family} fault at ${boundary.point}`
+        const faulted = await EnsureLifecycleLedger.open(root, {
+          fault: (point) => {
+            if (point === boundary.point) throw new Error(marker)
+          },
+        })
+        await expect(apply(faulted)).rejects.toThrow(marker)
+
+        const recovered = await EnsureLifecycleLedger.open(root)
+        const durable = await recovered.get(request.ensure_id)
+        if (boundary.committed) {
+          expect(durable, marker).toMatchObject({ revision: finalRevision, stage: finalStage })
+        } else if (beforeRevision === null) {
+          expect(durable, marker).toBeNull()
+        } else {
+          expect(durable, marker).toMatchObject({ revision: beforeRevision, stage: beforeStage })
+        }
+        const replayed = await apply(recovered)
+        expect(replayed, marker).toMatchObject({ revision: finalRevision, stage: finalStage })
+        expect(await apply(recovered), marker).toEqual(replayed)
+        expect(await recovered.list()).toHaveLength(1)
+      }
+    }
+  })
+
+  test("binds the locked file, root directory, and record target identities", async () => {
+    const { request: fixtureRequest } = await fixtureA()
+    {
+      const request = distinctRequest(fixtureRequest, 70)
+      const { root, scratch } = await newLedgerRoot()
+      let swapped = false
+      const ledger = await EnsureLifecycleLedger.open(root, {
+        fault: async (point) => {
+          if (point !== "before_write" || swapped) return
+          swapped = true
+          await rename(join(root, ".ensure-lifecycle.lock"), join(scratch, "displaced.lock"))
+          await writeFile(join(root, ".ensure-lifecycle.lock"), "", { mode: 0o600 })
         },
       })
-      await expect(faulted.claim(request)).rejects.toThrow(marker)
+      await expectLedgerError(ledger.claim(request), "unsafe_storage")
+      expect(await (await EnsureLifecycleLedger.open(root)).get(request.ensure_id)).toBeNull()
+    }
 
+    {
+      const request = distinctRequest(fixtureRequest, 71)
+      const { root, scratch } = await newLedgerRoot()
+      let swapped = false
+      const ledger = await EnsureLifecycleLedger.open(root, {
+        fault: async (point) => {
+          if (point !== "before_write" || swapped) return
+          swapped = true
+          await rename(root, join(scratch, "displaced-ledger"))
+          await mkdir(root, { mode: 0o700 })
+          await writeFile(join(root, ".ensure-lifecycle.lock"), "", { mode: 0o600 })
+        },
+      })
+      await expectLedgerError(ledger.claim(request), "unsafe_storage")
+      expect(await (await EnsureLifecycleLedger.open(root)).get(request.ensure_id)).toBeNull()
+    }
+
+    {
+      const { ledger: initial, request, root, scratch } = await populatedLedger(72)
+      const target = recordPathFor(root, request.ensure_id)
+      const original = await readFile(target)
+      let swapped = false
+      const ledger = await EnsureLifecycleLedger.open(root, {
+        fault: async (point) => {
+          if (point !== "before_rename" || swapped) return
+          swapped = true
+          await rename(target, join(scratch, "displaced-record.json"))
+          await writeFile(target, original, { mode: 0o600 })
+        },
+      })
+      const transition = transitionsFor(request)[0]!
+      await expectLedgerError(ledger.advance(request.ensure_id, transition), "unsafe_storage")
       const recovered = await EnsureLifecycleLedger.open(root)
-      const durable = await recovered.get(request.ensure_id)
-      if (boundary.committed) {
-        expect(durable, boundary.point).toMatchObject({ revision: 1, stage: "claimed", request })
-      } else {
-        expect(durable, boundary.point).toBeNull()
-      }
-      expect(await recovered.claim(request)).toMatchObject({ revision: 1, stage: "claimed", request })
-      expect(await recovered.list()).toHaveLength(1)
+      expect(await recovered.get(request.ensure_id)).toMatchObject({ revision: 1, stage: "claimed" })
+      expect(await recovered.advance(request.ensure_id, transition)).toMatchObject({
+        revision: 2,
+        stage: "worktree_created",
+      })
+      expect(await initial.get(request.ensure_id)).toMatchObject({
+        revision: 2,
+        stage: "worktree_created",
+      })
+    }
+  })
+
+  test("rejects receipt histories that live mutations cannot produce", async () => {
+    {
+      const { path, record, root } = await completedFixtureLedger()
+      const duplicate = structuredClone(record.acknowledgements.at(-1)!)
+      duplicate.acknowledgement_id = "ensure-ack-a-complete-second"
+      record.acknowledgements.push(duplicate)
+      record.revision++
+      await writeCanonicalRecord(path, record)
+      await expectLedgerError(EnsureLifecycleLedger.open(root), "corrupt_record")
+    }
+
+    {
+      const { path, record, root } = await completedFixtureLedger()
+      record.receipts.reverse()
+      await writeCanonicalRecord(path, record)
+      await expectLedgerError(EnsureLifecycleLedger.open(root), "corrupt_record")
     }
   })
 

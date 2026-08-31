@@ -1,4 +1,4 @@
-import { closeSync, openSync } from "node:fs"
+import { closeSync, constants, openSync } from "node:fs"
 import { dlopen } from "bun:ffi"
 
 const LOCK_EXCLUSIVE = 2
@@ -43,7 +43,13 @@ export function exclusiveLockHeld(path: string): boolean | null {
   }
 }
 
-export type HeldLock = { release: () => void }
+export type HeldLock = { descriptor: number; release: () => void }
+
+export type ExclusiveLockOptions = {
+  create?: boolean
+  noFollow?: boolean
+  mode?: number
+}
 
 /**
  * Take an exclusive flock on `path`, creating it if needed, and hold it until
@@ -52,12 +58,18 @@ export type HeldLock = { release: () => void }
  * says as much about who owns it; `undefined` only when the native probe is
  * unavailable and nothing can be said either way.
  */
-export function acquireExclusiveLock(path: string): HeldLock | null | undefined {
+export function acquireExclusiveLock(
+  path: string,
+  options: ExclusiveLockOptions = {},
+): HeldLock | null | undefined {
   const nativeFlock = loadFlock()
   if (!nativeFlock) return undefined
   let descriptor: number
   try {
-    descriptor = openSync(path, "a+")
+    const flags = constants.O_RDWR |
+      (options.create === false ? 0 : constants.O_CREAT) |
+      (options.noFollow === true ? constants.O_NOFOLLOW : 0)
+    descriptor = openSync(path, flags, options.mode ?? 0o600)
   } catch {
     // A lock file this process cannot open is one it does not hold. Reporting
     // "no flock here" would let the caller bind the socket unlocked.
@@ -74,6 +86,7 @@ export function acquireExclusiveLock(path: string): HeldLock | null | undefined 
   }
   let released = false
   return {
+    descriptor,
     release: () => {
       if (released) return
       released = true

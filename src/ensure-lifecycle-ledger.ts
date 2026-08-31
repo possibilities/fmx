@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto"
-import { constants, type Stats } from "node:fs"
+import { constants, fstatSync, type Stats } from "node:fs"
 import {
   lstat,
   mkdir,
@@ -15,6 +15,7 @@ import { dirname, isAbsolute, resolve } from "node:path"
 import * as z from "zod/v4"
 import {
   ensureLifecycleMessageSchema,
+  isAgentWorkplaceConversationId,
   type EnsureLifecycleMessage,
 } from "./agentworkplace-contracts.ts"
 import { identityFor } from "./agent-manifest.ts"
@@ -24,7 +25,7 @@ import {
   encodeCanonicalJson,
   type JsonValue,
 } from "./contract-codec.ts"
-import { acquireExclusiveLock } from "./file-lock.ts"
+import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
 
 const LEDGER_SCHEMA_ID = "fmx.ensure-lifecycle-ledger"
 const LEDGER_SCHEMA_VERSION = 1
@@ -32,7 +33,6 @@ const LOCK_FILE = ".ensure-lifecycle.lock"
 const RECORD_FILE = /^[0-9a-f]{64}\.json$/u
 const TEMPORARY_FILE = /^[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{16}\.tmp$/u
 const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
-const CONVERSATION_ID = /^\d{13}-\d{19}-[0-9a-f]{8}$/u
 const STAGES = [
   "claimed",
   "worktree_created",
@@ -181,7 +181,15 @@ const privateRecordSchema = z.strictObject({
 
 type RecordIndex = {
   byEnsureId: Map<string, EnsureLifecycleRecord>
+  identities: Map<string, Stats>
   records: EnsureLifecycleRecord[]
+}
+
+type StorageGuard = {
+  directory: FileHandle
+  lock: HeldLock
+  lockIdentity: Stats
+  rootIdentity: Stats
 }
 
 /**
@@ -215,16 +223,16 @@ export class EnsureLifecycleLedger {
   ): Promise<EnsureLifecycleLedger> {
     assertRootPath(root)
     const ledger = new EnsureLifecycleLedger(root, options)
-    await ledger.serial(() => ledger.withLock(async () => {
-      await ledger.readIndex()
+    await ledger.serial(() => ledger.withLock(async (guard) => {
+      await ledger.readIndex(guard)
     }))
     return ledger
   }
 
   claim(requestInput: EnsureRequest): Promise<EnsureLifecycleRecord> {
-    return this.serial(() => this.withLock(async () => {
+    return this.serial(() => this.withLock(async (guard) => {
       const request = parseEnsureRequest(requestInput)
-      const index = await this.readIndex()
+      const index = await this.readIndex(guard)
       const existing = index.byEnsureId.get(request.ensure_id)
       if (existing) {
         if (!sameEnsureClaim(existing.request, request)) {
@@ -246,38 +254,38 @@ export class EnsureLifecycleLedger {
         receipts: [],
         acknowledgements: [],
       }
-      await this.writeRecord(record)
+      await this.writeRecord(record, guard, null)
       return copyRecord(record)
     }))
   }
 
   get(ensureId: string): Promise<EnsureLifecycleRecord | null> {
-    return this.serial(() => this.withLock(async () => {
-      const record = (await this.readIndex()).byEnsureId.get(ensureId)
+    return this.serial(() => this.withLock(async (guard) => {
+      const record = (await this.readIndex(guard)).byEnsureId.get(ensureId)
       return record ? copyRecord(record) : null
     }))
   }
 
   list(): Promise<EnsureLifecycleRecord[]> {
-    return this.serial(() => this.withLock(async () =>
-      (await this.readIndex()).records.map(copyRecord)))
+    return this.serial(() => this.withLock(async (guard) =>
+      (await this.readIndex(guard)).records.map(copyRecord)))
   }
 
   advance(ensureId: string, transition: EnsureLifecycleTransition): Promise<EnsureLifecycleRecord> {
-    return this.serial(() => this.withLock(async () => {
-      const index = await this.readIndex()
+    return this.serial(() => this.withLock(async (guard) => {
+      const index = await this.readIndex(guard)
       const record = requireRecord(index, ensureId)
       const advanced = advanceRecord(record, transition)
       if (advanced === record) return copyRecord(record)
-      await this.writeRecord(advanced)
+      await this.writeRecord(advanced, guard, requireRecordIdentity(index, ensureId))
       return copyRecord(advanced)
     }))
   }
 
   retainEnsureReceipt(receiptInput: EnsureReceipt): Promise<EnsureLifecycleRecord> {
-    return this.serial(() => this.withLock(async () => {
+    return this.serial(() => this.withLock(async (guard) => {
       const receipt = parseEnsureReceipt(receiptInput)
-      const index = await this.readIndex()
+      const index = await this.readIndex(guard)
       const record = requireRecord(index, receipt.ensure_id)
       const existing = record.receipts.find(({ receipt_id }) => receipt_id === receipt.receipt_id)
       if (existing) {
@@ -299,7 +307,7 @@ export class EnsureLifecycleLedger {
       next.revision++
       next.receipts.push(receipt)
       validateRecord(next, recordPathFor(this.root, receipt.ensure_id))
-      await this.writeRecord(next)
+      await this.writeRecord(next, guard, requireRecordIdentity(index, receipt.ensure_id))
       return copyRecord(next)
     }))
   }
@@ -307,9 +315,9 @@ export class EnsureLifecycleLedger {
   acknowledgeEnsureReceipt(
     acknowledgementInput: EnsureReceiptAcknowledgement,
   ): Promise<EnsureLifecycleRecord> {
-    return this.serial(() => this.withLock(async () => {
+    return this.serial(() => this.withLock(async (guard) => {
       const acknowledgement = parseEnsureAcknowledgement(acknowledgementInput)
-      const index = await this.readIndex()
+      const index = await this.readIndex(guard)
       const record = requireRecord(index, acknowledgement.ensure_id)
       const receipt = record.receipts.find(
         ({ receipt_id }) => receipt_id === acknowledgement.receipt_id,
@@ -355,7 +363,11 @@ export class EnsureLifecycleLedger {
       next.revision++
       next.acknowledgements.push(acknowledgement)
       validateRecord(next, recordPathFor(this.root, acknowledgement.ensure_id))
-      await this.writeRecord(next)
+      await this.writeRecord(
+        next,
+        guard,
+        requireRecordIdentity(index, acknowledgement.ensure_id),
+      )
       return copyRecord(next)
     }))
   }
@@ -366,21 +378,44 @@ export class EnsureLifecycleLedger {
     return result
   }
 
-  private async withLock<T>(operation: () => Promise<T>): Promise<T> {
-    await ensurePrivateRoot(this.root, this.uid)
-    await ensureLockFile(this.root, this.uid)
+  private async withLock<T>(operation: (guard: StorageGuard) => Promise<T>): Promise<T> {
+    const expectedRoot = await ensurePrivateRoot(this.root, this.uid)
+    const expectedLock = await ensureLockFile(this.root, this.uid)
     for (let attempt = 0; attempt < this.lockAttempts; attempt++) {
-      const lock = acquireExclusiveLock(resolve(this.root, LOCK_FILE))
+      const lock = acquireExclusiveLock(resolve(this.root, LOCK_FILE), {
+        create: false,
+        noFollow: true,
+      })
       if (lock === undefined) {
         throw ledgerError("lock_unavailable", "native flock is unavailable for the ensure ledger")
       }
       if (lock !== null) {
+        let directory: FileHandle | null = null
         try {
-          await ensurePrivateRoot(this.root, this.uid)
-          await assertSafeFile(resolve(this.root, LOCK_FILE), this.uid)
-          return await operation()
+          const lockedIdentity = fstatSync(lock.descriptor)
+          assertSafeStats(resolve(this.root, LOCK_FILE), lockedIdentity, this.uid)
+          if (!sameFileIdentity(expectedLock, lockedIdentity)) {
+            throw unsafeStorage("ensure ledger lock changed before it was acquired")
+          }
+          directory = await open(this.root, constants.O_RDONLY | constants.O_NOFOLLOW)
+          const directoryIdentity = await directory.stat()
+          assertSafeRootStats(this.root, directoryIdentity, this.uid)
+          if (!sameRootIdentity(expectedRoot, directoryIdentity)) {
+            throw unsafeStorage("ensure ledger root changed before its lock was acquired")
+          }
+          const guard = {
+            directory,
+            lock,
+            lockIdentity: lockedIdentity,
+            rootIdentity: directoryIdentity,
+          }
+          await assertStorageGuard(this.root, guard, this.uid)
+          const result = await operation(guard)
+          await assertStorageGuard(this.root, guard, this.uid)
+          return result
         } finally {
           lock.release()
+          await directory?.close().catch(() => undefined)
         }
       }
       await delay(this.lockDelayMs)
@@ -388,9 +423,11 @@ export class EnsureLifecycleLedger {
     throw ledgerError("lock_unavailable", "the ensure ledger lock remained held")
   }
 
-  private async readIndex(): Promise<RecordIndex> {
+  private async readIndex(guard: StorageGuard): Promise<RecordIndex> {
+    await assertStorageGuard(this.root, guard, this.uid)
     const entries = await readdir(this.root, { withFileTypes: true })
     const records: EnsureLifecycleRecord[] = []
+    const identities = new Map<string, Stats>()
     const temporaries: string[] = []
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const path = resolve(this.root, entry.name)
@@ -408,14 +445,17 @@ export class EnsureLifecycleLedger {
       if (!RECORD_FILE.test(entry.name) || !entry.isFile()) {
         throw ledgerError("corrupt_record", `foreign or unsafe entry in ensure ledger: ${path}`)
       }
-      const record = await readRecord(path, this.uid)
+      await assertStorageGuard(this.root, guard, this.uid)
+      const { identity, record } = await readRecord(path, this.uid)
       if (entry.name !== recordFileName(record.request.ensure_id)) {
         throw ledgerError("corrupt_record", `ensure ledger filename does not match ${record.request.ensure_id}`)
       }
       records.push(record)
+      identities.set(record.request.ensure_id, identity)
     }
     validateIndex(records)
     for (const temporary of temporaries) {
+      await assertStorageGuard(this.root, guard, this.uid)
       try {
         await unlink(temporary)
       } catch (error) {
@@ -425,14 +465,21 @@ export class EnsureLifecycleLedger {
     // A prior process may have died after rename but before syncing the
     // directory. Re-sync even when no temporary remains so retry turns either
     // observable pre-rename or post-rename state into durable authority.
-    await syncDirectory(this.root)
+    await guard.directory.sync()
+    await assertStorageGuard(this.root, guard, this.uid)
     return {
       byEnsureId: new Map(records.map((record) => [record.request.ensure_id, record])),
+      identities,
       records,
     }
   }
 
-  private async writeRecord(record: EnsureLifecycleRecord): Promise<void> {
+  private async writeRecord(
+    record: EnsureLifecycleRecord,
+    guard: StorageGuard,
+    expectedTarget: Stats | null,
+  ): Promise<void> {
+    await assertStorageGuard(this.root, guard, this.uid)
     validateRecord(record, recordPathFor(this.root, record.request.ensure_id))
     const canonical = encodeCanonicalJson(record as unknown as JsonValue)
     const bytes = Buffer.concat([Buffer.from(canonical), Buffer.from("\n")])
@@ -442,6 +489,8 @@ export class EnsureLifecycleLedger {
     const target = recordPathFor(this.root, record.request.ensure_id)
     const temporary = `${target}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
     await this.inject("before_write", record)
+    await assertStorageGuard(this.root, guard, this.uid)
+    await assertTargetSnapshot(target, expectedTarget, this.uid)
     let handle: FileHandle | null = null
     let renamed = false
     try {
@@ -456,7 +505,10 @@ export class EnsureLifecycleLedger {
       assertSafeStats(temporary, temporaryIdentity, this.uid)
       await handle.sync()
       await this.inject("after_file_sync", record)
+      await assertStorageGuard(this.root, guard, this.uid)
       await this.inject("before_rename", record)
+      await assertStorageGuard(this.root, guard, this.uid)
+      await assertTargetSnapshot(target, expectedTarget, this.uid)
       const pathnameIdentity = await assertSafeFile(temporary, this.uid)
       if (!sameFileIdentity(temporaryIdentity, pathnameIdentity)) {
         throw unsafeStorage(`${temporary} changed before its durable rename`)
@@ -470,8 +522,10 @@ export class EnsureLifecycleLedger {
         throw unsafeStorage(`${target} changed during its durable rename`)
       }
       await this.inject("after_rename", record)
-      await syncDirectory(this.root)
+      await assertStorageGuard(this.root, guard, this.uid)
+      await guard.directory.sync()
       await this.inject("after_directory_sync", record)
+      await assertStorageGuard(this.root, guard, this.uid)
     } finally {
       await handle?.close().catch(() => undefined)
       if (!renamed) await unlink(temporary).catch(() => undefined)
@@ -654,7 +708,7 @@ function advanceRecord(
       }
       break
     case "fx_started":
-      if (!CONVERSATION_ID.test(transition.conversation_id)) {
+      if (!isAgentWorkplaceConversationId(transition.conversation_id)) {
         throw ledgerError("invalid_transition", "Fx start did not return a valid Conversation identity")
       }
       next.effects.fx = { status: "started", conversation_id: transition.conversation_id }
@@ -736,15 +790,21 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
     )
   }
   const receiptIds = new Set<string>()
+  let previousReceiptStage = -1
   for (const receiptInput of record.receipts) {
     const receipt = parseEnsureReceipt(receiptInput)
     if (receiptIds.has(receipt.receipt_id)) {
       throw ledgerError("corrupt_record", `${path} repeats receipt ${receipt.receipt_id}`)
     }
     receiptIds.add(receipt.receipt_id)
-    assertHistoricalReceipt(record, receipt, path)
+    const receiptStage = STAGES.indexOf(assertHistoricalReceipt(record, receipt, path))
+    if (receiptStage < previousReceiptStage) {
+      throw ledgerError("corrupt_record", `${path} has regressive receipt history`)
+    }
+    previousReceiptStage = receiptStage
   }
   const acknowledgementIds = new Set<string>()
+  const acknowledgedReceiptIds = new Set<string>()
   for (const acknowledgementInput of record.acknowledgements) {
     const acknowledgement = parseEnsureAcknowledgement(acknowledgementInput)
     if (acknowledgementIds.has(acknowledgement.acknowledgement_id)) {
@@ -754,6 +814,13 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
       )
     }
     acknowledgementIds.add(acknowledgement.acknowledgement_id)
+    if (acknowledgedReceiptIds.has(acknowledgement.receipt_id)) {
+      throw ledgerError(
+        "corrupt_record",
+        `${path} acknowledges receipt ${acknowledgement.receipt_id} more than once`,
+      )
+    }
+    acknowledgedReceiptIds.add(acknowledgement.receipt_id)
     const receipt = record.receipts.find(
       ({ receipt_id }) => receipt_id === acknowledgement.receipt_id,
     )
@@ -780,7 +847,7 @@ function assertHistoricalReceipt(
   record: EnsureLifecycleRecord,
   receipt: EnsureReceipt,
   path: string,
-): void {
+): EnsureLifecycleStage {
   const request = record.request
   for (const field of [
     "request_id",
@@ -805,6 +872,7 @@ function assertHistoricalReceipt(
   if (receipt.status !== expectedStatus) {
     throw ledgerError("corrupt_record", `${path} receipt status conflicts with its effects`)
   }
+  return receiptStage
 }
 
 function stageForEffects(
@@ -843,7 +911,6 @@ function effectsAtStage(
 
 function validateIndex(records: EnsureLifecycleRecord[]): void {
   const ensureIds = new Set<string>()
-  const requestIds = new Set<string>()
   const launchIds = new Set<string>()
   const worktreeIds = new Set<string>()
   const agentIds = new Set<string>()
@@ -853,7 +920,6 @@ function validateIndex(records: EnsureLifecycleRecord[]): void {
   for (const record of records) {
     const request = record.request
     assertUnique(ensureIds, request.ensure_id, "ensure id")
-    assertUnique(requestIds, request.request_id, "request id")
     assertUnique(launchIds, request.launch_id, "launch id")
     assertUnique(worktreeIds, request.worktree_id, "Worktree id")
     assertUnique(agentIds, request.agent_id, "Agent id")
@@ -876,7 +942,6 @@ function assertSecondaryClaimsAvailable(
   for (const record of records) {
     const existing = record.request
     for (const [label, left, right] of [
-      ["request id", existing.request_id, request.request_id],
       ["launch id", existing.launch_id, request.launch_id],
       ["Worktree id", existing.worktree_id, request.worktree_id],
       ["Agent id", existing.agent_id, request.agent_id],
@@ -903,7 +968,16 @@ function requireRecord(index: RecordIndex, ensureId: string): EnsureLifecycleRec
   return record
 }
 
-async function readRecord(path: string, uid: number): Promise<EnsureLifecycleRecord> {
+function requireRecordIdentity(index: RecordIndex, ensureId: string): Stats {
+  const identity = index.identities.get(ensureId)
+  if (!identity) throw ledgerError("corrupt_record", `ensure ${ensureId} has no file identity`)
+  return identity
+}
+
+async function readRecord(
+  path: string,
+  uid: number,
+): Promise<{ identity: Stats; record: EnsureLifecycleRecord }> {
   const { bytes, initial } = await readSafeFile(path, uid)
   try {
     if (bytes.byteLength < 2 || bytes[bytes.byteLength - 1] !== 0x0a) {
@@ -957,7 +1031,7 @@ async function readRecord(path: string, uid: number): Promise<EnsureLifecycleRec
     if (initial.size !== bytes.byteLength) {
       throw ledgerError("corrupt_record", `${path} changed while being read`)
     }
-    return record
+    return { identity: initial, record }
   } catch (error) {
     if (error instanceof EnsureLifecycleLedgerError && error.code === "corrupt_record") throw error
     const wrapped = ledgerError("corrupt_record", `${path} could not be decoded as a private ensure record`)
@@ -1002,7 +1076,7 @@ async function readSafeFile(path: string, uid: number): Promise<{ bytes: Buffer;
   }
 }
 
-async function ensurePrivateRoot(root: string, uid: number): Promise<void> {
+async function ensurePrivateRoot(root: string, uid: number): Promise<Stats> {
   let existed = true
   try {
     await lstat(root)
@@ -1012,19 +1086,15 @@ async function ensurePrivateRoot(root: string, uid: number): Promise<void> {
     await mkdir(root, { recursive: true, mode: 0o700 })
   }
   const info = await lstat(root)
-  if (!info.isDirectory() || info.isSymbolicLink()) {
-    throw unsafeStorage(`ensure ledger root ${root} is not a real directory`)
-  }
-  if (info.uid !== uid || (info.mode & 0o777) !== 0o700) {
-    throw unsafeStorage(`ensure ledger root ${root} must be owned by uid ${uid} with mode 0700`)
-  }
+  assertSafeRootStats(root, info, uid)
   if (await realpath(root) !== root) {
     throw unsafeStorage(`ensure ledger root ${root} crosses a symbolic link`)
   }
   if (!existed) await syncDirectory(dirname(root))
+  return info
 }
 
-async function ensureLockFile(root: string, uid: number): Promise<void> {
+async function ensureLockFile(root: string, uid: number): Promise<Stats> {
   const path = resolve(root, LOCK_FILE)
   let handle: FileHandle | null = null
   let created = false
@@ -1042,8 +1112,60 @@ async function ensureLockFile(root: string, uid: number): Promise<void> {
   } finally {
     await handle?.close()
   }
-  await assertSafeFile(path, uid)
+  const identity = await assertSafeFile(path, uid)
   if (created) await syncDirectory(root)
+  return identity
+}
+
+async function assertStorageGuard(
+  root: string,
+  guard: StorageGuard,
+  uid: number,
+): Promise<void> {
+  const directoryIdentity = await guard.directory.stat()
+  assertSafeRootStats(root, directoryIdentity, uid)
+  if (!sameRootIdentity(guard.rootIdentity, directoryIdentity)) {
+    throw unsafeStorage(`ensure ledger root descriptor changed: ${root}`)
+  }
+  const rootPathIdentity = await lstat(root)
+  assertSafeRootStats(root, rootPathIdentity, uid)
+  if (
+    !sameRootIdentity(guard.rootIdentity, rootPathIdentity) ||
+    await realpath(root) !== root
+  ) {
+    throw unsafeStorage(`ensure ledger root path changed while locked: ${root}`)
+  }
+
+  const lockPath = resolve(root, LOCK_FILE)
+  const lockedIdentity = fstatSync(guard.lock.descriptor)
+  assertSafeStats(lockPath, lockedIdentity, uid)
+  if (!sameFileIdentity(guard.lockIdentity, lockedIdentity)) {
+    throw unsafeStorage(`ensure ledger lock descriptor changed: ${lockPath}`)
+  }
+  const lockPathIdentity = await assertSafeFile(lockPath, uid)
+  if (!sameFileIdentity(guard.lockIdentity, lockPathIdentity)) {
+    throw unsafeStorage(`ensure ledger lock path changed while held: ${lockPath}`)
+  }
+}
+
+async function assertTargetSnapshot(
+  path: string,
+  expected: Stats | null,
+  uid: number,
+): Promise<void> {
+  if (expected === null) {
+    try {
+      await lstat(path)
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return
+      throw unsafeStorage(`cannot inspect new ensure ledger target ${path}`, error)
+    }
+    throw unsafeStorage(`new ensure ledger target already exists: ${path}`)
+  }
+  const current = await assertSafeFile(path, uid)
+  if (!sameFileSnapshot(expected, current)) {
+    throw unsafeStorage(`ensure ledger target changed during its transaction: ${path}`)
+  }
 }
 
 async function assertSafeFile(path: string, uid: number): Promise<Stats> {
@@ -1068,6 +1190,17 @@ function assertSafeStats(path: string, info: Stats, uid: number): void {
   }
 }
 
+function assertSafeRootStats(path: string, info: Stats, uid: number): void {
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    info.uid !== uid ||
+    (info.mode & 0o777) !== 0o700
+  ) {
+    throw unsafeStorage(`${path} must be one uid-${uid} real directory with mode 0700`)
+  }
+}
+
 async function syncDirectory(path: string): Promise<void> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
@@ -1088,7 +1221,9 @@ function recordFileName(ensureId: string): string {
 }
 
 function sameEnsureClaim(left: EnsureRequest, right: EnsureRequest): boolean {
-  return sameCanonical(left, right)
+  return left.ensure_id === right.ensure_id &&
+    left.ensure_digest === right.ensure_digest &&
+    sameCanonical(ensureSpecification(left), ensureSpecification(right))
 }
 
 function sameCanonical(left: unknown, right: unknown): boolean {
@@ -1103,6 +1238,16 @@ function copyRecord(record: EnsureLifecycleRecord): EnsureLifecycleRecord {
 function sameFileIdentity(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode &&
     left.uid === right.uid && left.nlink === right.nlink
+}
+
+function sameRootIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode &&
+    left.uid === right.uid
+}
+
+function sameFileSnapshot(left: Stats, right: Stats): boolean {
+  return sameFileIdentity(left, right) && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs
 }
 
 function ledgerError(
