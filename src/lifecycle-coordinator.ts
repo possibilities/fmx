@@ -27,6 +27,7 @@ export type CancelledFxAdmissionDecision = FxAdmissionDecisionFor<"cancelled_bef
 
 export type LifecycleAdmissionOutcome =
   | { kind: "pending" }
+  | { kind: "final"; receipt: FxFinalReceipt }
   | {
       kind: "admitted"
       decision: AdmittedFxAdmissionDecision
@@ -440,6 +441,10 @@ export class LifecycleCoordinator {
           expectedConversationId: prepared.conversationId,
         })
         if (outcome.kind === "pending") return { kind: "pending" as const }
+        if (outcome.kind === "final") {
+          await this.options.ledger.retainFxFinalReceipt(ensureId, outcome.receipt)
+          return { kind: "final" as const, receipt: outcome.receipt }
+        }
         if (outcome.kind === "cancelled_before_start") {
           await this.options.ledger.retainFxAdmissionDecision(ensureId, outcome.decision)
           return { kind: "cancelled" as const, decision: outcome.decision }

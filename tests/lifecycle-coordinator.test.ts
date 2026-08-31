@@ -210,6 +210,30 @@ describe("durable lifecycle coordinator", () => {
     expect(observed).toContain("import-pending:conversation-main")
   })
 
+  test("retains a provider final returned during admission before retirement", async () => {
+    const fixture = await sourceFixture("import-final")
+    const finalReceipt = await finalFixture(fixture)
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupCompanion(fixture, ledger, sources)
+    let retirementSawDurableReceipt = false
+    const ports = fakePorts([], "start", {
+      afterFinalReceipt: async (ensureId, receipt) => {
+        retirementSawDurableReceipt =
+          (await ledger.get(ensureId))?.fx_final.receipt?.receipt_id === receipt.receipt_id
+      },
+    })
+    ports.admission.import = async () => ({ kind: "final", receipt: finalReceipt })
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+
+    await coordinator.recover()
+    await coordinator.settled()
+
+    expect(retirementSawDurableReceipt).toBe(true)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.fx_final.receipt).toEqual(finalReceipt)
+  })
+
   test("close cancels a deferred pending redrive and preserves durable pending work", async () => {
     const fixture = await sourceFixture("pending-close")
     const root = await temporaryDirectory()
