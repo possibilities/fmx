@@ -1,11 +1,21 @@
 import { expect, test } from "bun:test"
+import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import { RUNTIME_EXTENSION_CAPABILITIES } from "../src/agentworkplace-contracts.ts"
+import {
+  RUNTIME_EXTENSION_CAPABILITIES,
+  ensureLifecycleMessageSchema,
+  type EnsureLifecycleMessage,
+} from "../src/agentworkplace-contracts.ts"
 import type { RuntimeExtensionSurface } from "../src/multiplexer.ts"
 import { RuntimeExtensionSurfaceError } from "../src/multiplexer.ts"
 import { runtimeExtensionRequestHandler } from "../src/runtime-extension-host.ts"
 import { RuntimeExtensionHost } from "../src/runtime-extension-host.ts"
 import type { RuntimeExtensionInboundRequest } from "../src/runtime-extension.ts"
+import type {
+  RuntimeExtensionLifecycleInbound,
+  RuntimeExtensionLifecycleReceipt,
+  RuntimeExtensionLifecycleRequest,
+} from "../src/runtime-extension.ts"
 import type { RecoveryCardSpec } from "../src/recovery-card.ts"
 import type { RuntimeExtensionStartup } from "../src/runtime-startup.ts"
 
@@ -13,6 +23,11 @@ const FMX_SESSION = "workers"
 const NEVER = new AbortController().signal
 const AGENT_ID = "a".repeat(32)
 const FIXTURE = fileURLToPath(new URL("./fixtures/runtime-extension.ts", import.meta.url))
+const PEER = fileURLToPath(new URL("./runtime-extension-supervisor-child.ts", import.meta.url))
+const LIFECYCLE_FIXTURE = fileURLToPath(new URL(
+  "../contracts/agentworkplace/v1/ensure-lifecycle.jsonl",
+  import.meta.url,
+))
 const CARD: RecoveryCardSpec = {
   slot_id: "slot-a",
   card_revision: "4",
@@ -190,6 +205,45 @@ test("bounds and sanitizes an unexpected host error into the v1 response contrac
   expect(Buffer.byteLength(outcome.error.message)).toBeLessThanOrEqual(1024)
 })
 
+test("threads the injected lifecycle handler and asynchronous receipt publisher through the host", async () => {
+  const lifecycle = await frozenLifecycleMessages()
+  const request = lifecycle.find((message): message is RuntimeExtensionLifecycleRequest =>
+    message.message_type === "ensure_request" && "planned_worktree" in message)!
+  const receipt = lifecycle.find((message): message is RuntimeExtensionLifecycleReceipt =>
+    message.message_type === "ensure_receipt" && "status" in message && message.status === "complete")!
+  const startup = structuredClone(STARTUP)
+  startup.association.members[1]!.fmx_session = request.fmx_session
+  startup.registration.argv = [process.execPath, PEER]
+  const observed: RuntimeExtensionLifecycleInbound[] = []
+  const host = await RuntimeExtensionHost.start(startup, surface().value, {
+    env: {
+      ...process.env,
+      FMX_SUPERVISOR_CHILD_MODE: "ready",
+      FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([request]),
+      FMX_SUPERVISOR_CHILD_ACK_LIFECYCLE: "1",
+    },
+    startupTimeoutMs: 1_000,
+    requestTimeoutMs: 1_000,
+    shutdownGraceMs: 50,
+    terminateGraceMs: 50,
+    onLifecycleMessage: (message) => {
+      observed.push(message)
+    },
+  })
+  try {
+    await waitFor(() => observed.some((message) => message.message_type === "ensure_request"))
+    await host.publishLifecycleReceipt(receipt)
+    await waitFor(() => observed.some((message) => message.message_type === "receipt_acknowledgement"))
+    expect(observed.map((message) => message.message_type)).toEqual([
+      "ensure_request",
+      "receipt_acknowledgement",
+    ])
+    expect(host.state).toBe("ready")
+  } finally {
+    await host.close()
+  }
+})
+
 test("restarts one post-readiness child generation, then degrades without a crash loop", async () => {
   const fake = surface()
   const diagnostics: Array<{ code: string; generation: number | null }> = []
@@ -224,4 +278,11 @@ async function waitFor(condition: () => boolean, timeoutMs = 4_000): Promise<voi
     if (Date.now() >= deadline) throw new Error("condition timed out")
     await Bun.sleep(10)
   }
+}
+
+async function frozenLifecycleMessages(): Promise<EnsureLifecycleMessage[]> {
+  return (await readFile(LIFECYCLE_FIXTURE, "utf8"))
+    .trimEnd()
+    .split("\n")
+    .map((line) => ensureLifecycleMessageSchema.parse(JSON.parse(line)) as EnsureLifecycleMessage)
 }

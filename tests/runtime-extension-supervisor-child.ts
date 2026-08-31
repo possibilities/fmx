@@ -5,9 +5,10 @@ import {
   AGENTWORKPLACE_CONTRACT_VERSION,
   RUNTIME_EXTENSION_CAPABILITIES,
   RUNTIME_EXTENSION_SCHEMA_ID,
+  agentWorkplaceMessageSchema,
   decodeAgentWorkplacePayload,
   encodeAgentWorkplaceFrame,
-  type RuntimeExtensionMessage,
+  type AgentWorkplaceMessage,
 } from "../src/agentworkplace-contracts.ts"
 import { CONTRACT_MAX_FRAME_BYTES, ContractFrameDecoder } from "../src/contract-codec.ts"
 
@@ -43,17 +44,20 @@ type Initialize = {
   protocol_version: 1
 }
 
-type WireMessage = RuntimeExtensionMessage & Record<string, unknown>
+type WireMessage = AgentWorkplaceMessage & Record<string, unknown>
 
 const mode = (process.env.FMX_SUPERVISOR_CHILD_MODE ?? "ready") as Mode
 const markerPath = process.env.FMX_SUPERVISOR_CHILD_MARKER
 const releasePath = process.env.FMX_SUPERVISOR_CHILD_RELEASE
 const logPath = process.env.FMX_SUPERVISOR_CHILD_LOG
+const scripted = readScript(process.env.FMX_SUPERVISOR_CHILD_SCRIPT)
+const acknowledgeLifecycleReceipts = process.env.FMX_SUPERVISOR_CHILD_ACK_LIFECYCLE === "1"
 const decoder = new ContractFrameDecoder()
 let initialized = false
 let keepAlive = false
 let coalescingPullSent = false
 let sequentialResponses = 0
+let lifecycleAcknowledgements = 0
 let fmxSession = ""
 const sequentialTarget = Number(process.env.FMX_SUPERVISOR_CHILD_SEQUENTIAL_COUNT ?? "128")
 
@@ -84,6 +88,23 @@ for await (const chunk of Bun.stdin.stream()) {
       }
     }
     if (message.message_type === "unavailable_slot_action") respondToAction(message)
+    if (acknowledgeLifecycleReceipts && (
+      message.message_type === "ensure_receipt" ||
+      message.message_type === "end_receipt" ||
+      message.message_type === "cleanup_receipt"
+    )) {
+      lifecycleAcknowledgements++
+      write({
+        schema_id: "fmx.ensure-lifecycle",
+        schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
+        message_type: "receipt_acknowledgement",
+        acknowledgement_id: `fixture-lifecycle-ack-${lifecycleAcknowledgements}`,
+        receipt_kind: message.message_type.replace("_receipt", ""),
+        receipt_id: String(message.receipt_id),
+        receipt_digest: String(message.receipt_digest),
+        ensure_id: String(message.ensure_id),
+      })
+    }
   }
 }
 decoder.finish()
@@ -138,6 +159,7 @@ async function initialize(message: Initialize): Promise<void> {
     capabilities: [...RUNTIME_EXTENSION_CAPABILITIES],
   } as const
   write(ready)
+  writeMany(scripted)
 
   if (mode === "coalescing_probe") {
     if (releasePath === undefined) throw new Error("coalescing probe requires a release path")
@@ -260,13 +282,25 @@ function accepted(
 }
 
 function write(message: object): void {
-  process.stdout.write(Buffer.from(encodeAgentWorkplaceFrame(message as RuntimeExtensionMessage)))
+  process.stdout.write(Buffer.from(encodeAgentWorkplaceFrame(message as AgentWorkplaceMessage)))
 }
 
 function writeMany(messages: object[]): void {
   process.stdout.write(Buffer.concat(messages.map((message) =>
-    Buffer.from(encodeAgentWorkplaceFrame(message as RuntimeExtensionMessage))
+    Buffer.from(encodeAgentWorkplaceFrame(message as AgentWorkplaceMessage))
   )))
+}
+
+function readScript(value: string | undefined): AgentWorkplaceMessage[] {
+  if (value === undefined) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch (error) {
+    throw new Error("supervisor-child script is not JSON", { cause: error })
+  }
+  if (!Array.isArray(parsed)) throw new Error("supervisor-child script must be an array")
+  return parsed.map((message) => agentWorkplaceMessageSchema.parse(message))
 }
 
 async function record(message: WireMessage): Promise<void> {

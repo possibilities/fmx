@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto"
 import {
   AGENTWORKPLACE_CONTRACT_VERSION,
+  ENSURE_LIFECYCLE_SCHEMA_ID,
   RUNTIME_EXTENSION_CAPABILITIES,
   RUNTIME_EXTENSION_SCHEMA_ID,
   decodeAgentWorkplacePayload,
   encodeAgentWorkplaceFrame,
+  ensureLifecycleMessageSchema,
   runtimeExtensionMessageSchema,
+  type AgentWorkplaceMessage,
+  type EnsureLifecycleMessage,
   type RuntimeExtensionMessage,
 } from "./agentworkplace-contracts.ts"
 import { CONTRACT_MAX_FRAME_BYTES, ContractFrameDecoder } from "./contract-codec.ts"
@@ -71,6 +75,41 @@ export type RuntimeExtensionResponse = LiteralMessage<
 export type RuntimeExtensionInboundRequest = SnapshotGet | Present | RecoveryCardPublish | RecoveryCardClear
 export type RuntimeExtensionInboundOutcome = SnapshotResult | RuntimeExtensionResponse
 
+type EnsureRequest = LiteralMessage<
+  Extract<EnsureLifecycleMessage, { planned_worktree: unknown }>,
+  "ensure_request"
+>
+type EnsureReceipt = LiteralMessage<
+  Extract<EnsureLifecycleMessage, { effects: unknown }>,
+  "ensure_receipt"
+>
+type EndRequest = LiteralMessage<
+  Extract<EnsureLifecycleMessage, { reason: unknown }>,
+  "end_request"
+>
+type EndReceipt = LiteralMessage<
+  Extract<EnsureLifecycleMessage, { proof: unknown }>,
+  "end_receipt"
+>
+type CleanupRequest = LiteralMessage<
+  Exclude<Extract<EnsureLifecycleMessage, { cleanup_id: unknown }>, { outcome: unknown }>,
+  "cleanup_request"
+>
+type CleanupReceipt = LiteralMessage<
+  Extract<EnsureLifecycleMessage, { outcome: unknown }>,
+  "cleanup_receipt"
+>
+
+export type RuntimeExtensionLifecycleRequest = EnsureRequest | EndRequest | CleanupRequest
+export type RuntimeExtensionLifecycleReceipt = EnsureReceipt | EndReceipt | CleanupReceipt
+export type RuntimeExtensionLifecycleAcknowledgement = LiteralMessage<
+  Extract<EnsureLifecycleMessage, { acknowledgement_id: unknown }>,
+  "receipt_acknowledgement"
+>
+export type RuntimeExtensionLifecycleInbound =
+  | RuntimeExtensionLifecycleRequest
+  | RuntimeExtensionLifecycleAcknowledgement
+
 export type RuntimeExtensionState = "starting" | "ready" | "degraded" | "closing" | "closed"
 
 export type RuntimeExtensionErrorCode =
@@ -126,8 +165,19 @@ export type RuntimeExtensionRequestHandler = (
   signal: AbortSignal,
 ) => RuntimeExtensionInboundOutcome | Promise<RuntimeExtensionInboundOutcome>
 
+/**
+ * Admit only extension-to-fmx lifecycle intents and one-way receipt
+ * acknowledgements. Receipts are published independently after durable work
+ * advances; this callback never manufactures a Runtime-extension response.
+ */
+export type RuntimeExtensionLifecycleHandler = (
+  message: RuntimeExtensionLifecycleInbound,
+  signal: AbortSignal,
+) => void | Promise<void>
+
 export type RuntimeExtensionSupervisorOptions = {
   onRequest: RuntimeExtensionRequestHandler
+  onLifecycleMessage?: RuntimeExtensionLifecycleHandler
   onDisconnect?: (error: RuntimeExtensionError) => void | Promise<void>
   cwd?: string
   env?: Record<string, string | undefined>
@@ -150,6 +200,7 @@ type ResolvedStartup = {
 
 type NormalizedOptions = {
   onRequest: RuntimeExtensionRequestHandler
+  onLifecycleMessage?: RuntimeExtensionLifecycleHandler
   onDisconnect?: (error: RuntimeExtensionError) => void | Promise<void>
   cwd?: string
   env?: Record<string, string | undefined>
@@ -309,6 +360,18 @@ export class RuntimeExtensionSupervisor {
       return Promise.resolve()
     }
     return this.scheduleInvalidation(generation)
+  }
+
+  /**
+   * Publish one already-durable ensure/end/cleanup receipt. Publication is
+   * intentionally independent of inbound handler completion: one request may
+   * advance through multiple retained receipts, each acknowledged one-way.
+   */
+  async publishLifecycleReceipt(receipt: RuntimeExtensionLifecycleReceipt): Promise<void> {
+    const generation = this.requireReady()
+    assertLifecycleReceipt(receipt, "outbound lifecycle receipt")
+    this.assertLifecycleIdentity(receipt)
+    await this.writeOrFail(generation, receipt)
   }
 
   /** Forward the one opaque human-only Recovery-card action and await its exact response. */
@@ -577,11 +640,20 @@ export class RuntimeExtensionSupervisor {
               cause: error,
             } satisfies Failure
           }
-          const parsed = runtimeExtensionMessageSchema.safeParse(message)
-          if (!parsed.success) {
-            throw { code: "protocol_error", message: "child sent a non-Runtime-extension message" } satisfies Failure
+          const runtime = runtimeExtensionMessageSchema.safeParse(message)
+          if (runtime.success) {
+            this.handleRuntimeMessage(generation, runtime.data as RuntimeExtensionMessage)
+            continue
           }
-          this.handleMessage(generation, parsed.data as RuntimeExtensionMessage)
+          const lifecycle = ensureLifecycleMessageSchema.safeParse(message)
+          if (lifecycle.success) {
+            this.handleLifecycleMessage(generation, lifecycle.data as EnsureLifecycleMessage)
+            continue
+          }
+          throw {
+            code: "protocol_error",
+            message: "child sent a message outside the Runtime-extension and ensure-lifecycle link families",
+          } satisfies Failure
         }
       }
     } finally {
@@ -604,7 +676,7 @@ export class RuntimeExtensionSupervisor {
     }
   }
 
-  private handleMessage(generation: Generation, message: RuntimeExtensionMessage): void {
+  private handleRuntimeMessage(generation: Generation, message: RuntimeExtensionMessage): void {
     if (generation.phase === "starting") {
       if (message.message_type === "ready") {
         this.acceptReadiness(generation, message as RuntimeExtensionReady)
@@ -640,6 +712,35 @@ export class RuntimeExtensionSupervisor {
         this.acceptInboundRequest(generation, message as RuntimeExtensionInboundRequest)
         return
       default:
+        throw {
+          code: "protocol_error",
+          message: `child sent ${message.message_type} in the extension-to-Runtime direction`,
+        } satisfies Failure
+    }
+  }
+
+  private handleLifecycleMessage(generation: Generation, message: EnsureLifecycleMessage): void {
+    if (generation.phase === "starting") {
+      throw {
+        code: "protocol_error",
+        message: `child sent ${message.message_type} before exact readiness`,
+      } satisfies Failure
+    }
+    if (generation.phase !== "ready") return
+
+    switch (message.message_type) {
+      case "ensure_request":
+      case "end_request":
+      case "cleanup_request":
+        this.assertLifecycleIdentity(message as RuntimeExtensionLifecycleRequest)
+        this.acceptLifecycleInbound(generation, message as RuntimeExtensionLifecycleRequest)
+        return
+      case "receipt_acknowledgement":
+        this.acceptLifecycleInbound(generation, message as RuntimeExtensionLifecycleAcknowledgement)
+        return
+      case "ensure_receipt":
+      case "end_receipt":
+      case "cleanup_receipt":
         throw {
           code: "protocol_error",
           message: `child sent ${message.message_type} in the extension-to-Runtime direction`,
@@ -723,6 +824,65 @@ export class RuntimeExtensionSupervisor {
     void this.dispatchInboundRequest(generation, request, abort)
   }
 
+  private assertLifecycleIdentity(
+    message: RuntimeExtensionLifecycleRequest | RuntimeExtensionLifecycleReceipt,
+  ): void {
+    if (message.workplace_instance_id !== this.startup.association.workplace_instance_id) {
+      throw new RuntimeExtensionError(
+        "protocol_error",
+        `lifecycle message names Workplace ${message.workplace_instance_id}; expected ${this.startup.association.workplace_instance_id}`,
+      )
+    }
+    if (message.fmx_session !== this.startup.fmxSession) {
+      throw new RuntimeExtensionError(
+        "protocol_error",
+        `lifecycle message names fmx Session ${message.fmx_session}; expected ${this.startup.fmxSession}`,
+      )
+    }
+  }
+
+  private acceptLifecycleInbound(
+    generation: Generation,
+    message: RuntimeExtensionLifecycleInbound,
+  ): void {
+    if (this.options.onLifecycleMessage === undefined) {
+      throw {
+        code: "protocol_error",
+        message: `child sent ${message.message_type} without an installed lifecycle handler`,
+      } satisfies Failure
+    }
+
+    const requestId = "request_id" in message ? message.request_id : null
+    const inboundKey = requestId === null
+      // Slash is outside the frozen safe-token grammar, so this internal key
+      // cannot collide with any child request_id.
+      ? `lifecycle-acknowledgement/${(message as RuntimeExtensionLifecycleAcknowledgement).acknowledgement_id}`
+      : requestId
+    if (requestId !== null && generation.activeRequestIds.has(requestId)) {
+      throw {
+        code: "protocol_error",
+        message: `child reused Runtime-extension request id ${requestId}`,
+      } satisfies Failure
+    }
+    if (generation.inbound.has(inboundKey)) {
+      throw {
+        code: "protocol_error",
+        message: `child reused ${lifecycleMessageIdentity(message)}`,
+      } satisfies Failure
+    }
+    if (generation.inbound.size >= this.options.maxPendingRequests) {
+      throw {
+        code: "request_limit",
+        message: `child exceeded ${this.options.maxPendingRequests} concurrent Runtime-extension request(s)`,
+      } satisfies Failure
+    }
+
+    if (requestId !== null) generation.activeRequestIds.add(requestId)
+    const abort = new AbortController()
+    generation.inbound.set(inboundKey, { abort })
+    void this.dispatchLifecycleInbound(generation, message, inboundKey, requestId, abort)
+  }
+
   private async dispatchInboundRequest(
     generation: Generation,
     request: RuntimeExtensionInboundRequest,
@@ -757,6 +917,44 @@ export class RuntimeExtensionSupervisor {
     } finally {
       generation.inbound.delete(request.request_id)
       generation.activeRequestIds.delete(request.request_id)
+    }
+  }
+
+  private async dispatchLifecycleInbound(
+    generation: Generation,
+    message: RuntimeExtensionLifecycleInbound,
+    inboundKey: string,
+    requestId: string | null,
+    abort: AbortController,
+  ): Promise<void> {
+    try {
+      await withTimeout(
+        (async () => {
+          const result = await Promise.resolve(this.options.onLifecycleMessage!(message, abort.signal))
+          if (result !== undefined) {
+            throw {
+              code: "handler_failed",
+              message: `${message.message_type} lifecycle handler must not return a link response`,
+            } satisfies Failure
+          }
+        })(),
+        this.options.requestTimeoutMs,
+        () => ({
+          code: "request_timeout",
+          message: `Lifecycle handler for ${lifecycleMessageIdentity(message)} timed out after ${this.options.requestTimeoutMs}ms`,
+        } satisfies Failure),
+      )
+    } catch (error) {
+      if (this.active !== generation || generation.phase === "stopping") return
+      const failure = asFailure(
+        error,
+        "handler_failed",
+        `Lifecycle handler failed for ${lifecycleMessageIdentity(message)}`,
+      )
+      this.recordFailure(generation, failure)
+    } finally {
+      generation.inbound.delete(inboundKey)
+      if (requestId !== null) generation.activeRequestIds.delete(requestId)
     }
   }
 
@@ -875,12 +1073,12 @@ export class RuntimeExtensionSupervisor {
       if (next === null) return
       let frame: Uint8Array
       try {
-        assertRuntimeMessage(next, "outbound Runtime-extension message")
-        frame = encodeAgentWorkplaceFrame(next as RuntimeExtensionMessage)
+        assertHostToChildMessage(next, "outbound Runtime-extension link message")
+        frame = encodeAgentWorkplaceFrame(next as AgentWorkplaceMessage)
       } catch (error) {
         throw {
           code: "protocol_error",
-          message: `cannot encode Runtime-extension message: ${boundedErrorMessage(error)}`,
+          message: `cannot encode Runtime-extension link message: ${boundedErrorMessage(error)}`,
           cause: error,
         } satisfies Failure
       }
@@ -1055,6 +1253,7 @@ function validateStartup(startup: RuntimeExtensionStartup): ResolvedStartup {
 function normalizeOptions(options: RuntimeExtensionSupervisorOptions): NormalizedOptions {
   const normalized: NormalizedOptions = {
     onRequest: options.onRequest,
+    onLifecycleMessage: options.onLifecycleMessage,
     onDisconnect: options.onDisconnect,
     cwd: options.cwd,
     env: options.env,
@@ -1095,6 +1294,64 @@ function assertRuntimeMessage(message: unknown, label: string): void {
       `${label} is invalid${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}: ${issue?.message ?? "unknown error"}`,
     )
   }
+}
+
+function assertLifecycleReceipt(
+  message: unknown,
+  label: string,
+): asserts message is RuntimeExtensionLifecycleReceipt {
+  const parsed = ensureLifecycleMessageSchema.safeParse(message)
+  if (parsed.success && (
+    parsed.data.message_type === "ensure_receipt" ||
+    parsed.data.message_type === "end_receipt" ||
+    parsed.data.message_type === "cleanup_receipt"
+  )) return
+
+  const direction = parsed.success
+    ? `${parsed.data.message_type} travels only in the extension-to-Runtime direction`
+    : parsed.error.issues[0]?.message ?? "unknown error"
+  throw new RuntimeExtensionError("protocol_error", `${label} is invalid: ${direction}`)
+}
+
+function assertHostToChildMessage(message: unknown, label: string): void {
+  const runtime = runtimeExtensionMessageSchema.safeParse(message)
+  if (runtime.success) {
+    const value = runtime.data
+    const response = value as RuntimeExtensionResponse
+    if (
+      value.message_type === "initialize" ||
+      value.message_type === "snapshot_invalidated" ||
+      value.message_type === "snapshot_result" ||
+      value.message_type === "unavailable_slot_action" ||
+      (value.message_type === "response" &&
+        response.operation !== "initialize" &&
+        response.operation !== "unavailable_slot_action")
+    ) return
+    throw new RuntimeExtensionError(
+      "protocol_error",
+      `${label} is invalid: ${value.message_type} travels only in the extension-to-Runtime direction`,
+    )
+  }
+
+  const lifecycle = ensureLifecycleMessageSchema.safeParse(message)
+  if (lifecycle.success) {
+    assertLifecycleReceipt(lifecycle.data, label)
+    return
+  }
+
+  const schemaId = typeof message === "object" && message !== null && "schema_id" in message
+    ? String((message as { schema_id?: unknown }).schema_id)
+    : "missing"
+  const family = schemaId === ENSURE_LIFECYCLE_SCHEMA_ID
+    ? "invalid ensure-lifecycle message"
+    : `unsupported link schema ${schemaId}`
+  throw new RuntimeExtensionError("protocol_error", `${label} is invalid: ${family}`)
+}
+
+function lifecycleMessageIdentity(message: RuntimeExtensionLifecycleInbound): string {
+  return message.message_type === "receipt_acknowledgement"
+    ? `${message.message_type} ${message.acknowledgement_id}`
+    : `${message.message_type} ${message.request_id}`
 }
 
 function validateInboundOutcome(

@@ -9,10 +9,11 @@ import {
 } from "./multiplexer.ts"
 import type { RecoveryCardSpec } from "./recovery-card.ts"
 import {
+  RuntimeExtensionError,
   RuntimeExtensionSupervisor,
-  type RuntimeExtensionError,
   type RuntimeExtensionInboundOutcome,
   type RuntimeExtensionInboundRequest,
+  type RuntimeExtensionLifecycleReceipt,
   type RuntimeExtensionRequestHandler,
   type RuntimeExtensionResponse,
   type RuntimeExtensionState,
@@ -95,6 +96,15 @@ export class RuntimeExtensionHost {
       // action remains inert rather than acquiring fmx-owned recovery policy.
       return null
     }
+  }
+
+  /** Publish one durable lifecycle receipt without coupling it to handler completion. */
+  async publishLifecycleReceipt(receipt: RuntimeExtensionLifecycleReceipt): Promise<void> {
+    const supervisor = this.supervisor
+    if (supervisor === null) {
+      throw new RuntimeExtensionError("invalid_state", "Runtime-extension host has not started")
+    }
+    await supervisor.publishLifecycleReceipt(receipt)
   }
 
   close(): Promise<void> {

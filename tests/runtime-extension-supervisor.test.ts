@@ -7,18 +7,27 @@ import {
   AGENTWORKPLACE_CONTRACT_VERSION,
   RUNTIME_EXTENSION_CAPABILITIES,
   RUNTIME_EXTENSION_SCHEMA_ID,
+  ensureLifecycleMessageSchema,
+  type EnsureLifecycleMessage,
 } from "../src/agentworkplace-contracts.ts"
 import {
   RuntimeExtensionError,
   RuntimeExtensionSupervisor,
   type RuntimeExtensionInboundOutcome,
   type RuntimeExtensionInboundRequest,
+  type RuntimeExtensionLifecycleInbound,
+  type RuntimeExtensionLifecycleReceipt,
+  type RuntimeExtensionLifecycleRequest,
   type RuntimeExtensionSupervisorOptions,
 } from "../src/runtime-extension.ts"
 import type { RuntimeExtensionStartup } from "../src/runtime-startup.ts"
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/runtime-extension.ts", import.meta.url))
 const PEER = fileURLToPath(new URL("./runtime-extension-supervisor-child.ts", import.meta.url))
+const LIFECYCLE_FIXTURE = fileURLToPath(new URL(
+  "../contracts/agentworkplace/v1/ensure-lifecycle.jsonl",
+  import.meta.url,
+))
 const supervisors = new Set<RuntimeExtensionSupervisor>()
 const temporaryDirectories = new Set<string>()
 
@@ -196,6 +205,199 @@ describe("Runtime-extension readiness and strict directions", () => {
     expect(error.stderr).toEndWith("[31mTAIL")
     expect(error.stderr).not.toContain("\u001b")
     expect(error.message).toContain("Runtime-extension stderr")
+  })
+})
+
+describe("Runtime-extension ensure-lifecycle transport", () => {
+  test("carries frozen requests and one-way acknowledgements inward while publishing receipts asynchronously", async () => {
+    const directory = await temporaryDirectory()
+    const log = join(directory, "lifecycle.log")
+    const fixture = (await frozenLifecycleMessages())
+      .filter((message) => "ensure_id" in message && message.ensure_id === "ensure-a")
+    const requests = fixture.filter((message): message is RuntimeExtensionLifecycleRequest =>
+      message.message_type === "ensure_request" ||
+      message.message_type === "end_request" ||
+      message.message_type === "cleanup_request")
+    const receipts = fixture.filter((message): message is RuntimeExtensionLifecycleReceipt =>
+      (message.message_type === "ensure_receipt" && "status" in message && message.status === "complete") ||
+      message.message_type === "end_receipt" ||
+      message.message_type === "cleanup_receipt")
+    expect(requests.map((message) => message.message_type)).toEqual([
+      "ensure_request",
+      "end_request",
+      "cleanup_request",
+    ])
+    expect(receipts.map((message) => message.message_type)).toEqual([
+      "ensure_receipt",
+      "end_receipt",
+      "cleanup_receipt",
+    ])
+
+    const observed: RuntimeExtensionLifecycleInbound[] = []
+    const requestsHandled = deferred<void>()
+    const allHandled = deferred<void>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      env: {
+        FMX_SUPERVISOR_CHILD_LOG: log,
+        FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify(requests),
+        FMX_SUPERVISOR_CHILD_ACK_LIFECYCLE: "1",
+      },
+      onLifecycleMessage: (message) => {
+        observed.push(message)
+        if (observed.length === requests.length) requestsHandled.resolve()
+        if (observed.length === requests.length + receipts.length) allHandled.resolve()
+      },
+    })
+
+    await withTestTimeout(requestsHandled.promise, 1_000, "lifecycle requests were not admitted")
+    await Promise.all(receipts.map((receipt) => supervisor.publishLifecycleReceipt(receipt)))
+    await withTestTimeout(allHandled.promise, 1_000, "lifecycle acknowledgements were not admitted")
+
+    expect(observed.slice(0, requests.length).map((message) => message.message_type)).toEqual([
+      "ensure_request",
+      "end_request",
+      "cleanup_request",
+    ])
+    expect(observed.slice(requests.length).map((message) => message.message_type)).toEqual([
+      "receipt_acknowledgement",
+      "receipt_acknowledgement",
+      "receipt_acknowledgement",
+    ])
+    const received = await waitForMessages(
+      log,
+      (messages) => messages.filter((message) => String(message.message_type).endsWith("_receipt")).length === 3,
+    )
+    expect(received.filter((message) => String(message.message_type).endsWith("_receipt"))).toEqual(receipts)
+    expect(received.filter((message) => message.message_type === "response")).toEqual([])
+    expect(supervisor.state).toBe("ready")
+  })
+
+  test("rejects lifecycle receipts in the child-to-host direction", async () => {
+    const receipt = (await frozenLifecycleMessages()).find((message) => message.message_type === "end_receipt")!
+    const disconnected = deferred<RuntimeExtensionError>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      env: { FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([receipt]) },
+      onLifecycleMessage: () => {},
+      onDisconnect: disconnected.resolve,
+    })
+    const error = await withTestTimeout(disconnected.promise, 1_000, "reverse lifecycle receipt was not rejected")
+    expect(error.code).toBe("protocol_error")
+    expect(error.message).toContain("extension-to-Runtime direction")
+    expect(supervisor.state).toBe("degraded")
+  })
+
+  test("rejects another valid AgentWorkplace family instead of admitting the broad union", async () => {
+    const disconnected = deferred<RuntimeExtensionError>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      env: {
+        FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([{
+          schema_id: "fmx.agent-defaults",
+          schema_version: 1,
+          message_type: "defaults_table",
+          entries: [],
+        }]),
+      },
+      onLifecycleMessage: () => {},
+      onDisconnect: disconnected.resolve,
+    })
+    const error = await withTestTimeout(disconnected.promise, 1_000, "broad-union message was not rejected")
+    expect(error.code).toBe("protocol_error")
+    expect(error.message).toContain("outside the Runtime-extension and ensure-lifecycle link families")
+    expect(supervisor.state).toBe("degraded")
+  })
+
+  test("requires the narrow lifecycle handler and exact link identity", async () => {
+    const request = (await frozenLifecycleMessages()).find((message) => message.message_type === "ensure_request")!
+    for (const [label, scripted, onLifecycleMessage, diagnostic] of [
+      ["missing handler", request, undefined, "without an installed lifecycle handler"],
+      [
+        "foreign Workplace",
+        { ...request, workplace_instance_id: "foreign-workplace" },
+        () => {},
+        "names Workplace foreign-workplace",
+      ],
+      [
+        "foreign Session",
+        { ...request, fmx_session: "session-alpha" },
+        () => {},
+        "names fmx Session session-alpha",
+      ],
+    ] as const) {
+      const disconnected = deferred<RuntimeExtensionError>()
+      const supervisor = await startSupervisor(PEER, "ready", {
+        env: { FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([scripted]) },
+        onLifecycleMessage,
+        onDisconnect: disconnected.resolve,
+      })
+      const error = await withTestTimeout(disconnected.promise, 1_000, `${label} was not rejected`)
+      expect(error.code, label).toBe("protocol_error")
+      expect(error.message, label).toContain(diagnostic)
+      expect(supervisor.state, label).toBe("degraded")
+      await supervisor.close()
+      supervisors.delete(supervisor)
+    }
+  })
+
+  test("bounds and cancels a stuck lifecycle handler without writing a synthetic response", async () => {
+    const request = (await frozenLifecycleMessages()).find((message) => message.message_type === "ensure_request")!
+    const disconnected = deferred<RuntimeExtensionError>()
+    const handlerStarted = deferred<AbortSignal>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      env: { FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([request]) },
+      requestTimeoutMs: 30,
+      onLifecycleMessage: (_message, signal) => {
+        handlerStarted.resolve(signal)
+        return new Promise<void>(() => {})
+      },
+      onDisconnect: disconnected.resolve,
+    })
+    const signal = await withTestTimeout(handlerStarted.promise, 1_000, "lifecycle handler did not start")
+    const error = await withTestTimeout(disconnected.promise, 1_000, "lifecycle handler did not time out")
+    expect(error.code).toBe("request_timeout")
+    expect(signal.aborted).toBe(true)
+    expect(supervisor.state).toBe("degraded")
+  })
+
+  test("shares the bounded serialized writer with asynchronous lifecycle receipts", async () => {
+    const receipts = (await frozenLifecycleMessages()).filter(
+      (message): message is RuntimeExtensionLifecycleReceipt =>
+        message.message_type === "ensure_receipt" || message.message_type === "end_receipt",
+    ).slice(0, 2)
+    const disconnected = deferred<RuntimeExtensionError>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      maxQueuedWrites: 1,
+      onDisconnect: disconnected.resolve,
+    })
+    const outcomes = await Promise.allSettled(
+      receipts.map((receipt) => supervisor.publishLifecycleReceipt(receipt)),
+    )
+    expect(outcomes.some((outcome) =>
+      outcome.status === "rejected" && outcome.reason instanceof RuntimeExtensionError &&
+      outcome.reason.code === "request_limit"
+    )).toBe(true)
+    expect((await withTestTimeout(disconnected.promise, 1_000, "receipt saturation did not degrade")).code)
+      .toBe("request_limit")
+    expect(supervisor.state).toBe("degraded")
+  })
+
+  test("refuses host-to-child lifecycle requests, acknowledgements, and foreign receipts locally", async () => {
+    const messages = await frozenLifecycleMessages()
+    const request = messages.find((message) => message.message_type === "ensure_request")!
+    const acknowledgement = messages.find((message) => message.message_type === "receipt_acknowledgement")!
+    const receipt = messages.find((message) => message.message_type === "ensure_receipt")!
+    const supervisor = await startSupervisor(PEER, "ready")
+
+    for (const [label, message] of [
+      ["request", request],
+      ["acknowledgement", acknowledgement],
+      ["foreign receipt", { ...receipt, fmx_session: "session-alpha" }],
+    ] as const) {
+      const error = await expectRuntimeError(supervisor.publishLifecycleReceipt(
+        message as RuntimeExtensionLifecycleReceipt,
+      ))
+      expect(error.code, label).toBe("protocol_error")
+    }
+    expect(supervisor.state).toBe("ready")
   })
 })
 
@@ -728,6 +930,13 @@ function snapshotGet(requestId: string, afterRevision: string | null = null) {
 
 function nextRevision(after: string | null): string {
   return after === null ? "0" : String(BigInt(after) + 1n)
+}
+
+async function frozenLifecycleMessages(): Promise<EnsureLifecycleMessage[]> {
+  return (await readFile(LIFECYCLE_FIXTURE, "utf8"))
+    .trimEnd()
+    .split("\n")
+    .map((line) => ensureLifecycleMessageSchema.parse(JSON.parse(line)) as EnsureLifecycleMessage)
 }
 
 async function expectRuntimeError(promise: Promise<unknown>): Promise<RuntimeExtensionError> {
