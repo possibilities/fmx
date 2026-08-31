@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { access, chmod, constants, lstat, mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises"
+import { access, constants, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 import { expect, test } from "bun:test"
 import fxPin from "../fx.json" with { type: "json" }
@@ -63,7 +63,7 @@ import { COMPANION_PIN, companionBuild, ensureCompanionDirectories } from "../sr
 
 const ENABLED = process.env.FMX_RUN_PHASE1C_REAL_PROCESS === "1"
 const SKIP_CONTRACT =
-  "real Phase 1C lifecycle uses installed fmx-fx and Companion (run scripts/phase1c-real-process-acceptance.sh after install)"
+  "Phase 1C composition-level production seams use installed fmx-fx and Companion (run scripts/phase1c-real-process-composition-acceptance.sh after install)"
 const AGENT_ID = "d".repeat(32)
 const FMX_SESSION = "phase1c-real-session"
 const HOME_ID = "phase1c-real-home"
@@ -78,12 +78,11 @@ type LifecycleReceipt = EnsureReceipt | EndReceipt | CleanupReceipt
 
 test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
   const scratch = await requiredDirectory("FMX_PHASE1C_SCRATCH_ROOT")
+  const root = await requiredRunRoot("FMX_PHASE1C_RUN_ROOT", scratch)
   const fxPath = await requiredExecutable("FMX_FX_PATH")
   const zmxPath = await requiredExecutable("FMX_ZMX_PATH")
   await verifyInstalledFx(fxPath)
 
-  const root = await realpath(await mkdtemp(join(scratch, "p1c-")))
-  await chmodPrivate(root)
   const repository = join(root, "r")
   const worktree = join(root, "w")
   const stateRoot = join(root, "s")
@@ -154,6 +153,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     expect(turnId).toMatch(/^[1-9]\d*$/)
     const binding = first.manifest.get(AGENT_ID)?.workControl
     if (binding === null || binding === undefined) throw new Error("real Fx lost its Work-control binding")
+    const workControlSocketPath = binding.socketPath
     const snapshot = await new FxWorkControlClient().request(
       binding,
       "work.snapshot",
@@ -235,6 +235,15 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       untracked_paths: ["dirty-untracked.txt"],
     })
     expect(await readFile(dirtyPath, "utf8")).toBe("must survive cleanup refusal\n")
+    const cleanupReceiptCount = replayed.filter(isCleanupReceipt).length
+    await second.runtime.acceptLifecycle(cleanup)
+    await waitFor(
+      () => replayed.filter(isCleanupReceipt).length === cleanupReceiptCount + 1,
+      "exact retained cleanup receipt replay",
+      errors,
+    )
+    expect(replayed.filter(isCleanupReceipt).at(-1)).toEqual(cleanupReceipt)
+    expect(await readFile(dirtyPath, "utf8")).toBe("must survive cleanup refusal\n")
     await second.runtime.acceptLifecycle(acknowledgementFor(cleanupReceipt, "cleanup"))
 
     const finalized = (await second.runtimeRecord(fixture.ensure.ensure_id))!
@@ -249,6 +258,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     if (finalAcknowledgement === null) throw new Error("Fx final receipt has no durable acknowledgement")
     expect(finalAuthority.finalAcknowledgementId).toBe(finalAcknowledgement.acknowledgement_id)
     expect(second.manifest.get(AGENT_ID)).toBeNull()
+    expect(await pathDisposition(workControlSocketPath)).toBe("absent")
     expect((await second.companion.list()).filter(({ state }) => state === "live")).toEqual([])
 
     // The lifecycle quite correctly retained its dirty refusal. Clean the
@@ -283,8 +293,13 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     )
     const raced = await racedAuthority.compareAndRemove(prepare)
     expect(raceCount).toBe(1)
-    expect(raced.kind).toBe("refused")
+    expect(raced).toMatchObject({ kind: "refused", inspection: { kind: "mismatch" } })
+    const foreignReplacementDisposition = raced.kind === "refused" && raced.inspection.kind === "mismatch"
+      ? "refused_mismatch"
+      : "unexpected"
+    expect(foreignReplacementDisposition).toBe("refused_mismatch")
     expect(await readFile(foreignSentinel, "utf8")).toBe("foreign replacement survives\n")
+    expect(raceCount).toBe(1)
     expect(errors.map(String)).toEqual([])
   } finally {
     await first?.runtime.close().catch(() => {})
@@ -292,8 +307,6 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     await second?.runtime.close().catch(() => {})
     await second?.multiplexer.close().catch(() => {})
     gateway?.close()
-    await reapCompanion(companionDirectory, zmxPath).catch(() => {})
-    if (root.startsWith(`${scratch}/p1c-`)) await rm(root, { recursive: true, force: true })
   }
 }, 60_000)
 
@@ -630,7 +643,7 @@ function boundedGateway() {
 
 function realFxEnvironment(home: string, gatewayPort: number): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    ...scrubGitEnvironment(process.env),
     HOME: home,
     AI_GATEWAY_API_KEY: "phase1c-local-gateway-key",
     VERCEL_OIDC_TOKEN: undefined,
@@ -716,7 +729,7 @@ async function initializeRepository(repository: string): Promise<string> {
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const child = Bun.spawn(["git", "-C", cwd, ...args], {
-    env: process.env,
+    env: scrubGitEnvironment(process.env),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -781,6 +794,17 @@ async function requiredDirectory(name: string): Promise<string> {
   return path
 }
 
+async function requiredRunRoot(name: string, scratch: string): Promise<string> {
+  const root = await requiredDirectory(name)
+  if (root === scratch || !root.startsWith(`${scratch}/`)) {
+    throw new Error(`${name} must be a dedicated directory beneath FMX_PHASE1C_SCRATCH_ROOT`)
+  }
+  if ((await lstat(root)).mode & 0o077) {
+    throw new Error(`${name} must be private (mode 0700)`)
+  }
+  return root
+}
+
 async function requiredExecutable(name: string): Promise<string> {
   const value = process.env[name]
   if (value === undefined || !isAbsolute(value)) {
@@ -793,19 +817,35 @@ async function requiredExecutable(name: string): Promise<string> {
   return path
 }
 
-async function chmodPrivate(path: string): Promise<void> {
-  const facts = await lstat(path)
-  if ((facts.mode & 0o077) !== 0) await chmod(path, 0o700)
+async function pathDisposition(path: string): Promise<"absent" | "present"> {
+  try {
+    await lstat(path)
+    return "present"
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return "absent"
+    }
+    throw error
+  }
 }
 
-async function reapCompanion(directory: string, binary: string): Promise<void> {
-  let facts
-  try { facts = await lstat(directory) } catch { return }
-  if (!facts.isDirectory()) return
-  const companion = new CompanionCommand(directory, process.env, binary)
-  for (const session of await companion.list()) {
-    if (session.state === "live") await companion.kill(session.name).catch(() => {})
-    const settled = await companion.settle(session.name, 5_000, 50).catch(() => null)
-    if (settled?.state === "exited") await companion.forget(session.name).catch(() => {})
+function scrubGitEnvironment(parent: NodeJS.ProcessEnv): Record<string, string> {
+  const environment: Record<string, string> = {}
+  for (const [key, value] of Object.entries(parent)) {
+    if (value !== undefined && !key.startsWith("GIT_")) environment[key] = value
   }
+  environment.GIT_ATTR_NOSYSTEM = "1"
+  environment.GIT_CONFIG_COUNT = "2"
+  environment.GIT_CONFIG_GLOBAL = "/dev/null"
+  environment.GIT_CONFIG_KEY_0 = "core.attributesFile"
+  environment.GIT_CONFIG_KEY_1 = "core.excludesFile"
+  environment.GIT_CONFIG_NOSYSTEM = "1"
+  environment.GIT_CONFIG_SYSTEM = "/dev/null"
+  environment.GIT_CONFIG_VALUE_0 = "/dev/null"
+  environment.GIT_CONFIG_VALUE_1 = "/dev/null"
+  environment.GIT_NO_REPLACE_OBJECTS = "1"
+  environment.GIT_TERMINAL_PROMPT = "0"
+  environment.GIT_PAGER = "cat"
+  environment.LC_ALL = "C"
+  return environment
 }

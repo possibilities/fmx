@@ -124,9 +124,16 @@ bun link                      # ~/.bun/bin/fmx runs this checkout
 bun test && bun run typecheck
 bun run gallery               # browse UI components and their states
 scripts/install-companion.sh  # the pinned companion, into ~/.local/bin
-scripts/phase1c-real-process-acceptance.sh # post-install real Fx lifecycle acceptance
+scripts/phase1c-real-process-composition-acceptance.sh # post-install production-seam acceptance + evidence
 scripts/local-gate.sh         # the only merge gate: this Mac architecture
 ```
+
+The Phase 1C command is composition-level: it restarts the lifecycle Runtime
+composition around one Companion-held Fx process, but does not crash and
+replace the complete fmx Runtime process. On success it writes a private,
+canonical `fmx.phase1c-real-process-evidence` v1 artifact beneath the selected
+Scratch root (or `FMX_PHASE1C_EVIDENCE_PATH`). On failure it reaps the dedicated
+Companion/Fx state and retains the private run directory and logs.
 
 `AGENTS.md` is the working contract, `docs/adr/` the decisions behind it.
 
