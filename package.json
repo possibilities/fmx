@@ -18,6 +18,7 @@
     "gate:local": "scripts/local-gate.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "test:phase1c-real": "scripts/phase1c-real-process-acceptance.sh",
     "test:pty": "FMX_RUN_PTY_TESTS=1 bun test tests/multiplexer.e2e.test.ts"
   },
   "dependencies": {

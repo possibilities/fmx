@@ -24,4 +24,7 @@ FMX_BINARY_PATH="${BUN_INSTALL:-$HOME/.bun}/bin/fmx" \
 FMX_ZMX_PATH="${FMX_INSTALL_BIN_DIR:-$HOME/.local/bin}/fmx-zmx" \
 FMX_RUN_PTY_TESTS=1 \
 bun test tests/multiplexer.e2e.test.ts
+FMX_FX_PATH="${FMX_INSTALL_BIN_DIR:-$HOME/.local/bin}/fmx-fx" \
+FMX_ZMX_PATH="${FMX_INSTALL_BIN_DIR:-$HOME/.local/bin}/fmx-zmx" \
+scripts/phase1c-real-process-acceptance.sh 2>&1 | sed 's/^/fmx Phase 1C acceptance: /'
 printf 'fmx local gate: PASS %s\n' "$platform"

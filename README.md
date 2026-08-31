@@ -124,6 +124,7 @@ bun link                      # ~/.bun/bin/fmx runs this checkout
 bun test && bun run typecheck
 bun run gallery               # browse UI components and their states
 scripts/install-companion.sh  # the pinned companion, into ~/.local/bin
+scripts/phase1c-real-process-acceptance.sh # post-install real Fx lifecycle acceptance
 scripts/local-gate.sh         # the only merge gate: this Mac architecture
 ```
 
