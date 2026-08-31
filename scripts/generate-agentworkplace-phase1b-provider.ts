@@ -561,6 +561,7 @@ async function runCanonicalGate(productRoot: string, logPath: string) {
   await chmod(logPath, FILE_MODE)
   const bytes = new Uint8Array(await readFile(logPath))
   const text = decoder.decode(bytes)
+  process.stdout.write(bytes)
   if (exitStatus !== 0) throw new Error(`canonical Phase 1B gate exited ${exitStatus}`)
   return { bytes, receipt: parsePhase1bGateLog(text) }
 }
