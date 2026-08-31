@@ -966,6 +966,19 @@ export class Multiplexer {
     return operation
   }
 
+  /**
+   * Remove only an inert managed projection after the lifecycle Runtime has
+   * proven a never-started cancellation. This is not a process-stop surface.
+   */
+  async removeManagedAgentProjection(agentId: string): Promise<void> {
+    const agent = this.agents.find((candidate) => candidate.entry.agentId === agentId)
+    if (!agent) return
+    if (agent.connected || this.managedAgentStarts.has(agentId)) {
+      throw new Error(`managed Agent ${agentId} is not an inert projection`)
+    }
+    this.removeAgent(agent)
+  }
+
   private async runManagedAgentStart(
     agent: FxAgent,
     invocation: ManagedAgentInvocation,

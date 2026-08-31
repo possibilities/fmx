@@ -48,6 +48,7 @@ import {
   FxWorkControlClient,
   FxWorkControlError,
   mintFxWorkControlBinding,
+  removeFxWorkControlResidue,
   type FxWorkControlBinding,
   type FxWorkControlRequester,
   type FxWorkControlResult,
@@ -91,6 +92,8 @@ export type LifecycleRuntimeMultiplexer = {
     agentId: string,
     invocation: ManagedAgentInvocation,
   ): Promise<ManagedAgentStartResult>
+  /** Remove an inert managed projection after exact never-started retirement. */
+  removeManagedAgentProjection(agentId: string): Promise<void>
 }
 
 export type LifecycleReceiptPublisher = (
@@ -177,6 +180,7 @@ export class LifecycleRuntime {
   private readonly effectGates = new Map<string, Promise<void>>()
   private readonly retirementDirty = new Set<string>()
   private readonly retirementEffects = new Map<string, Promise<void>>()
+  private recoveryOperation: Promise<void> | null = null
   private readonly coordinator: LifecycleCoordinator
 
   private constructor(
@@ -277,12 +281,54 @@ export class LifecycleRuntime {
 
   async recover(): Promise<void> {
     this.assertOpen()
+    if (this.recoveryOperation !== null) return this.recoveryOperation
+    const operation = this.recoverOnce()
+    this.recoveryOperation = operation
+    try {
+      await operation
+    } finally {
+      if (this.recoveryOperation === operation) this.recoveryOperation = null
+    }
+  }
+
+  private async recoverOnce(): Promise<void> {
+    // Re-project claims before the coordinator starts Companion work. A
+    // crash after the projection but before its next durable boundary must
+    // leave the exact Agent/work-control identity restartable.
+    const durable = await this.ensureLedger.list()
+    if (this.closed) return
+    const app = this.requireMultiplexer()
+    for (const record of durable) {
+      if (this.closed) return
+      if (record.stage !== "manifest_claimed") continue
+      const existing = this.options.manifest.get(record.request.agent_id)
+      const workControl = existing?.workControl ?? mintFxWorkControlBinding(
+        this.options.runtimeSocketPath,
+        record.request.agent_id,
+      )
+      await app.projectManagedAgent({
+        agentId: record.request.agent_id,
+        cwd: record.request.planned_worktree.directory,
+        fxPath: this.options.fxPath,
+        fxArgs: existing?.fxArgs ?? null,
+        workControl,
+        createdAt: existing?.createdAt,
+        focus: false,
+      })
+      if (this.closed) return
+      await this.removeNeverStartedProjection(
+        await this.retirementLedger.get(record.request.ensure_id),
+      )
+      if (this.closed) return
+    }
+    if (this.closed) return
     await this.coordinator.recover()
     for (const record of await this.retirementLedger.list()) {
       this.scheduleRetirement(record.ensure.request.ensure_id)
     }
     await this.coordinator.settled()
     await this.retirementSettled()
+    await this.replayEnsureReceipts()
   }
 
   async close(): Promise<void> {
@@ -290,6 +336,8 @@ export class LifecycleRuntime {
     this.closed = true
     this.workAbort.abort()
     this.coordinator.close()
+    const recovery = this.recoveryOperation
+    if (recovery !== null) await Promise.allSettled([recovery])
     // Active Companion effects retain their cancellation leases until their
     // exact durable boundary (or failure). Teardown must not return while one
     // of those leases can still release into a dismantled Runtime.
@@ -298,15 +346,24 @@ export class LifecycleRuntime {
   }
 
   /** Startup reconciliation barrier. Nondefinitive managed removal fails closed. */
-  async beforeRemove(removal: AgentRemoval): Promise<void> {
+  async beforeRemove(removal: AgentRemoval): Promise<void | "preserve"> {
     const record = await this.ensureForAgent(removal.entry.agentId)
     if (record === null) return
+    if (record.stage === "manifest_claimed") {
+      const retired = await this.retirementLedger.get(record.request.ensure_id)
+      if (await this.isProvenNeverStarted(retired, record)) {
+        // Startup reconciliation owns final residue/Manifest removal. This
+        // hook may run before the Multiplexer has projected the row.
+        return
+      }
+      if (!(removal.reason === "exited" && removal.session?.exit)) return "preserve"
+    }
     if (removal.reason === "exited" && removal.session?.exit) {
       await this.finalize(record, finalEvidenceForSession(removal.session.exit, removal.session.detail))
     } else {
       await this.finalize(record, null)
     }
-    await this.drainRetirement(record.request.ensure_id)
+    await this.awaitRetirement(record.request.ensure_id)
   }
 
   /** Live Multiplexer barrier. The supplied Exit is the definitive Companion observation. */
@@ -326,7 +383,7 @@ export class LifecycleRuntime {
           : { kind: "signalled", signal: exit.signal },
       })
     }
-    await this.drainRetirement(record.request.ensure_id)
+    await this.awaitRetirement(record.request.ensure_id)
   }
 
   private coordinatorPorts(): LifecycleCoordinatorPorts {
@@ -587,7 +644,10 @@ export class LifecycleRuntime {
     message: Exclude<RuntimeExtensionLifecycleInbound, { message_type: "ensure_request" }>,
   ): Promise<void> {
     if (message.message_type === "receipt_acknowledgement") {
-      await this.retirement.acknowledge(message as RetirementReceiptAcknowledgement)
+      const record = await this.retirement.acknowledge(message as RetirementReceiptAcknowledgement)
+      if (message.receipt_kind === "end") {
+        await this.removeNeverStartedProjection(record)
+      }
       return
     }
     const ensure = await this.requireEnsure(message.ensure_id)
@@ -600,6 +660,62 @@ export class LifecycleRuntime {
     this.scheduleRetirement(message.ensure_id)
   }
 
+  /**
+   * Forget a cancelled-before-start claim only after both exact authorities
+   * have committed: Fx's negative admission winner and the acknowledged
+   * never-started end receipt. Any uncertainty leaves the durable claim for
+   * the next recovery pass.
+   */
+  private async removeNeverStartedProjection(
+    retirementRecord: Awaited<ReturnType<ExactRetirementLedger["get"]>>,
+  ): Promise<void> {
+    if (retirementRecord === null || !(await this.isProvenNeverStarted(retirementRecord))) return
+    const ensure = await this.ensureLedger.get(retirementRecord.ensure.request.ensure_id)
+    if (ensure === null || ensure.stage !== "manifest_claimed") return
+
+    await this.withEffectGate(ensure.request.ensure_id, async () => {
+      const current = await this.ensureLedger.get(ensure.request.ensure_id)
+      if (current === null || current.stage !== "manifest_claimed") return
+      const entry = this.options.manifest.get(current.request.agent_id)
+      if (entry === null) return
+      await this.requireMultiplexer().removeManagedAgentProjection(entry.agentId)
+      await removeFxWorkControlResidue(entry.workControl, this.options.runtimeSocketPath)
+      await this.options.manifest.remove(entry.agentId)
+    })
+  }
+
+  private async isProvenNeverStarted(
+    retirementRecord: Awaited<ReturnType<ExactRetirementLedger["get"]>>,
+    expectedEnsure?: EnsureLifecycleRecord,
+  ): Promise<boolean> {
+    if (retirementRecord === null || retirementRecord.end === null) return false
+    const receipt = retirementRecord.end.receipt
+    const acknowledgement = retirementRecord.end.acknowledgement
+    if (
+      receipt === null || acknowledgement === null ||
+      retirementRecord.end.request.reason !== "cancelled_before_start" ||
+      receipt.proof.kind !== "never_started" ||
+      acknowledgement.receipt_kind !== "end" ||
+      acknowledgement.receipt_id !== receipt.receipt_id ||
+      acknowledgement.receipt_digest !== receipt.receipt_digest
+    ) return false
+
+    const ensure = expectedEnsure ?? await this.ensureLedger.get(retirementRecord.ensure.request.ensure_id)
+    if (ensure === null || ensure.stage !== "manifest_claimed") return false
+    const decision = ensure.fx_admission_decision
+    if (
+      decision?.decision.kind !== "cancelled_before_start" ||
+      decision.receipt_id !== receipt.proof.admission_receipt_id ||
+      decision.receipt_digest !== receipt.proof.admission_receipt_digest
+    ) return false
+    const expectedCancellation = cancellationRequest(ensure, retirementRecord.end.request)
+    if (
+      decision.decision.cancellation_request_id !== expectedCancellation.request_id ||
+      receipt.proof.cancellation_request_id !== expectedCancellation.request_id
+    ) return false
+    return true
+  }
+
   private scheduleRetirement(ensureId: string): void {
     if (this.closed) return
     this.retirementDirty.add(ensureId)
@@ -608,11 +724,22 @@ export class LifecycleRuntime {
       while (!this.closed && this.retirementDirty.delete(ensureId)) {
         await this.drainRetirement(ensureId)
       }
-    })().catch((error) => this.report(error, ensureId)).finally(() => {
-      this.retirementEffects.delete(ensureId)
-      if (this.retirementDirty.has(ensureId)) this.scheduleRetirement(ensureId)
-    })
+    })()
     this.retirementEffects.set(ensureId, operation)
+    // Scheduled recovery remains best-effort, while direct barriers await the
+    // same operation and receive its failure.
+    void operation.catch((error) => this.report(error, ensureId)).finally(() => {
+      if (this.retirementEffects.get(ensureId) === operation) {
+        this.retirementEffects.delete(ensureId)
+      }
+      if (this.retirementDirty.has(ensureId)) this.scheduleRetirement(ensureId)
+    }).catch(() => {})
+  }
+
+  private async awaitRetirement(ensureId: string): Promise<void> {
+    this.scheduleRetirement(ensureId)
+    const operation = this.retirementEffects.get(ensureId)
+    if (operation !== undefined) await operation
   }
 
   private async drainRetirement(ensureId: string): Promise<void> {
@@ -756,13 +883,34 @@ export class LifecycleRuntime {
   ): Promise<void> {
     if (this.closed) return
     const publish = this.receiptPublisher
-    if (publish === null) throw new Error("lifecycle Runtime has no receipt publisher")
+    // Durable ledgers retain unacknowledged receipts. Startup may finish a
+    // background effect before the host binds its publisher; leave that
+    // receipt pending for the next recovery/replay pass.
+    if (publish === null) return
     await publish(receipt as RuntimeExtensionLifecycleReceipt)
+  }
+
+  private async replayEnsureReceipts(): Promise<void> {
+    const publish = this.receiptPublisher
+    if (publish === null || this.closed) return
+    for (const record of await this.ensureLedger.list()) {
+      const current = buildEnsureLifecycleReceipt(record)
+      if (current !== null) await this.ensureLedger.retainEnsureReceipt(current)
+      const refreshed = await this.ensureLedger.get(record.request.ensure_id)
+      if (refreshed === null) continue
+      for (const receipt of refreshed.receipts) {
+        if (refreshed.acknowledgements.some((acknowledgement) =>
+          acknowledgement.receipt_id === receipt.receipt_id &&
+          acknowledgement.receipt_digest === receipt.receipt_digest
+        )) continue
+        await publish(receipt as RuntimeExtensionLifecycleReceipt)
+      }
+    }
   }
 
   private async retirementSettled(): Promise<void> {
     while (this.retirementEffects.size > 0) {
-      await Promise.all([...this.retirementEffects.values()])
+      await Promise.allSettled([...this.retirementEffects.values()])
     }
   }
 

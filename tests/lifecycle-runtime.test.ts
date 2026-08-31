@@ -16,12 +16,23 @@ import {
   deriveFxAdmissionDecisionDigest,
   deriveFxFinalReceiptDigest,
   EnsureLifecycleLedger,
+  type EnsureLifecycleRecord,
   type EnsureRequest,
   type FxAdmissionDecision,
   type FxFinalReceipt,
 } from "../src/ensure-lifecycle-ledger.ts"
-import { deriveEndDigest, type EndRequest } from "../src/exact-retirement-ledger.ts"
 import {
+  deriveCleanupDigest,
+  deriveEndDigest,
+  deriveLifecycleReceiptDigest,
+  ExactRetirementLedger,
+  type CleanupReceipt,
+  type CleanupRequest,
+  type EndReceipt,
+  type EndRequest,
+} from "../src/exact-retirement-ledger.ts"
+import {
+  InlineLaunchSourceLedger,
   encodeInlineSourceBytes,
   deriveFrozenLaunchDigest,
   deriveInlineLaunchSourceDigest,
@@ -36,6 +47,7 @@ import {
   type LifecycleRuntimeOptions,
 } from "../src/lifecycle-runtime.ts"
 import type { AgentDefaults } from "../src/config.ts"
+import { mintFxWorkControlBinding } from "../src/fx-work-control.ts"
 import type { ManagedAgentClaim, ManagedAgentInvocation } from "../src/multiplexer.ts"
 
 const CONTRACTS = resolve(import.meta.dir, "../contracts/agentworkplace/v1")
@@ -202,6 +214,132 @@ describe("production lifecycle Runtime composition", () => {
     }
   })
 
+  test("re-projects a durable manifest claim with the exact recovered Work-control path", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "manifest-replay")
+    const harness = await runtimeHarness(fixture, { preloadManifestClaim: true })
+    try {
+      await harness.runtime.recover()
+      const entry = harness.manifest.get(fixture.ensure.agent_id)
+      expect(entry).not.toBeNull()
+      expect(entry!.workControl).toMatchObject({
+        socketPath: mintFxWorkControlBinding(
+          harness.runtimeSocketPath,
+          fixture.ensure.agent_id,
+        ).socketPath,
+        instanceId: fixture.ensure.agent_id,
+      })
+      if (entry === null) throw new Error("projection did not recreate the Manifest entry")
+      const workControl = entry.workControl
+      if (workControl === null) throw new Error("projection did not recreate Work-control")
+      expect(workControl.token).toHaveLength(64)
+      expect(harness.multiplexer.claims).toHaveLength(1)
+    } finally {
+      await harness.runtime.close()
+    }
+  })
+
+  test("retains receipts when the publisher binds after startup, then replays them", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "publisher-replay")
+    const harness = await runtimeHarness(fixture, { bindPublisher: false })
+    try {
+      await harness.runtime.acceptInlineSource(fixture.source)
+      await harness.runtime.acceptLifecycle(fixture.ensure)
+      await harness.runtime.recover()
+      expect(harness.receipts).toHaveLength(0)
+
+      harness.runtime.bindReceiptPublisher((receipt) => {
+        harness.receipts.push(structuredClone(receipt))
+      })
+      await harness.runtime.recover()
+      expect(harness.receipts.some((receipt) => receipt.message_type === "ensure_receipt")).toBe(true)
+    } finally {
+      await harness.runtime.close()
+    }
+  })
+
+  test("coalesces concurrent recovery calls behind one recovery operation", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "recover-coalesced")
+    const gate = Promise.withResolvers<void>()
+    const harness = await runtimeHarness(fixture, {
+      preloadManifestClaim: true,
+      projectionGate: gate.promise,
+    })
+    try {
+      const first = harness.runtime.recover()
+      await waitFor(() => harness.multiplexer.claims.length === 1)
+      const second = harness.runtime.recover()
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+      expect(harness.multiplexer.claims).toHaveLength(1)
+      gate.resolve()
+      await Promise.all([first, second])
+      expect(harness.multiplexer.starts).toHaveLength(1)
+    } finally {
+      gate.resolve()
+      await harness.runtime.close()
+    }
+  })
+
+  test("close waits for paused recovery projection before teardown completes", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "recover-close")
+    const gate = Promise.withResolvers<void>()
+    const harness = await runtimeHarness(fixture, {
+      preloadManifestClaim: true,
+      projectionGate: gate.promise,
+    })
+    let closed = false
+    try {
+      const recovery = harness.runtime.recover()
+      await waitFor(() => harness.multiplexer.claims.length === 1)
+      const closing = harness.runtime.close().then(() => { closed = true })
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+      expect(closed).toBe(false)
+      gate.resolve()
+      await Promise.all([recovery, closing])
+      expect(closed).toBe(true)
+      expect(harness.multiplexer.starts).toHaveLength(0)
+    } finally {
+      gate.resolve()
+      await harness.runtime.close()
+    }
+  })
+
+  test("serializes concurrent finalization and cleanup effects per ensure", async () => {
+    const fixture = await lifecycleFixture("ensure-a", "launch-a", "retirement-serialize")
+    const endGate = Promise.withResolvers<void>()
+    const cleanupGate = Promise.withResolvers<void>()
+    const harness = await runtimeHarness(fixture, {
+      retirementGate: endGate.promise,
+      cleanupGate: cleanupGate.promise,
+    })
+    const retirement = harness.retirement as BarrierRetirement
+    const cleanup = harness.cleanup as BarrierCleanup
+    try {
+      await harness.runtime.acceptInlineSource(fixture.source)
+      await harness.runtime.acceptLifecycle(fixture.ensure)
+      await harness.runtime.recover()
+      const entry = harness.manifest.get(fixture.ensure.agent_id)!
+
+      const scheduledEnd = harness.runtime.acceptLifecycle(fixture.end!)
+      await waitFor(() => retirement.endCalls === 1)
+      const directFinalization = harness.runtime.beforeDefinitiveAgentForget(entry, { code: 0, signal: 0 })
+      endGate.resolve()
+      await Promise.all([scheduledEnd, directFinalization])
+      expect(retirement.endCalls).toBe(1)
+
+      await harness.runtime.acceptLifecycle(fixture.cleanup!)
+      await waitFor(() => cleanup.cleanupCalls === 1)
+      const firstCleanupFinalization = harness.runtime.beforeDefinitiveAgentForget(entry, null)
+      const secondCleanupFinalization = harness.runtime.beforeDefinitiveAgentForget(entry, null)
+      cleanupGate.resolve()
+      await Promise.all([firstCleanupFinalization, secondCleanupFinalization])
+      expect(cleanup.cleanupCalls).toBe(1)
+    } finally {
+      endGate.resolve()
+      cleanupGate.resolve()
+      await harness.runtime.close()
+    }
+  })
+
   test("fails closed without provider finality, then retains and acknowledges exact Exit", async () => {
     const fixture = await lifecycleFixture("ensure-a", "launch-a", "final")
     const harness = await runtimeHarness(fixture)
@@ -257,6 +395,67 @@ describe("production lifecycle Runtime composition", () => {
           cancellation_request_id: harness.provider.cancelled[0],
         },
       })
+      if (end === undefined || end.message_type !== "end_receipt") {
+        throw new Error("missing never-started end receipt")
+      }
+      const acknowledgement = {
+        schema_id: "fmx.ensure-lifecycle",
+        schema_version: 1 as const,
+        message_type: "receipt_acknowledgement" as const,
+        acknowledgement_id: "runtime-cancel-end-ack",
+        receipt_kind: "end" as const,
+        receipt_id: end.receipt_id,
+        receipt_digest: end.receipt_digest,
+        ensure_id: fixture.ensure.ensure_id,
+      }
+      await Promise.all([
+        harness.runtime.acceptLifecycle(acknowledgement),
+        harness.runtime.acceptLifecycle(acknowledgement),
+      ])
+      expect(harness.multiplexer.removals).toEqual([fixture.ensure.agent_id])
+      expect(harness.manifest.get(fixture.ensure.agent_id)).toBeNull()
+    } finally {
+      await harness.runtime.close()
+    }
+  })
+
+  test("startup consumes an acknowledged never-started claim idempotently", async () => {
+    const fixture = await lifecycleFixture("ensure-b", "launch-b", "cancel-restart")
+    const harness = await runtimeHarness(fixture, { cancellation: true })
+    try {
+      await harness.runtime.acceptLifecycle(fixture.ensure)
+      await harness.runtime.acceptLifecycle(fixture.end!)
+      await harness.runtime.acceptInlineSource(fixture.source)
+      await harness.runtime.recover()
+
+      const entry = harness.manifest.get(fixture.ensure.agent_id)
+      const end = harness.receipts.find((receipt) => receipt.message_type === "end_receipt")
+      if (entry === null || end === undefined || end.message_type !== "end_receipt") {
+        throw new Error("missing durable cancelled claim")
+      }
+      const acknowledgement = {
+        schema_id: "fmx.ensure-lifecycle",
+        schema_version: 1 as const,
+        message_type: "receipt_acknowledgement" as const,
+        acknowledgement_id: "runtime-cancel-restart-ack",
+        receipt_kind: "end" as const,
+        receipt_id: end.receipt_id,
+        receipt_digest: end.receipt_digest,
+        ensure_id: fixture.ensure.ensure_id,
+      }
+      // Simulate a restart after the acknowledgement reached the private
+      // retirement ledger but before the startup join consumed the claim.
+      await harness.retirementLedger.acknowledge(acknowledgement)
+      await harness.runtime.beforeRemove({ entry, reason: "absent", session: null })
+      // The startup join owns this final Manifest removal; Runtime's hook
+      // merely allows it after validating the exact durable proof.
+      expect(harness.manifest.get(fixture.ensure.agent_id)).not.toBeNull()
+      expect(harness.multiplexer.removals).toEqual([])
+      await harness.manifest.remove(fixture.ensure.agent_id)
+
+      // A replayed acknowledgement cannot resurrect or repeat the projection.
+      await harness.runtime.acceptLifecycle(acknowledgement)
+      expect(harness.multiplexer.removals).toEqual([])
     } finally {
       await harness.runtime.close()
     }
@@ -315,12 +514,41 @@ async function runtimeHarness(
     agentDefaults?: AgentDefaults
     fmxSession?: string
     providerEnvironment?: Record<string, string>
+    preloadManifestClaim?: boolean
+    bindPublisher?: boolean
+    projectionGate?: Promise<void>
+    retirementGate?: Promise<void>
+    cleanupGate?: Promise<void>
   } = {},
 ) {
   const home = await temporaryDirectory()
+  const runtimeRoots = lifecycleRuntimeRoots(home)
+  const retirementLedger = await ExactRetirementLedger.open(runtimeRoots.retirement)
+  let preloadedEnsureLedger: EnsureLifecycleLedger | undefined
+  let preloadedSourceLedger: InlineLaunchSourceLedger | undefined
+  if (choices.preloadManifestClaim) {
+    preloadedEnsureLedger = await EnsureLifecycleLedger.open(runtimeRoots.ensure)
+    preloadedSourceLedger = await InlineLaunchSourceLedger.open(runtimeRoots.inlineSource)
+    await preloadedSourceLedger.claim(fixture.source)
+    await preloadedEnsureLedger.claim(fixture.ensure)
+    await preloadedSourceLedger.bindEnsureRequestForEnsure(fixture.ensure)
+    await preloadedEnsureLedger.advance(fixture.ensure.ensure_id, {
+      kind: "worktree_created",
+      directory: fixture.ensure.planned_worktree.directory,
+      head_commit: fixture.ensure.planned_worktree.base_commit,
+    })
+    await preloadedEnsureLedger.advance(fixture.ensure.ensure_id, {
+      kind: "manifest_claimed",
+      agent_id: fixture.ensure.agent_id,
+    })
+  }
   const manifest = AgentManifest.ephemeral("lifecycle-runtime-test")
   const runtimeSocketPath = `/tmp/fmx-lr-${process.pid}-${temporaryDirectories.length}.bus`
-  const multiplexer = new FakeMultiplexer(manifest, choices.delayedStart ?? false)
+  const multiplexer = new FakeMultiplexer(
+    manifest,
+    choices.delayedStart ?? false,
+    choices.projectionGate,
+  )
   const workControl = new FakeWorkControl()
   const provider = new FakeProvider(
     fixture,
@@ -328,6 +556,12 @@ async function runtimeHarness(
     choices.cancellation ?? false,
     choices.providerEnvironment,
   )
+  const retirement = choices.retirementGate === undefined
+    ? undefined
+    : new BarrierRetirement(retirementLedger, choices.retirementGate)
+  const cleanup = choices.cleanupGate === undefined
+    ? undefined
+    : new BarrierCleanup(retirementLedger, choices.cleanupGate)
   const receipts: Array<Record<string, any>> = []
   const errors: unknown[] = []
   const options = {
@@ -348,6 +582,9 @@ async function runtimeHarness(
     },
     now: () => new Date("2026-08-31T20:00:00.000Z"),
     onError: (error: unknown) => { errors.push(error) },
+    ensureLedger: preloadedEnsureLedger,
+    inlineSourceLedger: preloadedSourceLedger,
+    retirementLedger,
     worktreeCreator: {
       create: async (request: EnsureRequest) => ({
         kind: "worktree_created" as const,
@@ -356,6 +593,8 @@ async function runtimeHarness(
       }),
     },
     launchProvider: provider,
+    retirement,
+    cleanup,
     workControl,
     companionAuthority: {
       list: async () => [],
@@ -364,15 +603,20 @@ async function runtimeHarness(
   } satisfies LifecycleRuntimeOptions
   const runtime = await LifecycleRuntime.open(options)
   runtime.bindMultiplexer(multiplexer)
-  runtime.bindReceiptPublisher((receipt) => { receipts.push(structuredClone(receipt)) })
+  if (choices.bindPublisher !== false) {
+    runtime.bindReceiptPublisher((receipt) => { receipts.push(structuredClone(receipt)) })
+  }
   expect(runtime.roots).toEqual(lifecycleRuntimeRoots(home))
   return {
     runtime,
     runtimeSocketPath,
+    retirementLedger,
     manifest,
     multiplexer,
     workControl,
     provider,
+    retirement,
+    cleanup,
     receipts,
     errors,
   }
@@ -381,16 +625,19 @@ async function runtimeHarness(
 class FakeMultiplexer implements LifecycleRuntimeMultiplexer {
   readonly claims: ManagedAgentClaim[] = []
   readonly starts: ManagedAgentInvocation[] = []
+  readonly removals: string[] = []
 
   private readonly startGate = Promise.withResolvers<void>()
 
   constructor(
     private readonly manifest: AgentManifest,
     private readonly delayedStart: boolean,
+    private readonly projectionGate?: Promise<void>,
   ) {}
 
   async projectManagedAgent(claim: ManagedAgentClaim): Promise<ManifestEntry> {
     this.claims.push(structuredClone(claim))
+    if (this.projectionGate) await this.projectionGate
     const { result, saved } = this.manifest.ensureClaim({
       identity: identityFor(claim.agentId),
       cwd: claim.cwd,
@@ -408,6 +655,11 @@ class FakeMultiplexer implements LifecycleRuntimeMultiplexer {
     if (this.delayedStart) await this.startGate.promise
     const entry = await this.manifest.markRunning(agentId)
     return { sessionName: entry.zmxName, paneId: entry.paneId }
+  }
+
+  async removeManagedAgentProjection(agentId: string): Promise<void> {
+    this.removals.push(agentId)
+    await this.manifest.remove(agentId)
   }
 
   releaseStart(): void {
@@ -565,6 +817,97 @@ class FakeProvider {
   }
 }
 
+class BarrierRetirement {
+  endCalls = 0
+
+  constructor(
+    private readonly ledger: ExactRetirementLedger,
+    private readonly gate: Promise<void>,
+  ) {}
+
+  async end(_ensure: EnsureLifecycleRecord, request: EndRequest) {
+    this.endCalls++
+    await this.gate
+    await this.ledger.markKillIntent(request.ensure_id, "2026-08-31T20:00:00.000Z")
+    const receipt = {
+      schema_id: "fmx.ensure-lifecycle",
+      schema_version: 1,
+      message_type: "end_receipt" as const,
+      request_id: request.request_id,
+      receipt_id: `barrier-end-${request.ensure_id}`,
+      workplace_instance_id: request.workplace_instance_id,
+      fmx_session: request.fmx_session,
+      ensure_id: request.ensure_id,
+      ensure_digest: request.ensure_digest,
+      launch_id: request.launch_id,
+      launch_digest: request.launch_digest,
+      worktree_id: request.worktree_id,
+      agent_id: request.agent_id,
+      conversation_id: request.conversation_id,
+      end_id: request.end_id,
+      end_digest: request.end_digest,
+      proof: {
+        kind: "ended" as const,
+        companion_session: `fmx-${request.agent_id}`,
+        pane_id: `p_${request.agent_id}`,
+        exit_code: 0,
+        signal: 0,
+        reason: "requested" as const,
+        observed_at: "2026-08-31T20:00:00.000Z",
+      },
+      receipt_digest: "",
+    } satisfies EndReceipt
+    receipt.receipt_digest = deriveLifecycleReceiptDigest(receipt)
+    await this.ledger.retainEndReceipt(receipt)
+    return receipt
+  }
+
+  acknowledge(acknowledgement: any) {
+    return this.ledger.acknowledge(acknowledgement)
+  }
+}
+
+class BarrierCleanup {
+  cleanupCalls = 0
+
+  constructor(
+    private readonly ledger: ExactRetirementLedger,
+    private readonly gate: Promise<void>,
+  ) {}
+
+  async cleanup(_ensure: unknown, request: CleanupRequest) {
+    this.cleanupCalls++
+    await this.gate
+    const receipt = {
+      schema_id: "fmx.ensure-lifecycle",
+      schema_version: 1,
+      message_type: "cleanup_receipt" as const,
+      request_id: request.request_id,
+      receipt_id: `barrier-cleanup-${request.ensure_id}`,
+      workplace_instance_id: request.workplace_instance_id,
+      fmx_session: request.fmx_session,
+      ensure_id: request.ensure_id,
+      ensure_digest: request.ensure_digest,
+      launch_id: request.launch_id,
+      launch_digest: request.launch_digest,
+      worktree_id: request.worktree_id,
+      agent_id: request.agent_id,
+      conversation_id: request.conversation_id,
+      end_id: request.end_id,
+      end_digest: request.end_digest,
+      cleanup_id: request.cleanup_id,
+      cleanup_digest: request.cleanup_digest,
+      worktree_directory: request.worktree_directory,
+      outcome: { kind: "not_applicable" as const },
+      observed_at: "2026-08-31T20:00:00.000Z",
+      receipt_digest: "",
+    } satisfies CleanupReceipt
+    receipt.receipt_digest = deriveLifecycleReceiptDigest(receipt)
+    await this.ledger.retainCleanupReceipt(receipt)
+    return receipt
+  }
+}
+
 async function lifecycleFixture(
   ensureId: "ensure-a" | "ensure-b",
   launchId: "launch-a" | "launch-b",
@@ -629,9 +972,11 @@ async function lifecycleFixture(
     source_digest: deriveInlineLaunchSourceDigest(sourceWithoutDigest as InlineLaunchSourceRequest),
   }
   let end: EndRequest | null = null
-  if (ensureId === "ensure-b") {
+  let cleanup: CleanupRequest | null = null
+  if (ensureId === "ensure-a" || ensureId === "ensure-b") {
+    const endId = ensureId === "ensure-a" ? "end-a" : "end-b"
     end = structuredClone(ensures.find((message): message is EndRequest =>
-      message.message_type === "end_request" && message.ensure_id === "ensure-b"
+      message.message_type === "end_request" && (message as EndRequest).end_id === endId
     )!)
     end.request_id = `${end.request_id}-${suffix}`
     end.ensure_id = ensure.ensure_id
@@ -640,10 +985,28 @@ async function lifecycleFixture(
     end.launch_digest = ensure.launch_digest
     end.worktree_id = ensure.worktree_id
     end.agent_id = ensure.agent_id
+    if (ensureId === "ensure-a") end.conversation_id = "conversation-runtime"
     end.end_id = `${end.end_id}-${suffix}`
     end.end_digest = deriveEndDigest(end)
+    const cleanupId = ensureId === "ensure-a" ? "cleanup-a" : "cleanup-b"
+    cleanup = structuredClone(ensures.find((message): message is CleanupRequest =>
+      message.message_type === "cleanup_request" && (message as CleanupRequest).cleanup_id === cleanupId
+    )!)
+    cleanup.request_id = `${cleanup.request_id}-${suffix}`
+    cleanup.ensure_id = ensure.ensure_id
+    cleanup.ensure_digest = ensure.ensure_digest
+    cleanup.launch_id = ensure.launch_id
+    cleanup.launch_digest = ensure.launch_digest
+    cleanup.worktree_id = ensure.worktree_id
+    cleanup.agent_id = ensure.agent_id
+    if (ensureId === "ensure-a") cleanup.conversation_id = "conversation-runtime"
+    cleanup.end_id = end.end_id
+    cleanup.end_digest = end.end_digest
+    cleanup.cleanup_id = `${cleanup.cleanup_id}-${suffix}`
+    cleanup.worktree_directory = ensure.planned_worktree.directory
+    cleanup.cleanup_digest = deriveCleanupDigest(cleanup)
   }
-  return { ensure, source, end }
+  return { ensure, source, end, cleanup }
 }
 
 async function messages<T>(file: string, schema: { parse(value: unknown): T }): Promise<T[]> {
