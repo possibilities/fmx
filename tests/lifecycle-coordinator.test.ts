@@ -176,6 +176,129 @@ describe("durable lifecycle coordinator", () => {
       .toBe("cancelled_before_start")
   })
 
+  test("holds a start lease until the Companion boundary is durable before retirement can run", async () => {
+    const fixture = await sourceFixture("start-lease")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupManifest(fixture, ledger, sources)
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    let releaseLease!: () => void
+    const leaseReleased = new Promise<void>((resolve) => {
+      releaseLease = resolve
+    })
+    let releasePublishedCompanion!: () => void
+    const publishedCompanion = new Promise<void>((resolve) => {
+      releasePublishedCompanion = resolve
+    })
+    let companionBoundaryPublished = false
+    ports.cancellation.beginStart = async () => ({
+      kind: "start",
+      lease: { release: releaseLease },
+    })
+    ports.receipts = {
+      ensure: async (record) => {
+        if (record.stage === "companion_started") {
+          companionBoundaryPublished = true
+          await publishedCompanion
+        }
+        return null
+      },
+      publish: async () => {},
+    }
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+    const retirement = leaseReleased.then(() => { observed.push("retirement") })
+
+    await coordinator.recover()
+    await waitFor(() => companionBoundaryPublished)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("companion_started")
+    expect(observed).not.toContain("retirement")
+
+    releasePublishedCompanion()
+    await coordinator.settled()
+    await retirement
+    expect(observed.filter((effect) => effect === "retirement")).toHaveLength(1)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+  })
+
+  test("releases a failed start lease and retries the exact external start only on recovery", async () => {
+    const fixture = await sourceFixture("start-lease-failure")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupManifest(fixture, ledger, sources)
+    const ports = fakePorts([])
+    let releases = 0
+    let starts = 0
+    let fail = true
+    ports.cancellation.beginStart = async () => ({
+      kind: "start",
+      lease: { release: () => { releases++ } },
+    })
+    ports.companion.start = async ({ record }) => {
+      starts++
+      if (fail) throw new Error("injected Companion start failure")
+      return { sessionName: `fmx-${record.request.agent_id}`, paneId: `p_${record.request.agent_id}` }
+    }
+    const errors: unknown[] = []
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports: { ...ports, onError: (error) => errors.push(error) },
+    })
+
+    await coordinator.recover()
+    await coordinator.settled()
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("manifest_claimed")
+    expect(starts).toBe(1)
+    expect(releases).toBe(1)
+    expect(errors).toHaveLength(1)
+
+    fail = false
+    await coordinator.recover()
+    await coordinator.settled()
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("fx_started")
+    expect(starts).toBe(2)
+    expect(releases).toBe(2)
+  })
+
+  test("close still releases an in-flight start lease after the durable Companion boundary", async () => {
+    const fixture = await sourceFixture("start-lease-close")
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    await setupManifest(fixture, ledger, sources)
+    const observed: string[] = []
+    const ports = fakePorts(observed)
+    let startEntered = false
+    let releaseStart!: () => void
+    const startBlocked = new Promise<void>((resolve) => {
+      releaseStart = resolve
+    })
+    let releases = 0
+    ports.cancellation.beginStart = async () => ({
+      kind: "start",
+      lease: { release: () => { releases++ } },
+    })
+    ports.companion.start = async ({ record }) => {
+      startEntered = true
+      await startBlocked
+      return { sessionName: `fmx-${record.request.agent_id}`, paneId: `p_${record.request.agent_id}` }
+    }
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+
+    await coordinator.recover()
+    await waitFor(() => startEntered)
+    coordinator.close()
+    releaseStart()
+    await coordinator.settled()
+
+    expect(releases).toBe(1)
+    expect((await ledger.get(fixture.ensure.ensure_id))?.stage).toBe("companion_started")
+    expect(observed.filter((effect) => effect.startsWith("work-control:"))).toHaveLength(0)
+  })
+
   test("redrives a pending authoritative import until it converges in-runtime", async () => {
     const fixture = await sourceFixture("pending-import")
     const root = await temporaryDirectory()
@@ -932,7 +1055,7 @@ function fakePorts(
         if (!cancellationDecision) throw new Error("missing cancellation decision fixture")
         return { kind: cancellation, decision: cancellationDecision }
       }
-      return { kind: "start" }
+      return { kind: "start", lease: { release: () => {} } }
     } },
     retirement,
   }
@@ -975,7 +1098,7 @@ function cancelledDecisionFor(
   return { ...decision, receipt_digest: deriveFxAdmissionDecisionDigest(decision) }
 }
 
-async function setupCompanion(
+async function setupManifest(
   fixture: { ensure: EnsureRequest; source: InlineLaunchSourceRequest },
   ledger: EnsureLifecycleLedger,
   sources: InlineLaunchSourceLedger,
@@ -992,6 +1115,14 @@ async function setupCompanion(
     kind: "manifest_claimed",
     agent_id: fixture.ensure.agent_id,
   })
+}
+
+async function setupCompanion(
+  fixture: { ensure: EnsureRequest; source: InlineLaunchSourceRequest },
+  ledger: EnsureLifecycleLedger,
+  sources: InlineLaunchSourceLedger,
+): Promise<void> {
+  await setupManifest(fixture, ledger, sources)
   await ledger.bindFxFinalReceiptAuthority(fixture.ensure.ensure_id, {
     admission_key: fixture.source.admission_key,
     state_root: fixture.source.launch_request.state_root,

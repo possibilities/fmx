@@ -25,6 +25,15 @@ type FxAdmissionDecisionFor<Kind extends FxAdmissionDecision["decision"]["kind"]
 export type AdmittedFxAdmissionDecision = FxAdmissionDecisionFor<"admitted">
 export type CancelledFxAdmissionDecision = FxAdmissionDecisionFor<"cancelled_before_start">
 
+/**
+ * A held authorization to start one Companion session.  The cancellation
+ * authority keeps the corresponding retirement path behind this lease until
+ * `release` is called.
+ */
+export type LifecycleStartLease = {
+  release(): void
+}
+
 export type LifecycleAdmissionOutcome =
   | { kind: "pending" }
   | { kind: "final"; receipt: FxFinalReceipt }
@@ -113,7 +122,7 @@ export type LifecycleCoordinatorPorts = {
      * it cannot be reclassified as cancelled-before-start.
      */
     beginStart(ensureId: string): Promise<
-      | { kind: "start" }
+      | { kind: "start"; lease: LifecycleStartLease }
       | { kind: "cancelled_before_start"; decision: CancelledFxAdmissionDecision }
     >
   }
@@ -396,16 +405,23 @@ export class LifecycleCoordinator {
           await this.publish(ensureId)
           return false
         }
-        if (this.closed) return false
-        const effect = await this.options.ports.companion.start({ record, invocation: prepared.invocation })
-        await this.options.ledger.advance(ensureId, {
-          kind: "companion_started",
-          session_name: effect.sessionName,
-          pane_id: effect.paneId,
-        })
-        if (this.closed) return false
-        await this.publish(ensureId)
-        continue
+        try {
+          if (this.closed) return false
+          const effect = await this.options.ports.companion.start({ record, invocation: prepared.invocation })
+          await this.options.ledger.advance(ensureId, {
+            kind: "companion_started",
+            session_name: effect.sessionName,
+            pane_id: effect.paneId,
+          })
+          if (this.closed) return false
+          await this.publish(ensureId)
+          continue
+        } finally {
+          // Cancellation/retirement must not observe a never-started winner
+          // while the Companion start is in flight or before its durable
+          // companion_started boundary makes that start recoverable.
+          gate.lease.release()
+        }
       }
 
       const result = await this.withAdmissionGate(ensureId, async () => {
