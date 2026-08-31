@@ -26,9 +26,20 @@ export type AgentPickerEntry = {
   active: boolean
 }
 
+/** One extension-owned unavailable slot, deliberately outside Agent identity/state. */
+export type RecoveryCardPickerEntry = {
+  kind: "recovery-card"
+  slotId: string
+  title: string
+  active: boolean
+}
+
+export type AgentPickerNavigationEntry = AgentPickerEntry | RecoveryCardPickerEntry
+
 export type AgentPickerOptions = {
   theme?: FxnkTheme
   onSelect: (agentId: number) => void
+  onSelectRecoveryCard?: (slotId: string) => void
   onOpenChange?: (open: boolean) => void
 }
 
@@ -52,7 +63,7 @@ export class AgentPicker extends BoxRenderable {
   private readonly selectorText: TextRenderable
   private readonly renderContext: RenderContext
   private readonly options: AgentPickerOptions
-  private entries: AgentPickerEntry[] = []
+  private entries: AgentPickerNavigationEntry[] = []
   private visibleEntryIndices: number[] = []
   private ramp: Ramp = RAMP_FALLBACK
   private highlighted = 0
@@ -191,7 +202,8 @@ export class AgentPicker extends BoxRenderable {
   }
 
   get highlightedAgentId(): number | null {
-    return this.entries[this.highlighted]?.agentId ?? null
+    const entry = this.entries[this.highlighted]
+    return entry && !isRecoveryCardEntry(entry) ? entry.agentId : null
   }
 
   get menuHeight(): number {
@@ -206,8 +218,8 @@ export class AgentPicker extends BoxRenderable {
     this.refresh()
   }
 
-  setEntries(entries: readonly AgentPickerEntry[]): void {
-    const highlightedId = this.highlightedAgentId
+  setEntries(entries: readonly AgentPickerNavigationEntry[]): void {
+    const highlightedKey = this.highlightedEntryKey()
     this.entries = [...entries].reverse()
     if (this.entries.length === 0) {
       this.highlighted = 0
@@ -217,9 +229,9 @@ export class AgentPicker extends BoxRenderable {
       return
     }
 
-    const retained = highlightedId === null
+    const retained = highlightedKey === null
       ? -1
-      : this.entries.findIndex((entry) => entry.agentId === highlightedId)
+      : this.entries.findIndex((entry) => entryKey(entry) === highlightedKey)
     const active = this.entries.findIndex((entry) => entry.active)
     this.highlighted = retained >= 0 ? retained : active >= 0 ? active : 0
     this.refresh()
@@ -322,8 +334,14 @@ export class AgentPicker extends BoxRenderable {
   private chooseHighlighted(): void {
     const entry = this.entries[this.highlighted]
     if (!entry) return
-    this.options.onSelect(entry.agentId)
+    if (isRecoveryCardEntry(entry)) this.options.onSelectRecoveryCard?.(entry.slotId)
+    else this.options.onSelect(entry.agentId)
     this.close()
+  }
+
+  private highlightedEntryKey(): string | null {
+    const entry = this.entries[this.highlighted]
+    return entry ? entryKey(entry) : null
   }
 
   private chooseVisibleRow(rowIndex: number): void {
@@ -371,8 +389,17 @@ export class AgentPicker extends BoxRenderable {
     this.separator.content = "─".repeat(Math.max(0, this.width - 2))
   }
 
-  private controlContent(entry: AgentPickerEntry | null, focused: boolean): StyledText {
+  private controlContent(entry: AgentPickerNavigationEntry | null, focused: boolean): StyledText {
     if (!entry) return new StyledText([fg(this.ramp.dim)("  agent  —")])
+    if (isRecoveryCardEntry(entry)) {
+      return new StyledText([
+        fg(focused ? this.ramp.focus : this.ramp.dim)(focused ? "▎" : " "),
+        fg(this.ramp.secondary)(" unavailable "),
+        bold(fg(this.ramp.accent)("! ")),
+        focused ? bold(fg(this.ramp.foreground)(entry.title)) : fg(this.ramp.foreground)(entry.title),
+        fg(this.ramp.dim)(" ▾"),
+      ])
+    }
     const value = entryLabel(entry)
     return new StyledText([
       fg(focused ? this.ramp.focus : this.ramp.dim)(focused ? "▎" : " "),
@@ -384,7 +411,7 @@ export class AgentPicker extends BoxRenderable {
     ])
   }
 
-  private refreshRows(visible: readonly AgentPickerEntry[]): void {
+  private refreshRows(visible: readonly AgentPickerNavigationEntry[]): void {
     this.ensureRows(visible.length)
     for (const [rowIndex, row] of this.menuRows.entries()) {
       const entry = visible[rowIndex]
@@ -397,6 +424,15 @@ export class AgentPicker extends BoxRenderable {
       }
       const entryIndex = this.visibleEntryIndices[rowIndex]
       const highlighted = entryIndex === this.highlighted
+      if (isRecoveryCardEntry(entry)) {
+        row.text.content = new StyledText([
+          fg(highlighted ? this.ramp.focus : this.ramp.dim)(highlighted ? "> " : "  "),
+          bold(fg(this.ramp.accent)("! ")),
+          highlighted ? bold(fg(this.ramp.foreground)(entry.title)) : fg(this.ramp.secondary)(entry.title),
+          fg(this.ramp.dim)(" · unavailable"),
+        ])
+        continue
+      }
       const label = entryLabel(entry)
       row.text.content = new StyledText([
         fg(highlighted ? this.ramp.focus : this.ramp.dim)(highlighted ? "> " : "  "),
@@ -449,6 +485,14 @@ export class AgentPicker extends BoxRenderable {
 function stateGlyph(entry: AgentPickerEntry, ramp: Ramp) {
   const glyph = fg(ramp[stateRole(entry.state)])(`${stateIcon(entry.state, entry.attention)} `)
   return entry.state === "blocked" ? bold(glyph) : glyph
+}
+
+function isRecoveryCardEntry(entry: AgentPickerNavigationEntry): entry is RecoveryCardPickerEntry {
+  return "kind" in entry && entry.kind === "recovery-card"
+}
+
+function entryKey(entry: AgentPickerNavigationEntry): string {
+  return isRecoveryCardEntry(entry) ? `recovery-card:${entry.slotId}` : `agent:${entry.agentId}`
 }
 
 function entryLabel(entry: AgentPickerEntry): string {

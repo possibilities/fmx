@@ -21,7 +21,7 @@ import {
   displayStateFor,
   shortSessionId,
 } from "./agent-registry.ts"
-import { AgentPicker } from "./agent-picker.ts"
+import { AgentPicker, type AgentPickerNavigationEntry } from "./agent-picker.ts"
 import {
   AGENTWORKPLACE_CONTRACT_VERSION,
   RUNTIME_EXTENSION_SCHEMA_ID,
@@ -98,7 +98,13 @@ import {
 } from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
 import { expandTilde, scanProjectRoots } from "./projects.ts"
-import { SessionList, stateIcon } from "./session-list.ts"
+import {
+  RecoveryCard,
+  type RecoveryCardActionCorrelation,
+  type RecoveryCardSpec,
+  parseRecoveryCard,
+} from "./recovery-card.ts"
+import { type RecoveryCardListRow, SessionList, stateIcon } from "./session-list.ts"
 import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
@@ -180,6 +186,8 @@ type MultiplexerOptions = {
   agentDefaults?: AgentDefaults
   /** The per-Fx semantic work requester; replaceable only for deterministic tests. */
   fxWorkControl?: FxWorkControlRequester
+  /** Opaque human recovery actions forwarded by the Runtime-extension supervisor. */
+  onRecoveryCardAction?: (correlation: RecoveryCardActionCorrelation) => void
   /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
   initialTheme?: FxnkThemeResolution
 }
@@ -217,11 +225,20 @@ export type RuntimeExtensionSurface = {
   subscribeInvalidation(listener: (revision: string) => void): () => void
   snapshot(): Promise<RuntimeMemberSnapshot>
   present(agentId: string, focus: boolean): void
+  publishRecoveryCard(card: RecoveryCardSpec): void
+  clearRecoveryCard(slotId: string, cardRevision: string): void
 }
 
 export class RuntimeExtensionSurfaceError extends Error {
   constructor(
-    readonly code: "busy" | "not_found" | "shutting_down" | "snapshot_unavailable" | "starting_up",
+    readonly code:
+      | "busy"
+      | "invalid_card"
+      | "not_found"
+      | "shutting_down"
+      | "snapshot_unavailable"
+      | "stale"
+      | "starting_up",
     message: string,
   ) {
     super(message)
@@ -422,6 +439,10 @@ export class Multiplexer {
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
   private readonly emptyState: TextRenderable
+  private recoveryCard: RecoveryCard | null = null
+  private recoveryCardSpec: RecoveryCardSpec | null = null
+  private recoveryCardSelected = false
+  private recoveryCardReturnAgentId: string | null = null
   private readonly adeSocket: AdeEventSource | null
   private adeSubscribed = false
   private readonly registry = new AgentRegistry()
@@ -481,6 +502,8 @@ export class Multiplexer {
     subscribeInvalidation: (listener) => this.subscribeExtensionInvalidation(listener),
     snapshot: () => this.runtimeMemberSnapshot(),
     present: (agentId, focus) => this.presentAgent(agentId, focus),
+    publishRecoveryCard: (card) => this.publishRecoveryCard(card),
+    clearRecoveryCard: (slotId, cardRevision) => this.clearRecoveryCard(slotId, cardRevision),
   }
   private readonly donePromise: Promise<void>
   private resolveDone!: () => void
@@ -572,7 +595,11 @@ export class Multiplexer {
     this.content.add(this.emptyState)
 
     this.adeSocket = options.adeSocket ?? null
-    this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
+    this.sessionList = new SessionList(
+      renderer,
+      (agentId) => this.selectAgent(agentId),
+      (slotId) => this.selectRecoveryCard(slotId),
+    )
     this.sessionList.applyTheme(this.theme.theme)
     this.navigationPublicationHeld = (options.survivors?.length ?? 0) > 0
     this.sessionList.root.visible = !this.navigationPublicationHeld
@@ -581,6 +608,7 @@ export class Multiplexer {
     this.agentPicker = new AgentPicker(renderer, {
       theme: this.theme.theme,
       onSelect: (agentId) => this.selectAgent(agentId),
+      onSelectRecoveryCard: (slotId) => this.selectRecoveryCard(slotId),
       onOpenChange: (open) => {
         this.cancelPrefix()
         if (open) this.activeAgent()?.terminal.blur()
@@ -704,6 +732,7 @@ export class Multiplexer {
     const ramp = fxnkRamp(resolution.theme)
     this.renderer.setBackgroundColor(ramp.background)
     this.agentPicker.applyTheme(resolution.theme)
+    this.recoveryCard?.applyTheme(resolution.theme)
     this.applyModalTheme()
     this.applyDividerTheme()
     this.refreshEmptyState()
@@ -914,7 +943,9 @@ export class Multiplexer {
     this.agents.push(agent)
     this.content.add(agent.terminal)
     this.refreshAgentChrome()
-    if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
+    if (focus || (selectIfEmpty && this.activeIndex === -1 && !this.recoveryCardSelected)) {
+      this.switchTo(this.agents.length - 1)
+    }
     this.loadGitContext(cwd)
     this.refreshAgentNavigation()
     return agent
@@ -981,10 +1012,13 @@ export class Multiplexer {
     this.seenSeq.delete(agent.id)
     this.refreshAgentChrome()
     if (this.agents.length === 0) {
-      this.activeIndex = -1
-      this.options.onActiveAgentChange?.(null)
-      this.refreshTerminalTitle()
-      this.refreshAgentNavigation()
+      if (this.recoveryCard) this.selectRecoveryCard(this.recoveryCardSpec!.slot_id)
+      else {
+        this.activeIndex = -1
+        this.options.onActiveAgentChange?.(null)
+        this.refreshTerminalTitle()
+        this.refreshAgentNavigation()
+      }
     } else if (wasActive) {
       this.activeIndex = -1
       this.switchTo(Math.min(index, this.agents.length - 1))
@@ -1009,6 +1043,11 @@ export class Multiplexer {
       this.options.onActiveAgentChange?.(null)
       this.refreshTerminalTitle()
       return
+    }
+    if (this.recoveryCardSelected) {
+      this.recoveryCardSelected = false
+      this.recoveryCard?.setSelected(false)
+      if (this.recoveryCard) this.recoveryCard.visible = false
     }
     const normalized = ((index % this.agents.length) + this.agents.length) % this.agents.length
     const previous = this.activeAgent()
@@ -1035,13 +1074,51 @@ export class Multiplexer {
     return this.agents[this.activeIndex] ?? null
   }
 
+  private cycleSelectableSurface(delta: -1 | 1): void {
+    const hasCard = this.recoveryCard !== null
+    const count = this.agents.length + (hasCard ? 1 : 0)
+    if (count === 0) return
+    const current = this.recoveryCardSelected ? this.agents.length : this.activeIndex
+    const next = ((current + delta) % count + count) % count
+    if (hasCard && next === this.agents.length) {
+      this.selectRecoveryCard(this.recoveryCardSpec!.slot_id)
+      return
+    }
+    this.switchTo(next)
+  }
+
   private refreshAgentNavigation(): void {
     this.refreshExtensionRevision()
     if (this.navigationPublicationHeld) return
     void this.syncSubagentParents()
     const entries = this.sessionEntries()
-    this.sessionList.render(buildTree(entries), this.trayWidth)
-    this.agentPicker.setEntries(entries)
+    const rows: Array<ReturnType<typeof buildTree>[number] | RecoveryCardListRow> = buildTree(entries)
+    if (this.recoveryCardSpec) rows.unshift(this.recoveryCardListRow(this.recoveryCardSpec))
+    this.sessionList.render(rows, this.trayWidth)
+    const pickerEntries: AgentPickerNavigationEntry[] = [...entries]
+    if (this.recoveryCardSpec) {
+      pickerEntries.push({
+        kind: "recovery-card",
+        slotId: this.recoveryCardSpec.slot_id,
+        title: this.recoveryCardSpec.title,
+        active: this.recoveryCardSelected,
+      })
+    }
+    this.agentPicker.setEntries(pickerEntries)
+  }
+
+  private recoveryCardListRow(card: RecoveryCardSpec): RecoveryCardListRow {
+    return {
+      kind: "recovery-card",
+      depth: 0,
+      label: card.title,
+      slotId: card.slot_id,
+      agentId: null,
+      state: "unknown",
+      attention: null,
+      active: this.recoveryCardSelected,
+      onPath: this.recoveryCardSelected,
+    }
   }
 
   private subscribeExtensionInvalidation(listener: (revision: string) => void): () => void {
@@ -1280,6 +1357,107 @@ export class Multiplexer {
     this.selectAgent(agent.id, focus)
   }
 
+  private publishRecoveryCard(value: RecoveryCardSpec): void {
+    if (this.shuttingDown) {
+      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
+    }
+    this.assertExtensionReady()
+    let card: RecoveryCardSpec
+    try {
+      card = parseRecoveryCard(value)
+    } catch (error) {
+      throw new RuntimeExtensionSurfaceError("invalid_card", errorMessage(error))
+    }
+
+    if (this.recoveryCard) {
+      this.recoveryCard.setCard(card)
+    } else {
+      this.recoveryCard = new RecoveryCard(this.renderer, {
+        card,
+        selected: false,
+        theme: this.theme.theme,
+        visible: false,
+        onAction: (correlation) => this.options.onRecoveryCardAction?.(correlation),
+      })
+      this.content.add(this.recoveryCard)
+    }
+    this.recoveryCardSpec = card
+    if (this.agents.length === 0 || (this.activeIndex === -1 && !this.recoveryCardSelected)) {
+      this.selectRecoveryCard(card.slot_id)
+      return
+    }
+    this.refreshAgentChrome()
+  }
+
+  private clearRecoveryCard(slotId: string, cardRevision: string): void {
+    if (this.shuttingDown) {
+      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
+    }
+    this.assertExtensionReady()
+    const spec = this.recoveryCardSpec
+    if (!this.recoveryCard || !spec || spec.slot_id !== slotId) {
+      throw new RuntimeExtensionSurfaceError("not_found", `no recovery card for unavailable slot ${slotId}`)
+    }
+    if (spec.card_revision !== cardRevision) {
+      throw new RuntimeExtensionSurfaceError(
+        "stale",
+        `recovery card ${slotId} is at revision ${spec.card_revision}, not ${cardRevision}`,
+      )
+    }
+
+    const selected = this.recoveryCardSelected
+    const returnAgentId = this.recoveryCardReturnAgentId
+    const card = this.recoveryCard
+    this.content.remove(card)
+    card.destroyRecursively()
+    this.recoveryCard = null
+    this.recoveryCardSpec = null
+    this.recoveryCardSelected = false
+    this.recoveryCardReturnAgentId = null
+
+    if (selected && this.agents.length > 0) {
+      const retained = returnAgentId === null
+        ? -1
+        : this.agents.findIndex((agent) => agent.entry.agentId === returnAgentId)
+      this.switchTo(retained >= 0 ? retained : this.agents.length - 1)
+      this.refreshAgentChrome()
+      return
+    }
+    if (selected) {
+      this.activeIndex = -1
+      this.options.onActiveAgentChange?.(null)
+      this.refreshTerminalTitle()
+    }
+    this.refreshAgentChrome()
+  }
+
+  private selectRecoveryCard(slotId: string): void {
+    const card = this.recoveryCard
+    const spec = this.recoveryCardSpec
+    if (!card || !spec || spec.slot_id !== slotId) return
+    this.cancelExitConfirmation()
+    if (this.recoveryCardSelected) {
+      card.setSelected(true)
+      card.visible = true
+      return
+    }
+
+    const previous = this.activeAgent()
+    if (previous) {
+      this.recoveryCardReturnAgentId = previous.entry.agentId
+      previous.terminal.setHostSelectionEnabled(false)
+      previous.terminal.blur()
+      previous.terminal.visible = false
+    }
+    this.activeIndex = -1
+    this.recoveryCardSelected = true
+    card.setSelected(true)
+    card.visible = true
+    this.options.onActiveAgentChange?.(null)
+    this.refreshTerminalTitle()
+    this.refreshAgentChrome()
+  }
+
   private syncSubagentParents(): Promise<void> {
     return this.subagents.setParents(
       this.agents.flatMap((agent) => {
@@ -1303,16 +1481,19 @@ export class Multiplexer {
 
   private refreshAgentChrome(): void {
     const hasAgents = this.agents.length > 0
-    const showTray = hasAgents && !this.pickerMode && !this.trayHidden
-    const showPicker = hasAgents
+    const hasRecoveryCard = this.recoveryCard !== null
+    const hasSelectableSurface = hasAgents || hasRecoveryCard
+    const showTray = hasSelectableSurface && !this.pickerMode && !this.trayHidden
+    const showPicker = hasSelectableSurface
       && this.pickerMode
-      && (!this.hideSingleAgentPicker || this.agents.length > 1)
+      && (!this.hideSingleAgentPicker || hasRecoveryCard || this.agents.length > 1)
     this.tray.visible = showTray
     this.divider.visible = showTray
     this.agentPicker.visible = showPicker
     if (!showPicker) this.agentPicker.close()
-    this.emptyState.visible = !hasAgents
-    if (!hasAgents) this.refreshEmptyState()
+    if (this.recoveryCard) this.recoveryCard.visible = this.recoveryCardSelected
+    this.emptyState.visible = !hasSelectableSurface
+    if (!hasSelectableSurface) this.refreshEmptyState()
     this.applyLayout()
   }
 
@@ -1663,8 +1844,13 @@ export class Multiplexer {
       return
     }
 
+    if (this.recoveryCardSelected && this.recoveryCard?.handleKeyPress(key)) {
+      this.swallow(key)
+      return
+    }
+
     const emptyStateExitKey = isCancelKey(key) ? "ctrl+c" : keyMatchesCombo(key, CTRL_D_KEY) ? "ctrl+d" : null
-    if (this.agents.length === 0 && emptyStateExitKey !== null) {
+    if (this.agents.length === 0 && !this.recoveryCard && emptyStateExitKey !== null) {
       this.swallow(key)
       this.cancelPrefix()
       this.requestExitConfirmation(emptyStateExitKey)
@@ -1709,10 +1895,10 @@ export class Multiplexer {
         // must never turn one Client's Detach into a shared shutdown.
         return
       case "previous_tab":
-        this.switchTo(this.activeIndex - 1)
+        this.cycleSelectableSurface(-1)
         return
       case "next_tab":
-        this.switchTo(this.activeIndex + 1)
+        this.cycleSelectableSurface(1)
         return
       case "help":
         this.showHelp()
