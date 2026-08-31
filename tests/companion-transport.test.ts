@@ -3,7 +3,13 @@ import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { CompanionTransportFactory } from "../src/companion-transport.ts"
 import { AgentManifest, identityFor, type ManifestEntry } from "../src/agent-manifest.ts"
-import { AgentEndedError, AgentUnreachableError, type AgentTransport, type TransportHandlers } from "../src/agent-transport.ts"
+import {
+  AgentEndedError,
+  AgentStartConflictError,
+  AgentUnreachableError,
+  type AgentTransport,
+  type TransportHandlers,
+} from "../src/agent-transport.ts"
 import { ownershipLabels } from "../src/agent-reconcile.ts"
 import { CompanionCommand, CompanionCreateError, type SessionEntry } from "../src/zmx-command.ts"
 
@@ -387,4 +393,124 @@ test("a Companion lookup that fails after a create timeout keeps the Agent's cla
     .start({ entry, cwd: entry.cwd, command: ["fx"], env: {}, size: { cols: 80, rows: 24 } })
     .catch((error: unknown) => error)
   expect(failure).toBeInstanceOf(AgentUnreachableError)
+})
+
+test("a lost create response inspects and reuses the exact live owned session", async () => {
+  const entry = restoredEntry("1".repeat(32))
+  const session = liveSession(entry, "/tmp/lost-create-owned")
+  let creates = 0
+  let inspections = 0
+  const connections: Array<{ path: string; ownership: Record<string, string> | undefined }> = []
+  const factory = new CompanionTransportFactory(
+    {
+      create: async () => {
+        creates += 1
+        throw new CompanionCreateError("Timeout", "create response was lost", null)
+      },
+      settle: async (name: string) => {
+        inspections += 1
+        expect(name).toBe(entry.zmxName)
+        return session
+      },
+    } as unknown as CompanionCommand,
+    HOME,
+    {
+      connect: async (path, _size, options) => {
+        connections.push({ path, ownership: options?.ownership })
+        return inertTransport
+      },
+    },
+  )
+
+  expect(await factory.start({
+    entry,
+    command: [entry.fxPath],
+    cwd: entry.cwd,
+    env: {},
+    size: { cols: 80, rows: 24 },
+  })).toBe(inertTransport)
+  expect(creates).toBe(1)
+  expect(inspections).toBe(1)
+  expect(connections).toEqual([{
+    path: session.socketPath!,
+    ownership: ownershipLabels(HOME, entry.agentId),
+  }])
+})
+
+test("managed replay recovers AlreadyExists only for the exact owned identity", async () => {
+  const entry = restoredEntry("2".repeat(32))
+  const session = liveSession(entry, "/tmp/replayed-owned")
+  let creates = 0
+  let inspections = 0
+  const factory = new CompanionTransportFactory(
+    {
+      create: async () => {
+        creates += 1
+        throw new CompanionCreateError("AlreadyExists", "name is already live", null)
+      },
+      settle: async () => {
+        inspections += 1
+        return session
+      },
+    } as unknown as CompanionCommand,
+    HOME,
+    { connect: async () => inertTransport },
+  )
+
+  expect(await factory.start({
+    entry,
+    command: [entry.fxPath],
+    cwd: entry.cwd,
+    env: {},
+    size: { cols: 80, rows: 24 },
+    recoverExisting: true,
+  })).toBe(inertTransport)
+  expect(creates).toBe(1)
+  expect(inspections).toBe(1)
+
+  await expect(factory.start({
+    entry,
+    command: [entry.fxPath],
+    cwd: entry.cwd,
+    env: {},
+    size: { cols: 80, rows: 24 },
+  })).rejects.toMatchObject({ code: "AlreadyExists" })
+  expect(inspections).toBe(1)
+})
+
+test("managed replay refuses a foreign live session without connecting to or changing it", async () => {
+  const entry = restoredEntry("3".repeat(32))
+  const foreign = {
+    ...liveSession(entry, "/tmp/replayed-foreign"),
+    labels: ownershipLabels("foreign-home", entry.agentId),
+  }
+  let connections = 0
+  let observed = foreign
+  const factory = new CompanionTransportFactory(
+    {
+      create: async () => {
+        throw new CompanionCreateError("AlreadyExists", "foreign name is live", null)
+      },
+      settle: async () => observed,
+    } as unknown as CompanionCommand,
+    HOME,
+    {
+      connect: async () => {
+        connections += 1
+        return inertTransport
+      },
+    },
+  )
+
+  const failure = await factory.start({
+    entry,
+    command: [entry.fxPath],
+    cwd: entry.cwd,
+    env: {},
+    size: { cols: 80, rows: 24 },
+    recoverExisting: true,
+  }).catch((error: unknown) => error)
+  expect(failure).toBeInstanceOf(AgentStartConflictError)
+  expect(connections).toBe(0)
+  expect(observed).toEqual(foreign)
 })

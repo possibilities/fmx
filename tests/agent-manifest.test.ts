@@ -147,6 +147,31 @@ test("creation is written before it is acknowledged, and acknowledged in place",
   })
 })
 
+test("an exact predetermined claim replays in place and a conflicting claim is refused", async () => {
+  await withDirectory(async (dir) => {
+    const path = join(dir, "managed.json")
+    const manifest = await AgentManifest.open(path, HOME)
+    const identity = identityFor("8".repeat(32))
+    const workControl = {
+      socketPath: `/tmp/fmx-managed.${identity.agentId}.fx`,
+      instanceId: identity.agentId,
+      token: "cd".repeat(32),
+    }
+    const input = { ...params(), identity, workControl }
+    const first = manifest.ensureClaim(input)
+    await first.saved
+    const replay = manifest.ensureClaim({ ...input, createdAt: input.createdAt + 1 })
+    await replay.saved
+
+    expect(replay.result).toEqual(first.result)
+    expect(manifest.entries).toHaveLength(1)
+    expect((await loadManifest(path, HOME)).agents).toEqual([first.result])
+    expect(() => manifest.ensureClaim({ ...input, cwd: "/other" })).toThrow(
+      "conflicting manifest claim",
+    )
+  })
+})
+
 test("an adopted Agent's arguments may be unknown, and that survives a reload", async () => {
   await withDirectory(async (dir) => {
     const path = join(dir, "m.json")

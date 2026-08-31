@@ -60,6 +60,13 @@ export type AgentStart = {
   cwd: string
   env: Record<string, string>
   size: TerminalSize
+  /**
+   * A managed lifecycle replay may follow a lost create response or a crash
+   * before its durable stage transition. In that one path, an existing exact
+   * owned session is the start result; ordinary starts still reject a name
+   * which already exists.
+   */
+  recoverExisting?: boolean
 }
 
 /**
@@ -104,6 +111,16 @@ export class AgentUnreachableError extends Error {
     readonly cause: Error,
   ) {
     super(`agent ${entry.displayId} is running but could not be reached: ${cause.message}`)
+  }
+}
+
+/** A session under the expected stable name exists, but is not this Agent's. */
+export class AgentStartConflictError extends Error {
+  constructor(
+    readonly entry: ManifestEntry,
+    readonly cause: Error,
+  ) {
+    super(`agent ${entry.displayId} Companion session is not owned by its managed identity: ${cause.message}`)
   }
 }
 

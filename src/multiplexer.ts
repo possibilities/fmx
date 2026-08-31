@@ -52,12 +52,19 @@ import {
   type FxAdeBinding,
   type FxStartLevel,
 } from "./fx-environment.ts"
-import { mintIdentity, type AgentManifest, type ManifestEntry } from "./agent-manifest.ts"
+import {
+  identityFor,
+  isAgentId,
+  mintIdentity,
+  type AgentManifest,
+  type ManifestEntry,
+} from "./agent-manifest.ts"
 import {
   FxWorkControlClient,
   FxWorkControlError,
   mintFxWorkControlBinding,
   removeFxWorkControlResidue,
+  type FxWorkControlBinding,
   type FxWorkControlMethod,
   type FxWorkControlRequester,
   type FxWorkControlResult,
@@ -66,6 +73,7 @@ import {
   AgentEndedError,
   AgentUnreachableError,
   type AgentExit,
+  type AgentStart,
   type AgentTransport,
   type AgentTransportFactory,
   stringEnvironment,
@@ -213,6 +221,33 @@ export type AgentCreateRequest = {
   worktree?: boolean
   focus?: boolean
   startLevel?: FxStartLevel | null
+}
+
+/**
+ * Implementation-private projection inputs for a lifecycle-owned Agent.
+ * Its stable identity and Work-control bearer authority are supplied by the
+ * lifecycle composition; fmx derives the Companion and pane names from the
+ * Agent id and never mints replacements during replay.
+ */
+export type ManagedAgentClaim = {
+  agentId: string
+  cwd: string
+  fxPath: string
+  fxArgs: string[] | null
+  workControl: FxWorkControlBinding
+  createdAt?: number
+  focus?: boolean
+}
+
+/** Provider-independent exact Fx invocation handed to the transport seam. */
+export type ManagedAgentInvocation = Pick<
+  AgentStart,
+  "command" | "cwd" | "env"
+>
+
+export type ManagedAgentStartResult = {
+  sessionName: string
+  paneId: string
 }
 
 export type RuntimeMemberAgentSnapshot = {
@@ -479,6 +514,11 @@ export class Multiplexer {
   private readonly adeStaleRecords = new Map<string, number>()
   /** Managed finalization which shutdown must not strand before Manifest removal. */
   private readonly definitiveAgentFinalizations = new Set<Promise<void>>()
+  /** One exact managed start effect may be in flight for each stable Agent. */
+  private readonly managedAgentStarts = new Map<
+    string,
+    { invocationKey: string; operation: Promise<ManagedAgentStartResult> }
+  >()
   private readonly sessionList: SessionList
   private readonly agentPicker: AgentPicker
   private readonly pickerMode: boolean
@@ -825,6 +865,119 @@ export class Multiplexer {
     )
     if (!agent) throw new ControlFailure("shutting_down", "fmx is shutting down")
     return this.agentInfo(agent)
+  }
+
+  /**
+   * Durably claim and project one lifecycle-owned Agent. Replaying the exact
+   * claim retries a failed Manifest write and returns the same display row;
+   * a different claim for that stable identity fails closed.
+   */
+  async projectManagedAgent(claim: ManagedAgentClaim): Promise<ManifestEntry> {
+    if (this.shuttingDown) {
+      throw new ControlFailure("shutting_down", "fmx is shutting down")
+    }
+    assertManagedClaim(claim)
+    if (this.options.runtimeSocketPath) {
+      const expected = mintFxWorkControlBinding(
+        this.options.runtimeSocketPath,
+        claim.agentId,
+        claim.workControl.token,
+      )
+      if (claim.workControl.socketPath !== expected.socketPath) {
+        throw new Error(`managed Agent ${claim.agentId} has a foreign Work-control path`)
+      }
+    }
+    const identity = identityFor(claim.agentId)
+    const existing = this.options.manifest.get(claim.agentId)
+    const { result: entry, saved } = this.options.manifest.ensureClaim({
+      identity,
+      cwd: claim.cwd,
+      fxPath: claim.fxPath,
+      fxArgs: claim.fxArgs,
+      createdAt: existing?.createdAt ?? claim.createdAt ?? Date.now(),
+      workControl: claim.workControl,
+    })
+    if (!this.agents.some((candidate) => candidate.entry.agentId === entry.agentId)) {
+      this.addAgent(entry, entry.cwd, claim.focus ?? false)
+    }
+    await saved
+    return this.options.manifest.get(entry.agentId) ?? entry
+  }
+
+  /**
+   * Idempotently start or recover the exact preclaimed Companion session.
+   * The transport is not adopted until the existing Manifest entry is
+   * durably `running`; a failed write leaves the process available for the
+   * next exact replay without starting a second one.
+   */
+  async startManagedAgent(
+    agentId: string,
+    invocation: ManagedAgentInvocation,
+  ): Promise<ManagedAgentStartResult> {
+    if (this.shuttingDown) {
+      throw new ControlFailure("shutting_down", "fmx is shutting down")
+    }
+    const entry = this.options.manifest.get(agentId)
+    if (!entry) throw new Error(`managed Agent is not claimed: ${agentId}`)
+    assertManagedInvocation(entry, invocation)
+    const agent = this.agents.find((candidate) => candidate.entry.agentId === agentId)
+    if (!agent) throw new Error(`managed Agent is not projected: ${agentId}`)
+    if (agent.connected) {
+      return { sessionName: entry.zmxName, paneId: entry.paneId }
+    }
+
+    const invocationKey = managedInvocationKey(invocation)
+    const active = this.managedAgentStarts.get(agentId)
+    if (active) {
+      if (active.invocationKey !== invocationKey) {
+        throw new Error(`conflicting managed Fx invocation for agent: ${agentId}`)
+      }
+      return active.operation
+    }
+
+    const operation = this.runManagedAgentStart(agent, invocation)
+    this.managedAgentStarts.set(agentId, { invocationKey, operation })
+    const clear = () => {
+      if (this.managedAgentStarts.get(agentId)?.operation === operation) {
+        this.managedAgentStarts.delete(agentId)
+      }
+    }
+    void operation.then(clear, clear)
+    return operation
+  }
+
+  private async runManagedAgentStart(
+    agent: FxAgent,
+    invocation: ManagedAgentInvocation,
+  ): Promise<ManagedAgentStartResult> {
+    const entry = this.options.manifest.get(agent.entry.agentId)
+    if (!entry) throw new Error(`managed Agent is not claimed: ${agent.entry.agentId}`)
+    const size = agent.currentSize()
+    const transport = entry.phase === "running"
+      ? await this.options.transport.attach(entry, size)
+      : await this.options.transport.start({
+        entry,
+        command: [...invocation.command],
+        cwd: invocation.cwd,
+        env: { ...invocation.env },
+        size,
+        recoverExisting: true,
+      })
+    try {
+      // Queue this write even when an earlier failed write already changed
+      // the in-memory phase. Replay must repair the durable snapshot before
+      // any risky fmx adoption or renderer operation.
+      const running = await this.options.manifest.markRunning(entry.agentId)
+      if (this.shuttingDown || !this.agents.includes(agent)) {
+        throw new ControlFailure("shutting_down", "fmx is shutting down")
+      }
+      agent.adopt(transport)
+      this.refreshAgentNavigation()
+      return { sessionName: running.zmxName, paneId: running.paneId }
+    } catch (error) {
+      transport.detach()
+      throw error
+    }
   }
 
   /**
@@ -2476,6 +2629,64 @@ function resolveStartLevel(
   const model = explicit?.model ?? defaults?.model
   const effort = explicit?.effort ?? defaults?.effort
   return model === undefined && effort === undefined ? null : { model, effort }
+}
+
+function assertManagedClaim(claim: ManagedAgentClaim): void {
+  if (!isAgentId(claim.agentId)) throw new Error(`invalid managed Agent id: ${claim.agentId}`)
+  if (!isAbsolute(claim.cwd) || normalize(claim.cwd) !== claim.cwd || claim.cwd === "/") {
+    throw new Error(`managed Agent ${claim.agentId} has an invalid directory`)
+  }
+  if (claim.fxPath.length === 0 || claim.fxArgs?.some((value) => typeof value !== "string")) {
+    throw new Error(`managed Agent ${claim.agentId} has invalid Fx launch metadata`)
+  }
+  if (
+    claim.createdAt !== undefined &&
+    (!Number.isSafeInteger(claim.createdAt) || claim.createdAt < 0)
+  ) {
+    throw new Error(`managed Agent ${claim.agentId} has an invalid creation time`)
+  }
+  if (
+    claim.workControl.instanceId !== claim.agentId ||
+    !isAbsolute(claim.workControl.socketPath) ||
+    claim.workControl.socketPath.includes("\0") ||
+    !/^[0-9a-f]{64}$/u.test(claim.workControl.token)
+  ) {
+    throw new Error(`managed Agent ${claim.agentId} has an invalid Work-control binding`)
+  }
+}
+
+function assertManagedInvocation(
+  entry: ManifestEntry,
+  invocation: ManagedAgentInvocation,
+): void {
+  if (invocation.cwd !== entry.cwd) {
+    throw new Error(`managed Fx invocation directory does not match agent: ${entry.agentId}`)
+  }
+  if (
+    invocation.command.length === 0 ||
+    invocation.command.some((value) => typeof value !== "string") ||
+    invocation.command[0] !== entry.fxPath
+  ) {
+    throw new Error(`managed Fx invocation does not match agent: ${entry.agentId}`)
+  }
+  if (
+    entry.fxArgs !== null &&
+    (invocation.command.length !== entry.fxArgs.length + 1 ||
+      entry.fxArgs.some((value, index) => invocation.command[index + 1] !== value))
+  ) {
+    throw new Error(`managed Fx invocation does not match agent: ${entry.agentId}`)
+  }
+  if (Object.values(invocation.env).some((value) => typeof value !== "string")) {
+    throw new Error(`managed Fx invocation environment is invalid: ${entry.agentId}`)
+  }
+}
+
+function managedInvocationKey(invocation: ManagedAgentInvocation): string {
+  return JSON.stringify([
+    invocation.command,
+    invocation.cwd,
+    Object.entries(invocation.env).sort(([left], [right]) => left.localeCompare(right)),
+  ])
 }
 
 function displayStateForCheckpoint(entry: ManifestEntry): DisplayState {
