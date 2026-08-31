@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto"
-import { chmod, lstat, mkdtemp, rmdir, unlink } from "node:fs/promises"
+import { lstat, rmdir, unlink } from "node:fs/promises"
 import { createConnection, type Socket } from "node:net"
 import { join } from "node:path"
 import {
@@ -235,13 +235,16 @@ export class FxLaunchProviderClient {
     const token = randomBytes(32).toString("hex")
     const started = Date.now()
     await ensurePrivateDirectories([this.runtimeDirectory], "Fx launch provider")
-    const directory = await mkdtemp(join(this.runtimeDirectory, "launch-provider-"))
+    // The provider contract gives Fx authority to atomically create and anchor
+    // the fresh endpoint directory. Supplying an already-created directory is
+    // an implementation compatibility allowance, not the caller contract.
+    const directory = join(this.runtimeDirectory, `launch-provider-${randomUUID()}`)
     const socketPath = join(directory, FX_LAUNCH_PROVIDER_SOCKET_NAME)
     if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX_BYTES) {
       await cleanupEndpoint(directory, socketPath)
       throw new FxLaunchProviderError("unsafe_socket_path", `launch-provider socket path is too long: ${socketPath}`)
     }
-    await chmod(directory, 0o700)
+    await assertEndpointAbsent(directory)
     const environment: NodeJS.ProcessEnv = {
       ...this.parentEnvironment,
       [FX_LAUNCH_PROVIDER_DIRECTORY]: directory,
@@ -280,6 +283,22 @@ export class FxLaunchProviderClient {
     if (remaining <= 0) throw new FxLaunchProviderError("timeout", "Fx launch provider did not answer before its deadline")
     return remaining
   }
+}
+
+async function assertEndpointAbsent(directory: string): Promise<void> {
+  try {
+    await lstat(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+    throw new FxLaunchProviderError(
+      "unsafe_endpoint",
+      `cannot verify fresh launch-provider endpoint: ${(error as Error).message}`,
+    )
+  }
+  throw new FxLaunchProviderError(
+    "unsafe_endpoint",
+    "launch-provider endpoint directory already exists",
+  )
 }
 
 export function encodeLaunchControls(args: readonly string[]): string {

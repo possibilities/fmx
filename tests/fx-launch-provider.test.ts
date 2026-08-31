@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { existsSync, mkdirSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
@@ -185,7 +186,10 @@ function controlsAtExactLimit(): string[] {
 
 function fakeProvider(responder: (request: Record<string, unknown>) => FakeResponse | null) {
   return (request: FxLaunchProviderHelperRequest): FxLaunchProviderHelper => {
-    const path = join(request.environment.FX_INTERNAL_LAUNCH_PROVIDER_DIRECTORY!, "provider.sock")
+    const directory = request.environment.FX_INTERNAL_LAUNCH_PROVIDER_DIRECTORY!
+    expect(existsSync(directory)).toBe(false)
+    mkdirSync(directory, { mode: 0o700 })
+    const path = join(directory, "provider.sock")
     const server = createServer()
     let peer: Socket | null = null
     let done = false
