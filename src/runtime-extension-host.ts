@@ -27,10 +27,20 @@ const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu
 
 type SupervisorOverrides = Omit<
   RuntimeExtensionSupervisorOptions,
-  "cwd" | "env" | "onDisconnect" | "onRequest"
+  | "cwd"
+  | "env"
+  | "onDisconnect"
+  | "onRequest"
+  | "onLifecycleMessage"
+  | "onInlineLaunchSourceRequest"
 >
 
-export type RuntimeExtensionHostOptions = SupervisorOverrides & {
+type RuntimeExtensionHostCallbacks = Pick<
+  RuntimeExtensionSupervisorOptions,
+  "onLifecycleMessage" | "onInlineLaunchSourceRequest"
+>
+
+export type RuntimeExtensionHostOptions = SupervisorOverrides & RuntimeExtensionHostCallbacks & {
   cwd?: string
   env?: Record<string, string | undefined>
   onDiagnostic?: (error: RuntimeExtensionError) => void
@@ -124,12 +134,16 @@ export class RuntimeExtensionHost {
       cwd,
       env,
       onDiagnostic: _onDiagnostic,
+      onLifecycleMessage,
+      onInlineLaunchSourceRequest,
       ...supervisorOptions
     } = this.options
     const supervisor = await RuntimeExtensionSupervisor.start(this.startup, {
       ...supervisorOptions,
       cwd,
       env,
+      onLifecycleMessage,
+      onInlineLaunchSourceRequest,
       onRequest: runtimeExtensionRequestHandler(this.surface, this.startup.association.members.find(
         (member) => member.placement_id === this.startup.placementId,
       )!.fmx_session),

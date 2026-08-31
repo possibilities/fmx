@@ -18,6 +18,16 @@ import type {
 } from "../src/runtime-extension.ts"
 import type { RecoveryCardSpec } from "../src/recovery-card.ts"
 import type { RuntimeExtensionStartup } from "../src/runtime-startup.ts"
+import { encodeCanonicalJson } from "../src/contract-codec.ts"
+import {
+  INLINE_LAUNCH_SOURCE_SCHEMA_ID,
+  INLINE_LAUNCH_SOURCE_SCHEMA_VERSION,
+  deriveFrozenLaunchDigest,
+  deriveInlineLaunchSourceDigest,
+  encodeInlineSourceBytes,
+  type FrozenLaunchRequest,
+  type InlineLaunchSourceRequest,
+} from "../src/inline-launch-source.ts"
 
 const FMX_SESSION = "workers"
 const NEVER = new AbortController().signal
@@ -244,6 +254,88 @@ test("threads the injected lifecycle handler and asynchronous receipt publisher 
   }
 })
 
+test("forwards lifecycle and inline-source callbacks in either child arrival order", async () => {
+  const lifecycle = await frozenLifecycleMessages()
+  const lifecycleRequest = lifecycle.find((message): message is RuntimeExtensionLifecycleRequest =>
+    message.message_type === "ensure_request" && "planned_worktree" in message)!
+  const inline = inlineSourceRequest(lifecycleRequest.fmx_session)
+
+  for (const [label, script] of [
+    ["lifecycle-first", [lifecycleRequest, inline]],
+    ["inline-first", [inline, lifecycleRequest]],
+  ] as const) {
+    const startup = structuredClone(STARTUP)
+    startup.association.members[1]!.fmx_session = lifecycleRequest.fmx_session
+    startup.registration.argv = [process.execPath, PEER]
+    const observed: string[] = []
+    const host = await RuntimeExtensionHost.start(startup, surface().value, {
+      env: {
+        ...process.env,
+        FMX_SUPERVISOR_CHILD_MODE: "ready",
+        FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify(script),
+      },
+      startupTimeoutMs: 1_000,
+      requestTimeoutMs: 1_000,
+      shutdownGraceMs: 50,
+      terminateGraceMs: 50,
+      onLifecycleMessage: (message) => {
+        observed.push(`${label}:${message.message_type}`)
+      },
+      onInlineLaunchSourceRequest: (request) => {
+        observed.push(`${label}:${request.message_type}`)
+      },
+    })
+    try {
+      await waitFor(() => observed.length === 2)
+      expect(observed).toEqual([
+        `${label}:${script[0]!.message_type}`,
+        `${label}:${script[1]!.message_type}`,
+      ])
+      expect(host.state).toBe("ready")
+    } finally {
+      await host.close()
+    }
+  }
+})
+
+test("recovers unrelated host operations after a callback failure using supervisor restart semantics", async () => {
+  const lifecycle = await frozenLifecycleMessages()
+  const lifecycleRequest = lifecycle.find((message): message is RuntimeExtensionLifecycleRequest =>
+    message.message_type === "ensure_request" && "planned_worktree" in message)!
+  const diagnostics: string[] = []
+  let callbackAttempts = 0
+  const startup = structuredClone(STARTUP)
+  startup.association.members[1]!.fmx_session = lifecycleRequest.fmx_session
+  startup.registration.argv = [process.execPath, PEER]
+  const host = await RuntimeExtensionHost.start(startup, surface().value, {
+    env: {
+      ...process.env,
+      FMX_SUPERVISOR_CHILD_MODE: "reply",
+      FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([lifecycleRequest]),
+    },
+    startupTimeoutMs: 1_000,
+    requestTimeoutMs: 1_000,
+    shutdownGraceMs: 50,
+    terminateGraceMs: 50,
+    onDiagnostic: (error) => diagnostics.push(error.code),
+    onLifecycleMessage: () => {
+      if (callbackAttempts++ === 0) throw new Error("first callback failed")
+    },
+  })
+  try {
+    await waitFor(() => host.generation === 2 && host.state === "ready" && diagnostics.length > 0)
+    expect(diagnostics).toContain("handler_failed")
+    expect(await host.forwardRecoveryAction({
+      slot_id: CARD.slot_id,
+      card_revision: CARD.card_revision,
+      action_id: CARD.action.action_id,
+    })).toMatchObject({ ok: true, operation: "unavailable_slot_action" })
+    expect(host.state).toBe("ready")
+  } finally {
+    await host.close()
+  }
+})
+
 test("restarts one post-readiness child generation, then degrades without a crash loop", async () => {
   const fake = surface()
   const diagnostics: Array<{ code: string; generation: number | null }> = []
@@ -285,4 +377,47 @@ async function frozenLifecycleMessages(): Promise<EnsureLifecycleMessage[]> {
     .trimEnd()
     .split("\n")
     .map((line) => ensureLifecycleMessageSchema.parse(JSON.parse(line)) as EnsureLifecycleMessage)
+}
+
+function inlineSourceRequest(fmxSession: string): InlineLaunchSourceRequest {
+  const initialWork = encodeInlineSourceBytes(Buffer.from("private host source\n", "utf8"))
+  const launchControls = encodeInlineSourceBytes(encodeCanonicalJson({ remaining_global_args: [] }))
+  const launch = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "launch_request",
+    request_id: "host-fx-launch-request",
+    launch_id: "host-launch",
+    launch_digest: "0".repeat(64),
+    admission_key: "host-admission",
+    conversation_name: "Host fixture",
+    resume: { mode: "fresh" },
+    state_root: "/var/tmp/fmx-host-state",
+    directory: "/var/tmp/fmx-host-worktree",
+    initial_work_digest: initialWork.sha256,
+    remaining_launch_controls_digest: launchControls.sha256,
+  } satisfies FrozenLaunchRequest
+  launch.launch_digest = deriveFrozenLaunchDigest(launch)
+  const request = {
+    schema_id: INLINE_LAUNCH_SOURCE_SCHEMA_ID,
+    schema_version: INLINE_LAUNCH_SOURCE_SCHEMA_VERSION,
+    message_type: "source_request",
+    request_id: "host-source-request",
+    workplace_instance_id: "fixture-workplace",
+    fmx_session: fmxSession,
+    ensure_id: "host-ensure",
+    ensure_digest: "e".repeat(64),
+    worktree_id: "host-worktree",
+    agent_id: AGENT_ID,
+    launch_id: launch.launch_id,
+    launch_digest: launch.launch_digest,
+    admission_key: launch.admission_key,
+    source_id: "host-source",
+    source_digest: "0".repeat(64),
+    launch_request: launch,
+    initial_work: initialWork,
+    launch_controls: launchControls,
+  } satisfies InlineLaunchSourceRequest
+  request.source_digest = deriveInlineLaunchSourceDigest(request)
+  return request
 }
