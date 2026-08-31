@@ -26,6 +26,9 @@ const GIT_OUTPUT_MAX_BYTES = 16 * 1024 * 1024
 const PRIVATE_FILE_MAX_BYTES = 64 * 1024
 const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
 const TOKEN = /^fmx-exact-worktree:[0-9a-f]{64}$/u
+const FILTER_DRIVER = /^[A-Za-z0-9][A-Za-z0-9.-]{0,63}$/u
+const FILTER_CONFIG_KEY = /^filter\.([A-Za-z0-9][A-Za-z0-9.-]{0,63})\.(?:smudge|process|required)$/u
+const MAX_FILTER_DRIVERS = 256
 
 export type WorktreeCreatedTransition = Extract<
   EnsureLifecycleTransition,
@@ -396,7 +399,8 @@ export class ExactWorktreeCreator {
       await this.requireOwnedBranch(transaction, request, inspection.repository)
     }
 
-    const accepted = await this.addWorktree(transaction, request, inspection)
+    const checkoutEnvironment = await this.checkoutEnvironment(request)
+    const accepted = await this.addWorktree(transaction, request, inspection, checkoutEnvironment)
     await this.after("after_git_accepted", request)
     return await this.finishAccepted(
       transactionPath,
@@ -412,6 +416,7 @@ export class ExactWorktreeCreator {
     transaction: CreationTransaction,
     request: EnsureRequest,
     initial: AbsentWorktree,
+    checkoutEnvironment: Readonly<Record<string, string>>,
   ): Promise<PresentWorktree> {
     const plan = request.planned_worktree
     let repository = initial.repository
@@ -451,7 +456,7 @@ export class ExactWorktreeCreator {
       "--",
       plan.directory,
       plan.branch,
-    ])
+    ], checkoutEnvironment)
     const recovered = await this.inspect(request)
     assertRepositoryPins(transaction.baseline, recovered.repository)
     if (recovered.kind === "present") {
@@ -502,6 +507,97 @@ export class ExactWorktreeCreator {
     ) {
       throw conflict("planned branch does not carry the exact private creation provenance")
     }
+  }
+
+  /**
+   * A Worktree add checks out the exact base tree.  Attributes from that tree
+   * may select a repository-configured filter, so merely disabling a global
+   * attributes file is insufficient: Git would still run a tracked smudge or
+   * process filter while materializing the new Worktree.  Resolve attributes
+   * from the immutable planned commit, then make every possible driver inert
+   * in this one Git process.  Local configuration is also enumerated so an
+   * info/attributes race cannot activate an otherwise-unused configured
+   * driver.  System and global config are already excluded by
+   * scrubGitEnvironment, and runGit forces fsmonitor off for every command.
+   */
+  private async checkoutEnvironment(request: EnsureRequest): Promise<Readonly<Record<string, string>>> {
+    const plan = request.planned_worktree
+    const drivers = new Set<string>()
+    const paths = await this.trackedPaths(plan.repository, plan.base_commit)
+    for (const batch of chunk(paths, 128)) {
+      const result = await this.command(plan.repository, [
+        "check-attr",
+        `--source=${plan.base_commit}`,
+        "-z",
+        "filter",
+        "--",
+        ...batch,
+      ])
+      if (result.exitCode < 0) throw transient(commandFailure("git check-attr checkout filters", result))
+      if (result.exitCode !== 0) throw conflict("cannot resolve exact checkout filter attributes")
+      try {
+        for (const driver of parseFilterAttributes(result.stdout)) drivers.add(driver)
+      } catch (error) {
+        throw conflict(`exact checkout filter attributes are ambiguous: ${errorMessage(error)}`)
+      }
+    }
+
+    const configured = await this.command(plan.repository, [
+      "config",
+      "--null",
+      "--name-only",
+      "--get-regexp",
+      "^filter\\..*\\.(smudge|process|required)$",
+    ])
+    if (configured.exitCode < 0) throw transient(commandFailure("git config checkout filters", configured))
+    if (configured.exitCode === 0) {
+      try {
+        for (const driver of parseConfiguredFilterDrivers(configured.stdout)) drivers.add(driver)
+      } catch (error) {
+        throw conflict(`configured checkout filter drivers are ambiguous: ${errorMessage(error)}`)
+      }
+    } else if (configured.exitCode !== 1) {
+      throw transient(commandFailure("git config checkout filters", configured))
+    }
+
+    if (drivers.size > MAX_FILTER_DRIVERS) {
+      throw conflict("exact checkout exposes too many filter drivers")
+    }
+    const environment: Record<string, string> = { ...this.environment }
+    const entries = [...drivers].sort().flatMap((driver) => [
+      [`filter.${driver}.smudge`, ""],
+      [`filter.${driver}.process`, ""],
+      [`filter.${driver}.required`, "false"],
+    ])
+    environment.GIT_CONFIG_COUNT = String(entries.length)
+    for (const [index, [key, value]] of entries.entries()) {
+      environment[`GIT_CONFIG_KEY_${index}`] = key
+      environment[`GIT_CONFIG_VALUE_${index}`] = value
+    }
+    return environment
+  }
+
+  private async trackedPaths(repository: string, commit: string): Promise<string[]> {
+    const result = await this.command(repository, ["ls-tree", "-r", "-z", "--name-only", commit])
+    if (result.exitCode < 0) throw transient(commandFailure("git ls-tree exact checkout", result))
+    if (result.exitCode !== 0) throw conflict("cannot enumerate exact checkout tree")
+    let fields: string[]
+    try {
+      fields = decodeNulFields(result.stdout, "exact checkout tree")
+    } catch (error) {
+      throw conflict(`cannot parse exact checkout tree: ${errorMessage(error)}`)
+    }
+    const paths = fields.slice(0, -1)
+    if (paths.some((path) => (
+      path.length === 0 ||
+      path.startsWith("/") ||
+      path === ".." ||
+      path.startsWith("../") ||
+      path.includes("/../")
+    ))) {
+      throw conflict("exact checkout tree has an unsafe path")
+    }
+    return paths
   }
 
   private async finishAccepted(
@@ -852,9 +948,10 @@ export class ExactWorktreeCreator {
   private async command(
     cwd: string,
     args: readonly string[],
+    environment: Readonly<Record<string, string>> = this.environment,
   ): Promise<ExactWorktreeGitCommandResult> {
     try {
-      return await this.git(cwd, args, this.environment)
+      return await this.git(cwd, args, environment)
     } catch (error) {
       return { exitCode: -1, stdout: new Uint8Array(), stderr: errorMessage(error) }
     }
@@ -1100,6 +1197,46 @@ function parseBranchReflog(bytes: Uint8Array): { commit: string; message: string
   })
 }
 
+function parseFilterAttributes(bytes: Uint8Array): string[] {
+  const fields = decodeNulFields(bytes, "Git checkout filter attributes")
+  if ((fields.length - 1) % 3 !== 0 || fields.at(-1) !== "") {
+    throw new Error("filter attributes are not NUL-delimited triples")
+  }
+  const drivers: string[] = []
+  for (let index = 0; index < fields.length - 1; index += 3) {
+    const path = fields[index]!
+    const attribute = fields[index + 1]!
+    const value = fields[index + 2]!
+    if (path.length === 0 || attribute !== "filter") {
+      throw new Error("filter attributes contain an unexpected record")
+    }
+    if (value === "unspecified" || value === "unset") continue
+    if (!FILTER_DRIVER.test(value)) {
+      throw new Error("filter attribute does not name one bounded driver")
+    }
+    drivers.push(value)
+  }
+  return drivers
+}
+
+function parseConfiguredFilterDrivers(bytes: Uint8Array): string[] {
+  const fields = decodeNulFields(bytes, "Git configured checkout filters")
+  if (fields.at(-1) !== "") throw new Error("configured filter keys lack a final NUL")
+  const drivers: string[] = []
+  for (const key of fields.slice(0, -1)) {
+    const match = FILTER_CONFIG_KEY.exec(key)
+    if (!match) throw new Error("configured filter key is not bounded")
+    drivers.push(match[1]!)
+  }
+  return drivers
+}
+
+function* chunk<T>(values: readonly T[], size: number): Generator<readonly T[]> {
+  for (let index = 0; index < values.length; index += size) {
+    yield values.slice(index, index + size)
+  }
+}
+
 async function runGit(
   cwd: string,
   args: readonly string[],
@@ -1116,6 +1253,8 @@ async function runGit(
       "core.attributesFile=/dev/null",
       "-c",
       "core.excludesFile=/dev/null",
+      "-c",
+      "core.fsmonitor=false",
       ...args,
     ], {
       cwd,

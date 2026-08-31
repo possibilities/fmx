@@ -527,11 +527,27 @@ describe("recoverable exact Git Worktree creation", () => {
     expect(await pathExists(linkedRequest.planned_worktree.directory)).toBeFalse()
   })
 
-  test("command-scoped Git hardening disables repository hooks and ambient attributes", async () => {
+  test("command-scoped Git hardening prevents tracked, configured, and raced checkout filters", async () => {
     const fixture = await repositoryFixture("git-hardening")
     const tracked = join(fixture.repository, "tracked.txt")
+    const globallyFiltered = join(fixture.repository, "globally-filtered.txt")
+    const disabled = join(fixture.repository, "disabled.txt")
+    const benign = join(fixture.repository, "benign.txt")
     await writeFile(tracked, "exact checked-out bytes\n")
-    await git(fixture.repository, "add", "tracked.txt")
+    await writeFile(globallyFiltered, "global filter bytes\n")
+    await writeFile(disabled, "disabled filter bytes\n")
+    await writeFile(benign, "benign attribute bytes\n")
+    await writeFile(
+      join(fixture.repository, ".gitattributes"),
+      [
+        "tracked.txt filter=hostile",
+        "globally-filtered.txt filter=global",
+        "disabled.txt filter=disabled",
+        "benign.txt text eol=lf",
+        "",
+      ].join("\n"),
+    )
+    await git(fixture.repository, "add", ".gitattributes", "tracked.txt", "globally-filtered.txt", "disabled.txt", "benign.txt")
     await git(
       fixture.repository,
       "-c",
@@ -549,10 +565,15 @@ describe("recoverable exact Git Worktree creation", () => {
 
     const hookSentinel = join(fixture.root, "hook-ran")
     const filterSentinel = join(fixture.root, "filter-ran")
+    const globalFilterSentinel = join(fixture.root, "global-filter-ran")
+    const fsmonitorSentinel = join(fixture.root, "fsmonitor-ran")
     const hooks = join(fixture.root, "hostile-hooks")
     const attributes = join(fixture.root, "hostile-attributes")
     const excludes = join(fixture.root, "hostile-excludes")
     const filter = join(fixture.root, "hostile-filter")
+    const globalFilter = join(fixture.root, "hostile-global-filter")
+    const fsmonitor = join(fixture.root, "hostile-fsmonitor")
+    const globalConfig = join(fixture.root, "hostile-global-config")
     await mkdir(hooks)
     await writeFile(
       join(hooks, "post-checkout"),
@@ -565,19 +586,94 @@ describe("recoverable exact Git Worktree creation", () => {
       filter,
       `#!/bin/sh\nprintf 'filter ran\\n' > "${filterSentinel}"\ncat\n`,
     )
+    await writeFile(
+      globalFilter,
+      `#!/bin/sh\nprintf 'global filter ran\\n' > "${globalFilterSentinel}"\ncat\n`,
+    )
+    await writeFile(
+      fsmonitor,
+      `#!/bin/sh\nprintf 'fsmonitor ran\\n' > "${fsmonitorSentinel}"\nprintf 'token\\0'\n`,
+    )
+    await writeFile(
+      globalConfig,
+      `[filter "global"]\n\tsmudge = ${globalFilter}\n\tprocess = ${globalFilter}\n\trequired = true\n`,
+    )
     await chmod(filter, 0o700)
+    await chmod(globalFilter, 0o700)
+    await chmod(fsmonitor, 0o700)
     await git(fixture.repository, "config", "core.hooksPath", hooks)
     await git(fixture.repository, "config", "core.attributesFile", attributes)
     await git(fixture.repository, "config", "core.excludesFile", excludes)
     await git(fixture.repository, "config", "filter.hostile.smudge", filter)
+    await git(fixture.repository, "config", "filter.hostile.process", filter)
     await git(fixture.repository, "config", "filter.hostile.required", "true")
+    await git(fixture.repository, "config", "filter.disabled.smudge", "")
+    await git(fixture.repository, "config", "filter.disabled.process", "")
+    await git(fixture.repository, "config", "filter.disabled.required", "true")
+    await git(fixture.repository, "config", "core.fsmonitor", fsmonitor)
 
-    expect((await new ExactWorktreeCreator(fixture.authority).create(fixture.request)).head_commit)
+    const environments: Readonly<Record<string, string>>[] = []
+    let racedAttributes = false
+    const runner: ExactWorktreeGitCommandRunner = async (cwd, args, environment) => {
+      environments.push(environment)
+      if (!racedAttributes && args[0] === "worktree" && args[1] === "add") {
+        racedAttributes = true
+        await writeFile(join(fixture.repository, ".git", "info", "attributes"), "* filter=hostile\n")
+      }
+      return await rawGit(cwd, args, environment)
+    }
+
+    expect((await new ExactWorktreeCreator(fixture.authority, {
+      environment: { ...process.env, GIT_CONFIG_GLOBAL: globalConfig },
+      git: runner,
+    }).create(fixture.request)).head_commit)
       .toBe(fixture.commit)
     expect(await readFile(join(fixture.directory, "tracked.txt"), "utf8"))
       .toBe("exact checked-out bytes\n")
+    expect(await readFile(join(fixture.directory, "globally-filtered.txt"), "utf8"))
+      .toBe("global filter bytes\n")
+    expect(await readFile(join(fixture.directory, "disabled.txt"), "utf8"))
+      .toBe("disabled filter bytes\n")
+    expect(await readFile(join(fixture.directory, "benign.txt"), "utf8"))
+      .toBe("benign attribute bytes\n")
+    expect(racedAttributes).toBeTrue()
     expect(await pathExists(hookSentinel)).toBeFalse()
     expect(await pathExists(filterSentinel)).toBeFalse()
+    expect(await pathExists(globalFilterSentinel)).toBeFalse()
+    expect(await pathExists(fsmonitorSentinel)).toBeFalse()
+    expect(environments.some((environment) => environment.GIT_CONFIG_GLOBAL === "/dev/null")).toBeTrue()
+  })
+
+  test("an unbounded tracked filter driver fails closed before the branch or Worktree effect", async () => {
+    const fixture = await repositoryFixture("unbounded-filter")
+    await writeFile(join(fixture.repository, ".gitattributes"), "* filter=driver@unsafe\n")
+    await git(fixture.repository, "add", ".gitattributes")
+    await git(
+      fixture.repository,
+      "-c",
+      "user.name=fmx test",
+      "-c",
+      "user.email=fmx@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "ambiguous filter",
+    )
+    fixture.commit = await gitOutput(fixture.repository, "rev-parse", "HEAD")
+    fixture.request.planned_worktree.base_commit = fixture.commit
+    fixture.request.ensure_digest = deriveEnsureDigest(fixture.request)
+
+    await expectConflict(
+      new ExactWorktreeCreator(fixture.authority).create(fixture.request),
+      "filter attributes are ambiguous",
+    )
+    expect(await pathExists(fixture.directory)).toBeFalse()
+    const branch = await rawGit(
+      fixture.repository,
+      ["rev-parse", "--verify", `refs/heads/${fixture.request.planned_worktree.branch}`],
+      process.env as Record<string, string>,
+    )
+    expect(branch.exitCode).not.toBe(0)
   })
 
   test("preexisting exact branch and exact foreign Worktree are ambiguous and preserved", async () => {
@@ -796,6 +892,8 @@ async function rawGit(
     "core.attributesFile=/dev/null",
     "-c",
     "core.excludesFile=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
     ...args,
   ], {
     cwd,
