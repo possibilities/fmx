@@ -11,12 +11,14 @@ import {
   type FileHandle,
 } from "node:fs/promises"
 import { userInfo } from "node:os"
-import { dirname, isAbsolute, resolve } from "node:path"
+import { dirname, isAbsolute, normalize, resolve } from "node:path"
 import * as z from "zod/v4"
 import {
   ensureLifecycleMessageSchema,
+  fxLaunchAdmissionFinalMessageSchema,
   isAgentWorkplaceConversationId,
   type EnsureLifecycleMessage,
+  type FxLaunchAdmissionFinalMessage,
 } from "./agentworkplace-contracts.ts"
 import { identityFor } from "./agent-manifest.ts"
 import {
@@ -33,6 +35,8 @@ const LOCK_FILE = ".ensure-lifecycle.lock"
 const RECORD_FILE = /^[0-9a-f]{64}\.json$/u
 const TEMPORARY_FILE = /^[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{16}\.tmp$/u
 const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
+const SAFE_TOKEN = /^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,127})$/u
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u
 const STAGES = [
   "claimed",
   "worktree_created",
@@ -58,6 +62,33 @@ export type EnsureReceiptAcknowledgement = LiteralMessage<
   Extract<EnsureLifecycleMessage, { acknowledgement_id: unknown }>,
   "receipt_acknowledgement"
 >
+export type FxFinalReceipt = LiteralMessage<
+  Extract<FxLaunchAdmissionFinalMessage, { outcome: unknown }>,
+  "final_receipt"
+>
+export type FxFinalReceiptAcknowledgement = LiteralMessage<
+  Extract<FxLaunchAdmissionFinalMessage, { acknowledgement_id: unknown }>,
+  "final_receipt_acknowledgement"
+>
+
+export type FxFinalReceiptAuthorityBinding = {
+  admission_key: string
+  state_root: string
+}
+
+export type FxFinalReceiptTransaction = {
+  binding: FxFinalReceiptAuthorityBinding | null
+  receipt: FxFinalReceipt | null
+  acknowledgement: FxFinalReceiptAcknowledgement | null
+  acknowledgement_applied: boolean
+}
+
+export interface FxFinalReceiptAuthority {
+  acknowledge(
+    binding: Readonly<FxFinalReceiptAuthorityBinding>,
+    acknowledgement: Readonly<FxFinalReceiptAcknowledgement>,
+  ): Promise<void>
+}
 
 export type EnsureLifecycleEffects = EnsureReceipt["effects"]
 
@@ -70,6 +101,7 @@ export type EnsureLifecycleRecord = {
   effects: EnsureLifecycleEffects
   receipts: EnsureReceipt[]
   acknowledgements: EnsureReceiptAcknowledgement[]
+  fx_final: FxFinalReceiptTransaction
 }
 
 export type EnsureLifecycleTransition =
@@ -163,6 +195,11 @@ const fxEffectSchema = z.discriminatedUnion("status", [
   z.strictObject({ status: z.literal("started"), conversation_id: z.string() }),
 ])
 
+const fxFinalReceiptAuthorityBindingSchema = z.strictObject({
+  admission_key: z.string().regex(SAFE_TOKEN),
+  state_root: z.string(),
+})
+
 const privateRecordSchema = z.strictObject({
   schema_id: z.literal(LEDGER_SCHEMA_ID),
   schema_version: z.literal(LEDGER_SCHEMA_VERSION),
@@ -177,6 +214,12 @@ const privateRecordSchema = z.strictObject({
   }),
   receipts: z.array(ensureLifecycleMessageSchema).max(4096),
   acknowledgements: z.array(ensureLifecycleMessageSchema).max(4096),
+  fx_final: z.strictObject({
+    binding: fxFinalReceiptAuthorityBindingSchema.nullable(),
+    receipt: z.unknown().nullable(),
+    acknowledgement: z.unknown().nullable(),
+    acknowledgement_applied: z.boolean(),
+  }),
 })
 
 type RecordIndex = {
@@ -196,9 +239,10 @@ type StorageGuard = {
  * Private durable authority for one Runtime's recoverable ensure effects.
  *
  * This store deliberately does not extend the frozen public lifecycle wire.
- * It records only already-versioned request/receipt envelopes and opaque
- * effect facts. All mutations are serialized, flocked across store instances,
- * and made durable before their promises resolve.
+ * It records already-versioned request/receipt envelopes, the private Fx
+ * authority binding, and opaque effect/application facts. All mutations are
+ * serialized, flocked across store instances, and made durable before their
+ * promises resolve.
  */
 export class EnsureLifecycleLedger {
   private queue: Promise<unknown> = Promise.resolve()
@@ -253,6 +297,7 @@ export class EnsureLifecycleLedger {
         effects: effectsForClaim(request),
         receipts: [],
         acknowledgements: [],
+        fx_final: emptyFxFinalReceiptTransaction(),
       }
       await this.writeRecord(record, guard, null)
       return copyRecord(record)
@@ -282,6 +327,169 @@ export class EnsureLifecycleLedger {
     }))
   }
 
+  /**
+   * Bind the exact Fx authority before the Companion can start the process.
+   * The future launch adapter supplies this private location/correlation; no
+   * prompt or launch-control bytes enter this retention ledger.
+   */
+  bindFxFinalReceiptAuthority(
+    ensureId: string,
+    bindingInput: FxFinalReceiptAuthorityBinding,
+  ): Promise<EnsureLifecycleRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const binding = parseFxFinalReceiptAuthorityBinding(bindingInput)
+      const index = await this.readIndex(guard)
+      const record = requireRecord(index, ensureId)
+      if (record.fx_final.binding !== null) {
+        if (!sameCanonical(record.fx_final.binding, binding)) {
+          throw ledgerError(
+            "receipt_conflict",
+            `ensure ${ensureId} is already bound to another Fx final-receipt authority`,
+          )
+        }
+        return copyRecord(record)
+      }
+      if (STAGES.indexOf(record.stage) >= STAGES.indexOf("companion_started")) {
+        throw ledgerError(
+          "invalid_transition",
+          `ensure ${ensureId} cannot bind Fx final-receipt authority after ${record.stage}`,
+        )
+      }
+      for (const candidate of index.records) {
+        if (candidate.fx_final.binding?.admission_key === binding.admission_key) {
+          throw ledgerError(
+            "receipt_conflict",
+            `Fx admission key ${binding.admission_key} belongs to another ensure`,
+          )
+        }
+      }
+      const next = copyRecord(record)
+      next.revision++
+      next.fx_final.binding = binding
+      validateRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyRecord(next)
+    }))
+  }
+
+  /** Retain the exact Fx-owned terminal receipt after Fx has durably produced it. */
+  retainFxFinalReceipt(
+    ensureId: string,
+    receiptInput: FxFinalReceipt,
+  ): Promise<EnsureLifecycleRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const receipt = parseFxFinalReceipt(receiptInput)
+      const index = await this.readIndex(guard)
+      const record = requireRecord(index, ensureId)
+      if (record.fx_final.receipt !== null) {
+        if (!sameCanonical(record.fx_final.receipt, receipt)) {
+          throw ledgerError(
+            "receipt_conflict",
+            `ensure ${ensureId} already retains a different Fx final receipt`,
+          )
+        }
+        return copyRecord(record)
+      }
+      assertFxFinalReceiptCorrelation(record, receipt, "receipt_conflict")
+      assertReceiptIdAvailable(index.records, receipt.receipt_id)
+      const next = copyRecord(record)
+      next.revision++
+      next.fx_final.receipt = receipt
+      validateRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyRecord(next)
+    }))
+  }
+
+  /**
+   * Persist the exact acknowledgement before asking Fx to apply it. A crash
+   * after the external authority commits is recovered by replaying these same
+   * bytes and id, which Fx defines as idempotent.
+   */
+  prepareFxFinalReceiptAcknowledgement(
+    ensureId: string,
+    acknowledgementInput: FxFinalReceiptAcknowledgement,
+  ): Promise<EnsureLifecycleRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const acknowledgement = parseFxFinalReceiptAcknowledgement(acknowledgementInput)
+      const index = await this.readIndex(guard)
+      const record = requireRecord(index, ensureId)
+      if (record.fx_final.acknowledgement !== null) {
+        if (!sameCanonical(record.fx_final.acknowledgement, acknowledgement)) {
+          throw ledgerError(
+            "acknowledgement_conflict",
+            `ensure ${ensureId} already retains another Fx final acknowledgement`,
+          )
+        }
+        return copyRecord(record)
+      }
+      assertFxFinalAcknowledgementCorrelation(record, acknowledgement, "invalid_acknowledgement")
+      assertAcknowledgementIdAvailable(
+        index.records,
+        acknowledgement.acknowledgement_id,
+      )
+      const next = copyRecord(record)
+      next.revision++
+      next.fx_final.acknowledgement = acknowledgement
+      validateRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyRecord(next)
+    }))
+  }
+
+  /** Record that the exact durable Fx authority accepted the retained acknowledgement. */
+  markFxFinalReceiptAcknowledgementApplied(
+    ensureId: string,
+    acknowledgementId: string,
+  ): Promise<EnsureLifecycleRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      if (!isSafeToken(acknowledgementId)) {
+        throw ledgerError("invalid_acknowledgement", "Fx final acknowledgement id is invalid")
+      }
+      const index = await this.readIndex(guard)
+      const record = requireRecord(index, ensureId)
+      if (record.fx_final.acknowledgement?.acknowledgement_id !== acknowledgementId) {
+        throw ledgerError(
+          "invalid_acknowledgement",
+          `ensure ${ensureId} has no matching durable Fx final acknowledgement intent`,
+        )
+      }
+      if (record.fx_final.acknowledgement_applied) return copyRecord(record)
+      const next = copyRecord(record)
+      next.revision++
+      next.fx_final.acknowledgement_applied = true
+      validateRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyRecord(next)
+    }))
+  }
+
+  /** Execute the durable intent -> exact external ack -> local completion transaction. */
+  async acknowledgeFxFinalReceipt(
+    ensureId: string,
+    acknowledgementInput: FxFinalReceiptAcknowledgement,
+    authority: FxFinalReceiptAuthority,
+  ): Promise<EnsureLifecycleRecord> {
+    const prepared = await this.prepareFxFinalReceiptAcknowledgement(
+      ensureId,
+      acknowledgementInput,
+    )
+    if (prepared.fx_final.acknowledgement_applied) return prepared
+    const binding = prepared.fx_final.binding
+    const acknowledgement = prepared.fx_final.acknowledgement
+    if (binding === null || acknowledgement === null) {
+      throw ledgerError(
+        "corrupt_record",
+        `ensure ${ensureId} lost its Fx final acknowledgement authority`,
+      )
+    }
+    await authority.acknowledge(structuredClone(binding), structuredClone(acknowledgement))
+    return this.markFxFinalReceiptAcknowledgementApplied(
+      ensureId,
+      acknowledgement.acknowledgement_id,
+    )
+  }
+
   retainEnsureReceipt(receiptInput: EnsureReceipt): Promise<EnsureLifecycleRecord> {
     return this.serial(() => this.withLock(async (guard) => {
       const receipt = parseEnsureReceipt(receiptInput)
@@ -298,11 +506,7 @@ export class EnsureLifecycleLedger {
         return copyRecord(record)
       }
       assertReceiptCorrelation(record, receipt)
-      for (const candidate of index.records) {
-        if (candidate.receipts.some(({ receipt_id }) => receipt_id === receipt.receipt_id)) {
-          throw ledgerError("receipt_conflict", `receipt id ${receipt.receipt_id} belongs to another ensure`)
-        }
-      }
+      assertReceiptIdAvailable(index.records, receipt.receipt_id)
       const next = copyRecord(record)
       next.revision++
       next.receipts.push(receipt)
@@ -349,16 +553,7 @@ export class EnsureLifecycleLedger {
           `receipt ${acknowledgement.receipt_id} is already acknowledged by ${existingForReceipt.acknowledgement_id}`,
         )
       }
-      for (const candidate of index.records) {
-        if (candidate.acknowledgements.some(
-          ({ acknowledgement_id }) => acknowledgement_id === acknowledgement.acknowledgement_id,
-        )) {
-          throw ledgerError(
-            "acknowledgement_conflict",
-            `acknowledgement id ${acknowledgement.acknowledgement_id} belongs to another ensure`,
-          )
-        }
-      }
+      assertAcknowledgementIdAvailable(index.records, acknowledgement.acknowledgement_id)
       const next = copyRecord(record)
       next.revision++
       next.acknowledgements.push(acknowledgement)
@@ -612,6 +807,167 @@ function parseEnsureAcknowledgement(
   }
 }
 
+function emptyFxFinalReceiptTransaction(): FxFinalReceiptTransaction {
+  return {
+    binding: null,
+    receipt: null,
+    acknowledgement: null,
+    acknowledgement_applied: false,
+  }
+}
+
+function parseFxFinalReceiptAuthorityBinding(
+  input: unknown,
+): FxFinalReceiptAuthorityBinding {
+  const parsed = fxFinalReceiptAuthorityBindingSchema.safeParse(input)
+  if (
+    !parsed.success ||
+    !isAbsolute(parsed.data.state_root) ||
+    parsed.data.state_root === "/" ||
+    normalize(parsed.data.state_root) !== parsed.data.state_root ||
+    CONTROL_CHARACTERS.test(parsed.data.state_root) ||
+    Buffer.byteLength(parsed.data.state_root) > 4096
+  ) {
+    throw ledgerError(
+      "invalid_request",
+      "Fx final-receipt authority requires one safe admission key and " +
+        "normalized non-root state root",
+    )
+  }
+  return structuredClone(parsed.data)
+}
+
+function parseFxFinalReceipt(input: FxFinalReceipt): FxFinalReceipt {
+  const parsed = fxLaunchAdmissionFinalMessageSchema.safeParse(input)
+  if (
+    !parsed.success ||
+    parsed.data.message_type !== "final_receipt" ||
+    !("outcome" in parsed.data)
+  ) {
+    throw ledgerError("receipt_conflict", "retained Fx receipt is not a strict final_receipt")
+  }
+  const receipt = {
+    ...structuredClone(parsed.data),
+    message_type: "final_receipt" as const,
+  } as FxFinalReceipt
+  const derived = deriveFxFinalReceiptDigest(receipt)
+  if (derived !== receipt.receipt_digest) {
+    throw ledgerError(
+      "receipt_conflict",
+      `Fx final receipt ${receipt.receipt_id} has digest ${receipt.receipt_digest}; ` +
+        `expected ${derived}`,
+    )
+  }
+  return receipt
+}
+
+function parseFxFinalReceiptAcknowledgement(
+  input: FxFinalReceiptAcknowledgement,
+): FxFinalReceiptAcknowledgement {
+  const parsed = fxLaunchAdmissionFinalMessageSchema.safeParse(input)
+  if (
+    !parsed.success ||
+    parsed.data.message_type !== "final_receipt_acknowledgement" ||
+    !("acknowledgement_id" in parsed.data)
+  ) {
+    throw ledgerError(
+      "invalid_acknowledgement",
+      "Fx final acknowledgement is not a strict final_receipt_acknowledgement",
+    )
+  }
+  return {
+    ...structuredClone(parsed.data),
+    message_type: "final_receipt_acknowledgement" as const,
+  } as FxFinalReceiptAcknowledgement
+}
+
+export function deriveFxFinalReceiptDigest(receipt: FxFinalReceipt): string {
+  const { receipt_digest: _receiptDigest, ...specification } = receipt
+  return createHash("sha256")
+    .update(encodeCanonicalJson(specification as unknown as JsonValue))
+    .digest("hex")
+}
+
+function assertFxFinalReceiptCorrelation(
+  record: EnsureLifecycleRecord,
+  receipt: FxFinalReceipt,
+  code: EnsureLifecycleLedgerErrorCode,
+): void {
+  const binding = record.fx_final.binding
+  if (record.stage !== "fx_started" || record.effects.fx.status !== "started") {
+    throw ledgerError(code, `ensure ${record.request.ensure_id} has no durably started Fx`)
+  }
+  if (binding === null) {
+    throw ledgerError(code, `ensure ${record.request.ensure_id} has no Fx final-receipt authority`)
+  }
+  if (
+    receipt.launch_id !== record.request.launch_id ||
+    receipt.launch_digest !== record.request.launch_digest ||
+    receipt.admission_key !== binding.admission_key ||
+    receipt.conversation_id !== record.effects.fx.conversation_id
+  ) {
+    throw ledgerError(code, `Fx final receipt changed the exact launch or Conversation correlation`)
+  }
+}
+
+function assertFxFinalAcknowledgementCorrelation(
+  record: EnsureLifecycleRecord,
+  acknowledgement: FxFinalReceiptAcknowledgement,
+  code: EnsureLifecycleLedgerErrorCode,
+): void {
+  const receipt = record.fx_final.receipt
+  if (receipt === null) {
+    throw ledgerError(code, `ensure ${record.request.ensure_id} has no retained Fx final receipt`)
+  }
+  if (
+    acknowledgement.admission_key !== receipt.admission_key ||
+    acknowledgement.launch_id !== receipt.launch_id ||
+    acknowledgement.launch_digest !== receipt.launch_digest ||
+    acknowledgement.conversation_id !== receipt.conversation_id ||
+    acknowledgement.receipt_id !== receipt.receipt_id ||
+    acknowledgement.receipt_digest !== receipt.receipt_digest
+  ) {
+    throw ledgerError(code, "Fx final acknowledgement does not name the exact retained receipt")
+  }
+}
+
+function assertReceiptIdAvailable(
+  records: readonly EnsureLifecycleRecord[],
+  receiptId: string,
+): void {
+  for (const record of records) {
+    if (
+      record.receipts.some(({ receipt_id }) => receipt_id === receiptId) ||
+      record.fx_final.receipt?.receipt_id === receiptId
+    ) {
+      throw ledgerError("receipt_conflict", `receipt id ${receiptId} belongs to another receipt`)
+    }
+  }
+}
+
+function assertAcknowledgementIdAvailable(
+  records: readonly EnsureLifecycleRecord[],
+  acknowledgementId: string,
+): void {
+  for (const record of records) {
+    if (
+      record.acknowledgements.some(
+        ({ acknowledgement_id }) => acknowledgement_id === acknowledgementId,
+      ) ||
+      record.fx_final.acknowledgement?.acknowledgement_id === acknowledgementId
+    ) {
+      throw ledgerError(
+        "acknowledgement_conflict",
+        `acknowledgement id ${acknowledgementId} belongs to another acknowledgement`,
+      )
+    }
+  }
+}
+
+function isSafeToken(value: unknown): value is string {
+  return typeof value === "string" && SAFE_TOKEN.test(value)
+}
+
 function ensureSpecification(request: EnsureRequest): JsonValue {
   return {
     workplace_instance_id: request.workplace_instance_id,
@@ -667,6 +1023,13 @@ function advanceRecord(
     throw ledgerError(
       "invalid_transition",
       `cannot advance ensure ${record.request.ensure_id} from ${record.stage} to ${target}`,
+    )
+  }
+  if (target === "companion_started" && record.fx_final.binding === null) {
+    throw ledgerError(
+      "invalid_transition",
+      `ensure ${record.request.ensure_id} must durably bind its Fx final-receipt ` +
+        "authority before Companion start",
     )
   }
 
@@ -781,8 +1144,13 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
     throw ledgerError("corrupt_record", `${path} changed its ensure identity during parsing`)
   }
   validateStageEffects(record, path)
+  validateFxFinalReceiptTransaction(record, path)
   const expectedRevision = 1 + STAGES.indexOf(record.stage) +
-    record.receipts.length + record.acknowledgements.length
+    record.receipts.length + record.acknowledgements.length +
+    (record.fx_final.binding === null ? 0 : 1) +
+    (record.fx_final.receipt === null ? 0 : 1) +
+    (record.fx_final.acknowledgement === null ? 0 : 1) +
+    (record.fx_final.acknowledgement_applied ? 1 : 0)
   if (record.revision !== expectedRevision) {
     throw ledgerError(
       "corrupt_record",
@@ -802,6 +1170,15 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
       throw ledgerError("corrupt_record", `${path} has regressive receipt history`)
     }
     previousReceiptStage = receiptStage
+  }
+  if (record.fx_final.receipt !== null) {
+    if (receiptIds.has(record.fx_final.receipt.receipt_id)) {
+      throw ledgerError(
+        "corrupt_record",
+        `${path} repeats receipt ${record.fx_final.receipt.receipt_id}`,
+      )
+    }
+    receiptIds.add(record.fx_final.receipt.receipt_id)
   }
   const acknowledgementIds = new Set<string>()
   const acknowledgedReceiptIds = new Set<string>()
@@ -831,6 +1208,66 @@ function validateRecord(record: EnsureLifecycleRecord, path: string): void {
     ) {
       throw ledgerError("corrupt_record", `${path} contains an orphaned acknowledgement`)
     }
+  }
+  if (record.fx_final.acknowledgement !== null) {
+    if (acknowledgementIds.has(record.fx_final.acknowledgement.acknowledgement_id)) {
+      throw ledgerError(
+        "corrupt_record",
+        `${path} repeats acknowledgement ${record.fx_final.acknowledgement.acknowledgement_id}`,
+      )
+    }
+    acknowledgementIds.add(record.fx_final.acknowledgement.acknowledgement_id)
+  }
+}
+
+function validateFxFinalReceiptTransaction(
+  record: EnsureLifecycleRecord,
+  path: string,
+): void {
+  try {
+    const transaction = record.fx_final
+    if (transaction.binding !== null) parseFxFinalReceiptAuthorityBinding(transaction.binding)
+    if (
+      STAGES.indexOf(record.stage) >= STAGES.indexOf("companion_started") &&
+      transaction.binding === null
+    ) {
+      throw ledgerError(
+        "corrupt_record",
+        `${path} started its Companion without Fx final authority`,
+      )
+    }
+    if (transaction.receipt !== null) {
+      const receipt = parseFxFinalReceipt(transaction.receipt)
+      assertFxFinalReceiptCorrelation(record, receipt, "corrupt_record")
+    }
+    if (transaction.acknowledgement !== null) {
+      const acknowledgement = parseFxFinalReceiptAcknowledgement(transaction.acknowledgement)
+      assertFxFinalAcknowledgementCorrelation(record, acknowledgement, "corrupt_record")
+    }
+    if (
+      transaction.binding === null &&
+      (transaction.receipt !== null || transaction.acknowledgement !== null ||
+        transaction.acknowledgement_applied)
+    ) {
+      throw ledgerError("corrupt_record", `${path} retains Fx final state without its authority`)
+    }
+    if (transaction.receipt === null && transaction.acknowledgement !== null) {
+      throw ledgerError(
+        "corrupt_record",
+        `${path} retains an Fx final acknowledgement without its receipt`,
+      )
+    }
+    if (transaction.acknowledgement === null && transaction.acknowledgement_applied) {
+      throw ledgerError(
+        "corrupt_record",
+        `${path} marks an absent Fx final acknowledgement applied`,
+      )
+    }
+  } catch (error) {
+    if (error instanceof EnsureLifecycleLedgerError && error.code === "corrupt_record") throw error
+    const wrapped = ledgerError("corrupt_record", `${path} contains invalid Fx final state`)
+    wrapped.cause = error
+    throw wrapped
   }
 }
 
@@ -917,6 +1354,7 @@ function validateIndex(records: EnsureLifecycleRecord[]): void {
   const directories = new Set<string>()
   const receiptIds = new Set<string>()
   const acknowledgementIds = new Set<string>()
+  const admissionKeys = new Set<string>()
   for (const record of records) {
     const request = record.request
     assertUnique(ensureIds, request.ensure_id, "ensure id")
@@ -925,10 +1363,23 @@ function validateIndex(records: EnsureLifecycleRecord[]): void {
     assertUnique(agentIds, request.agent_id, "Agent id")
     assertUnique(directories, request.planned_worktree.directory, "Worktree directory")
     for (const receipt of record.receipts) assertUnique(receiptIds, receipt.receipt_id, "receipt id")
+    if (record.fx_final.binding !== null) {
+      assertUnique(admissionKeys, record.fx_final.binding.admission_key, "Fx admission key")
+    }
+    if (record.fx_final.receipt !== null) {
+      assertUnique(receiptIds, record.fx_final.receipt.receipt_id, "receipt id")
+    }
     for (const acknowledgement of record.acknowledgements) {
       assertUnique(
         acknowledgementIds,
         acknowledgement.acknowledgement_id,
+        "acknowledgement id",
+      )
+    }
+    if (record.fx_final.acknowledgement !== null) {
+      assertUnique(
+        acknowledgementIds,
+        record.fx_final.acknowledgement.acknowledgement_id,
         "acknowledgement id",
       )
     }
@@ -1017,6 +1468,17 @@ async function readRecord(
       }
       acknowledgements.push({ ...message, message_type: "receipt_acknowledgement" })
     }
+    const binding = parsed.data.fx_final.binding === null
+      ? null
+      : parseFxFinalReceiptAuthorityBinding(parsed.data.fx_final.binding)
+    const finalReceipt = parsed.data.fx_final.receipt === null
+      ? null
+      : parseFxFinalReceipt(parsed.data.fx_final.receipt as FxFinalReceipt)
+    const finalAcknowledgement = parsed.data.fx_final.acknowledgement === null
+      ? null
+      : parseFxFinalReceiptAcknowledgement(
+        parsed.data.fx_final.acknowledgement as FxFinalReceiptAcknowledgement,
+      )
     const record: EnsureLifecycleRecord = {
       schema_id: LEDGER_SCHEMA_ID,
       schema_version: LEDGER_SCHEMA_VERSION,
@@ -1026,6 +1488,12 @@ async function readRecord(
       effects: parsed.data.effects,
       receipts,
       acknowledgements,
+      fx_final: {
+        binding,
+        receipt: finalReceipt,
+        acknowledgement: finalAcknowledgement,
+        acknowledgement_applied: parsed.data.fx_final.acknowledgement_applied,
+      },
     }
     validateRecord(record, path)
     if (initial.size !== bytes.byteLength) {
