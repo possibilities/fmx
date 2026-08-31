@@ -81,7 +81,7 @@ describe("production lifecycle Runtime composition", () => {
         "--state-dir",
         fixture.source.launch_request.state_root,
         "--context-limit",
-        "4096",
+        "skill_chunk_bytes=4096",
         "--tool",
         "read",
       ])
@@ -728,7 +728,7 @@ class FakeProvider {
         "--state-dir",
         this.fixture.source.launch_request.state_root,
         "--context-limit",
-        "4096",
+        "skill_chunk_bytes=4096",
         "--tool",
         "read",
       ],
@@ -943,7 +943,7 @@ async function lifecycleFixture(
     directory: `/var/tmp/fmx-lifecycle-runtime-${ensureId}-${suffix}`,
     branch: `runtime-${ensureId}-${suffix}`,
   }
-  const controls = encodeInlineLaunchControls(["--context-limit", "4096", "--tool", "read"])
+  const controls = encodeInlineLaunchControls(["--context-limit", "skill_chunk_bytes=4096", "--tool", "read"])
   const initial = Buffer.from("initial λ work", "utf8")
   launch.request_id = `${launch.request_id}-${suffix}`
   launch.launch_id = ensure.launch_id

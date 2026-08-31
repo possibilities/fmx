@@ -38,7 +38,7 @@ The array represents only an Fx global-argument suffix. Its currently allowed
 flags are `--no-additional-dirs`, `--no-native-tools`, `--no-default-skills`,
 and `--no-project-instructions`. The options that take
 one value are `--system-prompt-file`, `--append-system-prompt-file`,
-`--skills-dir`, `--context-limit`, `--add-dir`, `--tool`, and
+`--skills-dir`, `--context-limit NAME=BYTES|off`, `--add-dir`, `--tool`, and
 `--permissions-file`; they may use either separate or `--option=value` form.
 Separate values cannot begin with `-`, preventing an entry from being
 reinterpreted as another option.

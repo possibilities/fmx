@@ -189,7 +189,7 @@ describe("inline-v2 source validation", () => {
       ["--no-default-skills"],
       ["--no-default-skills", "--skills-dir", "/tmp/team λ"],
       ["--append-system-prompt-file=/tmp/role.md", "--tool", "read_file"],
-      ["--context-limit=tool=4096", "--add-dir", "/tmp/extra", "--no-additional-dirs"],
+      ["--context-limit=skill_chunk_bytes=4096", "--add-dir", "/tmp/extra", "--no-additional-dirs"],
       ["--no-native-tools", "--no-project-instructions", "--permissions-file=/tmp/policy.json"],
     ]
     for (const remaining_global_args of valid) {

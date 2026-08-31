@@ -71,7 +71,7 @@ test("uses one private helper endpoint per operation and maps every happy-path r
         return successFor(request)
       }),
     })
-    const controls = ["--context-limit", "4096", "--tool", "read"]
+    const controls = ["--context-limit", "skill_chunk_bytes=4096", "--tool", "read"]
     const digest = createHash("sha256").update(encodeLaunchControls(controls)).digest("hex")
     const launch = { ...launchRequest, remaining_launch_controls_digest: digest }
     expect((await client.prepare(launch)).receipt_id).toBe("receipt-a")
@@ -244,7 +244,7 @@ function successFor(request: Record<string, unknown>): FakeResponse {
         value: {
           ...response,
           result: {
-            arguments: ["--state-dir", CORRELATION.stateRoot, "--name", "Launch provider test", "--context-limit", "4096", "--tool", "read"],
+            arguments: ["--state-dir", CORRELATION.stateRoot, "--name", "Launch provider test", "--context-limit", "skill_chunk_bytes=4096", "--tool", "read"],
             cwd: launchRequest.directory,
             environment: {
               FX_INTERNAL_LAUNCH_STATE_ROOT: CORRELATION.stateRoot,
