@@ -84,16 +84,19 @@ const statePath = requiredEnvironment("FMX_PHASE1C_FIXTURE_STATE")
 const releaseMarker = process.env.FMX_PHASE1C_FIXTURE_RELEASE_MARKER
 const logPath = process.env.FMX_PHASE1C_FIXTURE_LOG
 const crashAfter = process.env.FMX_PHASE1C_FIXTURE_CRASH_AFTER
+const emission = parseEmission(process.env.FMX_PHASE1C_FIXTURE_EMISSION)
 const decoder = new ContractFrameDecoder()
 let initialized = false
 let state = await readState(statePath)
 let fixture: FixtureMessages | null = null
 let releaseTail: Promise<void> = Promise.resolve()
+let releaseReady = false
 let endSent = false
 let cleanupSent = false
 let crashed = false
 const acknowledgementSent = new Set<string>()
 const releaseWatcher = releaseMarker === undefined ? null : watchReleaseMarker(releaseMarker)
+const releaseProbe = releaseMarker === undefined ? null : probeReleaseMarker()
 
 for await (const chunk of Bun.stdin.stream()) {
   for (const payload of decoder.push(chunk)) {
@@ -107,10 +110,18 @@ for await (const chunk of Bun.stdin.stream()) {
       fixture = buildFixture(parsed.data as unknown as Initialize)
       await bindAuthority(fixture)
       writeRuntime(readyFor(parsed.data as unknown as Initialize))
-      writeInline(fixture.source)
-      writeLifecycle(fixture.ensure)
-      await evidence("outbound", fixture.source)
-      await evidence("outbound", fixture.ensure)
+      if (emission === "ensure_then_source") {
+        writeLifecycle(fixture.ensure)
+        await evidence("outbound", fixture.ensure)
+        writeInline(fixture.source)
+        await evidence("outbound", fixture.source)
+      } else if (emission === "source_then_ensure") {
+        writeInline(fixture.source)
+        await evidence("outbound", fixture.source)
+        writeLifecycle(fixture.ensure)
+        await evidence("outbound", fixture.ensure)
+      }
+      releaseReady = true
       await releasePending()
       continue
     }
@@ -123,6 +134,7 @@ for await (const chunk of Bun.stdin.stream()) {
 }
 decoder.finish()
 releaseWatcher?.close()
+if (releaseProbe !== null) clearInterval(releaseProbe)
 
 type FixtureMessages = {
   source: InlineLaunchSourceRequest
@@ -182,7 +194,10 @@ function assertPersistedIntents(current: FixtureMessages): void {
 function buildFixture(initialize: Initialize): FixtureMessages {
   const paths = fixturePaths()
   const initialWork = encodeInlineSourceBytes(Buffer.from("Phase 1C fixture work\n", "utf8"))
-  const launchControls = encodeInlineSourceBytes(encodeInlineLaunchControls(["--context-limit", "128000"]))
+  const launchControls = encodeInlineSourceBytes(encodeInlineLaunchControls([
+    "--context-limit",
+    "project_instructions_total_bytes=128000",
+  ]))
   const launch = {
     schema_id: "fx.launch-admission-final",
     schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
@@ -437,7 +452,7 @@ async function releasePending(): Promise<void> {
 }
 
 async function releaseAvailable(): Promise<void> {
-  if (fixture === null || releaseMarker === undefined || !existsSync(releaseMarker)) return
+  if (!releaseReady || fixture === null || releaseMarker === undefined || !existsSync(releaseMarker)) return
   for (const receipt of state.receipts) {
     if (receipt.acknowledgement === null) {
       receipt.acknowledgement = acknowledgementFor(receipt)
@@ -539,6 +554,30 @@ function watchReleaseMarker(path: string): FSWatcher {
   return watch(dirname(path), { persistent: false }, (_event, filename) => {
     if (filename === marker) void releasePending()
   })
+}
+
+/**
+ * fs.watch is only a wakeup optimization: it can lose a create notification
+ * between child startup and watcher installation. Probe briefly as well so a
+ * durable release marker is eventually observed without adding protocol I/O.
+ */
+function probeReleaseMarker(): ReturnType<typeof setInterval> {
+  const deadline = Date.now() + 5_000
+  const probe = setInterval(() => {
+    if (Date.now() >= deadline) {
+      clearInterval(probe)
+      return
+    }
+    void releasePending()
+  }, 25)
+  probe.unref()
+  return probe
+}
+
+function parseEmission(value: string | undefined): "source_then_ensure" | "ensure_then_source" | "replay_only" {
+  if (value === undefined || value === "source_then_ensure") return "source_then_ensure"
+  if (value === "ensure_then_source" || value === "replay_only") return value
+  throw new Error("FMX_PHASE1C_FIXTURE_EMISSION must name one supported fixture emission order")
 }
 
 async function readState(path: string): Promise<FixtureState> {

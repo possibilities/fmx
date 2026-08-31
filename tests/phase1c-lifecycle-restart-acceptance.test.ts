@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentManifest, identityFor, type ManifestEntry } from "../src/agent-manifest.ts"
@@ -14,11 +15,12 @@ import {
 import type { ManagedAgentClaim, ManagedAgentInvocation } from "../src/multiplexer.ts"
 import { RuntimeExtensionSupervisor } from "../src/runtime-extension.ts"
 import { deriveFxAdmissionDecisionDigest, EnsureLifecycleLedger, type FxAdmissionDecision } from "../src/ensure-lifecycle-ledger.ts"
-import { InlineLaunchSourceLedger } from "../src/inline-launch-source.ts"
+import { InlineLaunchSourceLedger, type InlineLaunchSourceAuthorityKey, type InlineLaunchSourceOptions } from "../src/inline-launch-source.ts"
 import type { RuntimeExtensionStartup } from "../src/runtime-startup.ts"
 import { RUNTIME_EXTENSION_CAPABILITIES } from "../src/agentworkplace-contracts.ts"
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/phase1c-runtime-extension.ts", import.meta.url))
+const FIXTURE_PROVIDER_STATE_ROOT = join(tmpdir(), "fmx-phase1c-state")
 const temporaryDirectories: string[] = []
 
 afterEach(async () => {
@@ -28,11 +30,13 @@ afterEach(async () => {
   })))
 })
 
-test("restarts a durable Phase 1C lifecycle exactly once and preserves dirty and foreign replacements", async () => {
+test("restarts durable Phase 1C records exactly once and refuses a foreign replacement at cleanup", async () => {
   const root = await temporaryDirectory()
   const repository = join(root, "repository")
   const worktree = join(root, "worktrees", "phase1c")
-  const home = join(root, "home")
+  // Keep the derived per-Agent work-control socket below macOS's short Unix
+  // socket-path ceiling even when os.tmpdir() itself is deeply nested.
+  const home = root
   const fixtureState = join(root, "fixture-state.json")
   const releaseMarker = join(root, "release.marker")
   const fixtureLog = join(root, "fixture.jsonl")
@@ -42,7 +46,23 @@ test("restarts a durable Phase 1C lifecycle exactly once and preserves dirty and
   await mkdir(join(root, "worktrees"), { recursive: true, mode: 0o700 })
   await writeFile(releaseMarker, "release\n", { mode: 0o600 })
 
-  const first = await openRuntime({ home, homeId, shared, repository, worktree })
+  // Persist the two independently durable intents, then fault after the
+  // source claim has committed but before it is bound to the exact ensure.
+  // Recovery, not the child callback, must close that crash window.
+  let sourceClaimFaulted = false
+  const first = await openRuntime({
+    home,
+    homeId,
+    shared,
+    repository,
+    worktree,
+    sourceFault: (point, operation) => {
+      if (!sourceClaimFaulted && point === "after_commit_before_return" && operation === "claim") {
+        sourceClaimFaulted = true
+        throw new Error("phase1c injected source-claim handoff loss")
+      }
+    },
+  })
   let firstExtension: RuntimeExtensionSupervisor | null = null
   try {
     firstExtension = await startFixture({
@@ -54,42 +74,29 @@ test("restarts a durable Phase 1C lifecycle exactly once and preserves dirty and
       baseCommit,
       worktree,
       counts: shared,
-      crashAfter: "acknowledgement_intent_saved",
+      emission: "ensure_then_source",
     })
-    await Bun.sleep(100)
-    expect((await first.ensureLedger.list()).length).toBe(1)
+    await waitFor(() => firstExtension!.state === "degraded")
+    expect(sourceClaimFaulted).toBe(true)
+    const ensure = await first.ensureLedger.get("phase1c-ensure")
+    expect(ensure).not.toBeNull()
+    const source = await fixtureSourceAuthority(fixtureState)
     await waitFor(async () => {
-      const ensure = await first.ensureLedger.get("phase1c-ensure")
-      return ensure !== null && await first.sourceLedger.sourceForEnsure(ensure.request) !== null
+      return (await first.sourceLedger.inspect(source)).ensure_bound === false
     })
-    first.runtime.bindReceiptPublisher((receipt) => publishFixtureReceipt(firstExtension!, receipt, true))
-    await first.runtime.recover()
-    await waitFor(async () => (await first.ensureLedger.get("phase1c-ensure"))?.stage === "fx_started" ||
-      shared.errors.length > 0 || firstExtension!.state !== "ready")
     expect(shared.errors.map(String)).toEqual([])
-    expect((await first.ensureLedger.get("phase1c-ensure"))?.receipts.some((receipt) =>
-      receipt.status === "complete")).toBe(true)
-    await waitFor(() => firstExtension!.state === "degraded" || shared.errors.length > 0)
-    expect(firstExtension.lastFailure?.exitCode).toBe(86)
-    expect(shared.errors.map(String)).toEqual([])
-    expect(await fixtureStateFor(fixtureState)).toMatchObject({
-      receipts: [expect.objectContaining({ kind: "ensure", acknowledgement: expect.any(Object) })],
-    })
-    expect(shared.starts).toBe(1)
-    expect(shared.turns).toBe(1)
+    expect(await first.sourceLedger.sourceForEnsure(ensure!.request)).toBeNull()
+    expect(shared.starts).toBe(0)
+    expect(shared.turns).toBe(0)
     expect(shared.inlineCallbacks).toBe(1)
     expect(shared.lifecycleCallbacks).toBe(1)
-    expect(await exactWorktreeCount(repository, worktree)).toBe(1)
   } finally {
     await first.runtime.close()
     await firstExtension?.close()
   }
 
-  // The first child persisted its acknowledgement intent and then crashed.
-  // Withhold release during the next initialize so Runtime recovery must replay
-  // the already durable receipt before the child can acknowledge it.
-  await unlink(releaseMarker)
-
+  // The recovery process binds the retained source, then the child durably
+  // records its acknowledgement intent and crashes before it can send it.
   const second = await openRuntime({ home, homeId, shared, repository, worktree })
   let secondExtension: RuntimeExtensionSupervisor | null = null
   try {
@@ -102,13 +109,53 @@ test("restarts a durable Phase 1C lifecycle exactly once and preserves dirty and
       baseCommit,
       worktree,
       counts: shared,
+      emission: "replay_only",
+      crashAfter: "acknowledgement_intent_saved",
     })
-    second.runtime.bindReceiptPublisher((receipt) => publishFixtureReceipt(secondExtension!, receipt))
-    await waitFor(async () => {
-      const ensure = await second.ensureLedger.get("phase1c-ensure")
-      return ensure !== null && await second.sourceLedger.sourceForEnsure(ensure.request) !== null
-    })
+    second.runtime.bindReceiptPublisher((receipt) => publishFixtureReceipt(secondExtension!, receipt, true))
+    const source = await fixtureSourceAuthority(fixtureState)
+    expect((await second.sourceLedger.inspect(source)).ensure_bound).toBe(false)
     await second.runtime.recover()
+    await waitFor(async () => (await second.sourceLedger.inspect(source)).ensure_bound)
+    await waitFor(async () => (await second.ensureLedger.get("phase1c-ensure"))?.stage === "fx_started" ||
+      shared.errors.length > 0 || secondExtension!.state !== "ready")
+    expect(shared.errors.map(String)).toEqual([])
+    expect((await second.ensureLedger.get("phase1c-ensure"))?.receipts.some((receipt) =>
+      receipt.status === "complete")).toBe(true)
+    await waitFor(() => secondExtension!.state === "degraded" || shared.errors.length > 0)
+    expect(secondExtension.lastFailure?.exitCode).toBe(86)
+    expect(shared.errors.map(String)).toEqual([])
+    expect(await fixtureStateFor(fixtureState)).toMatchObject({
+      receipts: [expect.objectContaining({ kind: "ensure", acknowledgement: expect.any(Object) })],
+    })
+    expect(shared.starts).toBe(1)
+    expect(shared.turns).toBe(1)
+    expect(await exactWorktreeCount(repository, worktree)).toBe(1)
+  } finally {
+    await second.runtime.close()
+    await secondExtension?.close()
+  }
+
+  // Withhold release during the next initialize so recovery must replay the
+  // receipt whose acknowledgement intent is already durable.
+  await unlink(releaseMarker)
+
+  const third = await openRuntime({ home, homeId, shared, repository, worktree })
+  let thirdExtension: RuntimeExtensionSupervisor | null = null
+  try {
+    thirdExtension = await startFixture({
+      runtime: third.runtime,
+      statePath: fixtureState,
+      releaseMarker,
+      logPath: fixtureLog,
+      repository,
+      baseCommit,
+      worktree,
+      counts: shared,
+      emission: "replay_only",
+    })
+    third.runtime.bindReceiptPublisher((receipt) => publishFixtureReceipt(thirdExtension!, receipt))
+    await third.runtime.recover()
     await waitFor(async () => (await receivedEnsureReceipts(fixtureLog)).length === 2)
 
     const replayed = await receivedEnsureReceipts(fixtureLog)
@@ -118,58 +165,60 @@ test("restarts a durable Phase 1C lifecycle exactly once and preserves dirty and
     expect(shared.turns).toBe(1)
     expect(await exactWorktreeCount(repository, worktree)).toBe(1)
 
-    // The end is held at the counted Companion seam. Dirty the exact owned
-    // Worktree before releasing the proof, so cleanup's durable result is the
-    // production refused_dirty path rather than a test-created substitute.
+    // The end is held at the counted Companion seam. Replace the exact clean
+    // Worktree only when cleanup reaches its compare-and-remove operation;
+    // the production authority must reject the new foreign path itself.
     await writeFile(releaseMarker, "release\n", { mode: 0o600 })
     await waitFor(async () => (await fixtureLogMessages(fixtureLog, "outbound", "end_request")).length === 1)
     await waitFor(() => shared.retirement.calls === 1)
-    await writeFile(join(worktree, "dirty-owned.txt"), "must remain\n", { mode: 0o600 })
+    const foreignSentinel = join(worktree, "foreign-replacement.txt")
+    shared.cleanup.beforeCompareAndRemove = async () => {
+      await git(repository, ["worktree", "remove", "--force", worktree])
+      await mkdir(worktree, { recursive: true, mode: 0o700 })
+      await writeFile(foreignSentinel, "foreign replacement survives\n", { mode: 0o600 })
+    }
     shared.retirement.release()
-    await waitFor(async () => (await second.retirementLedger.get("phase1c-ensure"))?.end?.receipt !== null ||
+    await waitFor(async () => (await third.retirementLedger.get("phase1c-ensure"))?.end?.receipt !== null ||
       shared.errors.length > 0)
     expect(shared.errors.map(String)).toEqual([])
     await waitFor(async () => (await fixtureLogMessages(fixtureLog, "inbound", "end_receipt")).length === 1)
     await waitFor(async () => (await fixtureLogMessages(fixtureLog, "outbound", "cleanup_request")).length === 1)
     await waitFor(async () => {
-      const record = await second.retirementLedger.get("phase1c-ensure")
-      return record?.cleanup?.receipt?.outcome.kind === "refused_dirty"
+      const record = await third.retirementLedger.get("phase1c-ensure")
+      return record?.cleanup?.receipt?.outcome.kind === "refused_mismatch"
     })
 
-    const retired = await second.retirementLedger.get("phase1c-ensure")
+    const retired = await third.retirementLedger.get("phase1c-ensure")
     expect(retired?.end?.receipt?.proof).toMatchObject({ kind: "ended", exit_code: 0, signal: 0 })
-    expect(retired?.cleanup?.receipt?.outcome).toMatchObject({ kind: "refused_dirty" })
+    expect(retired?.cleanup?.receipt?.outcome).toMatchObject({ kind: "refused_mismatch" })
     expect(shared.retirement.calls).toBe(1)
     expect(shared.cleanup.calls).toBe(1)
-    expect(shared.cleanup.removeAttempts).toBe(0)
-    expect(shared.inlineCallbacks).toBe(2)
-    expect(shared.lifecycleCallbacks).toBe(7)
+    expect(shared.cleanup.removeAttempts).toBe(1)
+    expect(await readFile(foreignSentinel, "utf8")).toBe("foreign replacement survives\n")
+    expect(shared.inlineCallbacks).toBe(1)
+    expect(shared.lifecycleCallbacks).toBe(6)
   } finally {
-    await second.runtime.close()
-    await secondExtension?.close()
+    shared.retirement.release()
+    await third.runtime.close()
+    await thirdExtension?.close()
   }
 
-  // A later process must not turn a completed dirty refusal into a broad
-  // cleanup. Replace the path with an intentionally foreign directory and
-  // recover once more; the retained receipt leaves it completely untouched.
-  await git(repository, ["worktree", "remove", "--force", worktree])
-  await mkdir(worktree, { recursive: true, mode: 0o700 })
+  // A later recovery retains the effect-boundary refusal without repeating
+  // the remove operation or touching the foreign replacement.
   const foreignSentinel = join(worktree, "foreign-replacement.txt")
-  await writeFile(foreignSentinel, "foreign replacement survives\n", { mode: 0o600 })
-
-  const third = await openRuntime({ home, homeId, shared, repository, worktree })
+  const fourth = await openRuntime({ home, homeId, shared, repository, worktree })
   try {
-    await third.runtime.recover()
+    await fourth.runtime.recover()
     expect(await readFile(foreignSentinel, "utf8")).toBe("foreign replacement survives\n")
     expect(shared.starts).toBe(1)
     expect(shared.turns).toBe(1)
     expect(shared.retirement.calls).toBe(1)
     expect(shared.cleanup.calls).toBe(1)
-    expect(shared.cleanup.removeAttempts).toBe(0)
-    expect(shared.inlineCallbacks).toBe(2)
-    expect(shared.lifecycleCallbacks).toBe(7)
+    expect(shared.cleanup.removeAttempts).toBe(1)
+    expect(shared.inlineCallbacks).toBe(1)
+    expect(shared.lifecycleCallbacks).toBe(6)
   } finally {
-    await third.runtime.close()
+    await fourth.runtime.close()
   }
 }, 15_000)
 
@@ -186,10 +235,11 @@ async function openRuntime(input: {
   shared: Counts
   repository: string
   worktree: string
+  sourceFault?: InlineLaunchSourceOptions["fault"]
 }): Promise<RuntimeHarness> {
   const roots = lifecycleRuntimeRoots(input.home)
   const ensureLedger = await EnsureLifecycleLedger.open(roots.ensure)
-  const sourceLedger = await InlineLaunchSourceLedger.open(roots.inlineSource)
+  const sourceLedger = await InlineLaunchSourceLedger.open(roots.inlineSource, { fault: input.sourceFault })
   const retirementLedger = await ExactRetirementLedger.open(roots.retirement)
   const manifest = await AgentManifest.open(join(input.home, "manifest.json"), input.homeId)
   const multiplexer = new CountingMultiplexer(manifest, input.shared)
@@ -199,6 +249,7 @@ async function openRuntime(input: {
       inspect: cleanupAuthority.inspect.bind(cleanupAuthority),
       compareAndRemove: async (prepare) => {
         input.shared.cleanup.removeAttempts++
+        await input.shared.cleanup.beforeCompareAndRemove?.()
         return cleanupAuthority.compareAndRemove(prepare)
       },
     }, { now: fixedNow }),
@@ -209,7 +260,7 @@ async function openRuntime(input: {
     homeId: input.homeId,
     fmxSession: "session-beta",
     fxPath: "/resolved/fmx-fx",
-    runtimeSocketPath: join(input.home, "runtime.bus"),
+    runtimeSocketPath: join(tmpdir(), "fmx-p1c-r"),
     adeBinding: null,
     manifest,
     companion: { list: async () => [] },
@@ -240,6 +291,7 @@ async function startFixture(input: {
   worktree: string
   counts: Counts
   crashAfter?: string
+  emission?: "source_then_ensure" | "ensure_then_source" | "replay_only"
 }): Promise<RuntimeExtensionSupervisor> {
   let inbound = Promise.resolve()
   const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -282,6 +334,7 @@ async function startFixture(input: {
       FMX_PHASE1C_FIXTURE_BASE_COMMIT: input.baseCommit,
       FMX_PHASE1C_FIXTURE_WORKTREE_DIRECTORY: input.worktree,
       FMX_PHASE1C_FIXTURE_CRASH_AFTER: input.crashAfter,
+      FMX_PHASE1C_FIXTURE_EMISSION: input.emission,
     },
   })
 }
@@ -319,7 +372,11 @@ class Counts {
   inlineCallbacks = 0
   lifecycleCallbacks = 0
   readonly errors: unknown[] = []
-  readonly cleanup = { calls: 0, removeAttempts: 0 }
+  readonly cleanup: {
+    calls: number
+    removeAttempts: number
+    beforeCompareAndRemove: (() => Promise<void>) | null
+  } = { calls: 0, removeAttempts: 0, beforeCompareAndRemove: null }
   readonly retirement = new HeldRetirement()
 }
 
@@ -388,10 +445,10 @@ class CountingProvider {
   async build() {
     if (this.source === null) throw new Error("provider build without launch source")
     return {
-      command: ["--context-limit", "128000"],
+      command: ["--context-limit", "project_instructions_total_bytes=128000"],
       cwd: this.source.directory,
       env: {
-        FX_INTERNAL_LAUNCH_STATE_ROOT: "/Volumes/Scratch/phase1c-state",
+        FX_INTERNAL_LAUNCH_STATE_ROOT: FIXTURE_PROVIDER_STATE_ROOT,
         FX_INTERNAL_LAUNCH_ADMISSION_KEY: this.source.admission_key,
         FX_INTERNAL_LAUNCH_DIGEST: this.source.launch_digest,
         FX_INTERNAL_LAUNCH_ID: this.source.launch_id,
@@ -547,6 +604,12 @@ async function fixtureStateFor(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, "utf8"))
 }
 
+async function fixtureSourceAuthority(path: string): Promise<InlineLaunchSourceAuthorityKey> {
+  const state = await fixtureStateFor(path) as { authority?: Partial<InlineLaunchSourceAuthorityKey> }
+  if (state.authority === undefined) throw new Error("Phase 1C fixture did not persist source authority")
+  return state.authority as InlineLaunchSourceAuthorityKey
+}
+
 async function publishFixtureReceipt(
   extension: RuntimeExtensionSupervisor,
   receipt: Parameters<RuntimeExtensionSupervisor["publishLifecycleReceipt"]>[0],
@@ -563,7 +626,7 @@ async function publishFixtureReceipt(
 }
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp("/Volumes/Scratch/fmx-phase1c-restart-")
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "f-")))
   temporaryDirectories.push(directory)
   return directory
 }
