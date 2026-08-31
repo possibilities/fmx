@@ -55,13 +55,19 @@ export async function retirementFixture(
   return {
     ensure: {
       schema_id: "fmx.ensure-lifecycle-ledger",
-      schema_version: 1,
+      schema_version: 2,
       revision: 1,
       request: structuredClone(ensureRequest),
       stage: ensureId === "ensure-a" ? "fx_started" : "manifest_claimed",
       effects: structuredClone(ensureReceipt.effects),
       receipts: [],
       acknowledgements: [],
+      fx_final: {
+        binding: null,
+        receipt: null,
+        acknowledgement: null,
+        acknowledgement_applied: false,
+      },
     },
     endRequest: structuredClone(endRequest),
     endReceipt: structuredClone(endReceipt),
