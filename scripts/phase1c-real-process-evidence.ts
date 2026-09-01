@@ -43,7 +43,7 @@ export const PHASE1C_COMPOSITION_ASSERTIONS = [
 
 /** SHA-256 of Fx's src/core/control/launch_provider.md at fx.json's pinned commit. */
 export const FX_PRIVATE_PROVIDER_CONTRACT_SHA256 =
-  "sha256:6ea8609e5a01c629dc168a78920fa193e6f22462be7cb49f5e57c92efe1c267e" as const
+  "sha256:58d191ee8628e0863a2451ff2b672f94484ca01aee20b5ab6f21d576a898fa1c" as const
 
 export const Phase1cRealProcessEvidenceV1Schema = z.strictObject({
   schema_id: z.literal("fmx.phase1c-real-process-evidence"),
