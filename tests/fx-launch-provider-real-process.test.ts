@@ -22,6 +22,8 @@ import { createFxEnvironment } from "../src/fx-environment.ts"
 import {
   encodeLaunchControls,
   FxLaunchProviderClient,
+  type FxFinalReceipt,
+  type FxFinalReceiptAcknowledgement,
   type FxLaunchRequest,
 } from "../src/fx-launch-provider.ts"
 import {
@@ -68,11 +70,12 @@ const FX_FILE_DESCRIPTION = "Mach-O 64-bit executable arm64"
 const EXCLUDED_FAILURE_ROOTS = [
   "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-maOw2l",
   "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0001",
+  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0002",
 ] as const
 const EVIDENCE_ROOT =
-  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0002"
+  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0003"
 const WORKSPACE = join(EVIDENCE_ROOT, "workspace")
-const SETTINGS_SHA256 = "5b3df30e759e05c1ce243c8a2bc59a5384ebf5f8b7bbc3ae677f83d23e57d055"
+const SETTINGS_SHA256 = "6c9bca9615d208ea2d0f635b5949e1279af1c7a76a6ceda5b98c4f319cadf429"
 const SETTINGS_BYTES = `${JSON.stringify({
   permission_mode: "yolo",
   workspaces: { [WORKSPACE]: { permission_mode: "yolo" } },
@@ -95,8 +98,79 @@ const TEST_PATH = "tests/fx-launch-provider-real-process.test.ts"
 const WAIT_MS = 15_000
 const WORK_CONTROL_RETRY_MS = 25
 const MAX_TERMINAL_BYTES = 16 * 1024 * 1024
+const GATEWAY_HOST = "127.0.0.1"
+const GATEWAY_MODEL = "moonshotai/kimi-k3"
+const GATEWAY_MODELS_PATH = "/coding-agent/v1/models"
+const GATEWAY_CHAT_PATH = "/v3/ai/language-model"
+const GATEWAY_API_KEY = "phase2-permission-loopback-gateway-key"
+const GATEWAY_AUTHORITY_KIND = "deterministic_loopback_gateway"
+const MAX_GATEWAY_REQUEST_BYTES = 4 * 1024 * 1024
+const STRICT_PROOF_ENVIRONMENT_KEYS = [
+  "AI_GATEWAY_API_KEY",
+  "COLORTERM",
+  "FX_AUTO_UPGRADE",
+  "FX_DISABLE_KEYCHAIN",
+  "FX_E2E_DISABLE_DOTENV",
+  "FX_EFFORT",
+  "FX_GATEWAY_BASE_URL",
+  "FX_GATEWAY_CHAT_URL",
+  "FX_MODEL",
+  "FX_PERMISSION_MODE",
+  "FX_SKIP_ONBOARDING",
+  "HOME",
+  "LANG",
+  "PATH",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+] as const
+const FORBIDDEN_AMBIENT_CREDENTIALS = [
+  "ANTHROPIC_API_KEY",
+  "AWS_SECRET_ACCESS_KEY",
+  "GITHUB_TOKEN",
+  "GOOGLE_API_KEY",
+  "OPENAI_API_KEY",
+  "SSH_AUTH_SOCK",
+  "VERCEL_OIDC_TOKEN",
+  "XAI_API_KEY",
+] as const
 
 type WorkControlReadback = Pick<ManifestEntry, "agentId" | "displayId" | "workControl">
+
+type LoopbackGatewayBinding = {
+  host: typeof GATEWAY_HOST
+  port: number
+  baseUrl: string
+  chatUrl: string
+  apiKey: typeof GATEWAY_API_KEY
+}
+
+type LoopbackGatewayRequestCounts = {
+  total: number
+  modelCatalog: number
+  completion: number
+  rejected: number
+}
+
+type LoopbackGatewayState = LoopbackGatewayRequestCounts & {
+  heldStream: "absent" | "open" | "client_cancelled" | "authority_closed"
+  clientCancellationCount: number
+  closeCount: number
+  closed: boolean
+}
+
+type LoopbackGatewayEvidence = {
+  authority_kind: typeof GATEWAY_AUTHORITY_KIND
+  endpoint_host: typeof GATEWAY_HOST
+  endpoint_port: number
+  key_sha256: string
+  request_count: {
+    total: number
+    model_catalog: number
+    completion: number
+    rejected: number
+  }
+}
 
 type WorkControlSequenceTrace = {
   snapshotAttemptCount: number
@@ -104,6 +178,7 @@ type WorkControlSequenceTrace = {
   socketInspected: boolean
   queueRequestCount: number
   providerCorrelated: boolean
+  gatewayCompletionValidated: boolean
   terminalBoundarySet: boolean
   permissionsSent: boolean
 }
@@ -116,6 +191,7 @@ type WorkControlSequenceOptions<SocketEvidence, ProviderEvidence> = {
   trace: WorkControlSequenceTrace
   inspectSocket: () => Promise<SocketEvidence>
   correlateProviderAdmission: (turnId: string) => Promise<ProviderEvidence>
+  awaitGatewayCompletion: () => Promise<void>
   markTerminalBoundary: () => number
   writeTerminal: (input: string) => void
   now?: () => number
@@ -129,6 +205,7 @@ function emptyWorkControlSequenceTrace(): WorkControlSequenceTrace {
     socketInspected: false,
     queueRequestCount: 0,
     providerCorrelated: false,
+    gatewayCompletionValidated: false,
     terminalBoundarySet: false,
     permissionsSent: false,
   }
@@ -265,6 +342,8 @@ async function runWorkControlPermissionSequence<SocketEvidence, ProviderEvidence
 
   const provider = await options.correlateProviderAdmission(admission.turn_id)
   options.trace.providerCorrelated = true
+  await options.awaitGatewayCompletion()
+  options.trace.gatewayCompletionValidated = true
   const permissionBoundary = options.markTerminalBoundary()
   options.trace.terminalBoundarySet = true
   options.writeTerminal("/permissions\r")
@@ -300,46 +379,485 @@ async function requestSnapshotBeforeDeadline(
   }
 }
 
+function loopbackGatewayBinding(port: number): LoopbackGatewayBinding {
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error("loopback Gateway port must be an allocated TCP port")
+  }
+  const baseUrl = `http://${GATEWAY_HOST}:${port}`
+  return {
+    host: GATEWAY_HOST,
+    port,
+    baseUrl,
+    chatUrl: `${baseUrl}${GATEWAY_CHAT_PATH}`,
+    apiKey: GATEWAY_API_KEY,
+  }
+}
+
+function assertStrictProofEnvironment(environment: NodeJS.ProcessEnv): void {
+  expect(Object.keys(environment).sort()).toEqual([...STRICT_PROOF_ENVIRONMENT_KEYS].sort())
+}
+
+function assertGatewayChildAuthority(
+  environment: NodeJS.ProcessEnv,
+  binding: LoopbackGatewayBinding,
+): Omit<LoopbackGatewayEvidence, "request_count"> {
+  const base = new URL(binding.baseUrl)
+  const chat = new URL(binding.chatUrl)
+  if (
+    binding.host !== GATEWAY_HOST ||
+    binding.apiKey !== GATEWAY_API_KEY ||
+    base.protocol !== "http:" ||
+    base.hostname !== GATEWAY_HOST ||
+    Number(base.port) !== binding.port ||
+    base.pathname !== "/" ||
+    base.search !== "" ||
+    base.hash !== "" ||
+    base.username !== "" ||
+    base.password !== "" ||
+    chat.origin !== base.origin ||
+    chat.pathname !== GATEWAY_CHAT_PATH ||
+    chat.search !== "" ||
+    chat.hash !== "" ||
+    chat.username !== "" ||
+    chat.password !== ""
+  ) {
+    throw new Error("Fx child Gateway authority is not exact loopback-only HTTP")
+  }
+  if (
+    environment.AI_GATEWAY_API_KEY !== binding.apiKey ||
+    environment.FX_GATEWAY_BASE_URL !== binding.baseUrl ||
+    environment.FX_GATEWAY_CHAT_URL !== binding.chatUrl ||
+    environment.FX_E2E_DISABLE_DOTENV !== "1" ||
+    environment.FX_DISABLE_KEYCHAIN !== "1"
+  ) {
+    throw new Error("Fx child Gateway authority is missing or changed")
+  }
+  for (const name of FORBIDDEN_AMBIENT_CREDENTIALS) {
+    if (environment[name] !== undefined) {
+      throw new Error(`Fx child environment leaked ambient credential ${name}`)
+    }
+  }
+  return {
+    authority_kind: GATEWAY_AUTHORITY_KIND,
+    endpoint_host: binding.host,
+    endpoint_port: binding.port,
+    key_sha256: sha256(binding.apiKey),
+  }
+}
+
+class GatewayRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = "GatewayRequestError"
+  }
+}
+
+async function readBoundedGatewayJson(request: Request): Promise<Record<string, unknown>> {
+  const declared = request.headers.get("content-length")
+  if (declared !== null) {
+    if (!/^\d+$/u.test(declared) || Number(declared) > MAX_GATEWAY_REQUEST_BYTES) {
+      throw new GatewayRequestError(413, "bounded Gateway request is too large")
+    }
+  }
+  if (request.body === null) throw new GatewayRequestError(400, "Gateway request has no body")
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let byteLength = 0
+  try {
+    for (;;) {
+      const result = await reader.read()
+      if (result.done) break
+      byteLength += result.value.byteLength
+      if (byteLength > MAX_GATEWAY_REQUEST_BYTES) {
+        await reader.cancel().catch(() => {})
+        throw new GatewayRequestError(413, "bounded Gateway request is too large")
+      }
+      chunks.push(result.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  let text: string
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, byteLength))
+  } catch {
+    throw new GatewayRequestError(400, "Gateway request is not UTF-8")
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new GatewayRequestError(400, "Gateway request is not JSON")
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new GatewayRequestError(400, "Gateway request is not an object")
+  }
+  return parsed as Record<string, unknown>
+}
+
+function gatewayJsonContainsInitialWork(value: unknown): boolean {
+  const pending: unknown[] = [value]
+  let visited = 0
+  while (pending.length > 0) {
+    if (++visited > 100_000) throw new GatewayRequestError(400, "Gateway request is too complex")
+    const current = pending.pop()
+    if (typeof current === "string") {
+      if (current.includes(INITIAL_WORK_TEXT)) return true
+      continue
+    }
+    if (Array.isArray(current)) {
+      pending.push(...current)
+      continue
+    }
+    if (current !== null && typeof current === "object") {
+      pending.push(...Object.values(current as Record<string, unknown>))
+    }
+  }
+  return false
+}
+
+function boundedGateway() {
+  let total = 0
+  let modelCatalog = 0
+  let completion = 0
+  let rejected = 0
+  let heldStream: LoopbackGatewayState["heldStream"] = "absent"
+  let heldController: ReadableStreamDefaultController<Uint8Array> | null = null
+  let clientCancellationCount = 0
+  let closeCount = 0
+  let closed = false
+
+  const reject = (status: number, message: string, headers?: HeadersInit): Response => {
+    rejected++
+    return new Response(message, { status, headers })
+  }
+  const server = Bun.serve({
+    hostname: GATEWAY_HOST,
+    port: 0,
+    async fetch(request) {
+      total++
+      const url = new URL(request.url)
+      const path = url.pathname
+      if (path !== GATEWAY_MODELS_PATH && path !== GATEWAY_CHAT_PATH) {
+        return reject(404, "not found")
+      }
+      if (url.search !== "" || url.hash !== "") return reject(404, "not found")
+      if (request.headers.get("authorization") !== `Bearer ${GATEWAY_API_KEY}`) {
+        return reject(401, "unauthorized")
+      }
+      if (path === GATEWAY_MODELS_PATH) {
+        if (request.method !== "GET") return reject(405, "method not allowed", { allow: "GET" })
+        modelCatalog++
+        return Response.json({
+          data: [{ id: GATEWAY_MODEL, type: "language", tags: ["tool-use"] }],
+        })
+      }
+      if (request.method !== "POST") {
+        return reject(405, "method not allowed", { allow: "POST" })
+      }
+      if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+        return reject(415, "content type must be application/json")
+      }
+      if (request.headers.get("ai-language-model-id") !== GATEWAY_MODEL) {
+        return reject(422, "unexpected model identity")
+      }
+      let body: Record<string, unknown>
+      try {
+        body = await readBoundedGatewayJson(request)
+      } catch (error) {
+        if (error instanceof GatewayRequestError) return reject(error.status, error.message)
+        throw error
+      }
+      let containsInitialWork = false
+      try {
+        containsInitialWork = Array.isArray(body.prompt) &&
+          gatewayJsonContainsInitialWork(body.prompt)
+      } catch (error) {
+        if (error instanceof GatewayRequestError) return reject(error.status, error.message)
+        throw error
+      }
+      if (!containsInitialWork) {
+        return reject(422, "initial work is absent from the model request")
+      }
+      completion++
+      if (completion !== 1 || heldStream !== "absent") {
+        return reject(409, "only one completion request is permitted")
+      }
+      const encoder = new TextEncoder()
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          heldController = controller
+          heldStream = "open"
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({
+              type: "text-delta",
+              id: "phase2-permission-held",
+              delta: "working",
+            })}\n\n`,
+          ))
+        },
+        cancel() {
+          heldController = null
+          heldStream = "client_cancelled"
+          clientCancellationCount++
+        },
+      }), { headers: { "content-type": "text/event-stream" } })
+    },
+  })
+  if (server.port === undefined) {
+    server.stop(true)
+    throw new Error("bounded loopback Gateway has no listening port")
+  }
+  const binding = loopbackGatewayBinding(server.port)
+  const state = (): LoopbackGatewayState => ({
+    total,
+    modelCatalog,
+    completion,
+    rejected,
+    heldStream,
+    clientCancellationCount,
+    closeCount,
+    closed,
+  })
+  const evidence = (): LoopbackGatewayEvidence => ({
+    ...assertGatewayChildAuthority(isolatedEnvironment("/private/fmx-gateway-evidence", binding), binding),
+    request_count: {
+      total,
+      model_catalog: modelCatalog,
+      completion,
+      rejected,
+    },
+  })
+  const waitForOneCompletion = async (): Promise<void> => {
+    const deadline = Date.now() + WAIT_MS
+    for (;;) {
+      if (rejected !== 0) throw new Error("bounded Gateway rejected an Fx request")
+      if (completion > 1) throw new Error("bounded Gateway received duplicate completion requests")
+      if (completion === 1 && heldStream === "open") return
+      if (Date.now() >= deadline) throw new Error("timed out waiting for one held Gateway request")
+      await Bun.sleep(25)
+    }
+  }
+  const waitForClientCancellation = async (): Promise<void> => {
+    const deadline = Date.now() + WAIT_MS
+    for (;;) {
+      if (clientCancellationCount > 1) {
+        throw new Error("bounded Gateway held stream was cancelled more than once")
+      }
+      if (clientCancellationCount === 1 && heldStream === "client_cancelled") return
+      if (Date.now() >= deadline) {
+        throw new Error("timed out waiting for Fx to cancel the held Gateway stream")
+      }
+      await Bun.sleep(25)
+    }
+  }
+  const close = (): void => {
+    if (closed) return
+    closed = true
+    closeCount++
+    if (heldController !== null) {
+      try { heldController.close() } catch {}
+      heldController = null
+      heldStream = "authority_closed"
+    }
+    server.stop(true)
+  }
+  return { binding, close, evidence, state, waitForClientCancellation, waitForOneCompletion }
+}
+
+function finalAcknowledgement(receipt: FxFinalReceipt): FxFinalReceiptAcknowledgement {
+  return {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "final_receipt_acknowledgement",
+    acknowledgement_id: `phase2-permission-final-ack-${sha256(
+      `${receipt.receipt_id}\0${receipt.receipt_digest}`,
+    )}`,
+    receipt_id: receipt.receipt_id,
+    receipt_digest: receipt.receipt_digest,
+    launch_id: receipt.launch_id,
+    launch_digest: receipt.launch_digest,
+    admission_key: receipt.admission_key,
+    conversation_id: receipt.conversation_id,
+  }
+}
+
 test("pins the exact Phase 2 supplier and yolo fixture bytes", () => {
   expect(Buffer.byteLength(SETTINGS_BYTES)).toBe(251)
   expect(sha256(SETTINGS_BYTES)).toBe(SETTINGS_SHA256)
   expect(FX_BINARY_PATH).toContain(`/${FX_SUPPLIER_COMMIT}/${FX_BINARY_SHA256}/fx`)
   expect(FX_SUPPLIER_PARENTS[2]).toBe(FX_HOSTED_CARRY)
+  expect(GATEWAY_MODEL).toBe("moonshotai/kimi-k3")
   for (const excluded of EXCLUDED_FAILURE_ROOTS) expect(EVIDENCE_ROOT).not.toBe(excluded)
   expect(Buffer.byteLength(INITIAL_WORK_BYTES)).toBe(42)
   expect(sha256(INITIAL_WORK_BYTES)).toBe(INITIAL_WORK_SHA256)
   expect(WORKSPACE).toBe(
-    "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0002/workspace",
+    "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0003/workspace",
   )
 })
 
 test("constructs one minimal proof environment without ambient credentials", () => {
-  const environment = isolatedEnvironment("/private/fmx-phase2-proof-home")
-  expect(Object.keys(environment).sort()).toEqual([
-    "COLORTERM",
-    "FX_AUTO_UPGRADE",
-    "FX_DISABLE_KEYCHAIN",
-    "FX_EFFORT",
-    "FX_MODEL",
-    "FX_PERMISSION_MODE",
-    "FX_SKIP_ONBOARDING",
-    "HOME",
-    "LANG",
-    "PATH",
-    "SHELL",
-    "TERM",
-    "TMPDIR",
-  ])
-  for (const forbidden of [
-    "AI_GATEWAY_API_KEY",
-    "AWS_SECRET_ACCESS_KEY",
-    "GITHUB_TOKEN",
-    "OPENAI_API_KEY",
-    "SSH_AUTH_SOCK",
-    "VERCEL_OIDC_TOKEN",
-  ]) {
+  const binding = loopbackGatewayBinding(31_337)
+  const environment = isolatedEnvironment("/private/fmx-phase2-proof-home", binding)
+  assertStrictProofEnvironment(environment)
+  expect(environment).toMatchObject({
+    AI_GATEWAY_API_KEY: GATEWAY_API_KEY,
+    FX_GATEWAY_BASE_URL: "http://127.0.0.1:31337",
+    FX_GATEWAY_CHAT_URL: "http://127.0.0.1:31337/v3/ai/language-model",
+    FX_E2E_DISABLE_DOTENV: "1",
+    FX_DISABLE_KEYCHAIN: "1",
+    FX_MODEL: GATEWAY_MODEL,
+  })
+  for (const forbidden of FORBIDDEN_AMBIENT_CREDENTIALS) {
     expect(environment[forbidden]).toBeUndefined()
   }
+  const ambientSentinels = {
+    AI_GATEWAY_API_KEY: "ambient-gateway-secret",
+    OPENAI_API_KEY: "ambient-openai-secret",
+    VERCEL_OIDC_TOKEN: "ambient-oidc-secret",
+  }
+  expect(Object.values(environment)).not.toContain(ambientSentinels.AI_GATEWAY_API_KEY)
+  expect(Object.values(environment)).not.toContain(ambientSentinels.OPENAI_API_KEY)
+  expect(Object.values(environment)).not.toContain(ambientSentinels.VERCEL_OIDC_TOKEN)
+  expect(assertGatewayChildAuthority(environment, binding)).toEqual({
+    authority_kind: GATEWAY_AUTHORITY_KIND,
+    endpoint_host: GATEWAY_HOST,
+    endpoint_port: 31_337,
+    key_sha256: sha256(GATEWAY_API_KEY),
+  })
+})
+
+test("bounds the loopback Gateway route, authentication, model, and held stream", async () => {
+  const gateway = boundedGateway()
+  const authorization = { authorization: `Bearer ${GATEWAY_API_KEY}` }
+  const chatHeaders = {
+    ...authorization,
+    "content-type": "application/json",
+    "ai-language-model-id": GATEWAY_MODEL,
+  }
+  const body = JSON.stringify({
+    prompt: [{ role: "user", content: INITIAL_WORK_TEXT }],
+    tools: [],
+    toolChoice: { type: "auto" },
+  })
+  try {
+    expect((await fetch(`${gateway.binding.baseUrl}/unexpected`, {
+      headers: authorization,
+    })).status).toBe(404)
+    expect((await fetch(gateway.binding.chatUrl, {
+      method: "GET",
+      headers: authorization,
+    })).status).toBe(405)
+    expect((await fetch(gateway.binding.chatUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "ai-language-model-id": GATEWAY_MODEL,
+      },
+      body,
+    })).status).toBe(401)
+    expect((await fetch(gateway.binding.chatUrl, {
+      method: "POST",
+      headers: { ...chatHeaders, "ai-language-model-id": "openai/not-the-frozen-model" },
+      body,
+    })).status).toBe(422)
+    expect((await fetch(gateway.binding.chatUrl, {
+      method: "POST",
+      headers: chatHeaders,
+      body: JSON.stringify({ prompt: [{ role: "user", content: "wrong initial work" }] }),
+    })).status).toBe(422)
+    const models = await fetch(`${gateway.binding.baseUrl}${GATEWAY_MODELS_PATH}`, {
+      headers: authorization,
+    })
+    expect(models.status).toBe(200)
+    expect(await models.json()).toEqual({
+      data: [{ id: GATEWAY_MODEL, type: "language", tags: ["tool-use"] }],
+    })
+    const completion = await fetch(gateway.binding.chatUrl, {
+      method: "POST",
+      headers: chatHeaders,
+      body,
+    })
+    expect(completion.status).toBe(200)
+    expect(completion.headers.get("content-type")).toBe("text/event-stream")
+    expect(gateway.state()).toMatchObject({
+      total: 7,
+      modelCatalog: 1,
+      completion: 1,
+      rejected: 5,
+      heldStream: "open",
+      clientCancellationCount: 0,
+    })
+    await completion.body!.cancel()
+    await gateway.waitForClientCancellation()
+    expect(gateway.state()).toMatchObject({
+      heldStream: "client_cancelled",
+      clientCancellationCount: 1,
+    })
+    const evidence = gateway.evidence()
+    expect(Object.keys(evidence).sort()).toEqual([
+      "authority_kind",
+      "endpoint_host",
+      "endpoint_port",
+      "key_sha256",
+      "request_count",
+    ])
+    expect(evidence.request_count).toEqual({
+      total: 7,
+      model_catalog: 1,
+      completion: 1,
+      rejected: 5,
+    })
+    expect(JSON.stringify(evidence)).not.toContain(GATEWAY_API_KEY)
+  } finally {
+    gateway.close()
+  }
+  gateway.close()
+  expect(gateway.state()).toMatchObject({
+    closed: true,
+    closeCount: 1,
+    heldStream: "client_cancelled",
+    clientCancellationCount: 1,
+  })
+})
+
+test("fails Gateway authority before spawn and closes every pre-client failure path", async () => {
+  const gateway = boundedGateway()
+  const valid = isolatedEnvironment("/private/fmx-phase2-proof-home", gateway.binding)
+  let spawnCount = 0
+  let queueCount = 0
+  let terminalInputCount = 0
+  const execute = (environment: NodeJS.ProcessEnv) => {
+    assertGatewayChildAuthority(environment, gateway.binding)
+    spawnCount++
+    queueCount++
+    terminalInputCount++
+  }
+  try {
+    for (const invalid of [
+      { ...valid, AI_GATEWAY_API_KEY: "ambient-gateway-secret" },
+      { ...valid, FX_GATEWAY_BASE_URL: "https://gateway.example.invalid" },
+      { ...valid, OPENAI_API_KEY: "ambient-openai-secret" },
+    ]) {
+      expect(() => execute(invalid)).toThrow()
+    }
+    expect(spawnCount).toBe(0)
+    expect(queueCount).toBe(0)
+    expect(terminalInputCount).toBe(0)
+    expect(gateway.state()).toMatchObject({ total: 0, completion: 0, rejected: 0 })
+    const harness = await readFile(join(REPOSITORY_ROOT, TEST_PATH), "utf8")
+    expect(harness).not.toContain(["...", "process.env"].join(""))
+  } finally {
+    gateway.close()
+  }
+  expect(gateway.state()).toMatchObject({
+    closed: true,
+    closeCount: 1,
+    heldStream: "absent",
+  })
 })
 
 test("refuses omitted, null, or unpersisted Work-control authority before execution", () => {
@@ -364,7 +882,7 @@ test("refuses omitted, null, or unpersisted Work-control authority before execut
   let executions = 0
   const execute = (manifestPath: string | null, readback: WorkControlReadback | null) => {
     const environment = composePersistedProofEnvironment(
-      isolatedEnvironment("/private/fmx-phase2-proof-home"),
+      isolatedEnvironment("/private/fmx-phase2-proof-home", loopbackGatewayBinding(31_337)),
       WORKSPACE,
       manifestPath,
       RUNTIME_SOCKET_PATH,
@@ -495,6 +1013,9 @@ test("orders authenticated Work-control readiness before one queue and terminal 
       events.push(`provider:${turnId}`)
       return { kind: "admitted" as const, turnId }
     },
+    awaitGatewayCompletion: async () => {
+      events.push("gateway")
+    },
     markTerminalBoundary: () => {
       events.push("boundary")
       return 123
@@ -516,6 +1037,7 @@ test("orders authenticated Work-control readiness before one queue and terminal 
     "socket",
     "queue",
     "provider:7",
+    "gateway",
     "boundary",
     "permissions",
   ])
@@ -527,6 +1049,7 @@ test("orders authenticated Work-control readiness before one queue and terminal 
     socketInspected: true,
     queueRequestCount: 1,
     providerCorrelated: true,
+    gatewayCompletionValidated: true,
     terminalBoundarySet: true,
     permissionsSent: true,
   })
@@ -568,6 +1091,7 @@ test("retries only unavailable readiness and fails closed before queue on author
         trace,
         inspectSocket: async () => { throw new Error("socket inspection must not run") },
         correlateProviderAdmission: async () => { throw new Error("provider must not run") },
+        awaitGatewayCompletion: async () => { throw new Error("Gateway must not run") },
         markTerminalBoundary: () => { throw new Error("terminal boundary must not be set") },
         writeTerminal: () => { throw new Error("terminal command must not be sent") },
       })
@@ -582,6 +1106,7 @@ test("retries only unavailable readiness and fails closed before queue on author
       socketInspected: false,
       queueRequestCount: 0,
       providerCorrelated: false,
+      gatewayCompletionValidated: false,
       terminalBoundarySet: false,
       permissionsSent: false,
     })
@@ -607,6 +1132,7 @@ test("retries only unavailable readiness and fails closed before queue on author
     trace,
     inspectSocket: async () => { throw new Error("socket inspection must not run") },
     correlateProviderAdmission: async () => { throw new Error("provider must not run") },
+    awaitGatewayCompletion: async () => { throw new Error("Gateway must not run") },
     markTerminalBoundary: () => { throw new Error("terminal boundary must not be set") },
     writeTerminal: () => { throw new Error("terminal command must not be sent") },
     now: () => clock,
@@ -645,12 +1171,14 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
   let child: ReturnType<typeof Bun.spawn> | null = null
   let terminal: Bun.Terminal | null = null
   let workControl: FxWorkControlBinding | null = null
+  let gateway: ReturnType<typeof boundedGateway> | null = null
   const workControlSequence = emptyWorkControlSequenceTrace()
   const terminalCapture = new BoundedTerminalCapture(MAX_TERMINAL_BYTES)
 
   try {
+    gateway = boundedGateway()
     const fmx = await verifyFmxSource()
-    const supplier = await verifySupplier(identityHome)
+    const supplier = await verifySupplier(identityHome, gateway.binding)
     const settingsBefore = await readFile(settingsPath)
     expect(settingsBefore.byteLength).toBe(251)
     expect(sha256(settingsBefore)).toBe(SETTINGS_SHA256)
@@ -725,7 +1253,10 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     }
     launchRequest.launch_digest = deriveFrozenLaunchDigest(launchRequest)
 
-    const parentEnvironment = isolatedEnvironment(ambientHome)
+    const parentEnvironment = isolatedEnvironment(ambientHome, gateway.binding)
+    assertStrictProofEnvironment(parentEnvironment)
+    const gatewayAuthority = assertGatewayChildAuthority(parentEnvironment, gateway.binding)
+    expect(gateway.state()).toMatchObject({ total: 0, completion: 0, rejected: 0 })
     const provider = new FxLaunchProviderClient({
       executable: FX_BINARY_PATH,
       runtimeDirectory: PROVIDER_RUNTIME,
@@ -808,6 +1339,8 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     expect(processEnvironment.FX_WORK_CONTROL_SOCKET_PATH).toBe(durableWorkControl.socketPath)
     expect(processEnvironment.FX_WORK_CONTROL_INSTANCE_ID).toBe(durableWorkControl.instanceId)
     expect(processEnvironment.FX_WORK_CONTROL_TOKEN).toBe(durableWorkControl.token)
+    expect(assertGatewayChildAuthority(processEnvironment, gateway.binding)).toEqual(gatewayAuthority)
+    expect(gateway.state()).toMatchObject({ total: 0, completion: 0, rejected: 0 })
 
     terminal = new Bun.Terminal({
       cols: 120,
@@ -860,6 +1393,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
         expect(providerTurnId).toBe(turnId)
         return { authority, turnId: providerTurnId }
       },
+      awaitGatewayCompletion: () => gateway!.waitForOneCompletion(),
       markTerminalBoundary: () => terminalCapture.markBoundary(),
       writeTerminal: (input) => terminal!.write(input),
     })
@@ -868,6 +1402,14 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     const workControlDisposition = workAdmission.disposition
     expect(workControlTurnId).toMatch(/^[1-9]\d*$/u)
     expect(["queued", "steering"]).toContain(workControlDisposition)
+    const admittedTurns = [
+      ...(workAdmission.snapshot.active_turn_id === null
+        ? []
+        : [workAdmission.snapshot.active_turn_id]),
+      ...workAdmission.snapshot.queue.map(({ turn_id }) => turn_id),
+    ]
+    expect(admittedTurns).toEqual([workControlTurnId])
+    expect(new Set(admittedTurns).size).toBe(1)
     const providerAuthority = sequence.provider.authority
     const providerTurnId = sequence.provider.turnId
     await writeJson(join(EVIDENCE_ROOT, "work-control-admission.json"), {
@@ -909,6 +1451,60 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       async () => !(await pathExists(durableWorkControl.socketPath)),
       "Fx Work-control endpoint cleanup",
     )
+    await gateway.waitForClientCancellation()
+
+    const providerCorrelation = {
+      stateRoot,
+      admissionKey: launchRequest.admission_key,
+      launchDigest: launchRequest.launch_digest,
+      launchId: launchRequest.launch_id,
+    }
+    const finalObservedAt = new Date().toISOString()
+    const finalAuthority = await provider.recordFinal(
+      providerCorrelation,
+      finalObservedAt,
+      { kind: "exited", code: exitCode },
+    )
+    const finalReceipt = finalAuthority.finalReceipt
+    if (finalReceipt === null) throw new Error("Fx provider returned no exact final receipt")
+    expect(finalReceipt).toMatchObject({
+      schema_id: "fx.launch-admission-final",
+      schema_version: 1,
+      message_type: "final_receipt",
+      launch_id: launchRequest.launch_id,
+      launch_digest: launchRequest.launch_digest,
+      admission_key: launchRequest.admission_key,
+      conversation_id: invocation.conversationId,
+      outcome: { kind: "exited", code: 0 },
+      observed_at: finalObservedAt,
+      retained_until_acknowledged: true,
+    })
+    const acknowledgement = finalAcknowledgement(finalReceipt)
+    const acknowledged = await provider.acknowledgeFinal(stateRoot, acknowledgement)
+    expect(acknowledged.finalAcknowledgementId).toBe(acknowledgement.acknowledgement_id)
+    expect(acknowledged.launchReceipt.receipt_id).toBe(launchReceipt.receipt_id)
+    expect(await readdir(PROVIDER_RUNTIME)).toEqual([])
+    const gatewayEvidence = gateway.evidence()
+    expect(gatewayEvidence.request_count.completion).toBe(1)
+    expect(gatewayEvidence.request_count.rejected).toBe(0)
+    expect(gatewayEvidence.request_count.total).toBe(
+      gatewayEvidence.request_count.model_catalog + gatewayEvidence.request_count.completion,
+    )
+    gateway.close()
+    expect(gateway.state()).toMatchObject({
+      closed: true,
+      closeCount: 1,
+      completion: 1,
+      rejected: 0,
+      heldStream: "client_cancelled",
+      clientCancellationCount: 1,
+    })
+    await writeJson(join(EVIDENCE_ROOT, "gateway.json"), gatewayEvidence)
+    await writeJson(join(EVIDENCE_ROOT, "provider-final.json"), {
+      final_receipt: finalReceipt,
+      acknowledgement,
+      final_acknowledgement_id: acknowledged.finalAcknowledgementId,
+    })
 
     const terminalBytes = terminalCapture.bytes()
     const permissionScreenText = permissionScreen.text()
@@ -936,6 +1532,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       explicit_permission_argv: controls,
       model_environment_present: processEnvironment.FX_MODEL !== undefined,
       effort_environment_present: processEnvironment.FX_EFFORT !== undefined,
+      gateway_authority: gatewayEvidence,
       work_control_socket_path: durableWorkControl.socketPath,
       work_control_instance_id: durableWorkControl.instanceId,
       work_control_token_sha256: sha256(durableWorkControl.token),
@@ -946,6 +1543,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       work_control_turn_id: workControlTurnId,
       work_control_disposition: workControlDisposition,
       work_control_provider_correlated: workControlSequence.providerCorrelated,
+      gateway_completion_validated: workControlSequence.gatewayCompletionValidated,
       work_control_endpoint_removed: !(await pathExists(durableWorkControl.socketPath)),
       pid: processId,
       exit_code: exitCode,
@@ -963,6 +1561,9 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       settings_before_sha256: sha256(settingsBefore),
       settings_after_sha256: sha256(settingsAfter),
       settings_unchanged: settingsAfter.equals(settingsBefore),
+      final_receipt_id: finalReceipt.receipt_id,
+      final_receipt_digest: finalReceipt.receipt_digest,
+      final_acknowledgement_id: acknowledgement.acknowledgement_id,
     })
 
     const artifactAfter = await artifactIdentity(FX_BINARY_PATH)
@@ -972,6 +1573,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       .toBe("")
     await rmdir(PROVIDER_RUNTIME)
     expect(await pathExists(PROVIDER_RUNTIME)).toBe(false)
+    await assertGatewayKeyNotRetained(EVIDENCE_ROOT)
     const inventory = await evidenceInventory(EVIDENCE_ROOT)
     await writeJson(join(EVIDENCE_ROOT, "evidence.json"), {
       schema_id: "fmx.fx-launch-provider-real-process-evidence",
@@ -989,6 +1591,11 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       evidence_root: EVIDENCE_ROOT,
       provider_prepare_correlated: true,
       provider_build_correlated: true,
+      provider_final_receipt_id: finalReceipt.receipt_id,
+      provider_final_receipt_digest: finalReceipt.receipt_digest,
+      provider_final_acknowledgement_id: acknowledgement.acknowledgement_id,
+      provider_final_acknowledged: true,
+      gateway_authority: gatewayEvidence,
       manifest_path: MANIFEST_PATH,
       manifest_sha256: sha256(manifestBytes),
       manifest_mode: "0600",
@@ -1004,6 +1611,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       work_control_turn_id: workControlTurnId,
       work_control_disposition: workControlDisposition,
       work_control_provider_correlated: workControlSequence.providerCorrelated,
+      gateway_completion_validated: workControlSequence.gatewayCompletionValidated,
       terminal_boundary_set_after_provider: workControlSequence.terminalBoundarySet,
       permissions_sent_after_boundary: workControlSequence.permissionsSent,
       work_control_endpoint_removed: true,
@@ -1018,6 +1626,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       provider_runtime_removed: true,
       files_before_manifest: inventory,
     })
+    await assertGatewayKeyNotRetained(EVIDENCE_ROOT)
   } catch (error) {
     if (child?.exitCode === null) child.kill("SIGKILL")
     await child?.exited.catch(() => {})
@@ -1037,11 +1646,14 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       terminal_sha256: sha256(terminalBytes),
       terminal_overflowed: terminalCapture.overflowed,
       work_control_sequence: workControlSequence,
+      gateway_authority: gateway?.evidence() ?? null,
       retried: false,
     })
+    await assertGatewayKeyNotRetained(EVIDENCE_ROOT)
     throw error
   } finally {
     terminal?.close()
+    gateway?.close()
   }
 }, 90_000)
 
@@ -1077,7 +1689,7 @@ async function verifyFmxSource() {
   }
 }
 
-async function verifySupplier(identityHome: string) {
+async function verifySupplier(identityHome: string, gateway: LoopbackGatewayBinding) {
   const [
     commit,
     tree,
@@ -1118,7 +1730,7 @@ async function verifySupplier(identityHome: string) {
     mode: "0755",
     description: FX_FILE_DESCRIPTION,
   })
-  const identityEnvironment = isolatedEnvironment(identityHome)
+  const identityEnvironment = isolatedEnvironment(identityHome, gateway)
   delete identityEnvironment.FX_MODEL
   delete identityEnvironment.FX_EFFORT
   delete identityEnvironment.FX_PERMISSION_MODE
@@ -1129,6 +1741,7 @@ async function verifySupplier(identityHome: string) {
   expect(statusResult.stderr).toBe("")
   const statusJson = JSON.parse(statusResult.stdout) as Record<string, unknown>
   expect(statusJson.build_revision).toBe(FX_BUILD_REVISION)
+  expect(statusJson.model).toBe(GATEWAY_MODEL)
   await writePrivate(join(EVIDENCE_ROOT, "fx-status.json"), statusResult.stdout)
   return {
     commit: commit.stdout.trim(),
@@ -1167,7 +1780,7 @@ async function artifactIdentity(path: string) {
   }
 }
 
-function isolatedEnvironment(home: string): NodeJS.ProcessEnv {
+function isolatedEnvironment(home: string, gateway: LoopbackGatewayBinding): NodeJS.ProcessEnv {
   return {
     PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
     HOME: home,
@@ -1176,8 +1789,12 @@ function isolatedEnvironment(home: string): NodeJS.ProcessEnv {
     SHELL: "/bin/sh",
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
+    AI_GATEWAY_API_KEY: gateway.apiKey,
+    FX_GATEWAY_BASE_URL: gateway.baseUrl,
+    FX_GATEWAY_CHAT_URL: gateway.chatUrl,
+    FX_E2E_DISABLE_DOTENV: "1",
     FX_PERMISSION_MODE: "yolo",
-    FX_MODEL: "openai/gpt-5",
+    FX_MODEL: GATEWAY_MODEL,
     FX_EFFORT: "high",
     FX_AUTO_UPGRADE: "0",
     FX_DISABLE_KEYCHAIN: "1",
@@ -1847,6 +2464,19 @@ async function evidenceInventory(root: string) {
     })
   }
   return files
+}
+
+async function assertGatewayKeyNotRetained(root: string): Promise<void> {
+  const pending = [root]
+  const rawKey = Buffer.from(GATEWAY_API_KEY, "utf8")
+  while (pending.length > 0) {
+    const directory = pending.pop()!
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) pending.push(path)
+      else if (entry.isFile()) expect((await readFile(path)).includes(rawKey)).toBe(false)
+    }
+  }
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
