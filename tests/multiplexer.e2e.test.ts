@@ -319,6 +319,14 @@ test.skipIf(!PTY_TEST_ENABLED)(
         12_000,
         () => alphaOutput.output,
       )
+      await waitUntil(
+        async () => {
+          const snapshot = await orientation(temporaryDirectory, baseEnv, "alpha")
+          return snapshot?.fmx.name === "alpha" && snapshot.fmx.cols === 100 && snapshot.fmx.rows === 24
+        },
+        8_000,
+        () => alphaOutput.output,
+      )
       const initial = await orientation(temporaryDirectory, baseEnv, "alpha")
       expect(initial?.fmx).toMatchObject({ name: "alpha", cols: 100, rows: 24 })
       expect(await orientation(temporaryDirectory, baseEnv, "beta")).toBeNull()
