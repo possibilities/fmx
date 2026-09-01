@@ -31,15 +31,18 @@ const SKIP_CONTRACT =
 const FMX_CONSUMER_COMMIT = "8f12d0384987c4f6024759b2edfe097ee6b11914"
 const FMX_CONSUMER_TREE = "8e61019b5476d61902b57026f5060402d8489463"
 const FX_SUPPLIER_REPOSITORY = "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/worktree"
-const FX_SUPPLIER_COMMIT = "082ade5fcac40e4af7847e0991a69d275b452360"
+const FX_SUPPLIER_COMMIT = "9ba167350abe035957aec07411b3a327371e3275"
 const FX_SUPPLIER_TREE = "7eb83bd94e8e10f0f6658207aa2c1ebe6ea68bb5"
 const FX_SUPPLIER_PARENTS = [
   "2b88952d123868c36407ef284917ad3e0522ee2f",
   "ed0b75e490a63263149918e7d3af95470768aa2c",
+  "4891175d1a3e0e914a89f10309a53d257c0eb5a7",
 ] as const
 const FX_PERMISSION_CARRY_PARENT = "6f44cd94d3f4b0a0516bd14bfaa20bdac3200717"
+const FX_HOSTED_CARRY = "4891175d1a3e0e914a89f10309a53d257c0eb5a7"
 const FX_UPSTREAM_BASE = "766e70f0106393b551e2363526cf6a41e60587c3"
-const FX_BINARY_SHA256 = "1aa87dad6a840b480e622b29964678e35f317977595ec8c0b63dcfaead711739"
+const FX_HOSTED_CARRY_PATH = ".github/workflows/full-ci.yml"
+const FX_BINARY_SHA256 = "17fbc6f5a6fc8c00e6e2c628b1d8a4ab39682efaafb1b1e1d55c745bdcaff6e2"
 const FX_BINARY_SIZE = 11_114_368
 const FX_BINARY_PATH =
   `/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/artifacts/${FX_SUPPLIER_COMMIT}/${FX_BINARY_SHA256}/fx`
@@ -67,6 +70,7 @@ test("pins the exact Phase 2 supplier and yolo fixture bytes", () => {
   expect(Buffer.byteLength(SETTINGS_BYTES)).toBe(251)
   expect(sha256(SETTINGS_BYTES)).toBe(SETTINGS_SHA256)
   expect(FX_BINARY_PATH).toContain(`/${FX_SUPPLIER_COMMIT}/${FX_BINARY_SHA256}/fx`)
+  expect(FX_SUPPLIER_PARENTS[2]).toBe(FX_HOSTED_CARRY)
   expect(WORKSPACE).toBe(
     "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-maOw2l/workspace",
   )
@@ -432,20 +436,36 @@ async function verifyFmxSource() {
 }
 
 async function verifySupplier(identityHome: string) {
-  const [commit, tree, parents, status, carryParent, upstream] = await Promise.all([
+  const [
+    commit,
+    tree,
+    parents,
+    status,
+    permissionCarryParent,
+    permissionUpstream,
+    hostedCarryParent,
+    hostedCarryPaths,
+    hostedCarryNumstat,
+  ] = await Promise.all([
     git(["rev-parse", "HEAD^{commit}"], FX_SUPPLIER_REPOSITORY),
     git(["rev-parse", "HEAD^{tree}"], FX_SUPPLIER_REPOSITORY),
     git(["show", "-s", "--format=%P", FX_SUPPLIER_COMMIT], FX_SUPPLIER_REPOSITORY),
     git(["status", "--porcelain=v1"], FX_SUPPLIER_REPOSITORY),
     git(["rev-parse", `${FX_SUPPLIER_PARENTS[1]}^`], FX_SUPPLIER_REPOSITORY),
     git(["merge-base", "--is-ancestor", FX_UPSTREAM_BASE, FX_PERMISSION_CARRY_PARENT], FX_SUPPLIER_REPOSITORY),
+    git(["rev-parse", `${FX_HOSTED_CARRY}^`], FX_SUPPLIER_REPOSITORY),
+    git(["diff-tree", "--no-commit-id", "--name-only", "-r", FX_HOSTED_CARRY], FX_SUPPLIER_REPOSITORY),
+    git(["diff", "--numstat", `${FX_HOSTED_CARRY}^`, FX_HOSTED_CARRY, "--", FX_HOSTED_CARRY_PATH], FX_SUPPLIER_REPOSITORY),
   ])
   expect(commit.stdout.trim()).toBe(FX_SUPPLIER_COMMIT)
   expect(tree.stdout.trim()).toBe(FX_SUPPLIER_TREE)
   expect(parents.stdout.trim().split(" ")).toEqual([...FX_SUPPLIER_PARENTS])
   expect(status.stdout).toBe("")
-  expect(carryParent.stdout.trim()).toBe(FX_PERMISSION_CARRY_PARENT)
-  expect(upstream.exitCode).toBe(0)
+  expect(permissionCarryParent.stdout.trim()).toBe(FX_PERMISSION_CARRY_PARENT)
+  expect(permissionUpstream.exitCode).toBe(0)
+  expect(hostedCarryParent.stdout.trim()).toBe(FX_UPSTREAM_BASE)
+  expect(hostedCarryPaths.stdout).toBe(`${FX_HOSTED_CARRY_PATH}\n`)
+  expect(hostedCarryNumstat.stdout).toBe(`6\t3\t${FX_HOSTED_CARRY_PATH}\n`)
 
   const artifact = await artifactIdentity(FX_BINARY_PATH)
   expect(artifact).toEqual({
@@ -472,9 +492,13 @@ async function verifySupplier(identityHome: string) {
     commit: commit.stdout.trim(),
     tree: tree.stdout.trim(),
     parents: parents.stdout.trim().split(" "),
-    permission_carry_parent: carryParent.stdout.trim(),
+    permission_carry_parent: permissionCarryParent.stdout.trim(),
     upstream_base: FX_UPSTREAM_BASE,
-    upstream_is_ancestor: upstream.exitCode === 0,
+    upstream_is_ancestor: permissionUpstream.exitCode === 0,
+    hosted_carry: FX_HOSTED_CARRY,
+    hosted_carry_parent: hostedCarryParent.stdout.trim(),
+    hosted_carry_changed_paths: hostedCarryPaths.stdout.trim().split("\n"),
+    hosted_carry_numstat: hostedCarryNumstat.stdout.trim(),
     repository_status: status.stdout,
     artifact,
     version: version.stdout.trim(),
