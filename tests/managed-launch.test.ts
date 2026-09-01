@@ -187,7 +187,6 @@ describe("managed-launch durable transaction", () => {
       "manifest",
       "prepare",
       "companion",
-      "prepare",
       "work-control:managed hello",
       "inspect",
     ])
@@ -204,6 +203,51 @@ describe("managed-launch durable transaction", () => {
       },
     })
     expect((await ledger.getManaged(request.ensure_id))?.outcome.receipt).toEqual(published[0])
+  })
+
+  test("reopens at companion_started without rebuilding or starting another Companion", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("reopen-companion")
+    const observed: string[] = []
+    const published: ManagedLaunchOutcome[] = []
+    await ledger.claimManaged(request)
+    await ledger.advanceManaged(request.ensure_id, {
+      kind: "directory_validated",
+      directory: request.workspace.directory,
+      repository: request.workspace.repository,
+      checkout_root: request.workspace.checkout_root,
+      head_commit: request.workspace.head_commit,
+    })
+    await ledger.advanceManaged(request.ensure_id, {
+      kind: "manifest_claimed",
+      agent_id: request.agent_id,
+    })
+    await ledger.bindManagedFxFinalReceiptAuthority(request.ensure_id, {
+      admission_key: request.source.admission_key,
+      state_root: request.source.launch_request.state_root,
+    })
+    await ledger.retainManagedPreparedConversation(
+      request.ensure_id,
+      request.fx_conversation.resume_conversation_id!,
+    )
+    await ledger.advanceManaged(request.ensure_id, {
+      kind: "companion_started",
+      session_name: `fmx-${request.agent_id}`,
+      pane_id: `p_${request.agent_id}`,
+    })
+
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports: managedPorts(published, observed),
+    })
+    await coordinator.recover()
+    await coordinator.settled()
+    expect(observed).toEqual(["work-control:managed hello", "inspect"])
+    expect((await ledger.getManaged(request.ensure_id))?.stage).toBe("fx_started")
+    expect(published[0]).toMatchObject({ status: "succeeded", attempt: 1 })
   })
 
   test("appends an acknowledged retryable attempt and redrives the exact launch to success", async () => {

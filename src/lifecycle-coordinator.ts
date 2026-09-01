@@ -205,6 +205,7 @@ export type ManagedLaunchCoordinatorPorts = {
       binding: FxWorkControlBinding
       text: string
       request: ManagedLaunchRequest
+      conversationId: string
     }>): Promise<{
       admission: FxWorkControlResult
       conversationId: string
@@ -664,14 +665,26 @@ export class LifecycleCoordinator {
         }
 
         const workControl = await ports.manifest.workControl(record.request.agent_id)
-        const prepared = await ports.launch.prepare({ record, workControl })
+        const prepared = record.stage === "manifest_claimed"
+          ? await ports.launch.prepare({ record, workControl })
+          : managedPreparedRecovery(record)
         assertManagedPreparedAuthority(prepared.finalReceiptAuthority, record.request)
-        await this.options.ledger.bindManagedFxFinalReceiptAuthority(
-          ensureId,
-          prepared.finalReceiptAuthority,
-        )
 
         if (record.stage === "manifest_claimed") {
+          await this.options.ledger.bindManagedFxFinalReceiptAuthority(
+            ensureId,
+            prepared.finalReceiptAuthority,
+          )
+          await this.options.ledger.retainManagedPreparedConversation(
+            ensureId,
+            prepared.conversationId,
+          )
+        }
+
+        if (record.stage === "manifest_claimed") {
+          if (!("invocation" in prepared)) {
+            throw new Error(`managed launch ${ensureId} lost its initial invocation before Companion start`)
+          }
           const effect = await ports.companion.start({
             record,
             invocation: prepared.invocation,
@@ -698,6 +711,7 @@ export class LifecycleCoordinator {
           binding: workControl,
           text,
           request: current.request,
+          conversationId: prepared.conversationId,
         })
         const admission = await ports.admission.import({
           record: current,
@@ -1048,6 +1062,19 @@ function assertManagedPreparedAuthority(
     binding.state_root !== request.source.launch_request.state_root
   ) {
     throw new Error("Fx launch provider changed managed launch authority")
+  }
+}
+
+function managedPreparedRecovery(record: ManagedLaunchRecord): {
+  conversationId: string
+  finalReceiptAuthority: FxFinalReceiptAuthorityBinding
+} {
+  if (record.prepared_conversation_id === null || record.fx_final.binding === null) {
+    throw new Error(`managed launch ${record.request.ensure_id} lacks its retained pre-Companion correlation`)
+  }
+  return {
+    conversationId: record.prepared_conversation_id,
+    finalReceiptAuthority: record.fx_final.binding,
   }
 }
 

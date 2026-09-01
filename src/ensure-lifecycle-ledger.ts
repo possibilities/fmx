@@ -172,6 +172,8 @@ export type ManagedLaunchRecord = {
   request: ManagedLaunchRequest
   stage: ManagedLaunchLedgerStage
   effects: ManagedLaunchEffects
+  /** Provider-reserved Conversation, persisted before the Companion can start. */
+  prepared_conversation_id: string | null
   attempt: number
   outcome_history: Array<{
     receipt: ManagedLaunchOutcome
@@ -349,6 +351,7 @@ const managedPrivateRecordSchema = z.strictObject({
     companion: companionEffectSchema,
     fx: fxEffectSchema,
   }),
+  prepared_conversation_id: z.string().nullable(),
   attempt: z.number().int().positive().max(4096),
   outcome_history: z.array(z.strictObject({
     receipt: managedLaunchOutcomeSchema,
@@ -491,6 +494,7 @@ export class EnsureLifecycleLedger {
         request,
         stage: "claimed",
         effects: managedEffectsForClaim(request),
+        prepared_conversation_id: null,
         attempt: 1,
         outcome_history: [],
         outcome: { receipt: null, acknowledgement: null },
@@ -779,6 +783,42 @@ export class EnsureLifecycleLedger {
       const next = copyManagedRecord(record)
       next.revision++
       next.fx_final.binding = binding
+      validateManagedRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeLedgerRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyManagedRecord(next)
+    }))
+  }
+
+  /** Persist Fx's exact reserved Conversation before any Companion effect. */
+  retainManagedPreparedConversation(
+    ensureId: string,
+    conversationId: string,
+  ): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      if (!isAgentWorkplaceConversationId(conversationId)) {
+        throw ledgerError("invalid_transition", "managed prepared Conversation is invalid")
+      }
+      const index = await this.readIndex(guard)
+      const record = requireManagedRecord(index, ensureId)
+      if (record.prepared_conversation_id !== null) {
+        if (record.prepared_conversation_id !== conversationId) {
+          throw ledgerError("receipt_conflict", "managed launch already retains another prepared Conversation")
+        }
+        return copyManagedRecord(record)
+      }
+      if (record.stage !== "manifest_claimed") {
+        throw ledgerError(
+          "invalid_transition",
+          `managed launch ${ensureId} cannot prepare a Conversation after ${record.stage}`,
+        )
+      }
+      const expected = record.request.fx_conversation.resume_conversation_id
+      if (expected !== null && expected !== conversationId) {
+        throw ledgerError("receipt_conflict", "managed launch changed its exact resume Conversation")
+      }
+      const next = copyManagedRecord(record)
+      next.revision++
+      next.prepared_conversation_id = conversationId
       validateManagedRecord(next, recordPathFor(this.root, ensureId))
       await this.writeLedgerRecord(next, guard, requireRecordIdentity(index, ensureId))
       return copyManagedRecord(next)
@@ -2017,10 +2057,17 @@ function validateManagedRecord(record: ManagedLaunchRecord, path: string): void 
   if (stageIndex < 0 || !sameCanonical(managedEffectsAtStage(record, record.stage), record.effects)) {
     throw ledgerError("corrupt_record", `${path} effects do not match stage ${record.stage}`)
   }
+  if (
+    stageIndex >= MANAGED_STAGES.indexOf("companion_started") &&
+    record.prepared_conversation_id === null
+  ) {
+    throw ledgerError("corrupt_record", `${path} started a Companion without a retained Conversation`)
+  }
   validateManagedOutcomeTransaction(record, path)
   validateManagedFxState(record, path)
   const historicalWrites = record.outcome_history.length * 2
   const expectedRevision = 1 + stageIndex + historicalWrites + (record.attempt - 1) +
+    (record.prepared_conversation_id === null ? 0 : 1) +
     (record.outcome.receipt === null ? 0 : 1) +
     (record.outcome.acknowledgement === null ? 0 : 1) +
     (record.fx_admission_decision === null ? 0 : 1) +
@@ -2766,6 +2813,7 @@ function decodeManagedRecord(
     request,
     stage: input.stage,
     effects: structuredClone(input.effects),
+    prepared_conversation_id: input.prepared_conversation_id,
     attempt: input.attempt,
     outcome_history: input.outcome_history.map((transaction) => ({
       receipt: parseManagedLaunchOutcome(transaction.receipt),

@@ -606,10 +606,9 @@ export class LifecycleRuntime {
           ),
         },
         workControl: {
-          admitInitial: ({ binding, text, request }) => this.managedPort(
+          admitInitial: ({ binding, text, conversationId }) => this.managedPort(
             "fx_admission",
             async () => {
-              const conversationId = this.preparedConversation(request.ensure_id)
               try {
                 const admission = await this.workControl.request(
                   binding,
@@ -829,7 +828,7 @@ export class LifecycleRuntime {
     return {
       kind: "admitted",
       decision: decision as AdmittedFxAdmissionDecision,
-      conversationId: delivered?.conversationId ?? this.preparedConversation(record.request.ensure_id),
+      conversationId: delivered?.conversationId ?? this.preparedManagedConversation(record),
     }
   }
 
@@ -1359,6 +1358,10 @@ export class LifecycleRuntime {
     const value = this.preparedConversations.get(ensureId)
     if (value === undefined) throw new Error(`ensure ${ensureId} has no prepared Fx Conversation`)
     return value
+  }
+
+  private preparedManagedConversation(record: ManagedLaunchRecord): string {
+    return record.prepared_conversation_id ?? this.preparedConversation(record.request.ensure_id)
   }
 
   private adeBinding(agentId: string): FxAdeBinding | null {
