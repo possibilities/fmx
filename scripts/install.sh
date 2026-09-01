@@ -56,7 +56,7 @@ done
 bun install --cwd "$root_dir" --frozen-lockfile \
   || fail 'frozen dependency installation failed'
 (cd "$root_dir" && bun link) || fail 'bun link failed'
-bun_bin="$(bun pm bin -g)"
+bun_bin="${BUN_INSTALL:-$HOME/.bun}/bin"
 for linked_command in fmx fmx-mcp; do
   [[ -x "$bun_bin/$linked_command" ]] \
     || fail "bun link did not install an executable $bun_bin/$linked_command"
