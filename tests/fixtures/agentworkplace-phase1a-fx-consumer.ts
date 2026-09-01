@@ -1075,7 +1075,10 @@ async function runStructuredScenario(fxPath: string, root: string): Promise<Scen
   }
 }
 
-async function verifyInstalledFxSource(path: string): Promise<VerifiedFxFile> {
+async function verifyInstalledFxSource(
+  path: string,
+  expectedIdentity: Phase1aFxIdentity = PHASE1A_EXPECTED_FX_IDENTITY,
+): Promise<VerifiedFxFile> {
   if (!isAbsolute(path)) throw new Error("--fx must be absolute")
   const physical = await realpath(path)
   if (physical !== path) throw new Error("--fx must already be canonical")
@@ -1085,9 +1088,9 @@ async function verifyInstalledFxSource(path: string): Promise<VerifiedFxFile> {
     mode: "0755",
     sha256: `sha256:${sha256(source.bytes)}`,
   }, {
-    bytes: PHASE1A_FX_BYTES,
-    mode: PHASE1A_EXPECTED_FX_IDENTITY.mode,
-    sha256: PHASE1A_EXPECTED_FX_IDENTITY.sha256,
+    bytes: expectedIdentity.bytes,
+    mode: expectedIdentity.mode,
+    sha256: expectedIdentity.sha256,
   }, "installed Fx source bytes")
   return { ...source, path }
 }
@@ -1116,10 +1119,11 @@ async function createExecutableFxSnapshot(root: string, source: VerifiedFxFile):
 async function identifyFxSnapshot(
   snapshot: VerifiedFxFile,
   sourcePath: string,
+  expectedIdentity: Phase1aFxIdentity = PHASE1A_EXPECTED_FX_IDENTITY,
 ): Promise<Phase1aFxIdentity & { path: string }> {
   if (
-    snapshot.facts.size !== PHASE1A_FX_BYTES ||
-    sha256(snapshot.bytes) !== PHASE1A_FX_SHA256
+    snapshot.facts.size !== expectedIdentity.bytes ||
+    `sha256:${sha256(snapshot.bytes)}` !== expectedIdentity.sha256
   ) {
     throw new Error("private Fx execution snapshot identity changed before execution")
   }
@@ -1130,19 +1134,19 @@ async function identifyFxSnapshot(
   }
   const actual: Phase1aFxIdentity & { path: string } = {
     bytes: snapshot.facts.size,
-    commit: PHASE1A_FX_COMMIT,
-    fxnk: fxnk.stdout.trim() === `fxnk ${PHASE1A_FXNK_VERSION} (fx ${PHASE1A_FX_VERSION})`
-      ? PHASE1A_FXNK_VERSION
+    commit: expectedIdentity.commit,
+    fxnk: fxnk.stdout.trim() === `fxnk ${expectedIdentity.fxnk} (fx ${expectedIdentity.version})`
+      ? expectedIdentity.fxnk
       : fxnk.stdout.trim(),
     mode: "0755",
     path: sourcePath,
     sha256: `sha256:${sha256(snapshot.bytes)}`,
-    tree: PHASE1A_FX_TREE,
+    tree: expectedIdentity.tree,
     version: version.stdout.trim(),
   }
   expectEqual(
     { ...actual, path: undefined },
-    { ...PHASE1A_EXPECTED_FX_IDENTITY, path: undefined },
+    { ...expectedIdentity, path: undefined },
     "private Fx execution snapshot identity",
   )
   return actual
@@ -1151,16 +1155,21 @@ async function identifyFxSnapshot(
 async function revalidateFxExecution(
   source: VerifiedFxFile,
   snapshot: VerifiedFxFile,
-  expectedIdentity?: Phase1aFxIdentity & { path: string },
+  expectedIdentity: Phase1aFxIdentity,
+  identifiedIdentity?: Phase1aFxIdentity & { path: string },
 ): Promise<void> {
   const beforeProbe = await readStableRegularFile(snapshot.path, 0o755)
   expectEqual(beforeProbe.facts, snapshot.facts, "private Fx snapshot path stability before final probes")
   if (!bytesEqual(beforeProbe.bytes, snapshot.bytes) || !bytesEqual(beforeProbe.bytes, source.bytes)) {
     throw new Error("private Fx snapshot bytes changed during scenario execution")
   }
-  const finalIdentity = await identifyFxSnapshot({ ...beforeProbe, path: snapshot.path }, source.path)
-  if (expectedIdentity !== undefined) {
-    expectEqual(finalIdentity, expectedIdentity, "private Fx snapshot final identity")
+  const finalIdentity = await identifyFxSnapshot(
+    { ...beforeProbe, path: snapshot.path },
+    source.path,
+    expectedIdentity,
+  )
+  if (identifiedIdentity !== undefined) {
+    expectEqual(finalIdentity, identifiedIdentity, "private Fx snapshot final identity")
   }
   const afterProbe = await readStableRegularFile(snapshot.path, 0o755)
   expectEqual(afterProbe.facts, snapshot.facts, "private Fx snapshot path stability after final probes")
@@ -1425,11 +1434,13 @@ function parseArguments(argv: readonly string[]): {
 export async function runPhase1aConsumerFixture(input: {
   readonly contracts?: string
   readonly evidence: string
+  readonly expectedFxIdentity?: Phase1aFxIdentity
   readonly fx: string
   readonly ownerGateReceipt?: string
 }): Promise<Phase1aConsumerEvidence> {
   const evidenceRoot = await validateEvidenceDirectory(input.evidence, true)
-  const fxSource = await verifyInstalledFxSource(input.fx)
+  const expectedFxIdentity = input.expectedFxIdentity ?? PHASE1A_EXPECTED_FX_IDENTITY
+  const fxSource = await verifyInstalledFxSource(input.fx, expectedFxIdentity)
   const contracts = input.contracts ?? join(REPOSITORY_ROOT, "contracts", "agentworkplace", "v1")
   const ownerGateReceipt = input.ownerGateReceipt ?? join(
     process.env.HOME ?? "",
@@ -1451,7 +1462,7 @@ export async function runPhase1aConsumerFixture(input: {
   let snapshot: VerifiedFxFile | undefined
   try {
     snapshot = await createExecutableFxSnapshot(scratch, fxSource)
-    fx = await identifyFxSnapshot(snapshot, fxSource.path)
+    fx = await identifyFxSnapshot(snapshot, fxSource.path, expectedFxIdentity)
     scenarioEvents = [
       await runNamingScenario(snapshot.path, scratch),
       await runAdmissionScenario(snapshot.path, scratch),
@@ -1462,7 +1473,7 @@ export async function runPhase1aConsumerFixture(input: {
   }
   try {
     if (snapshot === undefined) await revalidateInstalledFxSource(fxSource)
-    else await revalidateFxExecution(fxSource, snapshot, fx)
+    else await revalidateFxExecution(fxSource, snapshot, expectedFxIdentity, fx)
   } catch (error) {
     failures.push(error)
   }

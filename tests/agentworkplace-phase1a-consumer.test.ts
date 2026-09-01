@@ -6,17 +6,24 @@ import {
   PHASE1A_CONSUMER_EVIDENCE_PATHS,
   PHASE1A_CONSUMER_EXECUTION_SCHEMA_ID,
   PHASE1A_CONSUMER_SCENARIO_IDS,
-  PHASE1A_EXPECTED_FX_IDENTITY,
-  PHASE1A_FX_COMMIT,
-  PHASE1A_FX_SHA256,
   PHASE1A_LAUNCH_FIXTURE_SHA256,
   PHASE1A_OWNER_CANARIES,
+  type Phase1aFxIdentity,
   runPhase1aConsumerFixture,
   verifyPhase1aConsumerEvidence,
 } from "./fixtures/agentworkplace-phase1a-fx-consumer.ts"
 
 const roots: string[] = []
 const INSTALLED_FX = join(process.env.HOME ?? "", ".local", "bin", "fmx-fx")
+const EXPECTED_INSTALLED_FX: Phase1aFxIdentity = {
+  bytes: 11_097_952,
+  commit: "561a74e442b4b551b815a9f45230c486fe0e5f38",
+  fxnk: "0.5.0",
+  mode: "0755",
+  sha256: "sha256:57dfa1cfcdf2f45cca038b7c4c48138fe0a4a746f6489c84ccfebe2d59357b10",
+  tree: "107d63b5a57470097f701cb9c8ea9ef1f5bd86c7",
+  version: "0.0.7",
+}
 
 setDefaultTimeout(120_000)
 
@@ -27,7 +34,11 @@ afterEach(async () => {
 describe("AgentWorkplace Phase 1A Fx consumer fixture", () => {
   test("executes the three fresh-binary scenarios and emits one strict v1 receipt", async () => {
     const evidence = await privateEvidenceDirectory()
-    const result = await runPhase1aConsumerFixture({ evidence, fx: INSTALLED_FX })
+    const result = await runPhase1aConsumerFixture({
+      evidence,
+      expectedFxIdentity: EXPECTED_INSTALLED_FX,
+      fx: INSTALLED_FX,
+    })
     expect(result.receipt).toMatchObject({
       accepted: true,
       schema_id: PHASE1A_CONSUMER_EXECUTION_SCHEMA_ID,
@@ -36,15 +47,15 @@ describe("AgentWorkplace Phase 1A Fx consumer fixture", () => {
         identity_probes: "exclusive_private_snapshot",
         installed_source_executed: false,
         scenarios: "exclusive_private_snapshot",
-        snapshot_bytes: 11_065_088,
+        snapshot_bytes: EXPECTED_INSTALLED_FX.bytes,
         snapshot_retained: false,
         snapshot_revalidated_after_execution: true,
-        snapshot_sha256: `sha256:${PHASE1A_FX_SHA256}`,
+        snapshot_sha256: EXPECTED_INSTALLED_FX.sha256,
         source_revalidated_after_execution: true,
       },
       fx: {
-        commit: PHASE1A_FX_COMMIT,
-        sha256: `sha256:${PHASE1A_FX_SHA256}`,
+        commit: EXPECTED_INSTALLED_FX.commit,
+        sha256: EXPECTED_INSTALLED_FX.sha256,
       },
       contracts: {
         launch_admission_final: {
@@ -64,7 +75,7 @@ describe("AgentWorkplace Phase 1A Fx consumer fixture", () => {
     expect((await readdir(evidence)).length).toBe(PHASE1A_CONSUMER_EVIDENCE_PATHS.length)
 
     await writeFile(join(evidence, "unexpected.txt"), "unexpected", { mode: 0o600 })
-    await expect(verifyPhase1aConsumerEvidence(evidence, PHASE1A_EXPECTED_FX_IDENTITY))
+    await expect(verifyPhase1aConsumerEvidence(evidence, EXPECTED_INSTALLED_FX))
       .rejects.toThrow("consumer evidence inventory changed")
     await rm(join(evidence, "unexpected.txt"))
 
@@ -75,14 +86,14 @@ describe("AgentWorkplace Phase 1A Fx consumer fixture", () => {
     execution.scenarios = "direct_installed_source"
     await writeFile(receiptPath, `${JSON.stringify(overclaim, null, 2)}\n`, { mode: 0o600 })
     await chmod(receiptPath, 0o600)
-    await expect(verifyPhase1aConsumerEvidence(evidence, PHASE1A_EXPECTED_FX_IDENTITY))
+    await expect(verifyPhase1aConsumerEvidence(evidence, EXPECTED_INSTALLED_FX))
       .rejects.toThrow("consumer execution evidence changed")
 
     const receipt = JSON.parse(originalReceipt) as Record<string, unknown>
     receipt.schema_version = 2
     await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 })
     await chmod(receiptPath, 0o600)
-    await expect(verifyPhase1aConsumerEvidence(evidence, PHASE1A_EXPECTED_FX_IDENTITY))
+    await expect(verifyPhase1aConsumerEvidence(evidence, EXPECTED_INSTALLED_FX))
       .rejects.toThrow()
   })
 })
