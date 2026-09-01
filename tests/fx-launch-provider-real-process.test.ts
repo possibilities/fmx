@@ -27,9 +27,12 @@ import {
 import {
   fxWorkControlSocketPath,
   FxWorkControlClient,
+  FxWorkControlError,
   mintFxWorkControlBinding,
   removeFxWorkControlResidue,
   type FxWorkControlBinding,
+  type FxWorkControlRequester,
+  type FxWorkControlResult,
 } from "../src/fx-work-control.ts"
 import {
   deriveFrozenLaunchDigest,
@@ -62,12 +65,14 @@ const FX_VERSION = "0.0.7"
 const FX_BUILD_REVISION = FX_SUPPLIER_COMMIT.slice(0, 12)
 const FX_FILE_DESCRIPTION = "Mach-O 64-bit executable arm64"
 
-const EXCLUDED_FAILURE_ROOT =
-  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-maOw2l"
+const EXCLUDED_FAILURE_ROOTS = [
+  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-maOw2l",
+  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0001",
+] as const
 const EVIDENCE_ROOT =
-  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0001"
+  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0002"
 const WORKSPACE = join(EVIDENCE_ROOT, "workspace")
-const SETTINGS_SHA256 = "d0b72bd5393dd74904cb6c3549a99f58751de6549164e48cfa48ab9de488b54e"
+const SETTINGS_SHA256 = "5b3df30e759e05c1ce243c8a2bc59a5384ebf5f8b7bbc3ae677f83d23e57d055"
 const SETTINGS_BYTES = `${JSON.stringify({
   permission_mode: "yolo",
   workspaces: { [WORKSPACE]: { permission_mode: "yolo" } },
@@ -88,9 +93,46 @@ const INITIAL_WORK_SHA256 = "98773e1d250c106997808a31e378d0896fa18e160ac50a30b77
 const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const TEST_PATH = "tests/fx-launch-provider-real-process.test.ts"
 const WAIT_MS = 15_000
+const WORK_CONTROL_RETRY_MS = 25
 const MAX_TERMINAL_BYTES = 16 * 1024 * 1024
 
 type WorkControlReadback = Pick<ManifestEntry, "agentId" | "displayId" | "workControl">
+
+type WorkControlSequenceTrace = {
+  snapshotAttemptCount: number
+  snapshotReady: boolean
+  socketInspected: boolean
+  queueRequestCount: number
+  providerCorrelated: boolean
+  terminalBoundarySet: boolean
+  permissionsSent: boolean
+}
+
+type WorkControlSequenceOptions<SocketEvidence, ProviderEvidence> = {
+  requester: FxWorkControlRequester
+  binding: FxWorkControlBinding
+  initialWorkText: string
+  deadlineMs: number
+  trace: WorkControlSequenceTrace
+  inspectSocket: () => Promise<SocketEvidence>
+  correlateProviderAdmission: (turnId: string) => Promise<ProviderEvidence>
+  markTerminalBoundary: () => number
+  writeTerminal: (input: string) => void
+  now?: () => number
+  sleep?: (milliseconds: number) => Promise<void>
+}
+
+function emptyWorkControlSequenceTrace(): WorkControlSequenceTrace {
+  return {
+    snapshotAttemptCount: 0,
+    snapshotReady: false,
+    socketInspected: false,
+    queueRequestCount: 0,
+    providerCorrelated: false,
+    terminalBoundarySet: false,
+    permissionsSent: false,
+  }
+}
 
 function requirePersistedWorkControlBinding(
   manifestPath: string | null,
@@ -141,16 +183,133 @@ function composePersistedProofEnvironment(
   )
 }
 
+async function runWorkControlPermissionSequence<SocketEvidence, ProviderEvidence>(
+  options: WorkControlSequenceOptions<SocketEvidence, ProviderEvidence>,
+): Promise<{
+  readiness: FxWorkControlResult
+  socket: SocketEvidence
+  admission: FxWorkControlResult & { turn_id: string; disposition: "queued" | "steering" }
+  provider: ProviderEvidence
+  permissionBoundary: number
+}> {
+  const now = options.now ?? Date.now
+  const sleep = options.sleep ?? ((milliseconds: number) => Bun.sleep(milliseconds))
+  const deadline = now() + options.deadlineMs
+  let readiness: FxWorkControlResult
+
+  for (;;) {
+    if (deadline - now() <= 0) {
+      throw new FxWorkControlError(
+        "timeout",
+        `Fx Work-control readiness remained unavailable after ${options.trace.snapshotAttemptCount} attempts`,
+      )
+    }
+    options.trace.snapshotAttemptCount++
+    try {
+      readiness = await requestSnapshotBeforeDeadline(
+        options.requester,
+        options.binding,
+        deadline,
+        now,
+      )
+      options.trace.snapshotReady = true
+      break
+    } catch (error) {
+      if (!(error instanceof FxWorkControlError) || error.code !== "unavailable") throw error
+      const remaining = deadline - now()
+      if (remaining <= 0) {
+        throw new FxWorkControlError(
+          "timeout",
+          `Fx Work-control readiness remained unavailable after ${options.trace.snapshotAttemptCount} attempts`,
+        )
+      }
+      await sleep(Math.min(WORK_CONTROL_RETRY_MS, remaining))
+    }
+  }
+
+  const socket = await options.inspectSocket()
+  options.trace.socketInspected = true
+  options.trace.queueRequestCount++
+  if (options.trace.queueRequestCount !== 1) {
+    throw new Error("proof attempted more than one Fx Work-control queue request")
+  }
+  const queued = await options.requester.request(
+    options.binding,
+    "work.queue",
+    { text: options.initialWorkText },
+    new AbortController().signal,
+  )
+  if (queued.turn_id === undefined || queued.disposition === undefined) {
+    throw new Error("Fx Work-control queue returned no authoritative admission identity")
+  }
+  const admission = {
+    ...queued,
+    turn_id: queued.turn_id,
+    disposition: queued.disposition,
+  }
+  if (!/^[1-9]\d*$/u.test(admission.turn_id)) {
+    throw new Error("Fx Work-control queue returned an invalid authoritative Turn identity")
+  }
+  if (admission.disposition !== "queued" && admission.disposition !== "steering") {
+    throw new Error("Fx Work-control queue returned an invalid admission disposition")
+  }
+  const observedTurns = [
+    ...(admission.snapshot.active_turn_id === null
+      ? []
+      : [admission.snapshot.active_turn_id]),
+    ...admission.snapshot.queue.map(({ turn_id }) => turn_id),
+  ]
+  if (!observedTurns.includes(admission.turn_id)) {
+    throw new Error("Fx Work-control queue snapshot omitted the authoritative Turn identity")
+  }
+
+  const provider = await options.correlateProviderAdmission(admission.turn_id)
+  options.trace.providerCorrelated = true
+  const permissionBoundary = options.markTerminalBoundary()
+  options.trace.terminalBoundarySet = true
+  options.writeTerminal("/permissions\r")
+  options.trace.permissionsSent = true
+  return { readiness, socket, admission, provider, permissionBoundary }
+}
+
+async function requestSnapshotBeforeDeadline(
+  requester: FxWorkControlRequester,
+  binding: FxWorkControlBinding,
+  deadline: number,
+  now: () => number,
+): Promise<FxWorkControlResult> {
+  const remaining = deadline - now()
+  if (remaining <= 0) {
+    throw new FxWorkControlError("timeout", "Fx Work-control readiness deadline expired")
+  }
+  const abort = new AbortController()
+  let deadlineExpired = false
+  const timer = setTimeout(() => {
+    deadlineExpired = true
+    abort.abort()
+  }, remaining)
+  try {
+    return await requester.request(binding, "work.snapshot", {}, abort.signal)
+  } catch (error) {
+    if (deadlineExpired) {
+      throw new FxWorkControlError("timeout", "Fx Work-control readiness deadline expired")
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 test("pins the exact Phase 2 supplier and yolo fixture bytes", () => {
   expect(Buffer.byteLength(SETTINGS_BYTES)).toBe(251)
   expect(sha256(SETTINGS_BYTES)).toBe(SETTINGS_SHA256)
   expect(FX_BINARY_PATH).toContain(`/${FX_SUPPLIER_COMMIT}/${FX_BINARY_SHA256}/fx`)
   expect(FX_SUPPLIER_PARENTS[2]).toBe(FX_HOSTED_CARRY)
-  expect(EVIDENCE_ROOT).not.toBe(EXCLUDED_FAILURE_ROOT)
+  for (const excluded of EXCLUDED_FAILURE_ROOTS) expect(EVIDENCE_ROOT).not.toBe(excluded)
   expect(Buffer.byteLength(INITIAL_WORK_BYTES)).toBe(42)
   expect(sha256(INITIAL_WORK_BYTES)).toBe(INITIAL_WORK_SHA256)
   expect(WORKSPACE).toBe(
-    "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0001/workspace",
+    "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0002/workspace",
   )
 })
 
@@ -267,6 +426,201 @@ test("fails closed when the one retained terminal capture exceeds its byte bound
   expect(() => capture.bytes()).toThrow("terminal capture exceeded 4 bytes")
 })
 
+test("orders authenticated Work-control readiness before one queue and terminal command", async () => {
+  const events: string[] = []
+  let snapshotRequests = 0
+  let queueRequests = 0
+  let clock = 0
+  const emptySnapshot = { active_turn_id: null, queue_paused: false, queue: [] }
+  const requester = {
+    async request(
+      binding: FxWorkControlBinding,
+      method: Parameters<FxWorkControlRequester["request"]>[1],
+      params: Record<string, unknown>,
+      signal: AbortSignal,
+    ): Promise<FxWorkControlResult> {
+      expect(binding).toEqual({
+        socketPath: WORK_CONTROL_SOCKET_PATH,
+        instanceId: MANIFEST_AGENT_ID,
+        token: "ab".repeat(32),
+      })
+      expect(signal.aborted).toBe(false)
+      if (method === "work.snapshot") {
+        snapshotRequests++
+        events.push(`snapshot:${snapshotRequests}`)
+        expect(params).toEqual({})
+        if (snapshotRequests < 3) {
+          throw new FxWorkControlError("unavailable", "listener is not ready")
+        }
+        return { snapshot: emptySnapshot }
+      }
+      expect(method).toBe("work.queue")
+      queueRequests++
+      events.push("queue")
+      expect(params).toEqual({ text: INITIAL_WORK_TEXT })
+      return {
+        turn_id: "7",
+        disposition: "queued",
+        snapshot: {
+          active_turn_id: null,
+          queue_paused: false,
+          queue: [{
+            turn_id: "7",
+            kind: "queued",
+            text: INITIAL_WORK_TEXT,
+            has_images: false,
+            has_skill_bindings: false,
+            has_review_draft: false,
+          }],
+        },
+      }
+    },
+  } satisfies FxWorkControlRequester
+  const trace = emptyWorkControlSequenceTrace()
+  const result = await runWorkControlPermissionSequence({
+    requester,
+    binding: {
+      socketPath: WORK_CONTROL_SOCKET_PATH,
+      instanceId: MANIFEST_AGENT_ID,
+      token: "ab".repeat(32),
+    },
+    initialWorkText: INITIAL_WORK_TEXT,
+    deadlineMs: 100,
+    trace,
+    inspectSocket: async () => {
+      events.push("socket")
+      return { path: WORK_CONTROL_SOCKET_PATH, mode: "0600" }
+    },
+    correlateProviderAdmission: async (turnId) => {
+      events.push(`provider:${turnId}`)
+      return { kind: "admitted" as const, turnId }
+    },
+    markTerminalBoundary: () => {
+      events.push("boundary")
+      return 123
+    },
+    writeTerminal: (input) => {
+      expect(input).toBe("/permissions\r")
+      events.push("permissions")
+    },
+    now: () => clock,
+    sleep: async (milliseconds) => {
+      clock += milliseconds
+    },
+  })
+
+  expect(events).toEqual([
+    "snapshot:1",
+    "snapshot:2",
+    "snapshot:3",
+    "socket",
+    "queue",
+    "provider:7",
+    "boundary",
+    "permissions",
+  ])
+  expect(snapshotRequests).toBe(3)
+  expect(queueRequests).toBe(1)
+  expect(trace).toEqual({
+    snapshotAttemptCount: 3,
+    snapshotReady: true,
+    socketInspected: true,
+    queueRequestCount: 1,
+    providerCorrelated: true,
+    terminalBoundarySet: true,
+    permissionsSent: true,
+  })
+  expect(result).toMatchObject({
+    readiness: { snapshot: emptySnapshot },
+    socket: { path: WORK_CONTROL_SOCKET_PATH, mode: "0600" },
+    admission: { turn_id: "7", disposition: "queued" },
+    provider: { kind: "admitted", turnId: "7" },
+    permissionBoundary: 123,
+  })
+
+  const harness = await readFile(join(REPOSITORY_ROOT, TEST_PATH), "utf8")
+  const obsoleteGlyph = String.fromCodePoint(0x276f)
+  expect(harness).not.toContain(`.text().includes("${obsoleteGlyph}")`)
+  expect(harness).not.toContain(["Fx", " composer"].join(""))
+})
+
+test("retries only unavailable readiness and fails closed before queue on authority errors", async () => {
+  for (const code of ["timeout", "unauthorized", "instance_mismatch", "invalid_response"]) {
+    const failure = new FxWorkControlError(code, `refused with ${code}`)
+    let requests = 0
+    const trace = emptyWorkControlSequenceTrace()
+    let caught: unknown
+    try {
+      await runWorkControlPermissionSequence({
+        requester: {
+          async request() {
+            requests++
+            throw failure
+          },
+        },
+        binding: {
+          socketPath: WORK_CONTROL_SOCKET_PATH,
+          instanceId: MANIFEST_AGENT_ID,
+          token: "ab".repeat(32),
+        },
+        initialWorkText: INITIAL_WORK_TEXT,
+        deadlineMs: 100,
+        trace,
+        inspectSocket: async () => { throw new Error("socket inspection must not run") },
+        correlateProviderAdmission: async () => { throw new Error("provider must not run") },
+        markTerminalBoundary: () => { throw new Error("terminal boundary must not be set") },
+        writeTerminal: () => { throw new Error("terminal command must not be sent") },
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBe(failure)
+    expect(requests).toBe(1)
+    expect(trace).toEqual({
+      snapshotAttemptCount: 1,
+      snapshotReady: false,
+      socketInspected: false,
+      queueRequestCount: 0,
+      providerCorrelated: false,
+      terminalBoundarySet: false,
+      permissionsSent: false,
+    })
+  }
+
+  let clock = 0
+  let unavailableRequests = 0
+  const trace = emptyWorkControlSequenceTrace()
+  const unavailable = runWorkControlPermissionSequence({
+    requester: {
+      async request() {
+        unavailableRequests++
+        throw new FxWorkControlError("unavailable", "listener is not ready")
+      },
+    },
+    binding: {
+      socketPath: WORK_CONTROL_SOCKET_PATH,
+      instanceId: MANIFEST_AGENT_ID,
+      token: "ab".repeat(32),
+    },
+    initialWorkText: INITIAL_WORK_TEXT,
+    deadlineMs: 50,
+    trace,
+    inspectSocket: async () => { throw new Error("socket inspection must not run") },
+    correlateProviderAdmission: async () => { throw new Error("provider must not run") },
+    markTerminalBoundary: () => { throw new Error("terminal boundary must not be set") },
+    writeTerminal: () => { throw new Error("terminal command must not be sent") },
+    now: () => clock,
+    sleep: async (milliseconds) => {
+      clock += milliseconds
+    },
+  })
+  const unavailableFailure = await unavailable.catch((error) => error)
+  expect(unavailableFailure).toMatchObject({ code: "timeout" })
+  expect(unavailableRequests).toBe(2)
+  expect(trace.snapshotAttemptCount).toBe(2)
+  expect(trace.queueRequestCount).toBe(0)
+})
+
 test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
   requireExactEnvironment("FMX_FX_PATH", FX_BINARY_PATH)
   requireExactEnvironment("FMX_PHASE2_PERMISSION_EVIDENCE_ROOT", EVIDENCE_ROOT)
@@ -291,6 +645,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
   let child: ReturnType<typeof Bun.spawn> | null = null
   let terminal: Bun.Terminal | null = null
   let workControl: FxWorkControlBinding | null = null
+  const workControlSequence = emptyWorkControlSequenceTrace()
   const terminalCapture = new BoundedTerminalCapture(MAX_TERMINAL_BYTES)
 
   try {
@@ -473,61 +828,71 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       terminal,
     })
     const processId = child.pid
-    await waitFor(
-      () => terminalCapture.screen(120, 40).text().includes("❯"),
-      "Fx composer",
-    )
-    await waitFor(() => pathExists(durableWorkControl.socketPath), "Fx Work-control endpoint")
-    const workControlFacts = await lstat(durableWorkControl.socketPath)
-    expect(workControlFacts.isSocket()).toBe(true)
-    expect(workControlFacts.isSymbolicLink()).toBe(false)
-    expect(workControlFacts.mode & 0o777).toBe(0o600)
-    const workAdmission = await new FxWorkControlClient().request(
-      durableWorkControl,
-      "work.queue",
-      { text: new TextDecoder("utf-8", { fatal: true }).decode(INITIAL_WORK_BYTES) },
-      new AbortController().signal,
-    )
+    const sequence = await runWorkControlPermissionSequence({
+      requester: new FxWorkControlClient(),
+      binding: durableWorkControl,
+      initialWorkText: new TextDecoder("utf-8", { fatal: true }).decode(INITIAL_WORK_BYTES),
+      deadlineMs: WAIT_MS,
+      trace: workControlSequence,
+      inspectSocket: async () => {
+        expect(durableWorkControl.socketPath).toBe(WORK_CONTROL_SOCKET_PATH)
+        const facts = await lstat(durableWorkControl.socketPath)
+        expect(facts.isSocket()).toBe(true)
+        expect(facts.isSymbolicLink()).toBe(false)
+        expect(facts.mode & 0o777).toBe(0o600)
+        return {
+          path: durableWorkControl.socketPath,
+          mode: "0600",
+          uid: facts.uid,
+        }
+      },
+      correlateProviderAdmission: async (turnId) => {
+        const authority = await provider.inspect({
+          stateRoot,
+          admissionKey: launchRequest.admission_key,
+          launchDigest: launchRequest.launch_digest,
+          launchId: launchRequest.launch_id,
+        })
+        expect(authority.decision?.decision.kind).toBe("admitted")
+        const providerTurnId = authority.decision?.decision.kind === "admitted"
+          ? authority.decision.decision.turn_id
+          : null
+        expect(providerTurnId).toBe(turnId)
+        return { authority, turnId: providerTurnId }
+      },
+      markTerminalBoundary: () => terminalCapture.markBoundary(),
+      writeTerminal: (input) => terminal!.write(input),
+    })
+    const workAdmission = sequence.admission
     const workControlTurnId = workAdmission.turn_id
     const workControlDisposition = workAdmission.disposition
-    if (workControlTurnId === undefined || workControlDisposition === undefined) {
-      throw new Error("Fx Work-control queue returned no authoritative admission identity")
-    }
     expect(workControlTurnId).toMatch(/^[1-9]\d*$/u)
     expect(["queued", "steering"]).toContain(workControlDisposition)
-    const observedTurns = [
-      ...(workAdmission.snapshot.active_turn_id === null
-        ? []
-        : [workAdmission.snapshot.active_turn_id]),
-      ...workAdmission.snapshot.queue.map(({ turn_id }) => turn_id),
-    ]
-    expect(observedTurns).toContain(workControlTurnId)
-    const providerAuthority = await provider.inspect({
-      stateRoot,
-      admissionKey: launchRequest.admission_key,
-      launchDigest: launchRequest.launch_digest,
-      launchId: launchRequest.launch_id,
-    })
-    expect(providerAuthority.decision?.decision.kind).toBe("admitted")
-    const providerTurnId = providerAuthority.decision?.decision.kind === "admitted"
-      ? providerAuthority.decision.decision.turn_id
-      : null
-    expect(providerTurnId).toBe(workControlTurnId)
+    const providerAuthority = sequence.provider.authority
+    const providerTurnId = sequence.provider.turnId
     await writeJson(join(EVIDENCE_ROOT, "work-control-admission.json"), {
       initial_work_utf8: INITIAL_WORK_TEXT,
       initial_work_bytes: INITIAL_WORK_BYTES.byteLength,
       initial_work_sha256: INITIAL_WORK_SHA256,
       socket_path: durableWorkControl.socketPath,
-      socket_mode: "0600",
+      socket_mode: sequence.socket.mode,
+      socket_uid: sequence.socket.uid,
       instance_id: durableWorkControl.instanceId,
       token_sha256: sha256(durableWorkControl.token),
+      readiness: {
+        method: "work.snapshot",
+        attempt_count: workControlSequence.snapshotAttemptCount,
+        bounded_deadline_ms: WAIT_MS,
+        transient_retry_code: "unavailable",
+        result: sequence.readiness,
+      },
       method: "work.queue",
+      queue_request_count: workControlSequence.queueRequestCount,
       result: workAdmission,
       provider_decision: providerAuthority.decision,
       authoritative_turn_id: providerTurnId,
     })
-    const permissionBoundary = terminalCapture.markBoundary()
-    terminal.write("/permissions\r")
+    const permissionBoundary = sequence.permissionBoundary
     const permissionScreen = await waitForStablePermissionScreen(
       terminalCapture,
       permissionBoundary,
@@ -574,8 +939,13 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       work_control_socket_path: durableWorkControl.socketPath,
       work_control_instance_id: durableWorkControl.instanceId,
       work_control_token_sha256: sha256(durableWorkControl.token),
+      work_control_snapshot_attempt_count: workControlSequence.snapshotAttemptCount,
+      work_control_snapshot_ready: workControlSequence.snapshotReady,
+      work_control_socket_inspected: workControlSequence.socketInspected,
+      work_control_queue_request_count: workControlSequence.queueRequestCount,
       work_control_turn_id: workControlTurnId,
       work_control_disposition: workControlDisposition,
+      work_control_provider_correlated: workControlSequence.providerCorrelated,
       work_control_endpoint_removed: !(await pathExists(durableWorkControl.socketPath)),
       pid: processId,
       exit_code: exitCode,
@@ -627,8 +997,15 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       work_control_socket_path: durableWorkControl.socketPath,
       work_control_socket_derived: durableWorkControl.socketPath ===
         fxWorkControlSocketPath(RUNTIME_SOCKET_PATH, MANIFEST_AGENT_ID),
+      work_control_snapshot_attempt_count: workControlSequence.snapshotAttemptCount,
+      work_control_snapshot_ready: workControlSequence.snapshotReady,
+      work_control_socket_inspected: workControlSequence.socketInspected,
+      work_control_queue_request_count: workControlSequence.queueRequestCount,
       work_control_turn_id: workControlTurnId,
       work_control_disposition: workControlDisposition,
+      work_control_provider_correlated: workControlSequence.providerCorrelated,
+      terminal_boundary_set_after_provider: workControlSequence.terminalBoundarySet,
+      permissions_sent_after_boundary: workControlSequence.permissionsSent,
       work_control_endpoint_removed: true,
       inherited_permission_mode: "yolo",
       explicit_permission_mode: "auto",
@@ -659,6 +1036,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       terminal_bytes: terminalBytes.byteLength,
       terminal_sha256: sha256(terminalBytes),
       terminal_overflowed: terminalCapture.overflowed,
+      work_control_sequence: workControlSequence,
       retried: false,
     })
     throw error
