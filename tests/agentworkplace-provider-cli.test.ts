@@ -289,6 +289,30 @@ async function inventory(root: string, at = ""): Promise<string[]> {
 }
 
 describe("AgentWorkplace provider generator CLI", () => {
+  test("uses the documented Bun link directory without global package metadata", async () => {
+    const fixture = await createFixture()
+    const output = join(fixture.root, "provider-output")
+    const isolatedHome = join(fixture.root, "home")
+    const isolatedBunInstall = join(fixture.root, "bun-install")
+    const globalPackage = join(isolatedBunInstall, "install/global/package.json")
+    await mkdir(output)
+    await mkdir(join(isolatedBunInstall, "bin"), { recursive: true })
+    expect(await Bun.file(globalPackage).exists()).toBe(false)
+
+    const result = await runGenerator(fixture, output, {
+      BUN_INSTALL: isolatedBunInstall,
+      HOME: isolatedHome,
+    })
+
+    expect(result.exitStatus).toBe(0)
+    expect(result.stderr).toBe("")
+    expect(summaryFrom(result.stdout)).toMatchObject({
+      accepted: true,
+      gate_exit_status: 0,
+    })
+    expect(await Bun.file(globalPackage).exists()).toBe(false)
+  })
+
   test("binds a real successful gate to the exact committed source and retained output", async () => {
     const fixture = await createFixture()
     const unreplacedHead = git(fixture.repository, ["rev-parse", "HEAD"])

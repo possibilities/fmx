@@ -1179,18 +1179,8 @@ async function publishStagedBundle(
 }
 
 function bunGlobalBin(): string {
-  const result = Bun.spawnSync({
-    cmd: ["bun", "pm", "bin", "-g"],
-    cwd: REPOSITORY_ROOT,
-    stderr: "pipe",
-    stdout: "pipe",
-  })
-  if (result.exitCode !== 0) {
-    throw new Error(
-      `could not inspect Bun's global link directory: ${new TextDecoder().decode(result.stderr).trim()}`,
-    )
-  }
-  return new TextDecoder().decode(result.stdout).trim()
+  const install = process.env.BUN_INSTALL || join(process.env.HOME ?? "", ".bun")
+  return join(install, "bin")
 }
 
 async function resolveSymlinkChainEvenIfDangling(path: string): Promise<string> {
