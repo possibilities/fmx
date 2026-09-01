@@ -21,6 +21,7 @@ import {
 import {
   LifecycleCoordinator,
   type AdmittedFxAdmissionDecision,
+  type CancelledFxAdmissionDecision,
   type LifecycleCoordinatorPorts,
 } from "../src/lifecycle-coordinator.ts"
 import {
@@ -378,6 +379,359 @@ describe("managed-launch durable transaction", () => {
     })
   })
 })
+
+describe("managed-launch bounded pending admission", () => {
+  // Fx's provider inspection is fallible in the ordinary course of polling:
+  // `admission.kind === "pending"` means "ask again shortly," not a failure.
+  // These tests pin the corrected behavior: a bounded internal Fx-admission
+  // pending observation redrives through the coordinator's existing
+  // pendingAdmissionAttempts/pendingAdmissionRetryDelayMs budget exactly as
+  // the ordinary (non-managed) ensure path does, never fabricating a durable
+  // managed outcome merely because Fx has not yet decided.
+
+  test("observes pending then admitted without a premature outcome, starting Companion exactly once", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-converge")
+    const observed: string[] = []
+    const published: ManagedLaunchOutcome[] = []
+    const ports = managedPorts(published, observed)
+    const managed = ports.managed!
+
+    let companionStarts = 0
+    const baseStart = managed.companion.start
+    managed.companion.start = async (input) => {
+      companionStarts++
+      return baseStart(input)
+    }
+
+    let admissionAttempts = 0
+    const baseImport = managed.admission.import
+    managed.admission.import = async (input) => {
+      admissionAttempts++
+      if (admissionAttempts === 1) {
+        observed.push("inspect-pending")
+        return { kind: "pending" }
+      }
+      return baseImport(input)
+    }
+
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: 0,
+    })
+
+    await coordinator.acceptManaged(request)
+    await waitFor(async () => (await ledger.getManaged(request.ensure_id))?.stage === "fx_started")
+    await coordinator.settled()
+
+    expect(admissionAttempts).toBe(2)
+    expect(companionStarts).toBe(1)
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({
+      status: "succeeded",
+      success: { conversation_id: request.fx_conversation.resume_conversation_id },
+    })
+    const record = await ledger.getManaged(request.ensure_id)
+    expect(record?.stage).toBe("fx_started")
+    expect(record?.effects.fx.status === "started" ? record.effects.fx.conversation_id : null)
+      .toBe(request.fx_conversation.resume_conversation_id)
+  })
+
+  test("resubmits the idempotent Work-control request on every pending redrive (no dedupe seam exists)", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-workcontrol")
+    const published: ManagedLaunchOutcome[] = []
+    const ports = managedPorts(published, [])
+    const managed = ports.managed!
+
+    const admitInitialCalls: string[] = []
+    const baseAdmitInitial = managed.workControl.admitInitial
+    managed.workControl.admitInitial = async (input) => {
+      admitInitialCalls.push(input.text)
+      return baseAdmitInitial(input)
+    }
+
+    let admissionAttempts = 0
+    const baseImport = managed.admission.import
+    managed.admission.import = async (input) => {
+      admissionAttempts++
+      if (admissionAttempts === 1) return { kind: "pending" }
+      return baseImport(input)
+    }
+
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: 0,
+    })
+
+    await coordinator.acceptManaged(request)
+    await waitFor(async () => (await ledger.getManaged(request.ensure_id))?.stage === "fx_started")
+    await coordinator.settled()
+
+    // Documented invariant: the coordinator has no seam that recognizes a
+    // still-pending redrive as "the same Work-control submission" and skips
+    // it. It resubmits the exact initial text once per attempt, relying on
+    // Fx's own admission path to be idempotent for the same launch identity.
+    expect(admitInitialCalls).toEqual(["managed hello", "managed hello"])
+    expect(admissionAttempts).toBe(2)
+  })
+
+  test("bounds pending redrive at pendingAdmissionAttempts, reporting exactly one error and no durable outcome", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-exhaust")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    const published: ManagedLaunchOutcome[] = []
+    const errors: unknown[] = []
+    let attempts = 0
+    const ports = managedPorts(published, [])
+    ports.managed!.admission.import = async () => {
+      attempts++
+      return { kind: "pending" }
+    }
+
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports: { ...ports, onError: (error) => errors.push(error) },
+      pendingAdmissionAttempts: 3,
+      pendingAdmissionRetryDelayMs: 0,
+    })
+
+    await coordinator.recover()
+    await waitFor(() => attempts === 3)
+    await coordinator.settled()
+
+    expect(attempts).toBe(3)
+    expect(errors).toHaveLength(1)
+    expect(String(errors[0])).toContain("bounded admission attempts")
+    expect(published).toHaveLength(0)
+    const record = await ledger.getManaged(request.ensure_id)
+    expect(record?.stage).toBe("companion_started")
+    expect(record?.fx_admission_decision).toBeNull()
+    expect(record?.outcome.receipt).toBeNull()
+    coordinator.close()
+  })
+
+  test("close cancels a deferred managed pending redrive and preserves the durable pending record", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-close")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    let attempts = 0
+    const ports = managedPorts([], [])
+    ports.managed!.admission.import = async () => {
+      attempts++
+      return { kind: "pending" }
+    }
+
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: 10_000,
+    })
+
+    await coordinator.recover()
+    // settled() drains active work only; the deferred timer is deliberately
+    // outside that promise, matching the ordinary ensure path's close()
+    // contract.
+    await coordinator.settled()
+    coordinator.close()
+
+    expect(attempts).toBe(1)
+    const record = await ledger.getManaged(request.ensure_id)
+    expect(record?.stage).toBe("companion_started")
+    expect(record?.fx_admission_decision).toBeNull()
+    expect(record?.outcome.receipt).toBeNull()
+  })
+
+  test("a new coordinator over the same ledger converges a durable pending record without another Companion start", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-restart")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    const firstPorts = managedPorts([], [])
+    firstPorts.managed!.admission.import = async () => ({ kind: "pending" })
+    const first = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports: firstPorts,
+      pendingAdmissionRetryDelayMs: 10_000,
+    })
+    await first.recover()
+    await first.settled()
+    first.close()
+    expect((await ledger.getManaged(request.ensure_id))?.stage).toBe("companion_started")
+    expect((await ledger.getManaged(request.ensure_id))?.attempt).toBe(1)
+
+    const published: ManagedLaunchOutcome[] = []
+    const observed: string[] = []
+    const secondPorts = managedPorts(published, observed)
+    let companionStarts = 0
+    const baseStart = secondPorts.managed!.companion.start
+    secondPorts.managed!.companion.start = async (input) => {
+      companionStarts++
+      return baseStart(input)
+    }
+    const second = new LifecycleCoordinator({ ledger, sources, ports: secondPorts })
+    await second.recover()
+    await second.settled()
+
+    expect(companionStarts).toBe(0)
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({ status: "succeeded", attempt: 1 })
+    const record = await ledger.getManaged(request.ensure_id)
+    expect(record?.stage).toBe("fx_started")
+    expect(record?.attempt).toBe(1)
+  })
+
+  test("a genuine thrown Work-control/provider failure at fx_admission still produces the existing retryable fx_admission_unavailable outcome", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("genuine-failure")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    const published: ManagedLaunchOutcome[] = []
+    const ports = managedPorts(published, [])
+    ports.managed!.workControl.admitInitial = async () => {
+      throw new Error("Fx Work-control is unavailable")
+    }
+    // This mirrors LifecycleRuntime's real classifyManagedFailure mapping for
+    // a genuine FxWorkControlError/FxLaunchProviderError observed at the
+    // fx_admission stage. Unlike a bounded "pending" observation (which now
+    // never reaches classify at all), a real thrown failure is unaffected by
+    // this correction and still becomes a durable retryable outcome.
+    ports.managed!.classify = () => ({
+      classification: "retryable",
+      stage: "fx_admission",
+      cause: "fx_admission_unavailable",
+      processCertainty: "started",
+      exactResumeProof: null,
+    })
+
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+    await coordinator.recover()
+    await coordinator.settled()
+
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({
+      status: "failed",
+      classification: "retryable",
+      stage: "fx_admission",
+      cause: "fx_admission_unavailable",
+      process_certainty: "started",
+    })
+    const record = await ledger.getManaged(request.ensure_id)
+    expect(record?.stage).toBe("companion_started")
+    expect(record?.outcome.receipt).toEqual(published[0])
+  })
+
+  test("admission.kind final/cancelled_before_start remain the pre-existing internal_failure branch, unaffected by the pending fix", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("cancelled-branch")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    const published: ManagedLaunchOutcome[] = []
+    const ports = managedPorts(published, [])
+    ports.managed!.admission.import = async () => ({
+      kind: "cancelled_before_start",
+      decision: managedCancelledDecisionFor(request),
+    })
+
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+    await coordinator.recover()
+    await coordinator.settled()
+
+    // This gap (admission.kind "final"/"cancelled_before_start" falling into
+    // the generic "uncertain"/"internal_failure" branch instead of a
+    // dedicated classification) predates this correction and is out of
+    // scope here; this test only proves the one-line pending fix left it
+    // exactly as it was.
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({
+      status: "failed",
+      classification: "uncertain",
+      stage: "fx_admission",
+      cause: "internal_failure",
+      process_certainty: "started",
+    })
+    const record = await ledger.getManaged(request.ensure_id)
+    expect(record?.stage).toBe("companion_started")
+    expect(record?.fx_admission_decision).toBeNull()
+  })
+})
+
+async function placeManagedAtCompanionStarted(
+  ledger: EnsureLifecycleLedger,
+  request: ManagedLaunchRequest,
+): Promise<void> {
+  await ledger.claimManaged(request)
+  await ledger.advanceManaged(request.ensure_id, {
+    kind: "directory_validated",
+    directory: request.workspace.directory,
+    repository: request.workspace.repository,
+    checkout_root: request.workspace.checkout_root,
+    head_commit: request.workspace.head_commit,
+  })
+  await ledger.advanceManaged(request.ensure_id, {
+    kind: "manifest_claimed",
+    agent_id: request.agent_id,
+  })
+  await ledger.bindManagedFxFinalReceiptAuthority(request.ensure_id, {
+    admission_key: request.source.admission_key,
+    state_root: request.source.launch_request.state_root,
+  })
+  await ledger.retainManagedPreparedConversation(
+    request.ensure_id,
+    request.fx_conversation.resume_conversation_id!,
+  )
+  await ledger.advanceManaged(request.ensure_id, {
+    kind: "companion_started",
+    session_name: `fmx-${request.agent_id}`,
+    pane_id: `p_${request.agent_id}`,
+  })
+}
+
+function managedCancelledDecisionFor(request: ManagedLaunchRequest): CancelledFxAdmissionDecision {
+  const decision = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "admission_decision",
+    receipt_id: `managed-cancelled-${request.ensure_id}`,
+    receipt_digest: "",
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    admission_key: request.source.admission_key,
+    decision: { kind: "cancelled_before_start", cancellation_request_id: "cancel-request" },
+  } as CancelledFxAdmissionDecision
+  return { ...decision, receipt_digest: deriveFxAdmissionDecisionDigest(decision) }
+}
+
+async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt++) {
+    if (await condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  throw new Error("timed out waiting for deterministic managed lifecycle condition")
+}
 
 function managedPorts(
   published: ManagedLaunchOutcome[],

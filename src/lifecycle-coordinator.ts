@@ -718,15 +718,13 @@ export class LifecycleCoordinator {
           delivered,
           expectedConversationId: prepared.conversationId,
         })
-        if (admission.kind === "pending") {
-          throw new ManagedCoordinatorFailure({
-            classification: "retryable",
-            stage: "fx_admission",
-            cause: "fx_admission_unavailable",
-            processCertainty: "started",
-            exactResumeProof: null,
-          })
-        }
+        // A nonterminal Fx provider observation, not a failure: bounded
+        // redrive belongs to the same pendingAdmissionAttempts/
+        // pendingAdmissionRetryDelayMs budget the ordinary (non-managed)
+        // ensure path uses, via pump()'s deferPendingRetry. Fabricating a
+        // durable managed outcome here would turn Fx's "not yet decided"
+        // into a false failure before the bounded budget is even spent.
+        if (admission.kind === "pending") return true
         if (admission.kind !== "admitted") {
           throw new ManagedCoordinatorFailure({
             classification: "uncertain",
