@@ -71,7 +71,10 @@ test("uses one private helper endpoint per operation and maps every happy-path r
         return successFor(request)
       }),
     })
-    const controls = ["--context-limit", "skill_chunk_bytes=4096", "--tool", "read"]
+    const controls = [
+      "--context-limit", "skill_chunk_bytes=4096", "--tool", "read",
+      "--permission-mode", "auto",
+    ]
     const digest = createHash("sha256").update(encodeLaunchControls(controls)).digest("hex")
     const launch = { ...launchRequest, remaining_launch_controls_digest: digest }
     expect((await client.prepare(launch)).receipt_id).toBe("receipt-a")
@@ -126,6 +129,8 @@ test("uses one private helper endpoint per operation and maps every happy-path r
     ])
     expect(new Set(observed.map((request) => request.instance_id)).size).toBe(observed.length)
     expect(observed.every((request) => request.schema_id === "fx.private-launch-provider")).toBe(true)
+    expect(observed.find((request) => request.operation === "build")?.launch_controls)
+      .toBe(encodeLaunchControls(controls))
     expect(observed.find((request) => request.operation === "resume_status")?.schema_version).toBe(2)
     expect(observed.filter((request) => request.operation !== "resume_status").every(
       (request) => request.schema_version === 1,
@@ -224,6 +229,48 @@ test("matches Fx's controls bounds and allowlist before starting a helper", () =
   expect(() => encodeLaunchControls(["--resume-last"])).toThrow(FxLaunchProviderError)
   expect(() => encodeLaunchControls(["--tool", "-read"])).toThrow(FxLaunchProviderError)
   expect(() => encodeLaunchControls(["--tool=read", "--no-default-skills"])).not.toThrow()
+  expect(encodeLaunchControls(["--tool=read", "--no-default-skills"])).toBe(
+    '{"remaining_global_args":["--tool=read","--no-default-skills"]}',
+  )
+})
+
+test("admits and digests one explicit auto permission mode without ambient inference", () => {
+  const previous = process.env.FX_PERMISSION_MODE
+  process.env.FX_PERMISSION_MODE = "yolo"
+  try {
+    expect(encodeLaunchControls([])).toBe('{"remaining_global_args":[]}')
+    for (const controls of [
+      ["--permission-mode", "auto"],
+      ["--permission-mode=auto"],
+    ]) {
+      const encoded = encodeLaunchControls(controls)
+      expect(JSON.parse(encoded)).toEqual({ remaining_global_args: controls })
+      expect(createHash("sha256").update(encoded).digest("hex")).toHaveLength(64)
+    }
+  } finally {
+    if (previous === undefined) delete process.env.FX_PERMISSION_MODE
+    else process.env.FX_PERMISSION_MODE = previous
+  }
+})
+
+test("rejects every non-auto permission value, missing authority, and duplicates across forms", () => {
+  expect(() => encodeLaunchControls(["--permission-mode"])).toThrow(FxLaunchProviderError)
+  for (const value of ["", "ask", "yolo", "AUTO", " auto", "auto ", "automatic", "auto=extra"]) {
+    for (const controls of [
+      ["--permission-mode", value],
+      [`--permission-mode=${value}`],
+    ]) {
+      expect(() => encodeLaunchControls(controls)).toThrow(FxLaunchProviderError)
+    }
+  }
+  for (const controls of [
+    ["--permission-mode", "auto", "--permission-mode", "auto"],
+    ["--permission-mode=auto", "--permission-mode=auto"],
+    ["--permission-mode", "auto", "--permission-mode=auto"],
+    ["--permission-mode=auto", "--permission-mode", "auto"],
+  ]) {
+    expect(() => encodeLaunchControls(controls)).toThrow(FxLaunchProviderError)
+  }
 })
 
 function controlsAtExactLimit(): string[] {
@@ -299,7 +346,11 @@ function successFor(request: Record<string, unknown>): FakeResponse {
         value: {
           ...response,
           result: {
-            arguments: ["--state-dir", CORRELATION.stateRoot, "--name", "Launch provider test", "--context-limit", "skill_chunk_bytes=4096", "--tool", "read"],
+            arguments: [
+              "--state-dir", CORRELATION.stateRoot, "--name", "Launch provider test",
+              "--context-limit", "skill_chunk_bytes=4096", "--tool", "read",
+              "--permission-mode", "auto",
+            ],
             cwd: launchRequest.directory,
             environment: {
               FX_INTERNAL_LAUNCH_STATE_ROOT: CORRELATION.stateRoot,

@@ -191,6 +191,8 @@ describe("inline-v2 source validation", () => {
       ["--append-system-prompt-file=/tmp/role.md", "--tool", "read_file"],
       ["--context-limit=skill_chunk_bytes=4096", "--add-dir", "/tmp/extra", "--no-additional-dirs"],
       ["--no-native-tools", "--no-project-instructions", "--permissions-file=/tmp/policy.json"],
+      ["--permission-mode", "auto"],
+      ["--permission-mode=auto"],
     ]
     for (const remaining_global_args of valid) {
       const bytes = controlsBytes(remaining_global_args)
@@ -201,6 +203,49 @@ describe("inline-v2 source validation", () => {
       const value = `/tmp/${"λ".repeat(length)}`
       const bytes = controlsBytes(["--skills-dir", value])
       expect(parseInlineLaunchControls(bytes).remaining_global_args).toEqual(["--skills-dir", value])
+    }
+  })
+
+  test("binds only one explicit auto permission mode and never infers ambient authority", async () => {
+    const previous = process.env.FX_PERMISSION_MODE
+    process.env.FX_PERMISSION_MODE = "yolo"
+    try {
+      expect(Buffer.from(controlsBytes([])).toString("utf8")).toBe('{"remaining_global_args":[]}')
+      for (const remainingGlobalArgs of [
+        ["--permission-mode", "auto"],
+        ["--permission-mode=auto"],
+      ] as const) {
+        const controls = controlsBytes(remainingGlobalArgs)
+        const { request } = await sourceFixture({ controls })
+        expect(request.launch_request.remaining_launch_controls_digest).toBe(
+          createHash("sha256").update(controls).digest("hex"),
+        )
+        expect(parseInlineLaunchControls(controls).remaining_global_args).toEqual([...remainingGlobalArgs])
+      }
+    } finally {
+      if (previous === undefined) delete process.env.FX_PERMISSION_MODE
+      else process.env.FX_PERMISSION_MODE = previous
+    }
+  })
+
+  test("rejects every non-auto permission value, missing authority, and duplicates across forms", () => {
+    expect(() => parseInlineLaunchControls(rawControlsBytes(["--permission-mode"])))
+      .toThrow(InlineLaunchSourceError)
+    for (const value of ["", "ask", "yolo", "AUTO", " auto", "auto ", "automatic", "auto=extra"]) {
+      for (const controls of [
+        ["--permission-mode", value],
+        [`--permission-mode=${value}`],
+      ]) {
+        expect(() => parseInlineLaunchControls(rawControlsBytes(controls))).toThrow(InlineLaunchSourceError)
+      }
+    }
+    for (const controls of [
+      ["--permission-mode", "auto", "--permission-mode", "auto"],
+      ["--permission-mode=auto", "--permission-mode=auto"],
+      ["--permission-mode", "auto", "--permission-mode=auto"],
+      ["--permission-mode=auto", "--permission-mode", "auto"],
+    ]) {
+      expect(() => parseInlineLaunchControls(rawControlsBytes(controls))).toThrow(InlineLaunchSourceError)
     }
   })
 

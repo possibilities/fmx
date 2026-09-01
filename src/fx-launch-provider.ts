@@ -40,6 +40,8 @@ const FLAG_OPTIONS = new Set([
   "--no-project-instructions",
 ])
 const PROVIDER_OWNED = ["--state-dir", "--name", "--model", "--effort", "--resume", "--resume-id"]
+const PERMISSION_MODE_OPTION = "--permission-mode"
+const PERMISSION_MODE_VALUE = "auto"
 
 type Operation = "prepare" | "build" | "inspect" | "cancel" | "record_final" |
   "acknowledge_final" | "resume_status"
@@ -393,6 +395,7 @@ export function encodeLaunchControls(args: readonly string[]): string {
       throw new FxLaunchProviderError("invalid_controls", "launch controls contain an invalid argument")
     }
   }
+  let permissionModeSeen = false
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!
     if (PROVIDER_OWNED.some((option) => arg === option || arg.startsWith(`${option}=`))) {
@@ -400,6 +403,19 @@ export function encodeLaunchControls(args: readonly string[]): string {
     }
     if (["--", "--resume-last", "--continue", "-c", "-r", "resume"].includes(arg) || arg.startsWith("--resume-")) {
       throw new FxLaunchProviderError("invalid_controls", "launch controls may not select a resume target")
+    }
+    if (arg === PERMISSION_MODE_OPTION || arg.startsWith(`${PERMISSION_MODE_OPTION}=`)) {
+      if (permissionModeSeen) {
+        throw new FxLaunchProviderError("invalid_controls", "launch controls contain duplicate permission-mode authority")
+      }
+      const value = arg === PERMISSION_MODE_OPTION
+        ? args[++index]
+        : arg.slice(PERMISSION_MODE_OPTION.length + 1)
+      if (value !== PERMISSION_MODE_VALUE) {
+        throw new FxLaunchProviderError("invalid_controls", "launch controls permit only explicit permission mode auto")
+      }
+      permissionModeSeen = true
+      continue
     }
     if (FLAG_OPTIONS.has(arg)) continue
     if (VALUE_OPTIONS.has(arg)) {

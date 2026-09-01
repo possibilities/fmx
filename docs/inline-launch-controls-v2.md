@@ -43,6 +43,12 @@ one value are `--system-prompt-file`, `--append-system-prompt-file`,
 Separate values cannot begin with `-`, preventing an entry from being
 reinterpreted as another option.
 
+One additional process-only authority is accepted exactly once: either
+`--permission-mode auto` or `--permission-mode=auto`. The lowercase `auto`
+value is the only admitted value; omission remains omission, rather than
+inferring a value from the environment or Fx configuration. The exact accepted
+argv bytes are retained in the canonical object and forwarded unchanged.
+
 The mapping rejects empty strings, ASCII control bytes (including NUL and
 DEL), `--`, positional commands/executables, unknown flags, and missing or
 ambiguous option values. It also rejects provider-owned or duplicate launch

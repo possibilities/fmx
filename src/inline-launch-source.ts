@@ -51,6 +51,8 @@ export const INLINE_REMAINING_GLOBAL_ARGS_FLAG_OPTIONS = [
   "--no-default-skills",
   "--no-project-instructions",
 ] as const
+export const INLINE_REMAINING_GLOBAL_ARGS_PERMISSION_MODE_OPTION = "--permission-mode"
+export const INLINE_REMAINING_GLOBAL_ARGS_PERMISSION_MODE_VALUE = "auto"
 /** These are supplied only by the Fx launch provider, never by inline-v2. */
 export const INLINE_REMAINING_GLOBAL_ARGS_PROVIDER_OWNED_OPTIONS = [
   "--state-dir",
@@ -819,6 +821,7 @@ function validateRemainingGlobalArgs(args: readonly string[]): void {
     }
   }
 
+  let permissionModeSeen = false
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]
     if (isProviderOwnedArgument(arg)) {
@@ -826,6 +829,20 @@ function validateRemainingGlobalArgs(args: readonly string[]): void {
     }
     if (RESUME_SELECTIONS.has(arg) || INLINE_REMAINING_GLOBAL_ARGS_RESUME_PREFIXES.some((prefix) => arg.startsWith(prefix))) {
       throw sourceError("invalid_request", "remaining_global_args attempts to select a resume target")
+    }
+    if (arg === INLINE_REMAINING_GLOBAL_ARGS_PERMISSION_MODE_OPTION ||
+      arg.startsWith(`${INLINE_REMAINING_GLOBAL_ARGS_PERMISSION_MODE_OPTION}=`)) {
+      if (permissionModeSeen) {
+        throw sourceError("invalid_request", "remaining_global_args contains duplicate permission-mode authority")
+      }
+      const value = arg === INLINE_REMAINING_GLOBAL_ARGS_PERMISSION_MODE_OPTION
+        ? args[++index]
+        : arg.slice(INLINE_REMAINING_GLOBAL_ARGS_PERMISSION_MODE_OPTION.length + 1)
+      if (value !== INLINE_REMAINING_GLOBAL_ARGS_PERMISSION_MODE_VALUE) {
+        throw sourceError("invalid_request", "remaining_global_args permits only explicit permission mode auto")
+      }
+      permissionModeSeen = true
+      continue
     }
     if (FLAG_GLOBAL_OPTIONS.has(arg)) continue
     if (VALUE_GLOBAL_OPTIONS.has(arg)) {
