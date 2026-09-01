@@ -13,12 +13,24 @@ import {
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
 import { expect, test } from "bun:test"
+import {
+  AgentManifest,
+  identityFor,
+  type ManifestEntry,
+} from "../src/agent-manifest.ts"
 import { createFxEnvironment } from "../src/fx-environment.ts"
 import {
   encodeLaunchControls,
   FxLaunchProviderClient,
   type FxLaunchRequest,
 } from "../src/fx-launch-provider.ts"
+import {
+  fxWorkControlSocketPath,
+  FxWorkControlClient,
+  mintFxWorkControlBinding,
+  removeFxWorkControlResidue,
+  type FxWorkControlBinding,
+} from "../src/fx-work-control.ts"
 import {
   deriveFrozenLaunchDigest,
   type FrozenLaunchRequest,
@@ -50,9 +62,12 @@ const FX_VERSION = "0.0.7"
 const FX_BUILD_REVISION = FX_SUPPLIER_COMMIT.slice(0, 12)
 const FX_FILE_DESCRIPTION = "Mach-O 64-bit executable arm64"
 
-const EVIDENCE_ROOT = "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-maOw2l"
+const EXCLUDED_FAILURE_ROOT =
+  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-maOw2l"
+const EVIDENCE_ROOT =
+  "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0001"
 const WORKSPACE = join(EVIDENCE_ROOT, "workspace")
-const SETTINGS_SHA256 = "f548475c050dcf888b1c5df2da7473c1784eee6551ada1a6e7066a921fdb5f74"
+const SETTINGS_SHA256 = "d0b72bd5393dd74904cb6c3549a99f58751de6549164e48cfa48ab9de488b54e"
 const SETTINGS_BYTES = `${JSON.stringify({
   permission_mode: "yolo",
   workspaces: { [WORKSPACE]: { permission_mode: "yolo" } },
@@ -60,19 +75,82 @@ const SETTINGS_BYTES = `${JSON.stringify({
   sandbox: "none",
   session_naming: { gateway: null, codex: null, grok: null },
 })}\n`
+const MANIFEST_HOME_ID = "phase2-permission-proof"
+const MANIFEST_AGENT_ID = "a".repeat(32)
+const MANIFEST_PATH = join(EVIDENCE_ROOT, "agents.json")
+const PROVIDER_RUNTIME = `/tmp/fmx-p2-permission-${process.getuid!()}`
+const RUNTIME_SOCKET_PATH = join(PROVIDER_RUNTIME, "b.bus")
+const WORK_CONTROL_SOCKET_PATH = fxWorkControlSocketPath(RUNTIME_SOCKET_PATH, MANIFEST_AGENT_ID)
+const INITIAL_WORK_TEXT = "PHASE2_PERMISSION_MODE_REAL_PROCESS_PROOF\n"
+const INITIAL_WORK_BYTES = Buffer.from(INITIAL_WORK_TEXT, "utf8")
+const INITIAL_WORK_SHA256 = "98773e1d250c106997808a31e378d0896fa18e160ac50a30b77bf911666df281"
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url))
 const TEST_PATH = "tests/fx-launch-provider-real-process.test.ts"
 const WAIT_MS = 15_000
 const MAX_TERMINAL_BYTES = 16 * 1024 * 1024
 
+type WorkControlReadback = Pick<ManifestEntry, "agentId" | "displayId" | "workControl">
+
+function requirePersistedWorkControlBinding(
+  manifestPath: string | null,
+  runtimeSocketPath: string,
+  minted: FxWorkControlBinding,
+  readback: WorkControlReadback | null,
+): FxWorkControlBinding {
+  if (manifestPath === null) throw new Error("Work-control authority was not persisted")
+  if (readback?.workControl === null || readback?.workControl === undefined) {
+    throw new Error("durable Manifest has no Work-control authority")
+  }
+  const derived = fxWorkControlSocketPath(runtimeSocketPath, readback.agentId)
+  if (
+    readback.agentId !== minted.instanceId ||
+    minted.socketPath !== derived ||
+    !/^[0-9a-f]{64}$/u.test(minted.token) ||
+    readback.workControl.socketPath !== minted.socketPath ||
+    readback.workControl.instanceId !== minted.instanceId ||
+    readback.workControl.token !== minted.token
+  ) {
+    throw new Error("durable Manifest changed the minted Work-control authority")
+  }
+  return { ...readback.workControl }
+}
+
+function composePersistedProofEnvironment(
+  parent: NodeJS.ProcessEnv,
+  cwd: string,
+  manifestPath: string | null,
+  runtimeSocketPath: string,
+  minted: FxWorkControlBinding,
+  readback: WorkControlReadback | null,
+): NodeJS.ProcessEnv {
+  const workControl = requirePersistedWorkControlBinding(
+    manifestPath,
+    runtimeSocketPath,
+    minted,
+    readback,
+  )
+  return createFxEnvironment(
+    parent,
+    readback!.displayId,
+    cwd,
+    runtimeSocketPath,
+    null,
+    null,
+    workControl,
+  )
+}
+
 test("pins the exact Phase 2 supplier and yolo fixture bytes", () => {
   expect(Buffer.byteLength(SETTINGS_BYTES)).toBe(251)
   expect(sha256(SETTINGS_BYTES)).toBe(SETTINGS_SHA256)
   expect(FX_BINARY_PATH).toContain(`/${FX_SUPPLIER_COMMIT}/${FX_BINARY_SHA256}/fx`)
   expect(FX_SUPPLIER_PARENTS[2]).toBe(FX_HOSTED_CARRY)
+  expect(EVIDENCE_ROOT).not.toBe(EXCLUDED_FAILURE_ROOT)
+  expect(Buffer.byteLength(INITIAL_WORK_BYTES)).toBe(42)
+  expect(sha256(INITIAL_WORK_BYTES)).toBe(INITIAL_WORK_SHA256)
   expect(WORKSPACE).toBe(
-    "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-maOw2l/workspace",
+    "/Volumes/Scratch/fx-phase2-permission-mode.CV8gke/proof/permission-run-wc0001/workspace",
   )
 })
 
@@ -103,6 +181,55 @@ test("constructs one minimal proof environment without ambient credentials", () 
   ]) {
     expect(environment[forbidden]).toBeUndefined()
   }
+})
+
+test("refuses omitted, null, or unpersisted Work-control authority before execution", () => {
+  const minted = mintFxWorkControlBinding(RUNTIME_SOCKET_PATH, MANIFEST_AGENT_ID)
+  const persisted = {
+    agentId: MANIFEST_AGENT_ID,
+    displayId: 1,
+    workControl: minted,
+  } satisfies WorkControlReadback
+  const withNull = { ...persisted, workControl: null }
+  const transientManifest = AgentManifest.ephemeral(MANIFEST_HOME_ID)
+  transientManifest.ensureClaim({
+    identity: identityFor(MANIFEST_AGENT_ID),
+    cwd: WORKSPACE,
+    fxPath: FX_BINARY_PATH,
+    fxArgs: null,
+    createdAt: 0,
+    workControl: minted,
+  })
+  const transientReadback = transientManifest.get(MANIFEST_AGENT_ID)
+  expect(transientReadback?.workControl).toEqual(minted)
+  let executions = 0
+  const execute = (manifestPath: string | null, readback: WorkControlReadback | null) => {
+    const environment = composePersistedProofEnvironment(
+      isolatedEnvironment("/private/fmx-phase2-proof-home"),
+      WORKSPACE,
+      manifestPath,
+      RUNTIME_SOCKET_PATH,
+      minted,
+      readback,
+    )
+    executions++
+    return environment
+  }
+
+  expect(() => execute(MANIFEST_PATH, null)).toThrow("durable Manifest has no Work-control authority")
+  expect(() => execute(MANIFEST_PATH, withNull)).toThrow(
+    "durable Manifest has no Work-control authority",
+  )
+  expect(() => execute(transientManifest.path, transientReadback)).toThrow(
+    "Work-control authority was not persisted",
+  )
+  expect(executions).toBe(0)
+
+  const environment = execute(MANIFEST_PATH, persisted)
+  expect(executions).toBe(1)
+  expect(environment.FX_WORK_CONTROL_SOCKET_PATH).toBe(minted.socketPath)
+  expect(environment.FX_WORK_CONTROL_INSTANCE_ID).toBe(minted.instanceId)
+  expect(environment.FX_WORK_CONTROL_TOKEN).toBe(minted.token)
 })
 
 test("accepts only a post-boundary marker retained on the final visible VT screen", () => {
@@ -150,19 +277,20 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
   const settingsPath = join(settingsDirectory, "settings.json")
   const ambientHome = join(EVIDENCE_ROOT, "ambient-home")
   const identityHome = join(EVIDENCE_ROOT, "identity-home")
-  const providerRuntime = `/tmp/fmx-p2-permission-${process.getuid!()}`
   const stderrPath = join(EVIDENCE_ROOT, "stderr.log")
   const directories = [WORKSPACE, stateRoot, settingsDirectory, ambientHome, identityHome]
   for (const path of directories) await mkdir(path, { recursive: true, mode: 0o700 })
   for (const path of directories) await assertPrivateDirectory(path)
-  await assertPathAbsent(providerRuntime)
-  await mkdir(providerRuntime, { mode: 0o700 })
-  await assertPrivateDirectory(providerRuntime)
+  await assertPathAbsent(PROVIDER_RUNTIME)
+  await assertPathAbsent(WORK_CONTROL_SOCKET_PATH)
+  await mkdir(PROVIDER_RUNTIME, { mode: 0o700 })
+  await assertPrivateDirectory(PROVIDER_RUNTIME)
   await writeFile(settingsPath, SETTINGS_BYTES, { encoding: "utf8", mode: 0o600, flag: "wx" })
   await writeFile(stderrPath, "", { encoding: "utf8", mode: 0o600, flag: "wx" })
 
   let child: ReturnType<typeof Bun.spawn> | null = null
   let terminal: Bun.Terminal | null = null
+  let workControl: FxWorkControlBinding | null = null
   const terminalCapture = new BoundedTerminalCapture(MAX_TERMINAL_BYTES)
 
   try {
@@ -175,10 +303,56 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     await writePrivate(join(EVIDENCE_ROOT, "settings.before.json"), settingsBefore)
     await writeJson(join(EVIDENCE_ROOT, "supplier.json"), { fmx, supplier })
 
+    const mintedWorkControl = mintFxWorkControlBinding(RUNTIME_SOCKET_PATH, MANIFEST_AGENT_ID)
+    expect(mintedWorkControl.socketPath).toBe(WORK_CONTROL_SOCKET_PATH)
+    const manifest = await AgentManifest.open(MANIFEST_PATH, MANIFEST_HOME_ID)
+    const claim = manifest.ensureClaim({
+      identity: identityFor(MANIFEST_AGENT_ID),
+      cwd: WORKSPACE,
+      fxPath: FX_BINARY_PATH,
+      fxArgs: null,
+      createdAt: 0,
+      workControl: mintedWorkControl,
+    })
+    await claim.saved
+    expect(claim.result.workControl).toEqual(mintedWorkControl)
+    const manifestBytes = await readFile(MANIFEST_PATH)
+    const manifestFacts = await lstat(MANIFEST_PATH)
+    expect(manifestFacts.isFile()).toBe(true)
+    expect(manifestFacts.isSymbolicLink()).toBe(false)
+    expect(manifestFacts.mode & 0o777).toBe(0o600)
+    expect(await realpath(MANIFEST_PATH)).toBe(MANIFEST_PATH)
+    const reopenedManifest = await AgentManifest.open(MANIFEST_PATH, MANIFEST_HOME_ID)
+    const readback = reopenedManifest.get(MANIFEST_AGENT_ID)
+    const durableWorkControl = requirePersistedWorkControlBinding(
+      MANIFEST_PATH,
+      RUNTIME_SOCKET_PATH,
+      mintedWorkControl,
+      readback,
+    )
+    workControl = durableWorkControl
+    expect(durableWorkControl).toEqual(mintedWorkControl)
+    await writeJson(join(EVIDENCE_ROOT, "work-control-authority.json"), {
+      manifest_path: MANIFEST_PATH,
+      manifest_bytes: manifestBytes.byteLength,
+      manifest_sha256: sha256(manifestBytes),
+      manifest_mode: "0600",
+      manifest_home_id: MANIFEST_HOME_ID,
+      agent_id: MANIFEST_AGENT_ID,
+      display_id: readback!.displayId,
+      minted_socket_path: mintedWorkControl.socketPath,
+      derived_socket_path: fxWorkControlSocketPath(RUNTIME_SOCKET_PATH, MANIFEST_AGENT_ID),
+      instance_id: mintedWorkControl.instanceId,
+      token_sha256: sha256(mintedWorkControl.token),
+      claim_saved_before_spawn: true,
+      durable_readback_exact: true,
+    })
+
     const controls = ["--permission-mode", "auto"] as const
     const launchControls = encodeLaunchControls(controls)
     const remainingLaunchControlsDigest = sha256(launchControls)
-    const initialWorkDigest = sha256("PHASE2_PERMISSION_MODE_REAL_PROCESS_PROOF\n")
+    const initialWorkDigest = sha256(INITIAL_WORK_BYTES)
+    expect(initialWorkDigest).toBe(INITIAL_WORK_SHA256)
     const launchRequest: FrozenLaunchRequest = {
       schema_id: "fx.launch-admission-final",
       schema_version: 1,
@@ -199,7 +373,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     const parentEnvironment = isolatedEnvironment(ambientHome)
     const provider = new FxLaunchProviderClient({
       executable: FX_BINARY_PATH,
-      runtimeDirectory: providerRuntime,
+      runtimeDirectory: PROVIDER_RUNTIME,
       timeoutMs: WAIT_MS,
       parentEnvironment,
     })
@@ -236,7 +410,10 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     expect(invocation.env.FX_MODEL).toBeUndefined()
     expect(invocation.env.FX_EFFORT).toBeUndefined()
     expect(invocation.env.FX_PERMISSION_MODE).toBeUndefined()
-    expect(await readdir(providerRuntime)).toEqual([])
+    expect(invocation.env.FX_WORK_CONTROL_SOCKET_PATH).toBeUndefined()
+    expect(invocation.env.FX_WORK_CONTROL_INSTANCE_ID).toBeUndefined()
+    expect(invocation.env.FX_WORK_CONTROL_TOKEN).toBeUndefined()
+    expect(await readdir(PROVIDER_RUNTIME)).toEqual([])
     await writeJson(join(EVIDENCE_ROOT, "provider.json"), {
       launch_request: launchRequest,
       launch_receipt: launchReceipt,
@@ -249,14 +426,23 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
         conversation_id: invocation.conversationId,
         mode: invocation.mode,
       },
-      ephemeral_runtime: providerRuntime,
+      initial_work_utf8: INITIAL_WORK_TEXT,
+      initial_work_sha256: initialWorkDigest,
+      ephemeral_runtime: PROVIDER_RUNTIME,
     })
 
     const processParent = { ...parentEnvironment }
     delete processParent.FX_MODEL
     delete processParent.FX_EFFORT
     const processEnvironment = stringEnvironment({
-      ...createFxEnvironment(processParent, 1, invocation.cwd),
+      ...composePersistedProofEnvironment(
+        processParent,
+        invocation.cwd,
+        MANIFEST_PATH,
+        RUNTIME_SOCKET_PATH,
+        mintedWorkControl,
+        readback,
+      ),
       ...invocation.env,
     })
     expect(processEnvironment.FX_PERMISSION_MODE).toBe("yolo")
@@ -264,6 +450,9 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     expect(processEnvironment.FX_EFFORT).toBeUndefined()
     expect(processEnvironment.HOME).toBe(ambientHome)
     expect(processEnvironment.PWD).toBe(WORKSPACE)
+    expect(processEnvironment.FX_WORK_CONTROL_SOCKET_PATH).toBe(durableWorkControl.socketPath)
+    expect(processEnvironment.FX_WORK_CONTROL_INSTANCE_ID).toBe(durableWorkControl.instanceId)
+    expect(processEnvironment.FX_WORK_CONTROL_TOKEN).toBe(durableWorkControl.token)
 
     terminal = new Bun.Terminal({
       cols: 120,
@@ -288,6 +477,55 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       () => terminalCapture.screen(120, 40).text().includes("❯"),
       "Fx composer",
     )
+    await waitFor(() => pathExists(durableWorkControl.socketPath), "Fx Work-control endpoint")
+    const workControlFacts = await lstat(durableWorkControl.socketPath)
+    expect(workControlFacts.isSocket()).toBe(true)
+    expect(workControlFacts.isSymbolicLink()).toBe(false)
+    expect(workControlFacts.mode & 0o777).toBe(0o600)
+    const workAdmission = await new FxWorkControlClient().request(
+      durableWorkControl,
+      "work.queue",
+      { text: new TextDecoder("utf-8", { fatal: true }).decode(INITIAL_WORK_BYTES) },
+      new AbortController().signal,
+    )
+    const workControlTurnId = workAdmission.turn_id
+    const workControlDisposition = workAdmission.disposition
+    if (workControlTurnId === undefined || workControlDisposition === undefined) {
+      throw new Error("Fx Work-control queue returned no authoritative admission identity")
+    }
+    expect(workControlTurnId).toMatch(/^[1-9]\d*$/u)
+    expect(["queued", "steering"]).toContain(workControlDisposition)
+    const observedTurns = [
+      ...(workAdmission.snapshot.active_turn_id === null
+        ? []
+        : [workAdmission.snapshot.active_turn_id]),
+      ...workAdmission.snapshot.queue.map(({ turn_id }) => turn_id),
+    ]
+    expect(observedTurns).toContain(workControlTurnId)
+    const providerAuthority = await provider.inspect({
+      stateRoot,
+      admissionKey: launchRequest.admission_key,
+      launchDigest: launchRequest.launch_digest,
+      launchId: launchRequest.launch_id,
+    })
+    expect(providerAuthority.decision?.decision.kind).toBe("admitted")
+    const providerTurnId = providerAuthority.decision?.decision.kind === "admitted"
+      ? providerAuthority.decision.decision.turn_id
+      : null
+    expect(providerTurnId).toBe(workControlTurnId)
+    await writeJson(join(EVIDENCE_ROOT, "work-control-admission.json"), {
+      initial_work_utf8: INITIAL_WORK_TEXT,
+      initial_work_bytes: INITIAL_WORK_BYTES.byteLength,
+      initial_work_sha256: INITIAL_WORK_SHA256,
+      socket_path: durableWorkControl.socketPath,
+      socket_mode: "0600",
+      instance_id: durableWorkControl.instanceId,
+      token_sha256: sha256(durableWorkControl.token),
+      method: "work.queue",
+      result: workAdmission,
+      provider_decision: providerAuthority.decision,
+      authoritative_turn_id: providerTurnId,
+    })
     const permissionBoundary = terminalCapture.markBoundary()
     terminal.write("/permissions\r")
     const permissionScreen = await waitForStablePermissionScreen(
@@ -302,6 +540,10 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     expect(child.signalCode).toBeNull()
     terminal.close()
     terminal = null
+    await waitFor(
+      async () => !(await pathExists(durableWorkControl.socketPath)),
+      "Fx Work-control endpoint cleanup",
+    )
 
     const terminalBytes = terminalCapture.bytes()
     const permissionScreenText = permissionScreen.text()
@@ -314,7 +556,9 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     expect(sha256(settingsAfter)).toBe(SETTINGS_SHA256)
     expect((await lstat(settingsPath)).mode & 0o777).toBe(0o600)
     expect(processExists(processId)).toBe(false)
-    expect(await readdir(providerRuntime)).toEqual([])
+    expect(await pathExists(durableWorkControl.socketPath)).toBe(false)
+    expect((await readFile(MANIFEST_PATH)).equals(manifestBytes)).toBe(true)
+    expect(await readdir(PROVIDER_RUNTIME)).toEqual([])
 
     await writePrivate(join(EVIDENCE_ROOT, "terminal.raw"), terminalBytes)
     await writePrivate(join(EVIDENCE_ROOT, "permission-screen.txt"), `${permissionScreenText}\n`)
@@ -327,6 +571,12 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       explicit_permission_argv: controls,
       model_environment_present: processEnvironment.FX_MODEL !== undefined,
       effort_environment_present: processEnvironment.FX_EFFORT !== undefined,
+      work_control_socket_path: durableWorkControl.socketPath,
+      work_control_instance_id: durableWorkControl.instanceId,
+      work_control_token_sha256: sha256(durableWorkControl.token),
+      work_control_turn_id: workControlTurnId,
+      work_control_disposition: workControlDisposition,
+      work_control_endpoint_removed: !(await pathExists(durableWorkControl.socketPath)),
       pid: processId,
       exit_code: exitCode,
       signal: child.signalCode,
@@ -339,7 +589,7 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       observed_line: "● Permissions: mode=auto",
       inputs: ["/permissions", "/quit"],
       process_reaped: !processExists(processId),
-      provider_runtime_empty: (await readdir(providerRuntime)).length === 0,
+      provider_runtime_empty: (await readdir(PROVIDER_RUNTIME)).length === 0,
       settings_before_sha256: sha256(settingsBefore),
       settings_after_sha256: sha256(settingsAfter),
       settings_unchanged: settingsAfter.equals(settingsBefore),
@@ -350,8 +600,8 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     expect((await git(["status", "--porcelain=v1"], FX_SUPPLIER_REPOSITORY)).stdout).toBe("")
     expect((await git(["status", "--porcelain=v1", "--untracked-files=all"], REPOSITORY_ROOT)).stdout)
       .toBe("")
-    await rmdir(providerRuntime)
-    expect(await pathExists(providerRuntime)).toBe(false)
+    await rmdir(PROVIDER_RUNTIME)
+    expect(await pathExists(PROVIDER_RUNTIME)).toBe(false)
     const inventory = await evidenceInventory(EVIDENCE_ROOT)
     await writeJson(join(EVIDENCE_ROOT, "evidence.json"), {
       schema_id: "fmx.fx-launch-provider-real-process-evidence",
@@ -369,6 +619,17 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
       evidence_root: EVIDENCE_ROOT,
       provider_prepare_correlated: true,
       provider_build_correlated: true,
+      manifest_path: MANIFEST_PATH,
+      manifest_sha256: sha256(manifestBytes),
+      manifest_mode: "0600",
+      work_control_claim_saved_before_spawn: true,
+      work_control_readback_exact: true,
+      work_control_socket_path: durableWorkControl.socketPath,
+      work_control_socket_derived: durableWorkControl.socketPath ===
+        fxWorkControlSocketPath(RUNTIME_SOCKET_PATH, MANIFEST_AGENT_ID),
+      work_control_turn_id: workControlTurnId,
+      work_control_disposition: workControlDisposition,
+      work_control_endpoint_removed: true,
       inherited_permission_mode: "yolo",
       explicit_permission_mode: "auto",
       observed_line: "● Permissions: mode=auto",
@@ -385,7 +646,10 @@ test.skipIf(!ENABLED)(SKIP_CONTRACT, async () => {
     await child?.exited.catch(() => {})
     terminal?.close()
     terminal = null
-    await rmdir(providerRuntime).catch(() => {})
+    if (workControl !== null) {
+      await removeFxWorkControlResidue(workControl, RUNTIME_SOCKET_PATH).catch(() => {})
+    }
+    await rmdir(PROVIDER_RUNTIME).catch(() => {})
     const terminalBytes = terminalCapture.retainedBytes()
     await writePrivateIfAbsent(join(EVIDENCE_ROOT, "terminal.failure.raw"), terminalBytes)
     await writeJsonIfAbsent(join(EVIDENCE_ROOT, "failure.json"), {
@@ -622,10 +886,10 @@ async function run(
   return { exitCode, stdout, stderr }
 }
 
-async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+async function waitFor(predicate: () => boolean | Promise<boolean>, label: string): Promise<void> {
   const deadline = Date.now() + WAIT_MS
   for (;;) {
-    if (predicate()) return
+    if (await predicate()) return
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`)
     await Bun.sleep(25)
   }
