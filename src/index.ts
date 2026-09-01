@@ -356,6 +356,8 @@ async function main(): Promise<void> {
             lifecycleRuntime!.acceptLifecycle(message, signal),
           onInlineLaunchSourceRequest: (request, signal) =>
             lifecycleRuntime!.acceptInlineSource(request, signal),
+          onManagedLaunchMessage: (message, signal) =>
+            lifecycleRuntime!.acceptManagedLaunch(message, signal),
           onRestartReady: async () => {
             if (runtimeClosing) return
             try {

@@ -13,6 +13,7 @@ import {
 import {
   CONTRACT_MAX_FRAME_BYTES,
   ContractFrameDecoder,
+  decodeStrictJson,
   encodeCanonicalJson,
   encodeContractFrame,
   type JsonValue,
@@ -22,6 +23,13 @@ import {
   parseInlineLaunchSourceRequest,
   type InlineLaunchSourceRequest,
 } from "../src/inline-launch-source.ts"
+import {
+  MANAGED_LAUNCH_SCHEMA_ID,
+  decodeManagedLaunchPayload,
+  encodeManagedLaunchFrame,
+  managedLaunchMessageSchema,
+  type ManagedLaunchMessage,
+} from "../src/managed-launch-contract.ts"
 
 type Mode =
   | "ready"
@@ -55,7 +63,7 @@ type Initialize = {
   protocol_version: 1
 }
 
-type WireMessage = AgentWorkplaceMessage & Record<string, unknown>
+type WireMessage = (AgentWorkplaceMessage | ManagedLaunchMessage) & Record<string, unknown>
 
 const mode = (process.env.FMX_SUPERVISOR_CHILD_MODE ?? "ready") as Mode
 const markerPath = process.env.FMX_SUPERVISOR_CHILD_MARKER
@@ -63,18 +71,26 @@ const releasePath = process.env.FMX_SUPERVISOR_CHILD_RELEASE
 const logPath = process.env.FMX_SUPERVISOR_CHILD_LOG
 const scripted = readScript(process.env.FMX_SUPERVISOR_CHILD_SCRIPT)
 const acknowledgeLifecycleReceipts = process.env.FMX_SUPERVISOR_CHILD_ACK_LIFECYCLE === "1"
+const acknowledgeManagedOutcomes = process.env.FMX_SUPERVISOR_CHILD_ACK_MANAGED === "1"
 const decoder = new ContractFrameDecoder()
 let initialized = false
 let keepAlive = false
 let coalescingPullSent = false
 let sequentialResponses = 0
 let lifecycleAcknowledgements = 0
+let managedAcknowledgements = 0
 let fmxSession = ""
 const sequentialTarget = Number(process.env.FMX_SUPERVISOR_CHILD_SEQUENTIAL_COUNT ?? "128")
 
 for await (const chunk of Bun.stdin.stream()) {
   for (const payload of decoder.push(chunk)) {
-    const message = decodeAgentWorkplacePayload(payload) as WireMessage
+    const envelope = decodeStrictJson(payload)
+    const message = (
+      typeof envelope === "object" && envelope !== null && !Array.isArray(envelope) &&
+        envelope.schema_id === MANAGED_LAUNCH_SCHEMA_ID
+        ? decodeManagedLaunchPayload(payload)
+        : decodeAgentWorkplacePayload(payload)
+    ) as WireMessage
     await record(message)
     if (!initialized) {
       if (message.message_type !== "initialize") throw new Error("expected initialize")
@@ -114,6 +130,25 @@ for await (const chunk of Bun.stdin.stream()) {
         receipt_id: String(message.receipt_id),
         receipt_digest: String(message.receipt_digest),
         ensure_id: String(message.ensure_id),
+      })
+    }
+    if (acknowledgeManagedOutcomes && message.message_type === "launch_outcome") {
+      managedAcknowledgements++
+      write({
+        schema_id: MANAGED_LAUNCH_SCHEMA_ID,
+        schema_version: 1,
+        message_type: "outcome_acknowledgement",
+        acknowledgement_id: `fixture-managed-ack-${managedAcknowledgements}`,
+        workplace_instance_id: String(message.workplace_instance_id),
+        fmx_session: String(message.fmx_session),
+        receipt_id: String(message.receipt_id),
+        receipt_digest: String(message.receipt_digest),
+        attempt: Number(message.attempt),
+        ensure_id: String(message.ensure_id),
+        ensure_digest: String(message.ensure_digest),
+        launch_id: String(message.launch_id),
+        launch_digest: String(message.launch_digest),
+        agent_id: String(message.agent_id),
       })
     }
   }
@@ -302,7 +337,9 @@ function writeMany(messages: object[]): void {
   )))
 }
 
-function readScript(value: string | undefined): Array<AgentWorkplaceMessage | InlineLaunchSourceRequest> {
+function readScript(
+  value: string | undefined,
+): Array<AgentWorkplaceMessage | InlineLaunchSourceRequest | ManagedLaunchMessage> {
   if (value === undefined) return []
   let parsed: unknown
   try {
@@ -318,6 +355,12 @@ function readScript(value: string | undefined): Array<AgentWorkplaceMessage | In
     ) {
       return parseInlineLaunchSourceRequest(message)
     }
+    if (
+      typeof message === "object" && message !== null &&
+      "schema_id" in message && message.schema_id === MANAGED_LAUNCH_SCHEMA_ID
+    ) {
+      return managedLaunchMessageSchema.parse(message)
+    }
     return agentWorkplaceMessageSchema.parse(message)
   })
 }
@@ -327,6 +370,9 @@ function encodeWireFrame(message: object): Uint8Array {
     return encodeContractFrame(encodeCanonicalJson(
       parseInlineLaunchSourceRequest(message) as unknown as JsonValue,
     ))
+  }
+  if ("schema_id" in message && message.schema_id === MANAGED_LAUNCH_SCHEMA_ID) {
+    return encodeManagedLaunchFrame(managedLaunchMessageSchema.parse(message))
   }
   return encodeAgentWorkplaceFrame(message as AgentWorkplaceMessage)
 }

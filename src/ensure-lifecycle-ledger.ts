@@ -28,9 +28,24 @@ import {
   type JsonValue,
 } from "./contract-codec.ts"
 import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
+import {
+  managedLaunchAcknowledgementSchema,
+  managedLaunchOutcomeSchema,
+  managedLaunchRequestSchema,
+  managedLaunchRetrySchema,
+  parseManagedLaunchAcknowledgement,
+  parseManagedLaunchOutcome,
+  parseManagedLaunchRequest,
+  parseManagedLaunchRetry,
+  type ManagedLaunchAcknowledgement,
+  type ManagedLaunchOutcome,
+  type ManagedLaunchRequest,
+  type ManagedLaunchRetry,
+} from "./managed-launch-contract.ts"
 
 const LEDGER_SCHEMA_ID = "fmx.ensure-lifecycle-ledger"
 const LEDGER_SCHEMA_VERSION = 3
+const MANAGED_LEDGER_SCHEMA_VERSION = 4
 const LOCK_FILE = ".ensure-lifecycle.lock"
 const RECORD_FILE = /^[0-9a-f]{64}\.json$/u
 const TEMPORARY_FILE = /^[0-9a-f]{64}\.json\.[0-9]+\.[0-9a-f]{16}\.tmp$/u
@@ -44,8 +59,16 @@ const STAGES = [
   "companion_started",
   "fx_started",
 ] as const
+const MANAGED_STAGES = [
+  "claimed",
+  "directory_validated",
+  "manifest_claimed",
+  "companion_started",
+  "fx_started",
+] as const
 
 export type EnsureLifecycleStage = (typeof STAGES)[number]
+export type ManagedLaunchLedgerStage = (typeof MANAGED_STAGES)[number]
 type LiteralMessage<Shape, Type extends string> = Shape extends unknown
   ? Omit<Shape, "message_type"> & { message_type: Type }
   : never
@@ -110,6 +133,58 @@ export type EnsureLifecycleRecord = {
   fx_final: FxFinalReceiptTransaction
 }
 
+export type ManagedLaunchEffects = {
+  workspace:
+    | {
+        status: "pending"
+        kind: "existing_directory"
+        directory: string
+        repository: string
+        checkout_root: string
+        head_commit: string
+      }
+    | {
+        status: "validated"
+        kind: "existing_directory"
+        directory: string
+        repository: string
+        checkout_root: string
+        head_commit: string
+      }
+  manifest: EnsureLifecycleEffects["manifest"]
+  companion: EnsureLifecycleEffects["companion"]
+  fx: EnsureLifecycleEffects["fx"]
+}
+
+export type ManagedLaunchOutcomeTransaction = {
+  receipt: ManagedLaunchOutcome | null
+  acknowledgement: ManagedLaunchAcknowledgement | null
+}
+
+/**
+ * Additive existing-directory launch transaction stored beside, but never
+ * translated into, the frozen schema-v1 Worktree transaction.
+ */
+export type ManagedLaunchRecord = {
+  schema_id: typeof LEDGER_SCHEMA_ID
+  schema_version: typeof MANAGED_LEDGER_SCHEMA_VERSION
+  revision: number
+  request: ManagedLaunchRequest
+  stage: ManagedLaunchLedgerStage
+  effects: ManagedLaunchEffects
+  attempt: number
+  outcome_history: Array<{
+    receipt: ManagedLaunchOutcome
+    acknowledgement: ManagedLaunchAcknowledgement
+    retry: ManagedLaunchRetry
+  }>
+  outcome: ManagedLaunchOutcomeTransaction
+  fx_admission_decision: FxAdmissionDecision | null
+  fx_final: FxFinalReceiptTransaction
+}
+
+type LifecycleLedgerRecord = EnsureLifecycleRecord | ManagedLaunchRecord
+
 export type EnsureLifecycleTransition =
   | {
       kind: "worktree_created"
@@ -130,6 +205,16 @@ export type EnsureLifecycleTransition =
       conversation_id: string
     }
 
+export type ManagedLaunchTransition =
+  | {
+      kind: "directory_validated"
+      directory: string
+      repository: string
+      checkout_root: string
+      head_commit: string
+    }
+  | Exclude<EnsureLifecycleTransition, { kind: "worktree_created" }>
+
 export type EnsureLifecycleLedgerFaultPoint =
   | "before_write"
   | "after_file_sync"
@@ -141,6 +226,10 @@ export type EnsureLifecycleLedgerOptions = {
   fault?: (
     point: EnsureLifecycleLedgerFaultPoint,
     record: Readonly<EnsureLifecycleRecord>,
+  ) => void | Promise<void>
+  managedFault?: (
+    point: EnsureLifecycleLedgerFaultPoint,
+    record: Readonly<ManagedLaunchRecord>,
   ) => void | Promise<void>
   uid?: number
   lockAttempts?: number
@@ -206,6 +295,25 @@ const fxFinalReceiptAuthorityBindingSchema = z.strictObject({
   state_root: z.string(),
 })
 
+const managedWorkspaceEffectSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("pending"),
+    kind: z.literal("existing_directory"),
+    directory: z.string(),
+    repository: z.string(),
+    checkout_root: z.string(),
+    head_commit: z.string().regex(GIT_OBJECT_ID),
+  }),
+  z.strictObject({
+    status: z.literal("validated"),
+    kind: z.literal("existing_directory"),
+    directory: z.string(),
+    repository: z.string(),
+    checkout_root: z.string(),
+    head_commit: z.string().regex(GIT_OBJECT_ID),
+  }),
+])
+
 const privateRecordSchema = z.strictObject({
   schema_id: z.literal(LEDGER_SCHEMA_ID),
   schema_version: z.literal(LEDGER_SCHEMA_VERSION),
@@ -229,10 +337,43 @@ const privateRecordSchema = z.strictObject({
   }),
 })
 
+const managedPrivateRecordSchema = z.strictObject({
+  schema_id: z.literal(LEDGER_SCHEMA_ID),
+  schema_version: z.literal(MANAGED_LEDGER_SCHEMA_VERSION),
+  revision: z.number().int().positive(),
+  request: managedLaunchRequestSchema,
+  stage: z.enum(MANAGED_STAGES),
+  effects: z.strictObject({
+    workspace: managedWorkspaceEffectSchema,
+    manifest: manifestEffectSchema,
+    companion: companionEffectSchema,
+    fx: fxEffectSchema,
+  }),
+  attempt: z.number().int().positive().max(4096),
+  outcome_history: z.array(z.strictObject({
+    receipt: managedLaunchOutcomeSchema,
+    acknowledgement: managedLaunchAcknowledgementSchema,
+    retry: managedLaunchRetrySchema,
+  })).max(4095),
+  outcome: z.strictObject({
+    receipt: managedLaunchOutcomeSchema.nullable(),
+    acknowledgement: managedLaunchAcknowledgementSchema.nullable(),
+  }),
+  fx_admission_decision: z.unknown().nullable(),
+  fx_final: z.strictObject({
+    binding: fxFinalReceiptAuthorityBindingSchema.nullable(),
+    receipt: z.unknown().nullable(),
+    acknowledgement: z.unknown().nullable(),
+    acknowledgement_applied: z.boolean(),
+  }),
+})
+
 type RecordIndex = {
   byEnsureId: Map<string, EnsureLifecycleRecord>
+  managedByEnsureId: Map<string, ManagedLaunchRecord>
   identities: Map<string, Stats>
   records: EnsureLifecycleRecord[]
+  managedRecords: ManagedLaunchRecord[]
 }
 
 type StorageGuard = {
@@ -255,6 +396,8 @@ export class EnsureLifecycleLedger {
   private queue: Promise<unknown> = Promise.resolve()
   private readonly uid: number
   private readonly fault: NonNullable<EnsureLifecycleLedgerOptions["fault"]> | null
+  private readonly managedFault:
+    NonNullable<EnsureLifecycleLedgerOptions["managedFault"]> | null
   private readonly lockAttempts: number
   private readonly lockDelayMs: number
 
@@ -264,6 +407,7 @@ export class EnsureLifecycleLedger {
   ) {
     this.uid = options.uid ?? userInfo().uid
     this.fault = options.fault ?? null
+    this.managedFault = options.managedFault ?? null
     this.lockAttempts = options.lockAttempts ?? 1000
     this.lockDelayMs = options.lockDelayMs ?? 2
   }
@@ -284,6 +428,12 @@ export class EnsureLifecycleLedger {
     return this.serial(() => this.withLock(async (guard) => {
       const request = parseEnsureRequest(requestInput)
       const index = await this.readIndex(guard)
+      if (index.managedByEnsureId.has(request.ensure_id)) {
+        throw ledgerError(
+          "conflicting_claim",
+          `ensure id ${request.ensure_id} is already bound to a managed launch request`,
+        )
+      }
       const existing = index.byEnsureId.get(request.ensure_id)
       if (existing) {
         if (!sameEnsureClaim(existing.request, request)) {
@@ -295,6 +445,7 @@ export class EnsureLifecycleLedger {
         return copyRecord(existing)
       }
       assertSecondaryClaimsAvailable(index.records, request)
+      assertCrossClaimAvailable(index.managedRecords, request)
       const record: EnsureLifecycleRecord = {
         schema_id: LEDGER_SCHEMA_ID,
         schema_version: LEDGER_SCHEMA_VERSION,
@@ -312,6 +463,45 @@ export class EnsureLifecycleLedger {
     }))
   }
 
+  claimManaged(requestInput: ManagedLaunchRequest): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const request = parseManagedLaunchRequest(requestInput)
+      const index = await this.readIndex(guard)
+      if (index.byEnsureId.has(request.ensure_id)) {
+        throw ledgerError(
+          "conflicting_claim",
+          `ensure id ${request.ensure_id} is already bound to a frozen lifecycle request`,
+        )
+      }
+      const existing = index.managedByEnsureId.get(request.ensure_id)
+      if (existing !== undefined) {
+        if (!sameCanonical(existing.request, request)) {
+          throw ledgerError(
+            "conflicting_claim",
+            `ensure id ${request.ensure_id} is already bound to different managed launch bytes`,
+          )
+        }
+        return copyManagedRecord(existing)
+      }
+      assertManagedSecondaryClaimsAvailable(index, request)
+      const record: ManagedLaunchRecord = {
+        schema_id: LEDGER_SCHEMA_ID,
+        schema_version: MANAGED_LEDGER_SCHEMA_VERSION,
+        revision: 1,
+        request,
+        stage: "claimed",
+        effects: managedEffectsForClaim(request),
+        attempt: 1,
+        outcome_history: [],
+        outcome: { receipt: null, acknowledgement: null },
+        fx_admission_decision: null,
+        fx_final: emptyFxFinalReceiptTransaction(),
+      }
+      await this.writeLedgerRecord(record, guard, null)
+      return copyManagedRecord(record)
+    }))
+  }
+
   get(ensureId: string): Promise<EnsureLifecycleRecord | null> {
     return this.serial(() => this.withLock(async (guard) => {
       const record = (await this.readIndex(guard)).byEnsureId.get(ensureId)
@@ -324,6 +514,18 @@ export class EnsureLifecycleLedger {
       (await this.readIndex(guard)).records.map(copyRecord)))
   }
 
+  getManaged(ensureId: string): Promise<ManagedLaunchRecord | null> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const record = (await this.readIndex(guard)).managedByEnsureId.get(ensureId)
+      return record ? copyManagedRecord(record) : null
+    }))
+  }
+
+  listManaged(): Promise<ManagedLaunchRecord[]> {
+    return this.serial(() => this.withLock(async (guard) =>
+      (await this.readIndex(guard)).managedRecords.map(copyManagedRecord)))
+  }
+
   advance(ensureId: string, transition: EnsureLifecycleTransition): Promise<EnsureLifecycleRecord> {
     return this.serial(() => this.withLock(async (guard) => {
       const index = await this.readIndex(guard)
@@ -332,6 +534,108 @@ export class EnsureLifecycleLedger {
       if (advanced === record) return copyRecord(record)
       await this.writeRecord(advanced, guard, requireRecordIdentity(index, ensureId))
       return copyRecord(advanced)
+    }))
+  }
+
+  advanceManaged(
+    ensureId: string,
+    transition: ManagedLaunchTransition,
+  ): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const index = await this.readIndex(guard)
+      const record = requireManagedRecord(index, ensureId)
+      const advanced = advanceManagedRecord(record, transition)
+      if (advanced === record) return copyManagedRecord(record)
+      await this.writeLedgerRecord(
+        advanced,
+        guard,
+        requireRecordIdentity(index, ensureId),
+      )
+      return copyManagedRecord(advanced)
+    }))
+  }
+
+  retainManagedOutcome(
+    ensureId: string,
+    outcomeInput: ManagedLaunchOutcome,
+  ): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const outcome = parseManagedLaunchOutcome(outcomeInput)
+      const index = await this.readIndex(guard)
+      const record = requireManagedRecord(index, ensureId)
+      if (record.outcome.receipt !== null) {
+        if (!sameCanonical(record.outcome.receipt, outcome)) {
+          throw ledgerError(
+            "receipt_conflict",
+            `managed launch ${ensureId} already retains another outcome`,
+          )
+        }
+        return copyManagedRecord(record)
+      }
+      assertManagedOutcomeCorrelation(record, outcome)
+      assertAnyReceiptIdAvailable(index, outcome.receipt_id)
+      const next = copyManagedRecord(record)
+      next.revision++
+      next.outcome.receipt = outcome
+      validateManagedRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeLedgerRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyManagedRecord(next)
+    }))
+  }
+
+  acknowledgeManagedOutcome(
+    acknowledgementInput: ManagedLaunchAcknowledgement,
+  ): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const acknowledgement = parseManagedLaunchAcknowledgement(acknowledgementInput)
+      const index = await this.readIndex(guard)
+      const record = requireManagedRecord(index, acknowledgement.ensure_id)
+      if (record.outcome.acknowledgement !== null) {
+        if (!sameCanonical(record.outcome.acknowledgement, acknowledgement)) {
+          throw ledgerError(
+            "acknowledgement_conflict",
+            `managed launch ${record.request.ensure_id} already retains another acknowledgement`,
+          )
+        }
+        return copyManagedRecord(record)
+      }
+      assertManagedAcknowledgementCorrelation(record, acknowledgement)
+      assertAnyAcknowledgementIdAvailable(index, acknowledgement.acknowledgement_id)
+      const next = copyManagedRecord(record)
+      next.revision++
+      next.outcome.acknowledgement = acknowledgement
+      validateManagedRecord(next, recordPathFor(this.root, acknowledgement.ensure_id))
+      await this.writeLedgerRecord(
+        next,
+        guard,
+        requireRecordIdentity(index, acknowledgement.ensure_id),
+      )
+      return copyManagedRecord(next)
+    }))
+  }
+
+  retryManaged(retryInput: ManagedLaunchRetry): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const retry = parseManagedLaunchRetry(retryInput)
+      const index = await this.readIndex(guard)
+      const record = requireManagedRecord(index, retry.ensure_id)
+      if (retry.next_attempt <= record.attempt) {
+        if (managedRetryMatches(record, retry)) return copyManagedRecord(record)
+        throw ledgerError("conflicting_claim", "managed retry conflicts with the current attempt")
+      }
+      assertManagedRetryCorrelation(record, retry)
+      const next = copyManagedRecord(record)
+      next.revision++
+      next.outcome_history.push({
+        receipt: structuredClone(record.outcome.receipt!),
+        acknowledgement: structuredClone(record.outcome.acknowledgement!),
+        retry,
+      })
+      next.attempt = retry.next_attempt
+      next.outcome = { receipt: null, acknowledgement: null }
+      validateManagedRecord(next, recordPathFor(this.root, retry.ensure_id))
+      await this.writeLedgerRecord(next, guard, requireRecordIdentity(index, retry.ensure_id))
+      return copyManagedRecord(next)
     }))
   }
 
@@ -368,9 +672,37 @@ export class EnsureLifecycleLedger {
     }))
   }
 
+  retainManagedFxAdmissionDecision(
+    ensureId: string,
+    decisionInput: FxAdmissionDecision,
+  ): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const decision = parseFxAdmissionDecision(decisionInput)
+      const index = await this.readIndex(guard)
+      const record = requireManagedRecord(index, ensureId)
+      if (record.fx_admission_decision !== null) {
+        if (!sameCanonical(record.fx_admission_decision, decision)) {
+          throw ledgerError(
+            "receipt_conflict",
+            `managed launch ${ensureId} already retains another Fx admission decision`,
+          )
+        }
+        return copyManagedRecord(record)
+      }
+      assertManagedFxAdmissionDecisionCorrelation(record, decision, "receipt_conflict")
+      assertAnyReceiptIdAvailable(index, decision.receipt_id)
+      const next = copyManagedRecord(record)
+      next.revision++
+      next.fx_admission_decision = decision
+      validateManagedRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeLedgerRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyManagedRecord(next)
+    }))
+  }
+
   /**
    * Bind the exact Fx authority before the Companion can start the process.
-   * The future launch adapter supplies this private location/correlation; no
+   * The launch adapter supplies this private location/correlation; no
    * prompt or launch-control bytes enter this retention ledger.
    */
   bindFxFinalReceiptAuthority(
@@ -410,6 +742,46 @@ export class EnsureLifecycleLedger {
       validateRecord(next, recordPathFor(this.root, ensureId))
       await this.writeRecord(next, guard, requireRecordIdentity(index, ensureId))
       return copyRecord(next)
+    }))
+  }
+
+  bindManagedFxFinalReceiptAuthority(
+    ensureId: string,
+    bindingInput: FxFinalReceiptAuthorityBinding,
+  ): Promise<ManagedLaunchRecord> {
+    return this.serial(() => this.withLock(async (guard) => {
+      const binding = parseFxFinalReceiptAuthorityBinding(bindingInput)
+      const index = await this.readIndex(guard)
+      const record = requireManagedRecord(index, ensureId)
+      if (record.fx_final.binding !== null) {
+        if (!sameCanonical(record.fx_final.binding, binding)) {
+          throw ledgerError(
+            "receipt_conflict",
+            `managed launch ${ensureId} is already bound to another Fx final authority`,
+          )
+        }
+        return copyManagedRecord(record)
+      }
+      if (MANAGED_STAGES.indexOf(record.stage) >= MANAGED_STAGES.indexOf("companion_started")) {
+        throw ledgerError(
+          "invalid_transition",
+          `managed launch ${ensureId} cannot bind Fx final authority after ${record.stage}`,
+        )
+      }
+      for (const candidate of [...index.records, ...index.managedRecords]) {
+        if (candidate.fx_final.binding?.admission_key === binding.admission_key) {
+          throw ledgerError(
+            "receipt_conflict",
+            `Fx admission key ${binding.admission_key} belongs to another ensure`,
+          )
+        }
+      }
+      const next = copyManagedRecord(record)
+      next.revision++
+      next.fx_final.binding = binding
+      validateManagedRecord(next, recordPathFor(this.root, ensureId))
+      await this.writeLedgerRecord(next, guard, requireRecordIdentity(index, ensureId))
+      return copyManagedRecord(next)
     }))
   }
 
@@ -663,6 +1035,7 @@ export class EnsureLifecycleLedger {
     await assertStorageGuard(this.root, guard, this.uid)
     const entries = await readdir(this.root, { withFileTypes: true })
     const records: EnsureLifecycleRecord[] = []
+    const managedRecords: ManagedLaunchRecord[] = []
     const identities = new Map<string, Stats>()
     const temporaries: string[] = []
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -686,10 +1059,12 @@ export class EnsureLifecycleLedger {
       if (entry.name !== recordFileName(record.request.ensure_id)) {
         throw ledgerError("corrupt_record", `ensure ledger filename does not match ${record.request.ensure_id}`)
       }
-      records.push(record)
+      if (record.schema_version === MANAGED_LEDGER_SCHEMA_VERSION) managedRecords.push(record)
+      else records.push(record)
       identities.set(record.request.ensure_id, identity)
     }
     validateIndex(records)
+    validateManagedIndex(records, managedRecords)
     for (const temporary of temporaries) {
       await assertStorageGuard(this.root, guard, this.uid)
       try {
@@ -705,8 +1080,12 @@ export class EnsureLifecycleLedger {
     await assertStorageGuard(this.root, guard, this.uid)
     return {
       byEnsureId: new Map(records.map((record) => [record.request.ensure_id, record])),
+      managedByEnsureId: new Map(
+        managedRecords.map((record) => [record.request.ensure_id, record]),
+      ),
       identities,
       records,
+      managedRecords,
     }
   }
 
@@ -715,8 +1094,16 @@ export class EnsureLifecycleLedger {
     guard: StorageGuard,
     expectedTarget: Stats | null,
   ): Promise<void> {
+    return this.writeLedgerRecord(record, guard, expectedTarget)
+  }
+
+  private async writeLedgerRecord(
+    record: LifecycleLedgerRecord,
+    guard: StorageGuard,
+    expectedTarget: Stats | null,
+  ): Promise<void> {
     await assertStorageGuard(this.root, guard, this.uid)
-    validateRecord(record, recordPathFor(this.root, record.request.ensure_id))
+    validateLedgerRecord(record, recordPathFor(this.root, record.request.ensure_id))
     const canonical = encodeCanonicalJson(record as unknown as JsonValue)
     const bytes = Buffer.concat([Buffer.from(canonical), Buffer.from("\n")])
     if (bytes.byteLength > CONTRACT_MAX_FRAME_BYTES) {
@@ -770,9 +1157,13 @@ export class EnsureLifecycleLedger {
 
   private async inject(
     point: EnsureLifecycleLedgerFaultPoint,
-    record: EnsureLifecycleRecord,
+    record: LifecycleLedgerRecord,
   ): Promise<void> {
-    await this.fault?.(point, copyRecord(record))
+    if (record.schema_version === MANAGED_LEDGER_SCHEMA_VERSION) {
+      await this.managedFault?.(point, copyManagedRecord(record))
+    } else {
+      await this.fault?.(point, copyRecord(record))
+    }
   }
 }
 
@@ -996,6 +1387,208 @@ function assertFxAdmissionDecisionCorrelation(
   }
 }
 
+function assertManagedFxAdmissionDecisionCorrelation(
+  record: ManagedLaunchRecord,
+  decision: FxAdmissionDecision,
+  code: EnsureLifecycleLedgerErrorCode,
+): void {
+  const binding = record.fx_final.binding
+  if (binding === null) {
+    throw ledgerError(code, `managed launch ${record.request.ensure_id} has no Fx authority`)
+  }
+  if (
+    decision.launch_id !== record.request.launch_id ||
+    decision.launch_digest !== record.request.launch_digest ||
+    decision.admission_key !== binding.admission_key
+  ) {
+    throw ledgerError(code, "Fx admission changed managed launch correlation")
+  }
+  if (decision.decision.kind === "admitted") {
+    if (record.stage !== "companion_started" && record.stage !== "fx_started") {
+      throw ledgerError(code, `managed Fx admission cannot be retained at ${record.stage}`)
+    }
+    return
+  }
+  if (record.stage !== "manifest_claimed" && record.stage !== "companion_started") {
+    throw ledgerError(code, `managed Fx cancellation cannot be retained at ${record.stage}`)
+  }
+}
+
+function assertManagedFxFinalReceiptCorrelation(
+  record: ManagedLaunchRecord,
+  receipt: FxFinalReceipt,
+  code: EnsureLifecycleLedgerErrorCode,
+): void {
+  const binding = record.fx_final.binding
+  if (
+    MANAGED_STAGES.indexOf(record.stage) < MANAGED_STAGES.indexOf("companion_started") ||
+    record.effects.companion.status !== "started" ||
+    binding === null
+  ) {
+    throw ledgerError(code, `managed launch ${record.request.ensure_id} has no started Companion`)
+  }
+  if (
+    receipt.launch_id !== record.request.launch_id ||
+    receipt.launch_digest !== record.request.launch_digest ||
+    receipt.admission_key !== binding.admission_key
+  ) {
+    throw ledgerError(code, "Fx final receipt changed managed launch correlation")
+  }
+  if (
+    record.effects.fx.status === "started" &&
+    receipt.conversation_id !== record.effects.fx.conversation_id
+  ) {
+    throw ledgerError(code, "Fx final receipt changed the managed Conversation")
+  }
+}
+
+function assertManagedFxFinalAcknowledgementCorrelation(
+  record: ManagedLaunchRecord,
+  acknowledgement: FxFinalReceiptAcknowledgement,
+  code: EnsureLifecycleLedgerErrorCode,
+): void {
+  const receipt = record.fx_final.receipt
+  if (receipt === null) {
+    throw ledgerError(code, `managed launch ${record.request.ensure_id} has no Fx final receipt`)
+  }
+  if (
+    acknowledgement.admission_key !== receipt.admission_key ||
+    acknowledgement.launch_id !== receipt.launch_id ||
+    acknowledgement.launch_digest !== receipt.launch_digest ||
+    acknowledgement.conversation_id !== receipt.conversation_id ||
+    acknowledgement.receipt_id !== receipt.receipt_id ||
+    acknowledgement.receipt_digest !== receipt.receipt_digest
+  ) {
+    throw ledgerError(code, "Fx final acknowledgement changed managed receipt correlation")
+  }
+}
+
+function assertManagedOutcomeCorrelation(
+  record: ManagedLaunchRecord,
+  outcome: ManagedLaunchOutcome,
+): void {
+  const request = record.request
+  for (const field of [
+    "request_id",
+    "workplace_instance_id",
+    "fmx_session",
+    "ensure_id",
+    "ensure_digest",
+    "launch_id",
+    "launch_digest",
+    "agent_id",
+  ] as const) {
+    if (outcome[field] !== request[field]) {
+      throw ledgerError("receipt_conflict", `managed outcome changed ${field}`)
+    }
+  }
+  if (outcome.attempt !== record.attempt) {
+    throw ledgerError("receipt_conflict", "managed outcome changed the exact attempt")
+  }
+  if (outcome.exact_resume_proof !== null) {
+    const launch = request.source.launch_request
+    if (
+      launch.resume.mode !== "exact" ||
+      outcome.exact_resume_proof.conversation_id !== launch.resume.conversation_id ||
+      outcome.exact_resume_proof.state_root !== launch.state_root ||
+      outcome.exact_resume_proof.admission_key !== request.source.admission_key ||
+      outcome.exact_resume_proof.launch_id !== request.launch_id ||
+      outcome.exact_resume_proof.launch_digest !== request.launch_digest
+    ) {
+      throw ledgerError(
+        "receipt_conflict",
+        "managed permanent refusal does not prove the exact requested resume",
+      )
+    }
+  }
+  if (outcome.status === "succeeded") {
+    const decision = record.fx_admission_decision
+    const conversationId = record.effects.fx.status === "started"
+      ? record.effects.fx.conversation_id
+      : null
+    if (
+      record.stage !== "fx_started" ||
+      decision?.decision.kind !== "admitted" ||
+      conversationId === null ||
+      outcome.success.conversation_id !== conversationId ||
+      outcome.success.admission_receipt_id !== decision.receipt_id ||
+      outcome.success.admission_receipt_digest !== decision.receipt_digest
+    ) {
+      throw ledgerError(
+        "receipt_conflict",
+        "managed success does not name the exact retained admission and Conversation",
+      )
+    }
+  }
+}
+
+function assertManagedAcknowledgementCorrelation(
+  record: ManagedLaunchRecord,
+  acknowledgement: ManagedLaunchAcknowledgement,
+): void {
+  const receipt = record.outcome.receipt
+  if (receipt === null) {
+    throw ledgerError(
+      "invalid_acknowledgement",
+      `managed launch ${record.request.ensure_id} has no retained outcome`,
+    )
+  }
+  if (
+    acknowledgement.workplace_instance_id !== receipt.workplace_instance_id ||
+    acknowledgement.fmx_session !== receipt.fmx_session ||
+    acknowledgement.receipt_id !== receipt.receipt_id ||
+    acknowledgement.receipt_digest !== receipt.receipt_digest ||
+    acknowledgement.attempt !== receipt.attempt ||
+    acknowledgement.ensure_id !== receipt.ensure_id ||
+    acknowledgement.ensure_digest !== receipt.ensure_digest ||
+    acknowledgement.launch_id !== receipt.launch_id ||
+    acknowledgement.launch_digest !== receipt.launch_digest ||
+    acknowledgement.agent_id !== receipt.agent_id
+  ) {
+    throw ledgerError(
+      "invalid_acknowledgement",
+      "managed acknowledgement does not name the exact retained outcome",
+    )
+  }
+}
+
+function assertManagedRetryCorrelation(
+  record: ManagedLaunchRecord,
+  retry: ManagedLaunchRetry,
+): void {
+  const request = record.request
+  const outcome = record.outcome.receipt
+  const acknowledgement = record.outcome.acknowledgement
+  if (
+    outcome === null || acknowledgement === null ||
+    outcome.status !== "failed" || outcome.classification === "permanent"
+  ) {
+    throw ledgerError(
+      "invalid_request",
+      "managed retry requires one acknowledged retryable or uncertain outcome",
+    )
+  }
+  if (
+    retry.workplace_instance_id !== request.workplace_instance_id ||
+    retry.fmx_session !== request.fmx_session ||
+    retry.ensure_digest !== request.ensure_digest ||
+    retry.launch_id !== request.launch_id ||
+    retry.launch_digest !== request.launch_digest ||
+    retry.agent_id !== request.agent_id ||
+    retry.prior_attempt !== record.attempt ||
+    retry.next_attempt !== record.attempt + 1 ||
+    retry.prior_receipt_id !== outcome.receipt_id ||
+    retry.prior_receipt_digest !== outcome.receipt_digest
+  ) {
+    throw ledgerError("invalid_request", "managed retry changed immutable launch correlation")
+  }
+}
+
+function managedRetryMatches(record: ManagedLaunchRecord, retry: ManagedLaunchRetry): boolean {
+  const previous = record.outcome_history[retry.prior_attempt - 1]
+  return previous !== undefined && sameCanonical(previous.retry, retry)
+}
+
 function assertFxFinalReceiptCorrelation(
   record: EnsureLifecycleRecord,
   receipt: FxFinalReceipt,
@@ -1123,6 +1716,23 @@ function effectsForClaim(request: EnsureRequest): EnsureLifecycleEffects {
   }
 }
 
+function managedEffectsForClaim(request: ManagedLaunchRequest): ManagedLaunchEffects {
+  const identity = identityFor(request.agent_id)
+  return {
+    workspace: {
+      status: "pending",
+      ...structuredClone(request.workspace),
+    },
+    manifest: { status: "pending" },
+    companion: {
+      status: "pending",
+      session_name: identity.zmxName,
+      pane_id: identity.paneId,
+    },
+    fx: { status: "pending" },
+  }
+}
+
 function advanceRecord(
   record: EnsureLifecycleRecord,
   transition: EnsureLifecycleTransition,
@@ -1216,6 +1826,123 @@ function advanceRecord(
   return next
 }
 
+function advanceManagedRecord(
+  record: ManagedLaunchRecord,
+  transition: ManagedLaunchTransition,
+): ManagedLaunchRecord {
+  const expectedIndex = MANAGED_STAGES.indexOf(record.stage) + 1
+  const target = transition.kind
+  const targetIndex = MANAGED_STAGES.indexOf(target)
+  if (targetIndex < 1) throw ledgerError("invalid_transition", `unknown transition ${target}`)
+  if (record.outcome.receipt !== null) {
+    throw ledgerError(
+      "invalid_transition",
+      `managed launch ${record.request.ensure_id} already has a retained outcome`,
+    )
+  }
+  if (targetIndex <= MANAGED_STAGES.indexOf(record.stage)) {
+    if (managedTransitionMatches(record, transition)) return record
+    throw ledgerError(
+      "invalid_transition",
+      `${transition.kind} conflicts with the durable ${record.stage} state`,
+    )
+  }
+  if (targetIndex !== expectedIndex) {
+    throw ledgerError(
+      "invalid_transition",
+      `cannot advance managed launch ${record.request.ensure_id} from ${record.stage} to ${target}`,
+    )
+  }
+  if (target === "companion_started" && record.fx_final.binding === null) {
+    throw ledgerError(
+      "invalid_transition",
+      `managed launch ${record.request.ensure_id} must bind Fx final authority before Companion start`,
+    )
+  }
+
+  const next = copyManagedRecord(record)
+  next.revision++
+  next.stage = target
+  switch (transition.kind) {
+    case "directory_validated":
+      if (!sameCanonical({
+        kind: "existing_directory",
+        directory: transition.directory,
+        repository: transition.repository,
+        checkout_root: transition.checkout_root,
+        head_commit: transition.head_commit,
+      }, record.request.workspace)) {
+        throw ledgerError(
+          "invalid_transition",
+          "validated existing directory changed the immutable Git identity",
+        )
+      }
+      next.effects.workspace = {
+        status: "validated",
+        ...structuredClone(record.request.workspace),
+      }
+      break
+    case "manifest_claimed":
+      if (transition.agent_id !== record.request.agent_id) {
+        throw ledgerError("invalid_transition", "Manifest claim changed the managed Agent identity")
+      }
+      next.effects.manifest = { status: "claimed", agent_id: transition.agent_id }
+      break
+    case "companion_started": {
+      const identity = identityFor(record.request.agent_id)
+      if (
+        transition.session_name !== identity.zmxName ||
+        transition.pane_id !== identity.paneId
+      ) {
+        throw ledgerError("invalid_transition", "Companion changed the managed Agent identity")
+      }
+      next.effects.companion = {
+        status: "started",
+        session_name: transition.session_name,
+        pane_id: transition.pane_id,
+      }
+      break
+    }
+    case "fx_started":
+      if (record.fx_admission_decision?.decision.kind !== "admitted") {
+        throw ledgerError(
+          "invalid_transition",
+          `managed launch ${record.request.ensure_id} cannot start Fx without admitted authority`,
+        )
+      }
+      if (!isAgentWorkplaceConversationId(transition.conversation_id)) {
+        throw ledgerError("invalid_transition", "managed Fx start returned an invalid Conversation")
+      }
+      next.effects.fx = { status: "started", conversation_id: transition.conversation_id }
+      break
+  }
+  validateManagedRecord(next, `managed launch ${record.request.ensure_id}`)
+  return next
+}
+
+function managedTransitionMatches(
+  record: ManagedLaunchRecord,
+  transition: ManagedLaunchTransition,
+): boolean {
+  switch (transition.kind) {
+    case "directory_validated":
+      return record.effects.workspace.status === "validated" && sameCanonical(
+        record.effects.workspace,
+        { status: "validated", ...record.request.workspace },
+      )
+    case "manifest_claimed":
+      return record.effects.manifest.status === "claimed" &&
+        record.effects.manifest.agent_id === transition.agent_id
+    case "companion_started":
+      return record.effects.companion.status === "started" &&
+        record.effects.companion.session_name === transition.session_name &&
+        record.effects.companion.pane_id === transition.pane_id
+    case "fx_started":
+      return record.effects.fx.status === "started" &&
+        record.effects.fx.conversation_id === transition.conversation_id
+  }
+}
+
 function transitionMatches(
   record: EnsureLifecycleRecord,
   transition: EnsureLifecycleTransition,
@@ -1267,6 +1994,186 @@ function assertReceiptCorrelation(record: EnsureLifecycleRecord, receipt: Ensure
       "receipt_conflict",
       `receipt ${receipt.receipt_id} status does not match ${record.stage}`,
     )
+  }
+}
+
+function validateLedgerRecord(record: LifecycleLedgerRecord, path: string): void {
+  if (record.schema_version === MANAGED_LEDGER_SCHEMA_VERSION) validateManagedRecord(record, path)
+  else validateRecord(record, path)
+}
+
+function validateManagedRecord(record: ManagedLaunchRecord, path: string): void {
+  if (!managedPrivateRecordSchema.safeParse(record).success) {
+    throw ledgerError("corrupt_record", `${path} is not a bounded managed launch record`)
+  }
+  try {
+    parseManagedLaunchRequest(record.request)
+  } catch (error) {
+    const wrapped = ledgerError("corrupt_record", `${path} retains an invalid managed launch request`)
+    wrapped.cause = error
+    throw wrapped
+  }
+  const stageIndex = MANAGED_STAGES.indexOf(record.stage)
+  if (stageIndex < 0 || !sameCanonical(managedEffectsAtStage(record, record.stage), record.effects)) {
+    throw ledgerError("corrupt_record", `${path} effects do not match stage ${record.stage}`)
+  }
+  validateManagedOutcomeTransaction(record, path)
+  validateManagedFxState(record, path)
+  const historicalWrites = record.outcome_history.length * 2
+  const expectedRevision = 1 + stageIndex + historicalWrites + (record.attempt - 1) +
+    (record.outcome.receipt === null ? 0 : 1) +
+    (record.outcome.acknowledgement === null ? 0 : 1) +
+    (record.fx_admission_decision === null ? 0 : 1) +
+    (record.fx_final.binding === null ? 0 : 1) +
+    (record.fx_final.receipt === null ? 0 : 1) +
+    (record.fx_final.acknowledgement === null ? 0 : 1) +
+    (record.fx_final.acknowledgement_applied ? 1 : 0)
+  if (record.revision !== expectedRevision) {
+    throw ledgerError(
+      "corrupt_record",
+      `${path} has revision ${record.revision}; expected ${expectedRevision}`,
+    )
+  }
+}
+
+function managedEffectsAtStage(
+  record: ManagedLaunchRecord,
+  stage: ManagedLaunchLedgerStage,
+): ManagedLaunchEffects {
+  const index = MANAGED_STAGES.indexOf(stage)
+  const claimed = managedEffectsForClaim(record.request)
+  return {
+    workspace: index >= 1 && record.effects.workspace.status === "validated"
+      ? structuredClone(record.effects.workspace)
+      : claimed.workspace,
+    manifest: index >= 2 && record.effects.manifest.status === "claimed"
+      ? structuredClone(record.effects.manifest)
+      : claimed.manifest,
+    companion: index >= 3 && record.effects.companion.status === "started"
+      ? structuredClone(record.effects.companion)
+      : claimed.companion,
+    fx: index >= 4 && record.effects.fx.status === "started"
+      ? structuredClone(record.effects.fx)
+      : claimed.fx,
+  }
+}
+
+function validateManagedOutcomeTransaction(record: ManagedLaunchRecord, path: string): void {
+  if (record.outcome_history.length !== record.attempt - 1) {
+    throw ledgerError("corrupt_record", `${path} managed attempt history is not contiguous`)
+  }
+  for (let index = 0; index < record.outcome_history.length; index++) {
+    const transaction = record.outcome_history[index]!
+    if (
+      transaction.receipt.status !== "failed" ||
+      transaction.receipt.classification === "permanent" ||
+      transaction.receipt.attempt !== index + 1
+    ) {
+      throw ledgerError("corrupt_record", `${path} retains a non-retryable historical attempt`)
+    }
+    try {
+      const retry = parseManagedLaunchRetry(transaction.retry)
+      if (retry.next_attempt !== index + 2) {
+        throw new Error("managed retry attempt is not contiguous")
+      }
+      assertManagedRetryCorrelation(
+        { ...record, attempt: index + 1, outcome: transaction },
+        retry,
+      )
+    } catch (error) {
+      const wrapped = ledgerError("corrupt_record", `${path} retains an invalid managed retry`)
+      wrapped.cause = error
+      throw wrapped
+    }
+    validateManagedOneOutcome(
+      { ...record, attempt: index + 1, outcome: transaction },
+      transaction,
+      `${path} attempt ${index + 1}`,
+    )
+  }
+  validateManagedOneOutcome(record, record.outcome, path)
+}
+
+function validateManagedOneOutcome(
+  record: ManagedLaunchRecord,
+  transaction: ManagedLaunchOutcomeTransaction,
+  path: string,
+): void {
+  const { receipt, acknowledgement } = transaction
+  if (receipt !== null) {
+    try {
+      const parsed = parseManagedLaunchOutcome(receipt)
+      assertManagedOutcomeCorrelation(record, parsed)
+    } catch (error) {
+      const wrapped = ledgerError("corrupt_record", `${path} retains an invalid managed outcome`)
+      wrapped.cause = error
+      throw wrapped
+    }
+  }
+  if (acknowledgement !== null) {
+    try {
+      const parsed = parseManagedLaunchAcknowledgement(acknowledgement)
+      assertManagedAcknowledgementCorrelation(record, parsed)
+    } catch (error) {
+      const wrapped = ledgerError(
+        "corrupt_record",
+        `${path} retains an invalid managed outcome acknowledgement`,
+      )
+      wrapped.cause = error
+      throw wrapped
+    }
+  }
+  if (receipt === null && acknowledgement !== null) {
+    throw ledgerError("corrupt_record", `${path} acknowledges an absent managed outcome`)
+  }
+}
+
+function validateManagedFxState(record: ManagedLaunchRecord, path: string): void {
+  const transaction = record.fx_final
+  try {
+    if (transaction.binding !== null) parseFxFinalReceiptAuthorityBinding(transaction.binding)
+    if (
+      MANAGED_STAGES.indexOf(record.stage) >= MANAGED_STAGES.indexOf("companion_started") &&
+      transaction.binding === null
+    ) {
+      throw ledgerError("corrupt_record", `${path} started Companion without Fx authority`)
+    }
+    if (record.fx_admission_decision !== null) {
+      const decision = parseFxAdmissionDecision(record.fx_admission_decision)
+      assertManagedFxAdmissionDecisionCorrelation(record, decision, "corrupt_record")
+    } else if (record.stage === "fx_started") {
+      throw ledgerError("corrupt_record", `${path} started Fx without its admission decision`)
+    }
+    if (transaction.receipt !== null) {
+      const receipt = parseFxFinalReceipt(transaction.receipt)
+      assertManagedFxFinalReceiptCorrelation(record, receipt, "corrupt_record")
+    }
+    if (transaction.acknowledgement !== null) {
+      const acknowledgement = parseFxFinalReceiptAcknowledgement(transaction.acknowledgement)
+      assertManagedFxFinalAcknowledgementCorrelation(
+        record,
+        acknowledgement,
+        "corrupt_record",
+      )
+    }
+    if (
+      transaction.binding === null &&
+      (transaction.receipt !== null || transaction.acknowledgement !== null ||
+        transaction.acknowledgement_applied)
+    ) {
+      throw ledgerError("corrupt_record", `${path} retains Fx final state without authority`)
+    }
+    if (transaction.receipt === null && transaction.acknowledgement !== null) {
+      throw ledgerError("corrupt_record", `${path} acknowledges an absent Fx final receipt`)
+    }
+    if (transaction.acknowledgement === null && transaction.acknowledgement_applied) {
+      throw ledgerError("corrupt_record", `${path} applies an absent Fx final acknowledgement`)
+    }
+  } catch (error) {
+    if (error instanceof EnsureLifecycleLedgerError && error.code === "corrupt_record") throw error
+    const wrapped = ledgerError("corrupt_record", `${path} contains invalid managed Fx state`)
+    wrapped.cause = error
+    throw wrapped
   }
 }
 
@@ -1562,6 +2469,68 @@ function validateIndex(records: EnsureLifecycleRecord[]): void {
   }
 }
 
+function validateManagedIndex(
+  legacy: EnsureLifecycleRecord[],
+  managed: ManagedLaunchRecord[],
+): void {
+  const ensureIds = new Set(legacy.map((record) => record.request.ensure_id))
+  const launchIds = new Set(legacy.map((record) => record.request.launch_id))
+  const agentIds = new Set(legacy.map((record) => record.request.agent_id))
+  const receiptIds = new Set(legacy.flatMap((record) => [
+    ...record.receipts.map((receipt) => receipt.receipt_id),
+    ...(record.fx_admission_decision === null ? [] : [record.fx_admission_decision.receipt_id]),
+    ...(record.fx_final.receipt === null ? [] : [record.fx_final.receipt.receipt_id]),
+  ]))
+  const acknowledgementIds = new Set(legacy.flatMap((record) => [
+    ...record.acknowledgements.map((value) => value.acknowledgement_id),
+    ...(record.fx_final.acknowledgement === null
+      ? []
+      : [record.fx_final.acknowledgement.acknowledgement_id]),
+  ]))
+  const admissionKeys = new Set(legacy.flatMap((record) =>
+    record.fx_final.binding === null ? [] : [record.fx_final.binding.admission_key]))
+  for (const record of managed) {
+    validateManagedRecord(record, `managed launch ${record.request.ensure_id}`)
+    assertUnique(ensureIds, record.request.ensure_id, "ensure id")
+    assertUnique(launchIds, record.request.launch_id, "launch id")
+    assertUnique(agentIds, record.request.agent_id, "Agent id")
+    for (const transaction of record.outcome_history) {
+      assertUnique(receiptIds, transaction.receipt.receipt_id, "receipt id")
+      assertUnique(
+        acknowledgementIds,
+        transaction.acknowledgement!.acknowledgement_id,
+        "acknowledgement id",
+      )
+    }
+    if (record.outcome.receipt !== null) {
+      assertUnique(receiptIds, record.outcome.receipt.receipt_id, "receipt id")
+    }
+    if (record.fx_admission_decision !== null) {
+      assertUnique(receiptIds, record.fx_admission_decision.receipt_id, "receipt id")
+    }
+    if (record.fx_final.receipt !== null) {
+      assertUnique(receiptIds, record.fx_final.receipt.receipt_id, "receipt id")
+    }
+    if (record.outcome.acknowledgement !== null) {
+      assertUnique(
+        acknowledgementIds,
+        record.outcome.acknowledgement.acknowledgement_id,
+        "acknowledgement id",
+      )
+    }
+    if (record.fx_final.acknowledgement !== null) {
+      assertUnique(
+        acknowledgementIds,
+        record.fx_final.acknowledgement.acknowledgement_id,
+        "acknowledgement id",
+      )
+    }
+    if (record.fx_final.binding !== null) {
+      assertUnique(admissionKeys, record.fx_final.binding.admission_key, "Fx admission key")
+    }
+  }
+}
+
 function assertSecondaryClaimsAvailable(
   records: EnsureLifecycleRecord[],
   request: EnsureRequest,
@@ -1584,6 +2553,75 @@ function assertSecondaryClaimsAvailable(
   }
 }
 
+function assertCrossClaimAvailable(
+  records: ManagedLaunchRecord[],
+  request: EnsureRequest,
+): void {
+  for (const record of records) {
+    if (
+      record.request.launch_id === request.launch_id ||
+      record.request.agent_id === request.agent_id
+    ) {
+      throw ledgerError(
+        "conflicting_claim",
+        `frozen ensure ${request.ensure_id} collides with managed launch ${record.request.ensure_id}`,
+      )
+    }
+  }
+}
+
+function assertManagedSecondaryClaimsAvailable(
+  index: RecordIndex,
+  request: ManagedLaunchRequest,
+): void {
+  for (const record of [...index.records, ...index.managedRecords]) {
+    if (
+      record.request.launch_id === request.launch_id ||
+      record.request.agent_id === request.agent_id
+    ) {
+      throw ledgerError(
+        "conflicting_claim",
+        `managed launch ${request.ensure_id} collides with ensure ${record.request.ensure_id}`,
+      )
+    }
+  }
+}
+
+function assertAnyReceiptIdAvailable(index: RecordIndex, receiptId: string): void {
+  assertReceiptIdAvailable(index.records, receiptId)
+  for (const record of index.managedRecords) {
+    if (
+      record.outcome_history.some((value) => value.receipt.receipt_id === receiptId) ||
+      record.outcome.receipt?.receipt_id === receiptId ||
+      record.fx_admission_decision?.receipt_id === receiptId ||
+      record.fx_final.receipt?.receipt_id === receiptId
+    ) {
+      throw ledgerError("receipt_conflict", `receipt id ${receiptId} belongs to another receipt`)
+    }
+  }
+}
+
+function assertAnyAcknowledgementIdAvailable(
+  index: RecordIndex,
+  acknowledgementId: string,
+): void {
+  assertAcknowledgementIdAvailable(index.records, acknowledgementId)
+  for (const record of index.managedRecords) {
+    if (
+      record.outcome_history.some(
+        (value) => value.acknowledgement?.acknowledgement_id === acknowledgementId,
+      ) ||
+      record.outcome.acknowledgement?.acknowledgement_id === acknowledgementId ||
+      record.fx_final.acknowledgement?.acknowledgement_id === acknowledgementId
+    ) {
+      throw ledgerError(
+        "acknowledgement_conflict",
+        `acknowledgement id ${acknowledgementId} belongs to another acknowledgement`,
+      )
+    }
+  }
+}
+
 function assertUnique(values: Set<string>, value: string, label: string): void {
   if (values.has(value)) throw ledgerError("corrupt_record", `ensure ledger repeats ${label} ${value}`)
   values.add(value)
@@ -1592,6 +2630,12 @@ function assertUnique(values: Set<string>, value: string, label: string): void {
 function requireRecord(index: RecordIndex, ensureId: string): EnsureLifecycleRecord {
   const record = index.byEnsureId.get(ensureId)
   if (!record) throw ledgerError("conflicting_claim", `unknown ensure id ${ensureId}`)
+  return record
+}
+
+function requireManagedRecord(index: RecordIndex, ensureId: string): ManagedLaunchRecord {
+  const record = index.managedByEnsureId.get(ensureId)
+  if (!record) throw ledgerError("conflicting_claim", `unknown managed ensure id ${ensureId}`)
   return record
 }
 
@@ -1604,7 +2648,7 @@ function requireRecordIdentity(index: RecordIndex, ensureId: string): Stats {
 async function readRecord(
   path: string,
   uid: number,
-): Promise<{ identity: Stats; record: EnsureLifecycleRecord }> {
+): Promise<{ identity: Stats; record: LifecycleLedgerRecord }> {
   const { bytes, initial } = await readSafeFile(path, uid)
   try {
     if (bytes.byteLength < 2 || bytes[bytes.byteLength - 1] !== 0x0a) {
@@ -1615,6 +2659,14 @@ async function readRecord(
     const canonical = encodeCanonicalJson(value)
     if (!Buffer.from(canonical).equals(payload)) {
       throw ledgerError("corrupt_record", `${path} is not canonical JSON`)
+    }
+    const managed = managedPrivateRecordSchema.safeParse(value)
+    if (managed.success) {
+      const record = decodeManagedRecord(managed.data, path)
+      if (initial.size !== bytes.byteLength) {
+        throw ledgerError("corrupt_record", `${path} changed while being read`)
+      }
+      return { identity: initial, record }
     }
     const parsed = privateRecordSchema.safeParse(value)
     if (!parsed.success) {
@@ -1686,6 +2738,58 @@ async function readRecord(
     wrapped.cause = error
     throw wrapped
   }
+}
+
+function decodeManagedRecord(
+  input: z.infer<typeof managedPrivateRecordSchema>,
+  path: string,
+): ManagedLaunchRecord {
+  const request = parseManagedLaunchRequest(input.request)
+  const binding = input.fx_final.binding === null
+    ? null
+    : parseFxFinalReceiptAuthorityBinding(input.fx_final.binding)
+  const admissionDecision = input.fx_admission_decision === null
+    ? null
+    : parseFxAdmissionDecision(input.fx_admission_decision as FxAdmissionDecision)
+  const finalReceipt = input.fx_final.receipt === null
+    ? null
+    : parseFxFinalReceipt(input.fx_final.receipt as FxFinalReceipt)
+  const finalAcknowledgement = input.fx_final.acknowledgement === null
+    ? null
+    : parseFxFinalReceiptAcknowledgement(
+      input.fx_final.acknowledgement as FxFinalReceiptAcknowledgement,
+    )
+  const record: ManagedLaunchRecord = {
+    schema_id: LEDGER_SCHEMA_ID,
+    schema_version: MANAGED_LEDGER_SCHEMA_VERSION,
+    revision: input.revision,
+    request,
+    stage: input.stage,
+    effects: structuredClone(input.effects),
+    attempt: input.attempt,
+    outcome_history: input.outcome_history.map((transaction) => ({
+      receipt: parseManagedLaunchOutcome(transaction.receipt),
+      acknowledgement: parseManagedLaunchAcknowledgement(transaction.acknowledgement),
+      retry: parseManagedLaunchRetry(transaction.retry),
+    })),
+    outcome: {
+      receipt: input.outcome.receipt === null
+        ? null
+        : parseManagedLaunchOutcome(input.outcome.receipt),
+      acknowledgement: input.outcome.acknowledgement === null
+        ? null
+        : parseManagedLaunchAcknowledgement(input.outcome.acknowledgement),
+    },
+    fx_admission_decision: admissionDecision,
+    fx_final: {
+      binding,
+      receipt: finalReceipt,
+      acknowledgement: finalAcknowledgement,
+      acknowledgement_applied: input.fx_final.acknowledgement_applied,
+    },
+  }
+  validateManagedRecord(record, path)
+  return record
 }
 
 async function readSafeFile(path: string, uid: number): Promise<{ bytes: Buffer; initial: Stats }> {
@@ -1880,6 +2984,10 @@ function sameCanonical(left: unknown, right: unknown): boolean {
 }
 
 function copyRecord(record: EnsureLifecycleRecord): EnsureLifecycleRecord {
+  return structuredClone(record)
+}
+
+function copyManagedRecord(record: ManagedLaunchRecord): ManagedLaunchRecord {
   return structuredClone(record)
 }
 

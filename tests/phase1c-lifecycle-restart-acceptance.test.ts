@@ -112,7 +112,10 @@ test("restarts durable Phase 1C records exactly once and refuses a foreign repla
       emission: "replay_only",
       crashAfter: "acknowledgement_intent_saved",
     })
-    second.runtime.bindReceiptPublisher((receipt) => publishFixtureReceipt(secondExtension!, receipt, true))
+    second.runtime.bindReceiptPublisher((receipt) => {
+      if (receipt.message_type === "launch_outcome") return
+      return publishFixtureReceipt(secondExtension!, receipt, true)
+    })
     const source = await fixtureSourceAuthority(fixtureState)
     expect((await second.sourceLedger.inspect(source)).ensure_bound).toBe(false)
     await second.runtime.recover()
@@ -154,7 +157,10 @@ test("restarts durable Phase 1C records exactly once and refuses a foreign repla
       counts: shared,
       emission: "replay_only",
     })
-    third.runtime.bindReceiptPublisher((receipt) => publishFixtureReceipt(thirdExtension!, receipt))
+    third.runtime.bindReceiptPublisher((receipt) => {
+      if (receipt.message_type === "launch_outcome") return
+      return publishFixtureReceipt(thirdExtension!, receipt)
+    })
     await third.runtime.recover()
     await waitFor(async () => (await receivedEnsureReceipts(fixtureLog)).length === 2)
 

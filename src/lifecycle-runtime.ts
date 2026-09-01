@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { realpath } from "node:fs/promises"
 import { join } from "node:path"
 import type { AgentExit } from "./agent-transport.ts"
 import {
@@ -16,6 +17,8 @@ import {
   type FxAdmissionDecision,
   type FxFinalReceipt,
   type FxFinalReceiptAcknowledgement,
+  type FxFinalReceiptAuthorityBinding,
+  type ManagedLaunchRecord,
 } from "./ensure-lifecycle-ledger.ts"
 import { buildEnsureLifecycleReceipt } from "./ensure-lifecycle-receipt.ts"
 import {
@@ -38,11 +41,13 @@ import {
 } from "./fx-environment.ts"
 import {
   FxLaunchProviderClient,
+  FxLaunchProviderError,
   type FxAdmissionCancelRequest,
   type FxLaunchProviderBuild,
   type FxLaunchProviderFinalAuthority,
   type FxLaunchProviderFinalOutcome,
   type FxLaunchProviderInvocation,
+  type FxLaunchProviderResumeStatus,
 } from "./fx-launch-provider.ts"
 import {
   FxWorkControlClient,
@@ -68,7 +73,18 @@ import {
   type CancelledFxAdmissionDecision,
   type LifecycleAdmissionOutcome,
   type LifecycleCoordinatorPorts,
+  type ManagedLaunchFailure,
 } from "./lifecycle-coordinator.ts"
+import { readGitContext } from "./git-context.ts"
+import {
+  managedLaunchSourceBytes,
+  type ManagedLaunchAcknowledgement,
+  type ManagedLaunchCause,
+  type ManagedLaunchOutcome,
+  type ManagedLaunchRequest,
+  type ManagedLaunchRetry,
+  type ManagedLaunchStage,
+} from "./managed-launch-contract.ts"
 import type {
   ManagedAgentClaim,
   ManagedAgentInvocation,
@@ -83,6 +99,7 @@ import type {
   RuntimeExtensionLifecycleReceipt,
 } from "./runtime-extension.ts"
 import type { CompanionCommand } from "./zmx-command.ts"
+import { readHeadCommit } from "./worktree.ts"
 
 type MaybePromise<T> = T | Promise<T>
 
@@ -99,7 +116,7 @@ export type LifecycleRuntimeMultiplexer = {
 }
 
 export type LifecycleReceiptPublisher = (
-  receipt: RuntimeExtensionLifecycleReceipt,
+  receipt: RuntimeExtensionLifecycleReceipt | ManagedLaunchOutcome,
 ) => MaybePromise<void>
 
 export type LifecycleRuntimeRoots = {
@@ -113,7 +130,7 @@ export type LifecycleRuntimeRoots = {
 type LaunchProvider = Pick<
   FxLaunchProviderClient,
   "prepare" | "build" | "inspect" | "cancel" | "recordFinal" | "acknowledgeFinal"
->
+> & Partial<Pick<FxLaunchProviderClient, "resumeStatus">>
 
 type WorktreeCreator = Pick<ExactWorktreeCreator, "create">
 type RetirementEngine = Pick<ExactAgentRetirement, "end" | "acknowledge">
@@ -281,6 +298,16 @@ export class LifecycleRuntime {
     return this.coordinator.acceptInlineSource(source)
   }
 
+  acceptManagedLaunch(
+    message: ManagedLaunchRequest | ManagedLaunchAcknowledgement | ManagedLaunchRetry,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted()
+    this.assertOpen()
+    this.assertSession(message)
+    return this.coordinator.acceptManaged(message)
+  }
+
   async recover(): Promise<void> {
     this.assertOpen()
     if (this.recoveryOperation !== null) return this.recoveryOperation
@@ -298,6 +325,7 @@ export class LifecycleRuntime {
     // crash after the projection but before its next durable boundary must
     // leave the exact Agent/work-control identity restartable.
     const durable = await this.ensureLedger.list()
+    const managed = await this.ensureLedger.listManaged()
     if (this.closed) return
     const app = this.requireMultiplexer()
     for (const record of durable) {
@@ -322,6 +350,24 @@ export class LifecycleRuntime {
         await this.retirementLedger.get(record.request.ensure_id),
       )
       if (this.closed) return
+    }
+    for (const record of managed) {
+      if (this.closed) return
+      if (record.stage !== "manifest_claimed") continue
+      const existing = this.options.manifest.get(record.request.agent_id)
+      const workControl = existing?.workControl ?? mintFxWorkControlBinding(
+        this.options.runtimeSocketPath,
+        record.request.agent_id,
+      )
+      await app.projectManagedAgent({
+        agentId: record.request.agent_id,
+        cwd: record.request.workspace.directory,
+        fxPath: this.options.fxPath,
+        fxArgs: existing?.fxArgs ?? null,
+        workControl,
+        createdAt: existing?.createdAt,
+        focus: false,
+      })
     }
     if (this.closed) return
     await this.coordinator.recover()
@@ -514,7 +560,371 @@ export class LifecycleRuntime {
         ensure: async (record) => buildEnsureLifecycleReceipt(record),
         publish: (receipt) => this.publish(receipt),
       },
+      managed: {
+        existingDirectory: {
+          validate: (request) => this.managedPort("existing_directory", () =>
+            this.validateManagedDirectory(request)),
+        },
+        manifest: {
+          claim: (request) => this.managedPort("manifest_claim", async () => {
+            const existing = this.options.manifest.get(request.agent_id)
+            const binding = existing?.workControl ?? mintFxWorkControlBinding(
+              this.options.runtimeSocketPath,
+              request.agent_id,
+            )
+            await this.requireMultiplexer().projectManagedAgent({
+              agentId: request.agent_id,
+              cwd: request.workspace.directory,
+              fxPath: this.options.fxPath,
+              fxArgs: null,
+              workControl: binding,
+            })
+          }),
+          workControl: async (agentId) => this.requireWorkControl(agentId),
+          protect: async (agentIds) => {
+            for (const agentId of agentIds) {
+              const entry = this.options.manifest.get(agentId)
+              if (entry?.workControl === null) {
+                throw new Error(`managed Agent ${agentId} lost its Work-control authority`)
+              }
+            }
+          },
+        },
+        launch: {
+          prepare: ({ record, workControl }) => this.managedPort(
+            "launch_provider",
+            () => this.prepareManagedLaunch(record, workControl),
+          ),
+        },
+        companion: {
+          start: ({ record, invocation }) => this.managedPort(
+            "companion_start",
+            () => this.requireMultiplexer().startManagedAgent(
+              record.request.agent_id,
+              invocation as ManagedAgentInvocation,
+            ),
+          ),
+        },
+        workControl: {
+          admitInitial: ({ binding, text, request }) => this.managedPort(
+            "fx_admission",
+            async () => {
+              const conversationId = this.preparedConversation(request.ensure_id)
+              try {
+                const admission = await this.workControl.request(
+                  binding,
+                  "work.queue",
+                  { text },
+                  this.workAbort.signal,
+                )
+                return { admission, conversationId }
+              } catch (error) {
+                if (
+                  error instanceof FxWorkControlError &&
+                  (error.code === "unavailable" || error.code === "timeout")
+                ) return null
+                throw error
+              }
+            },
+          ),
+        },
+        admission: {
+          import: ({ record, delivered }) => this.managedPort(
+            "fx_admission",
+            () => this.importManagedAdmission(record, delivered),
+          ),
+        },
+        classify: (error, record) => this.classifyManagedFailure(error, record),
+        outcomes: {
+          publish: (outcome) => this.publish(outcome),
+        },
+      },
       onError: (error, ensureId) => this.report(error, ensureId),
+    }
+  }
+
+  private async validateManagedDirectory(request: ManagedLaunchRequest): Promise<{
+    directory: string
+    repository: string
+    checkoutRoot: string
+    headCommit: string
+  }> {
+    let directory: string
+    try {
+      directory = await realpath(request.workspace.directory)
+    } catch (error) {
+      throw new ManagedExistingDirectoryError("existing_directory_unavailable", error)
+    }
+    if (directory !== request.workspace.directory) {
+      throw new ManagedExistingDirectoryError("git_identity_changed")
+    }
+    let context: Awaited<ReturnType<typeof readGitContext>>
+    let headCommit: string
+    try {
+      context = await readGitContext(directory)
+      headCommit = await readHeadCommit(directory)
+    } catch (error) {
+      throw new ManagedExistingDirectoryError("git_identity_changed", error)
+    }
+    if (
+      context === null ||
+      context.mainRoot !== request.workspace.repository ||
+      context.root !== request.workspace.checkout_root ||
+      headCommit !== request.workspace.head_commit
+    ) {
+      throw new ManagedExistingDirectoryError("git_identity_changed")
+    }
+    return {
+      directory,
+      repository: context.mainRoot,
+      checkoutRoot: context.root,
+      headCommit,
+    }
+  }
+
+  private async prepareManagedLaunch(
+    record: ManagedLaunchRecord,
+    workControl: FxWorkControlBinding,
+  ): Promise<{
+    invocation: ManagedAgentInvocation
+    conversationId: string
+    finalReceiptAuthority: FxFinalReceiptAuthorityBinding
+  }> {
+    const request = record.request
+    const source = request.source
+    const launchReceipt = await this.provider.prepare(source.launch_request)
+    if (
+      launchReceipt.request_id !== source.launch_request.request_id ||
+      launchReceipt.launch_id !== request.launch_id ||
+      launchReceipt.launch_digest !== request.launch_digest ||
+      launchReceipt.admission_key !== source.admission_key ||
+      launchReceipt.status !== "accepted"
+    ) {
+      throw new Error("Fx launch provider changed the exact managed launch correlation")
+    }
+    if (
+      source.launch_request.resume.mode === "exact" &&
+      !managedProcessMayHaveStarted(record)
+    ) {
+      const resumeStatus = await this.provider.resumeStatus?.({
+        stateRoot: source.launch_request.state_root,
+        admissionKey: source.admission_key,
+        launchDigest: request.launch_digest,
+        launchId: request.launch_id,
+      }) ?? (() => {
+        throw new FxLaunchProviderError(
+          "resume_status_unavailable",
+          "Fx launch provider has no versioned resume-status authority",
+        )
+      })()
+      if (resumeStatus.conversationId !== source.launch_request.resume.conversation_id) {
+        throw new Error("Fx launch provider changed the exact managed resume Conversation")
+      }
+      if (
+        resumeStatus.status === "unavailable" &&
+        resumeStatus.semanticDecision === "exact_resume_unavailable"
+      ) {
+        throw new ManagedExactResumeUnavailable({
+          ...resumeStatus,
+          status: "unavailable",
+          semanticDecision: "exact_resume_unavailable",
+        })
+      }
+    }
+    const bytes = managedLaunchSourceBytes(request)
+    const controls = parseInlineLaunchControls(bytes.launchControls)
+    const build: FxLaunchProviderBuild = {
+      stateRoot: source.launch_request.state_root,
+      admissionKey: source.admission_key,
+      launchDigest: request.launch_digest,
+      launchId: request.launch_id,
+      mode: "initial",
+      remainingGlobalArgs: controls.remaining_global_args,
+      remainingLaunchControlsDigest:
+        source.launch_request.remaining_launch_controls_digest,
+    }
+    const provider = await this.provider.build(build)
+    if (provider.mode !== "initial") {
+      throw new Error("Fx launch provider changed the exact managed recovery mode")
+    }
+    if (provider.cwd !== request.workspace.directory) {
+      throw new Error("Fx launch provider changed the exact managed existing directory")
+    }
+    if (provider.conversationId !== request.fx_conversation.resume_conversation_id &&
+      request.fx_conversation.resume_conversation_id !== null) {
+      throw new Error("Fx launch provider changed the exact managed resume Conversation")
+    }
+    this.preparedConversations.set(request.ensure_id, provider.conversationId)
+    return {
+      invocation: this.managedLaunchInvocation(record, workControl, provider),
+      conversationId: provider.conversationId,
+      finalReceiptAuthority: {
+        admission_key: source.admission_key,
+        state_root: source.launch_request.state_root,
+      },
+    }
+  }
+
+  private managedLaunchInvocation(
+    record: ManagedLaunchRecord,
+    workControl: FxWorkControlBinding,
+    provider: FxLaunchProviderInvocation,
+  ): ManagedAgentInvocation {
+    const request = record.request
+    const entry = this.options.manifest.get(request.agent_id)
+    if (entry === null) throw new Error(`managed Agent is not claimed: ${request.agent_id}`)
+    const parent = { ...(this.options.environment ?? process.env) }
+    delete parent.FX_MODEL
+    delete parent.FX_EFFORT
+    const model = request.source.launch_request.model ?? this.options.agentDefaults?.model
+    const effort = request.source.launch_request.effort ?? this.options.agentDefaults?.effort
+    if (
+      request.source.launch_request.model !== undefined &&
+      provider.env.FX_MODEL !== undefined &&
+      provider.env.FX_MODEL !== request.source.launch_request.model
+    ) {
+      throw new Error("Fx launch provider changed the explicit managed model")
+    }
+    if (
+      request.source.launch_request.effort !== undefined &&
+      provider.env.FX_EFFORT !== undefined &&
+      provider.env.FX_EFFORT !== request.source.launch_request.effort
+    ) {
+      throw new Error("Fx launch provider changed the explicit managed effort")
+    }
+    const base = createFxEnvironment(
+      parent,
+      entry.displayId,
+      provider.cwd,
+      this.options.runtimeSocketPath,
+      model === undefined && effort === undefined ? null : { model, effort },
+      this.adeBinding(request.agent_id),
+      workControl,
+    )
+    const env = { ...base, ...provider.env }
+    if (model !== undefined) env.FX_MODEL = model
+    if (effort !== undefined) env.FX_EFFORT = effort
+    return {
+      command: [this.options.fxPath, ...provider.command],
+      cwd: provider.cwd,
+      env: stringEnvironment(env),
+    }
+  }
+
+  private async importManagedAdmission(
+    record: ManagedLaunchRecord,
+    delivered: Readonly<{ admission: FxWorkControlResult; conversationId: string }> | null,
+  ): Promise<LifecycleAdmissionOutcome> {
+    const authority = await this.provider.inspect(managedCorrelationFor(record))
+    if (authority.finalReceipt !== null) {
+      return { kind: "final", receipt: exactFinalReceipt(authority.finalReceipt) }
+    }
+    const decision = authority.decision === null
+      ? null
+      : exactAdmissionDecision(authority.decision)
+    if (decision === null) return { kind: "pending" }
+    if (decision.decision.kind === "cancelled_before_start") {
+      return { kind: "cancelled_before_start", decision: decision as CancelledFxAdmissionDecision }
+    }
+    return {
+      kind: "admitted",
+      decision: decision as AdmittedFxAdmissionDecision,
+      conversationId: delivered?.conversationId ?? this.preparedConversation(record.request.ensure_id),
+    }
+  }
+
+  private async managedPort<T>(
+    stage: ManagedLaunchStage,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      if (error instanceof ManagedRuntimePortError) throw error
+      throw new ManagedRuntimePortError(stage, error)
+    }
+  }
+
+  private classifyManagedFailure(
+    thrown: unknown,
+    record: ManagedLaunchRecord,
+  ): ManagedLaunchFailure {
+    const stage = thrown instanceof ManagedRuntimePortError
+      ? thrown.stage
+      : managedStageForRecord(record)
+    const error = thrown instanceof ManagedRuntimePortError ? thrown.original : thrown
+    if (stage === "existing_directory") {
+      return {
+        classification: "retryable",
+        stage,
+        cause: error instanceof ManagedExistingDirectoryError
+          ? error.managedCause
+          : "existing_directory_unavailable",
+        processCertainty: "not_started",
+        exactResumeProof: null,
+      }
+    }
+    if (stage === "manifest_claim") {
+      return {
+        classification: "retryable",
+        stage,
+        cause: "manifest_claim_failed",
+        processCertainty: "not_started",
+        exactResumeProof: null,
+      }
+    }
+    if (stage === "launch_provider") {
+      // Provider v1 diagnostic names never become policy. Only the strict v2
+      // semantic decision, while fmx still proves no process effect, can make
+      // an exact-resume refusal permanent.
+      if (error instanceof ManagedExactResumeUnavailable && !managedProcessMayHaveStarted(record)) {
+        return {
+          classification: "permanent",
+          stage,
+          cause: "exact_resume_refused",
+          processCertainty: "not_started",
+          exactResumeProof: {
+            kind: "exact_resume_refused",
+            authority: error.status.authority,
+            semantic_decision: error.status.semanticDecision,
+            status: error.status.status,
+            decision_id: error.status.decisionId,
+            decision_digest: error.status.decisionDigest,
+            admission_key: error.status.admissionKey,
+            conversation_id: error.status.conversationId,
+            launch_digest: error.status.launchDigest,
+            launch_id: error.status.launchId,
+            state_root: error.status.stateRoot,
+          },
+        }
+      }
+      return {
+        classification: "retryable",
+        stage,
+        cause: "launch_provider_unavailable",
+        processCertainty: "not_started",
+        exactResumeProof: null,
+      }
+    }
+    if (stage === "companion_start") {
+      return {
+        classification: "uncertain",
+        stage,
+        cause: "companion_start_uncertain",
+        processCertainty: "may_have_started",
+        exactResumeProof: null,
+      }
+    }
+    return {
+      classification: error instanceof FxWorkControlError || error instanceof FxLaunchProviderError
+        ? "retryable"
+        : "uncertain",
+      stage: "fx_admission",
+      cause: error instanceof FxWorkControlError || error instanceof FxLaunchProviderError
+        ? "fx_admission_unavailable"
+        : "internal_failure",
+      processCertainty: "started",
+      exactResumeProof: null,
     }
   }
 
@@ -883,7 +1293,7 @@ export class LifecycleRuntime {
   }
 
   private async publish(
-    receipt: RuntimeExtensionLifecycleReceipt | EndReceipt | CleanupReceipt,
+    receipt: RuntimeExtensionLifecycleReceipt | EndReceipt | CleanupReceipt | ManagedLaunchOutcome,
   ): Promise<void> {
     if (this.closed) return
     const publish = this.receiptPublisher
@@ -891,7 +1301,7 @@ export class LifecycleRuntime {
     // background effect before the host binds its publisher; leave that
     // receipt pending for the next recovery/replay pass.
     if (publish === null) return
-    await publish(receipt as RuntimeExtensionLifecycleReceipt)
+    await publish(receipt as RuntimeExtensionLifecycleReceipt | ManagedLaunchOutcome)
   }
 
   private async replayEnsureReceipts(): Promise<void> {
@@ -1027,6 +1437,41 @@ function correlationFor(record: EnsureLifecycleRecord) {
   }
 }
 
+function managedCorrelationFor(record: ManagedLaunchRecord) {
+  const binding = record.fx_final.binding
+  if (binding === null) {
+    throw new Error(`managed launch ${record.request.ensure_id} has no Fx final authority`)
+  }
+  return {
+    stateRoot: binding.state_root,
+    admissionKey: binding.admission_key,
+    launchDigest: record.request.launch_digest,
+    launchId: record.request.launch_id,
+  }
+}
+
+function managedStageForRecord(record: ManagedLaunchRecord): ManagedLaunchStage {
+  switch (record.stage) {
+    case "claimed":
+      return "existing_directory"
+    case "directory_validated":
+      return "manifest_claim"
+    case "manifest_claimed":
+      return "launch_provider"
+    case "companion_started":
+    case "fx_started":
+      return "fx_admission"
+  }
+}
+
+function managedProcessMayHaveStarted(record: ManagedLaunchRecord): boolean {
+  return record.stage === "companion_started" || record.stage === "fx_started" ||
+    record.outcome_history.some(({ receipt }) =>
+      receipt.process_certainty === "may_have_started" ||
+      receipt.process_certainty === "started"
+    )
+}
+
 function requireFinalBinding(record: EnsureLifecycleRecord) {
   const binding = record.fx_final.binding
   if (binding === null) throw new Error(`ensure ${record.request.ensure_id} has no Fx final authority`)
@@ -1139,4 +1584,38 @@ function stringEnvironment(environment: NodeJS.ProcessEnv): Record<string, strin
   return Object.fromEntries(
     Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined),
   )
+}
+
+class ManagedRuntimePortError extends Error {
+  constructor(
+    readonly stage: ManagedLaunchStage,
+    readonly original: unknown,
+  ) {
+    super(`managed launch failed during ${stage}`)
+    this.name = "ManagedRuntimePortError"
+  }
+}
+
+class ManagedExistingDirectoryError extends Error {
+  constructor(
+    readonly managedCause: Extract<
+      ManagedLaunchCause,
+      "existing_directory_unavailable" | "git_identity_changed"
+    >,
+    options?: unknown,
+  ) {
+    super(`managed existing-directory validation failed: ${managedCause}`)
+    this.name = "ManagedExistingDirectoryError"
+    if (options !== undefined) this.cause = options
+  }
+}
+
+class ManagedExactResumeUnavailable extends Error {
+  constructor(readonly status: FxLaunchProviderResumeStatus & {
+    status: "unavailable"
+    semanticDecision: "exact_resume_unavailable"
+  }) {
+    super("Fx semantic authority reports the exact resume Conversation unavailable")
+    this.name = "ManagedExactResumeUnavailable"
+  }
 }

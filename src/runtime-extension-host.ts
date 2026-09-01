@@ -20,6 +20,7 @@ import {
   type RuntimeExtensionSupervisorOptions,
 } from "./runtime-extension.ts"
 import type { RuntimeExtensionStartup } from "./runtime-startup.ts"
+import type { ManagedLaunchOutcome } from "./managed-launch-contract.ts"
 
 const ERROR_MESSAGE_MAX_BYTES = 1024
 const SAFE_ERROR_CODE = /^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,127})$/u
@@ -33,12 +34,22 @@ type SupervisorOverrides = Omit<
   | "onRequest"
   | "onLifecycleMessage"
   | "onInlineLaunchSourceRequest"
+  | "onManagedLaunchMessage"
 >
 
 type RuntimeExtensionHostCallbacks = Pick<
   RuntimeExtensionSupervisorOptions,
-  "onLifecycleMessage" | "onInlineLaunchSourceRequest"
+  "onLifecycleMessage" | "onInlineLaunchSourceRequest" | "onManagedLaunchMessage"
 >
+
+function publishReceipt(
+  host: RuntimeExtensionHost,
+  receipt: RuntimeExtensionLifecycleReceipt | ManagedLaunchOutcome,
+): Promise<void> {
+  return receipt.schema_id === "fmx.managed-launch"
+    ? host.publishManagedLaunchOutcome(receipt as ManagedLaunchOutcome)
+    : host.publishLifecycleReceipt(receipt as RuntimeExtensionLifecycleReceipt)
+}
 
 export type RuntimeExtensionHostOptions = SupervisorOverrides & RuntimeExtensionHostCallbacks & {
   cwd?: string
@@ -55,11 +66,11 @@ export type RuntimeExtensionHostOptions = SupervisorOverrides & RuntimeExtension
  */
 export class RuntimeExtensionReceiptQueue {
   private host: RuntimeExtensionHost | null = null
-  private pending: RuntimeExtensionLifecycleReceipt[] = []
+  private pending: Array<RuntimeExtensionLifecycleReceipt | ManagedLaunchOutcome> = []
   private tail: Promise<void> = Promise.resolve()
   private bindOperation: Promise<void> | null = null
 
-  publish(receipt: RuntimeExtensionLifecycleReceipt): Promise<void> {
+  publish(receipt: RuntimeExtensionLifecycleReceipt | ManagedLaunchOutcome): Promise<void> {
     const exact = structuredClone(receipt)
     if (this.host === null) {
       this.pending.push(exact)
@@ -76,7 +87,7 @@ export class RuntimeExtensionReceiptQueue {
     const pending = this.pending.splice(0)
     let flush = this.tail
     for (const receipt of pending) {
-      flush = flush.then(() => host.publishLifecycleReceipt(receipt))
+      flush = flush.then(() => publishReceipt(host, receipt))
     }
     this.host = host
     this.tail = flush.catch(() => {})
@@ -86,9 +97,9 @@ export class RuntimeExtensionReceiptQueue {
 
   private enqueue(
     host: RuntimeExtensionHost,
-    receipt: RuntimeExtensionLifecycleReceipt,
+    receipt: RuntimeExtensionLifecycleReceipt | ManagedLaunchOutcome,
   ): Promise<void> {
-    const operation = this.tail.then(() => host.publishLifecycleReceipt(receipt))
+    const operation = this.tail.then(() => publishReceipt(host, receipt))
     this.tail = operation.catch(() => {})
     return operation
   }
@@ -165,6 +176,14 @@ export class RuntimeExtensionHost {
     await supervisor.publishLifecycleReceipt(receipt)
   }
 
+  async publishManagedLaunchOutcome(outcome: ManagedLaunchOutcome): Promise<void> {
+    const supervisor = this.supervisor
+    if (supervisor === null) {
+      throw new RuntimeExtensionError("invalid_state", "Runtime-extension host has not started")
+    }
+    await supervisor.publishManagedLaunchOutcome(outcome)
+  }
+
   close(): Promise<void> {
     if (this.closeOperation !== null) return this.closeOperation
     this.closeOperation = (async () => {
@@ -185,6 +204,7 @@ export class RuntimeExtensionHost {
       onRestartReady: _onRestartReady,
       onLifecycleMessage,
       onInlineLaunchSourceRequest,
+      onManagedLaunchMessage,
       ...supervisorOptions
     } = this.options
     const supervisor = await RuntimeExtensionSupervisor.start(this.startup, {
@@ -193,6 +213,7 @@ export class RuntimeExtensionHost {
       env,
       onLifecycleMessage,
       onInlineLaunchSourceRequest,
+      onManagedLaunchMessage,
       onRequest: runtimeExtensionRequestHandler(this.surface, this.startup.association.members.find(
         (member) => member.placement_id === this.startup.placementId,
       )!.fmx_session),

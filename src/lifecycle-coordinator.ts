@@ -8,6 +8,7 @@ import {
   type FxFinalReceiptAcknowledgement,
   type FxFinalReceiptAuthority,
   type FxFinalReceiptAuthorityBinding,
+  type ManagedLaunchRecord,
   EnsureLifecycleLedger,
 } from "./ensure-lifecycle-ledger.ts"
 import {
@@ -16,6 +17,20 @@ import {
 } from "./inline-launch-source.ts"
 import type { FxWorkControlBinding, FxWorkControlResult } from "./fx-work-control.ts"
 import type { RuntimeExtensionLifecycleInbound } from "./runtime-extension.ts"
+import {
+  deriveManagedLaunchOutcomeDigest,
+  managedLaunchSourceBytes,
+  type ManagedLaunchAcknowledgement,
+  type ManagedLaunchCause,
+  type ManagedLaunchClassification,
+  type ManagedLaunchOutcome,
+  type ManagedLaunchProcessCertainty,
+  type ManagedLaunchRequest,
+  type ManagedLaunchRetry,
+  type ManagedLaunchStage,
+} from "./managed-launch-contract.ts"
+import { createHash } from "node:crypto"
+import { encodeCanonicalJson, type JsonValue } from "./contract-codec.ts"
 
 type FxAdmissionDecisionFor<Kind extends FxAdmissionDecision["decision"]["kind"]> =
   Omit<FxAdmissionDecision, "decision"> & {
@@ -143,7 +158,69 @@ export type LifecycleCoordinatorPorts = {
     /** Publish exact bytes at least once until their durable acknowledgement arrives. */
     publish(receipt: EnsureReceipt): Promise<void>
   }
+  managed?: ManagedLaunchCoordinatorPorts
   onError?: (error: unknown, ensureId: string) => void
+}
+
+export type ManagedLaunchFailure = {
+  classification: ManagedLaunchClassification
+  stage: ManagedLaunchStage
+  cause: ManagedLaunchCause
+  processCertainty: ManagedLaunchProcessCertainty
+  exactResumeProof: ManagedLaunchOutcome["exact_resume_proof"]
+}
+
+export type ManagedLaunchCoordinatorPorts = {
+  existingDirectory: {
+    validate(request: ManagedLaunchRequest): Promise<{
+      directory: string
+      repository: string
+      checkoutRoot: string
+      headCommit: string
+    }>
+  }
+  manifest: {
+    claim(request: ManagedLaunchRequest): Promise<void>
+    workControl(agentId: string): Promise<FxWorkControlBinding>
+    protect?(agentIds: readonly string[]): Promise<void>
+  }
+  launch: {
+    prepare(input: Readonly<{
+      record: ManagedLaunchRecord
+      workControl: FxWorkControlBinding
+    }>): Promise<{
+      invocation: unknown
+      conversationId: string
+      finalReceiptAuthority: FxFinalReceiptAuthorityBinding
+    }>
+  }
+  companion: {
+    start(input: Readonly<{ record: ManagedLaunchRecord; invocation: unknown }>): Promise<{
+      sessionName: string
+      paneId: string
+    }>
+  }
+  workControl: {
+    admitInitial(input: Readonly<{
+      binding: FxWorkControlBinding
+      text: string
+      request: ManagedLaunchRequest
+    }>): Promise<{
+      admission: FxWorkControlResult
+      conversationId: string
+    } | null>
+  }
+  admission: {
+    import(input: Readonly<{
+      record: ManagedLaunchRecord
+      delivered: Readonly<{ admission: FxWorkControlResult; conversationId: string }> | null
+      expectedConversationId: string
+    }>): Promise<LifecycleAdmissionOutcome>
+  }
+  classify(error: unknown, record: ManagedLaunchRecord): ManagedLaunchFailure
+  outcomes: {
+    publish(outcome: ManagedLaunchOutcome): Promise<void>
+  }
 }
 
 export type LifecycleCoordinatorOptions = {
@@ -229,13 +306,40 @@ export class LifecycleCoordinator {
     await this.options.ports.retirement?.accept?.(message)
   }
 
+  /** Admit one additive existing-directory launch or exact outcome acknowledgement. */
+  async acceptManaged(
+    message: ManagedLaunchRequest | ManagedLaunchAcknowledgement | ManagedLaunchRetry,
+  ): Promise<void> {
+    if (message.message_type === "outcome_acknowledgement") {
+      await this.options.ledger.acknowledgeManagedOutcome(message)
+      return
+    }
+    if (message.message_type === "retry_request") {
+      const record = await this.options.ledger.retryManaged(message)
+      this.schedule(record.request.ensure_id)
+      return
+    }
+    if (this.options.ports.managed === undefined) {
+      throw new Error("lifecycle coordinator has no managed-launch ports")
+    }
+    const record = await this.options.ledger.claimManaged(message)
+    this.schedule(record.request.ensure_id)
+  }
+
   /** Resume every incomplete persisted record; safe to call during startup and repeatedly. */
   async recover(): Promise<void> {
     const records = await this.options.ledger.list()
+    const managedRecords = await this.options.ledger.listManaged()
     const protectedIds = records
       .filter((record) => atOrAfter(record.stage, "manifest_claimed"))
       .map((record) => record.request.agent_id)
     if (protectedIds.length > 0) await this.options.ports.manifest.protect?.(protectedIds)
+    const managedProtectedIds = managedRecords
+      .filter((record) => managedAtOrAfter(record.stage, "manifest_claimed"))
+      .map((record) => record.request.agent_id)
+    if (managedProtectedIds.length > 0) {
+      await this.options.ports.managed?.manifest.protect?.(managedProtectedIds)
+    }
     for (const record of records) {
       if (
         record.fx_final.receipt !== null ||
@@ -247,6 +351,11 @@ export class LifecycleCoordinator {
       if (record.stage === "fx_started") continue
       const source = await this.options.sources.bindEnsureRequestForEnsureIfPresent(record.request)
       if (source !== null) {
+        this.schedule(record.request.ensure_id)
+      }
+    }
+    for (const record of managedRecords) {
+      if (record.outcome.receipt !== null || record.stage !== "fx_started") {
         this.schedule(record.request.ensure_id)
       }
     }
@@ -319,7 +428,7 @@ export class LifecycleCoordinator {
       const completion = this.scheduled.get(ensureId)
       if (completion === undefined) continue
       this.activeEffects++
-      void this.drive(ensureId)
+      void this.driveAny(ensureId)
         .then((pending) => {
           if (pending) this.deferPendingRetry(ensureId)
           else this.clearPendingRetry(ensureId)
@@ -339,6 +448,12 @@ export class LifecycleCoordinator {
           this.pump()
         })
     }
+  }
+
+  private async driveAny(ensureId: string): Promise<boolean> {
+    const managed = await this.options.ledger.getManaged(ensureId)
+    if (managed !== null) return this.driveManaged(ensureId)
+    return this.drive(ensureId)
   }
 
   private async drive(ensureId: string): Promise<boolean> {
@@ -509,6 +624,149 @@ export class LifecycleCoordinator {
     }
   }
 
+  private async driveManaged(ensureId: string): Promise<boolean> {
+    const ports = this.options.ports.managed
+    if (ports === undefined) throw new Error("lifecycle coordinator has no managed-launch ports")
+    try {
+      for (;;) {
+        const record = await this.requireManaged(ensureId)
+        if (this.closed) return false
+        if (record.outcome.receipt !== null) {
+          await this.publishManaged(record)
+          return false
+        }
+        if (record.stage === "fx_started") {
+          const outcome = buildManagedLaunchSuccess(record)
+          const retained = await this.options.ledger.retainManagedOutcome(ensureId, outcome)
+          await this.publishManaged(retained)
+          return false
+        }
+
+        if (record.stage === "claimed") {
+          const effect = await ports.existingDirectory.validate(record.request)
+          await this.options.ledger.advanceManaged(ensureId, {
+            kind: "directory_validated",
+            directory: effect.directory,
+            repository: effect.repository,
+            checkout_root: effect.checkoutRoot,
+            head_commit: effect.headCommit,
+          })
+          continue
+        }
+
+        if (record.stage === "directory_validated") {
+          await ports.manifest.claim(record.request)
+          await this.options.ledger.advanceManaged(ensureId, {
+            kind: "manifest_claimed",
+            agent_id: record.request.agent_id,
+          })
+          continue
+        }
+
+        const workControl = await ports.manifest.workControl(record.request.agent_id)
+        const prepared = await ports.launch.prepare({ record, workControl })
+        assertManagedPreparedAuthority(prepared.finalReceiptAuthority, record.request)
+        await this.options.ledger.bindManagedFxFinalReceiptAuthority(
+          ensureId,
+          prepared.finalReceiptAuthority,
+        )
+
+        if (record.stage === "manifest_claimed") {
+          const effect = await ports.companion.start({
+            record,
+            invocation: prepared.invocation,
+          })
+          await this.options.ledger.advanceManaged(ensureId, {
+            kind: "companion_started",
+            session_name: effect.sessionName,
+            pane_id: effect.paneId,
+          })
+          continue
+        }
+
+        const current = await this.requireManaged(ensureId)
+        if (current.fx_admission_decision?.decision.kind === "admitted") {
+          await this.options.ledger.advanceManaged(ensureId, {
+            kind: "fx_started",
+            conversation_id: prepared.conversationId,
+          })
+          continue
+        }
+        const bytes = managedLaunchSourceBytes(current.request)
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.initialWork)
+        const delivered = await ports.workControl.admitInitial({
+          binding: workControl,
+          text,
+          request: current.request,
+        })
+        const admission = await ports.admission.import({
+          record: current,
+          delivered,
+          expectedConversationId: prepared.conversationId,
+        })
+        if (admission.kind === "pending") {
+          throw new ManagedCoordinatorFailure({
+            classification: "retryable",
+            stage: "fx_admission",
+            cause: "fx_admission_unavailable",
+            processCertainty: "started",
+            exactResumeProof: null,
+          })
+        }
+        if (admission.kind !== "admitted") {
+          throw new ManagedCoordinatorFailure({
+            classification: "uncertain",
+            stage: "fx_admission",
+            cause: "internal_failure",
+            processCertainty: "started",
+            exactResumeProof: null,
+          })
+        }
+        assertAdmittedObservation(admission, delivered, prepared.conversationId)
+        await this.options.ledger.retainManagedFxAdmissionDecision(
+          ensureId,
+          admission.decision,
+        )
+        await this.options.ledger.advanceManaged(ensureId, {
+          kind: "fx_started",
+          conversation_id: admission.conversationId,
+        })
+        continue
+      }
+    } catch (error) {
+      if (this.closed) return false
+      const record = await this.requireManaged(ensureId)
+      if (record.outcome.receipt !== null) {
+        await this.publishManaged(record)
+        return false
+      }
+      const failure = error instanceof ManagedCoordinatorFailure
+        ? error.failure
+        : ports.classify(error, record)
+      const outcome = buildManagedLaunchOutcome(record, failure)
+      const retained = await this.options.ledger.retainManagedOutcome(ensureId, outcome)
+      await this.publishManaged(retained)
+      try {
+        this.options.ports.onError?.(error, ensureId)
+      } catch {
+        // Diagnostics cannot change the durable managed outcome.
+      }
+      return false
+    }
+  }
+
+  private async publishManaged(record: ManagedLaunchRecord): Promise<void> {
+    const ports = this.options.ports.managed
+    const receipt = record.outcome.receipt
+    if (
+      ports === undefined ||
+      receipt === null ||
+      record.outcome.acknowledgement !== null ||
+      this.closed
+    ) return
+    await ports.outcomes.publish(receipt)
+  }
+
   private async workControlFor(record: EnsureLifecycleRecord): Promise<FxWorkControlBinding> {
     // The Manifest owns both allocation and lookup. This is intentionally a
     // read: a resumed coordinator must never manufacture a replacement token.
@@ -542,6 +800,14 @@ export class LifecycleCoordinator {
   private async require(ensureId: string): Promise<EnsureLifecycleRecord> {
     const record = await this.options.ledger.get(ensureId)
     if (record === null) throw new Error(`ensure ${ensureId} disappeared from its durable ledger`)
+    return record
+  }
+
+  private async requireManaged(ensureId: string): Promise<ManagedLaunchRecord> {
+    const record = await this.options.ledger.getManaged(ensureId)
+    if (record === null) {
+      throw new Error(`managed launch ${ensureId} disappeared from its durable ledger`)
+    }
     return record
   }
 
@@ -601,6 +867,150 @@ function atOrAfter(stage: EnsureLifecycleStage, threshold: EnsureLifecycleStage)
   return STAGE_ORDER.indexOf(stage) >= STAGE_ORDER.indexOf(threshold)
 }
 
+function managedAtOrAfter(
+  stage: ManagedLaunchRecord["stage"],
+  threshold: ManagedLaunchRecord["stage"],
+): boolean {
+  const order: ManagedLaunchRecord["stage"][] = [
+    "claimed",
+    "directory_validated",
+    "manifest_claimed",
+    "companion_started",
+    "fx_started",
+  ]
+  return order.indexOf(stage) >= order.indexOf(threshold)
+}
+
+class ManagedCoordinatorFailure extends Error {
+  constructor(readonly failure: ManagedLaunchFailure) {
+    super(`managed launch stopped at ${failure.stage}: ${failure.cause}`)
+    this.name = "ManagedCoordinatorFailure"
+  }
+}
+
+function buildManagedLaunchOutcome(
+  record: ManagedLaunchRecord,
+  failure: ManagedLaunchFailure,
+): ManagedLaunchOutcome {
+  const effectiveFailure = managedFailurePreservingCertainty(record, failure)
+  const request = record.request
+  const identity = createHash("sha256").update(encodeCanonicalJson({
+    ensure_id: request.ensure_id,
+    ensure_digest: request.ensure_digest,
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    agent_id: request.agent_id,
+    attempt: record.attempt,
+    ...effectiveFailure,
+  } as unknown as JsonValue)).digest("hex")
+  const outcome: ManagedLaunchOutcome = {
+    schema_id: "fmx.managed-launch",
+    schema_version: 1,
+    message_type: "launch_outcome",
+    request_id: request.request_id,
+    receipt_id: `managed-outcome-${identity}`,
+    receipt_digest: "0".repeat(64),
+    workplace_instance_id: request.workplace_instance_id,
+    fmx_session: request.fmx_session,
+    ensure_id: request.ensure_id,
+    ensure_digest: request.ensure_digest,
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    agent_id: request.agent_id,
+    attempt: record.attempt,
+    status: "failed",
+    classification: effectiveFailure.classification,
+    stage: effectiveFailure.stage,
+    cause: effectiveFailure.cause,
+    process_certainty: effectiveFailure.processCertainty,
+    exact_resume_proof: structuredClone(effectiveFailure.exactResumeProof),
+    success: null,
+    retained_until_acknowledged: true,
+  }
+  outcome.receipt_digest = deriveManagedLaunchOutcomeDigest(outcome)
+  return outcome
+}
+
+function managedFailurePreservingCertainty(
+  record: ManagedLaunchRecord,
+  failure: ManagedLaunchFailure,
+): ManagedLaunchFailure {
+  const observed = [
+    ...record.outcome_history.map(({ receipt }) => receipt.process_certainty),
+    ...(record.stage === "companion_started" || record.stage === "fx_started"
+      ? ["started" as const]
+      : []),
+    failure.processCertainty,
+  ]
+  const processCertainty = observed.includes("started")
+    ? "started"
+    : observed.includes("may_have_started") ? "may_have_started" : "not_started"
+  if (failure.classification === "permanent" && processCertainty !== "not_started") {
+    return {
+      classification: "retryable",
+      stage: failure.stage,
+      cause: "launch_provider_unavailable",
+      processCertainty,
+      exactResumeProof: null,
+    }
+  }
+  return { ...failure, processCertainty }
+}
+
+function buildManagedLaunchSuccess(record: ManagedLaunchRecord): ManagedLaunchOutcome {
+  const decision = record.fx_admission_decision
+  if (record.stage !== "fx_started" || decision?.decision.kind !== "admitted") {
+    throw new Error(`managed launch ${record.request.ensure_id} has no exact admitted success`)
+  }
+  const conversationId = record.effects.fx.status === "started"
+    ? record.effects.fx.conversation_id
+    : null
+  if (conversationId === null) {
+    throw new Error(`managed launch ${record.request.ensure_id} has no exact success Conversation`)
+  }
+  const identity = createHash("sha256").update(encodeCanonicalJson({
+    ensure_id: record.request.ensure_id,
+    ensure_digest: record.request.ensure_digest,
+    launch_id: record.request.launch_id,
+    launch_digest: record.request.launch_digest,
+    agent_id: record.request.agent_id,
+    attempt: record.attempt,
+    conversation_id: conversationId,
+    admission_receipt_id: decision.receipt_id,
+    admission_receipt_digest: decision.receipt_digest,
+  })).digest("hex")
+  const outcome: ManagedLaunchOutcome = {
+    schema_id: "fmx.managed-launch",
+    schema_version: 1,
+    message_type: "launch_outcome",
+    request_id: record.request.request_id,
+    receipt_id: `managed-outcome-${identity}`,
+    receipt_digest: "0".repeat(64),
+    workplace_instance_id: record.request.workplace_instance_id,
+    fmx_session: record.request.fmx_session,
+    ensure_id: record.request.ensure_id,
+    ensure_digest: record.request.ensure_digest,
+    launch_id: record.request.launch_id,
+    launch_digest: record.request.launch_digest,
+    agent_id: record.request.agent_id,
+    attempt: record.attempt,
+    status: "succeeded",
+    classification: null,
+    stage: "fx_admission",
+    cause: null,
+    process_certainty: "started",
+    exact_resume_proof: null,
+    success: {
+      conversation_id: conversationId,
+      admission_receipt_id: decision.receipt_id,
+      admission_receipt_digest: decision.receipt_digest,
+    },
+    retained_until_acknowledged: true,
+  }
+  outcome.receipt_digest = deriveManagedLaunchOutcomeDigest(outcome)
+  return outcome
+}
+
 function sourceAuthority(source: InlineLaunchSourceRequest) {
   return {
     workplace_instance_id: source.workplace_instance_id,
@@ -626,6 +1036,18 @@ function assertPreparedAuthority(
     binding.state_root !== source.launch_request.state_root
   ) {
     throw new Error("Fx launch provider changed the frozen admission authority")
+  }
+}
+
+function assertManagedPreparedAuthority(
+  binding: FxFinalReceiptAuthorityBinding,
+  request: ManagedLaunchRequest,
+): void {
+  if (
+    binding.admission_key !== request.source.admission_key ||
+    binding.state_root !== request.source.launch_request.state_root
+  ) {
+    throw new Error("Fx launch provider changed managed launch authority")
   }
 }
 

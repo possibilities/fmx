@@ -8,7 +8,7 @@ import {
   encodeAgentWorkplacePayload,
   type FxLaunchAdmissionFinalMessage,
 } from "../src/agentworkplace-contracts.ts"
-import { decodeStrictJson } from "../src/contract-codec.ts"
+import { decodeStrictJson, encodeCanonicalJson } from "../src/contract-codec.ts"
 import {
   encodeLaunchControls,
   FxLaunchProviderClient,
@@ -90,6 +90,11 @@ test("uses one private helper endpoint per operation and maps every happy-path r
       mode: "initial",
     })
     expect((await client.inspect(CORRELATION)).decision).toBeNull()
+    expect(await client.resumeStatus(CORRELATION)).toMatchObject({
+      status: "unavailable",
+      semanticDecision: "exact_resume_unavailable",
+      conversationId: "conversation-a",
+    })
     const cancellation = {
       schema_id: "fx.launch-admission-final",
       schema_version: 1,
@@ -116,10 +121,15 @@ test("uses one private helper endpoint per operation and maps every happy-path r
     } satisfies FxFinalReceiptAcknowledgement
     expect((await client.acknowledgeFinal(CORRELATION.stateRoot, acknowledgement)).finalAcknowledgementId).toBe("ack-a")
     expect(observed.map((request) => request.operation)).toEqual([
-      "prepare", "build", "inspect", "cancel", "record_final", "acknowledge_final",
+      "prepare", "build", "inspect", "resume_status", "cancel", "record_final",
+      "acknowledge_final",
     ])
     expect(new Set(observed.map((request) => request.instance_id)).size).toBe(observed.length)
-    expect(observed.every((request) => request.schema_id === "fx.private-launch-provider" && request.schema_version === 1)).toBe(true)
+    expect(observed.every((request) => request.schema_id === "fx.private-launch-provider")).toBe(true)
+    expect(observed.find((request) => request.operation === "resume_status")?.schema_version).toBe(2)
+    expect(observed.filter((request) => request.operation !== "resume_status").every(
+      (request) => request.schema_version === 1,
+    )).toBe(true)
   })
 })
 
@@ -134,6 +144,51 @@ test("rejects malformed, oversized, trailing, and uncorrelated provider response
       const error = await client.prepare(launchRequest).catch((caught) => caught)
       expect(error).toBeInstanceOf(FxLaunchProviderError)
       expect(error).toMatchObject({ code: "invalid_response" })
+    })
+  }
+})
+
+test("keeps incomplete or corrupt exact-resume state as a v2 error, never semantic absence", async () => {
+  for (const code of ["SessionStateIncomplete", "SessionStateCorrupt"]) {
+    await withRuntime(async (runtimeDirectory) => {
+      const client = new FxLaunchProviderClient({
+        executable: "/resolved/fmx-fx",
+        runtimeDirectory,
+        launchHelper: fakeProvider((request) => ({
+          kind: "normal",
+          value: {
+            ...envelope(request),
+            ok: false,
+            error: { code },
+          },
+        })),
+      })
+      const error = await client.resumeStatus(CORRELATION).catch((caught) => caught)
+      expect(error).toBeInstanceOf(FxLaunchProviderError)
+      expect(error).toMatchObject({ code })
+    })
+  }
+})
+
+test("rejects uncorrelated or forged v2 semantic resume decisions", async () => {
+  for (const field of ["conversation_id", "decision_id", "decision_digest"] as const) {
+    await withRuntime(async (runtimeDirectory) => {
+      const client = new FxLaunchProviderClient({
+        executable: "/resolved/fmx-fx",
+        runtimeDirectory,
+        launchHelper: fakeProvider((request) => {
+          const response = successFor(request)
+          if (!("value" in response)) return response
+          const result = response.value.result as { resume_status: Record<string, unknown> }
+          result.resume_status[field] = field === "conversation_id"
+            ? "different-conversation"
+            : "0".repeat(64)
+          return response
+        }),
+      })
+      await expect(client.resumeStatus(CORRELATION)).rejects.toMatchObject({
+        code: "invalid_response",
+      })
     })
   }
 })
@@ -261,6 +316,8 @@ function successFor(request: Record<string, unknown>): FakeResponse {
       return { kind: "normal", value: inspection(response, finalReceipt()) }
     case "acknowledge_final":
       return { kind: "normal", value: inspection(response, null, "ack-a") }
+    case "resume_status":
+      return { kind: "normal", value: { ...response, result: { resume_status: resumeStatus() } } }
     default:
       return { kind: "normal", value: inspection(response) }
   }
@@ -279,7 +336,30 @@ function envelope(request: Record<string, unknown>): Record<string, unknown> {
     ok: true,
     request_id: request.request_id,
     schema_id: "fx.private-launch-provider",
-    schema_version: 1,
+    schema_version: request.schema_version,
+  }
+}
+
+function resumeStatus() {
+  const specification = {
+    admission_key: CORRELATION.admissionKey,
+    authority: "fx.private-launch-provider/resume-status-v2",
+    conversation_id: "conversation-a",
+    launch_digest: CORRELATION.launchDigest,
+    launch_id: CORRELATION.launchId,
+    semantic_decision: "exact_resume_unavailable",
+    state_root: CORRELATION.stateRoot,
+    status: "unavailable",
+  }
+  const identity = createHash("sha256").update(encodeCanonicalJson(specification)).digest("hex")
+  const decisionId = `resume-status-${identity}`
+  return {
+    ...specification,
+    decision_id: decisionId,
+    decision_digest: createHash("sha256").update(encodeCanonicalJson({
+      ...specification,
+      decision_id: decisionId,
+    })).digest("hex"),
   }
 }
 

@@ -31,6 +31,14 @@ import {
   type FrozenLaunchRequest,
   type InlineLaunchSourceRequest,
 } from "../src/inline-launch-source.ts"
+import {
+  deriveManagedLaunchEnsureDigest,
+  deriveManagedLaunchOutcomeDigest,
+  deriveManagedLaunchSourceDigest,
+  type ManagedLaunchOutcome,
+  type ManagedLaunchRequest,
+  type ManagedLaunchRetry,
+} from "../src/managed-launch-contract.ts"
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/runtime-extension.ts", import.meta.url))
 const PEER = fileURLToPath(new URL("./runtime-extension-supervisor-child.ts", import.meta.url))
@@ -312,7 +320,7 @@ describe("Runtime-extension ensure-lifecycle transport", () => {
     })
     const error = await withTestTimeout(disconnected.promise, 1_000, "broad-union message was not rejected")
     expect(error.code).toBe("protocol_error")
-    expect(error.message).toContain("outside the Runtime-extension and ensure-lifecycle link families")
+    expect(error.message).toContain("outside the Runtime-extension, lifecycle, and managed-launch link families")
     expect(supervisor.state).toBe("degraded")
   })
 
@@ -408,6 +416,62 @@ describe("Runtime-extension ensure-lifecycle transport", () => {
       expect(error.code, label).toBe("protocol_error")
     }
     expect(supervisor.state).toBe("ready")
+  })
+})
+
+describe("Runtime-extension managed-launch transport", () => {
+  test("admits requests inward, publishes retained outcomes outward, and receives exact acknowledgements", async () => {
+    const directory = await temporaryDirectory()
+    const log = join(directory, "managed-launch.log")
+    const request = managedLaunchRequest()
+    const outcome = managedLaunchFailure(request)
+    const retry = managedLaunchRetry(outcome)
+    const observed: string[] = []
+    const admitted = deferred<void>()
+    const complete = deferred<void>()
+    const supervisor = await startSupervisor(PEER, "ready", {
+      env: {
+        FMX_SUPERVISOR_CHILD_LOG: log,
+        FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([request, retry]),
+        FMX_SUPERVISOR_CHILD_ACK_MANAGED: "1",
+      },
+      onManagedLaunchMessage: (message) => {
+        observed.push(message.message_type)
+        if (observed.length === 2) admitted.resolve()
+        if (observed.length === 3) complete.resolve()
+      },
+    })
+    await withTestTimeout(admitted.promise, 1_000, "managed request was not admitted")
+    await supervisor.publishManagedLaunchOutcome(outcome)
+    await withTestTimeout(complete.promise, 1_000, "managed acknowledgement was not admitted")
+    expect(observed).toEqual([
+      "launch_request",
+      "retry_request",
+      "outcome_acknowledgement",
+    ])
+    const received = await waitForMessages(
+      log,
+      (messages) => messages.some((message) => message.message_type === "launch_outcome"),
+    )
+    expect(received.find((message) => message.message_type === "launch_outcome")).toEqual(outcome)
+    expect(supervisor.state).toBe("ready")
+  })
+
+  test("rejects managed outcomes in the child-to-host direction", async () => {
+    const outcome = managedLaunchFailure(managedLaunchRequest())
+    const disconnected = deferred<RuntimeExtensionError>()
+    await startSupervisor(PEER, "ready", {
+      env: { FMX_SUPERVISOR_CHILD_SCRIPT: JSON.stringify([outcome]) },
+      onManagedLaunchMessage: () => {},
+      onDisconnect: disconnected.resolve,
+    })
+    const error = await withTestTimeout(
+      disconnected.promise,
+      1_000,
+      "reverse managed outcome was not rejected",
+    )
+    expect(error.code).toBe("protocol_error")
+    expect(error.message).toContain("extension-to-Runtime direction")
   })
 })
 
@@ -1060,6 +1124,97 @@ function inlineSourceRequest(
   } satisfies InlineLaunchSourceRequest
   request.source_digest = deriveInlineLaunchSourceDigest(request)
   return request
+}
+
+function managedLaunchRequest(): ManagedLaunchRequest {
+  const inline = inlineSourceRequest()
+  const launch = structuredClone(inline.launch_request)
+  launch.directory = "/var/tmp/fmx-managed-transport"
+  launch.launch_digest = deriveFrozenLaunchDigest(launch)
+  const request = {
+    schema_id: "fmx.managed-launch",
+    schema_version: 1,
+    message_type: "launch_request",
+    request_id: "transport-managed-request",
+    workplace_instance_id: "fixture-workplace",
+    fmx_session: "session-beta",
+    ensure_id: "transport-managed-ensure",
+    ensure_digest: "0".repeat(64),
+    launch_id: launch.launch_id,
+    launch_digest: launch.launch_digest,
+    agent_id: inline.agent_id,
+    workspace: {
+      kind: "existing_directory",
+      directory: launch.directory,
+      repository: "/var/tmp/fmx-managed-repository",
+      checkout_root: launch.directory,
+      head_commit: "b".repeat(40),
+    },
+    fx_conversation: {
+      name: launch.conversation_name,
+      resume_conversation_id: null,
+    },
+    source: {
+      source_id: "transport-managed-source",
+      source_digest: "0".repeat(64),
+      admission_key: launch.admission_key,
+      launch_request: launch,
+      initial_work: inline.initial_work,
+      launch_controls: inline.launch_controls,
+    },
+  } as ManagedLaunchRequest
+  request.source.source_digest = deriveManagedLaunchSourceDigest(request)
+  request.ensure_digest = deriveManagedLaunchEnsureDigest(request)
+  return request
+}
+
+function managedLaunchFailure(request: ManagedLaunchRequest): ManagedLaunchOutcome {
+  const outcome: ManagedLaunchOutcome = {
+    schema_id: "fmx.managed-launch",
+    schema_version: 1,
+    message_type: "launch_outcome",
+    request_id: request.request_id,
+    receipt_id: "transport-managed-outcome",
+    receipt_digest: "0".repeat(64),
+    workplace_instance_id: request.workplace_instance_id,
+    fmx_session: request.fmx_session,
+    ensure_id: request.ensure_id,
+    ensure_digest: request.ensure_digest,
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    agent_id: request.agent_id,
+    attempt: 1,
+    status: "failed",
+    classification: "retryable",
+    stage: "existing_directory",
+    cause: "git_identity_changed",
+    process_certainty: "not_started",
+    exact_resume_proof: null,
+    success: null,
+    retained_until_acknowledged: true,
+  }
+  outcome.receipt_digest = deriveManagedLaunchOutcomeDigest(outcome)
+  return outcome
+}
+
+function managedLaunchRetry(outcome: ManagedLaunchOutcome): ManagedLaunchRetry {
+  return {
+    schema_id: "fmx.managed-launch",
+    schema_version: 1,
+    message_type: "retry_request",
+    request_id: "transport-managed-retry",
+    workplace_instance_id: outcome.workplace_instance_id,
+    fmx_session: outcome.fmx_session,
+    ensure_id: outcome.ensure_id,
+    ensure_digest: outcome.ensure_digest,
+    launch_id: outcome.launch_id,
+    launch_digest: outcome.launch_digest,
+    agent_id: outcome.agent_id,
+    prior_attempt: outcome.attempt,
+    prior_receipt_id: outcome.receipt_id,
+    prior_receipt_digest: outcome.receipt_digest,
+    next_attempt: outcome.attempt + 1,
+  }
 }
 
 async function frozenLifecycleMessages(): Promise<EnsureLifecycleMessage[]> {

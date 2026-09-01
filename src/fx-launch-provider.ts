@@ -13,6 +13,7 @@ import { privateRootDirectory } from "./zmx-environment.ts"
 
 export const FX_LAUNCH_PROVIDER_SCHEMA_ID = "fx.private-launch-provider"
 export const FX_LAUNCH_PROVIDER_SCHEMA_VERSION = 1
+export const FX_LAUNCH_PROVIDER_RESUME_STATUS_SCHEMA_VERSION = 2
 export const FX_LAUNCH_PROVIDER_INTERNAL_ARGUMENT = "--internal-launch-provider"
 export const FX_LAUNCH_PROVIDER_DIRECTORY = "FX_INTERNAL_LAUNCH_PROVIDER_DIRECTORY"
 export const FX_LAUNCH_PROVIDER_INSTANCE_ID = "FX_INTERNAL_LAUNCH_PROVIDER_INSTANCE_ID"
@@ -40,7 +41,8 @@ const FLAG_OPTIONS = new Set([
 ])
 const PROVIDER_OWNED = ["--state-dir", "--name", "--model", "--effort", "--resume", "--resume-id"]
 
-type Operation = "prepare" | "build" | "inspect" | "cancel" | "record_final" | "acknowledge_final"
+type Operation = "prepare" | "build" | "inspect" | "cancel" | "record_final" |
+  "acknowledge_final" | "resume_status"
 type Correlation = { stateRoot: string; admissionKey: string; launchDigest: string; launchId: string }
 export type FxLaunchRequest = Extract<FxLaunchAdmissionFinalMessage, { initial_work_digest: unknown }>
 export type FxLaunchReceipt = Extract<FxLaunchAdmissionFinalMessage, { status: "accepted" }>
@@ -65,6 +67,15 @@ export type FxLaunchProviderFinalAuthority = {
   decision: FxAdmissionDecision | null
   finalReceipt: FxFinalReceipt | null
   finalAcknowledgementId: string | null
+}
+
+export type FxLaunchProviderResumeStatus = Correlation & {
+  authority: "fx.private-launch-provider/resume-status-v2"
+  conversationId: string
+  decisionId: string
+  decisionDigest: string
+  semanticDecision: "exact_resume_available" | "exact_resume_unavailable"
+  status: "available" | "unavailable"
 }
 
 /** The provider deliberately returns arguments without an executable. The
@@ -169,6 +180,77 @@ export class FxLaunchProviderClient {
     return this.inspection("inspect", correlation)
   }
 
+  async resumeStatus(correlation: Correlation): Promise<FxLaunchProviderResumeStatus> {
+    const result = await this.request("resume_status", {
+      state_root: correlation.stateRoot,
+      admission_key: correlation.admissionKey,
+      launch_digest: correlation.launchDigest,
+      launch_id: correlation.launchId,
+    }, FX_LAUNCH_PROVIDER_RESUME_STATUS_SCHEMA_VERSION)
+    assertExactKeys(result, ["resume_status"], "resume status result")
+    if (!isRecord(result.resume_status)) throw invalidResponse("Fx returned an invalid resume status")
+    const value = result.resume_status
+    assertExactKeys(value, [
+      "admission_key",
+      "authority",
+      "conversation_id",
+      "decision_digest",
+      "decision_id",
+      "launch_digest",
+      "launch_id",
+      "semantic_decision",
+      "state_root",
+      "status",
+    ], "resume status")
+    if (
+      value.authority !== "fx.private-launch-provider/resume-status-v2" ||
+      typeof value.conversation_id !== "string" ||
+      typeof value.decision_id !== "string" ||
+      typeof value.decision_digest !== "string" ||
+      (value.status !== "available" && value.status !== "unavailable") ||
+      (value.semantic_decision !== "exact_resume_available" &&
+        value.semantic_decision !== "exact_resume_unavailable") ||
+      value.state_root !== correlation.stateRoot ||
+      value.admission_key !== correlation.admissionKey ||
+      value.launch_digest !== correlation.launchDigest ||
+      value.launch_id !== correlation.launchId ||
+      (value.status === "available") !==
+        (value.semantic_decision === "exact_resume_available")
+    ) {
+      throw invalidResponse("Fx returned an uncorrelated resume status")
+    }
+    const specification = {
+      admission_key: correlation.admissionKey,
+      authority: value.authority,
+      conversation_id: value.conversation_id,
+      launch_digest: correlation.launchDigest,
+      launch_id: correlation.launchId,
+      semantic_decision: value.semantic_decision,
+      state_root: correlation.stateRoot,
+      status: value.status,
+    } satisfies Record<string, JsonValue>
+    const identity = createHash("sha256").update(encodeCanonicalJson(specification)).digest("hex")
+    if (value.decision_id !== `resume-status-${identity}`) {
+      throw invalidResponse("Fx returned an invalid resume-status decision id")
+    }
+    const decisionDigest = createHash("sha256").update(encodeCanonicalJson({
+      ...specification,
+      decision_id: value.decision_id,
+    })).digest("hex")
+    if (value.decision_digest !== decisionDigest) {
+      throw invalidResponse("Fx returned an invalid resume-status decision digest")
+    }
+    return {
+      ...correlation,
+      authority: value.authority,
+      conversationId: value.conversation_id,
+      decisionId: value.decision_id,
+      decisionDigest: value.decision_digest,
+      semanticDecision: value.semantic_decision,
+      status: value.status,
+    }
+  }
+
   async cancel(
     stateRoot: string,
     cancelRequest: FxAdmissionCancelRequest,
@@ -228,7 +310,11 @@ export class FxLaunchProviderClient {
     }
   }
 
-  private async request(operation: Operation, fields: Record<string, JsonValue>): Promise<Record<string, unknown>> {
+  private async request(
+    operation: Operation,
+    fields: Record<string, JsonValue>,
+    schemaVersion = FX_LAUNCH_PROVIDER_SCHEMA_VERSION,
+  ): Promise<Record<string, unknown>> {
     const requestId = randomUUID()
     const instanceId = randomUUID()
     const token = randomBytes(32).toString("hex")
@@ -259,7 +345,7 @@ export class FxLaunchProviderClient {
       }) ?? spawnProvider(this.options.executable, environment)
       const payload = encodeCanonicalJson({
         schema_id: FX_LAUNCH_PROVIDER_SCHEMA_ID,
-        schema_version: FX_LAUNCH_PROVIDER_SCHEMA_VERSION,
+        schema_version: schemaVersion,
         instance_id: instanceId,
         token,
         request_id: requestId,
@@ -268,7 +354,7 @@ export class FxLaunchProviderClient {
       })
       const response = await exchange(socketPath, payload, this.remaining(started), helper)
       await awaitHelper(helper, this.remaining(started))
-      return decodeResponse(response, instanceId, requestId)
+      return decodeResponse(response, instanceId, requestId, schemaVersion)
     } catch (error) {
       helper?.kill()
       throw error
@@ -434,7 +520,12 @@ async function awaitHelper(helper: FxLaunchProviderHelper, timeoutMs: number): P
   if (exit !== 0) throw new FxLaunchProviderError("helper_exited", `Fx launch provider exited with status ${exit}`)
 }
 
-function decodeResponse(bytes: Uint8Array, instanceId: string, requestId: string): Record<string, unknown> {
+function decodeResponse(
+  bytes: Uint8Array,
+  instanceId: string,
+  requestId: string,
+  schemaVersion: number,
+): Record<string, unknown> {
   let value: JsonValue
   try {
     value = decodeStrictJson(bytes)
@@ -442,7 +533,7 @@ function decodeResponse(bytes: Uint8Array, instanceId: string, requestId: string
     throw invalidResponse("Fx returned invalid launch-provider JSON")
   }
   if (!isRecord(value) || value.schema_id !== FX_LAUNCH_PROVIDER_SCHEMA_ID ||
-    value.schema_version !== FX_LAUNCH_PROVIDER_SCHEMA_VERSION ||
+    value.schema_version !== schemaVersion ||
     value.instance_id !== instanceId || value.request_id !== requestId || typeof value.ok !== "boolean") {
     throw invalidResponse("Fx returned an uncorrelated launch-provider response")
   }

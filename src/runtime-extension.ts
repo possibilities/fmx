@@ -23,6 +23,19 @@ import {
   parseInlineLaunchSourceRequest,
   type InlineLaunchSourceRequest,
 } from "./inline-launch-source.ts"
+import {
+  MANAGED_LAUNCH_SCHEMA_ID,
+  encodeManagedLaunchFrame,
+  managedLaunchMessageSchema,
+  parseManagedLaunchAcknowledgement,
+  parseManagedLaunchOutcome,
+  parseManagedLaunchRequest,
+  parseManagedLaunchRetry,
+  type ManagedLaunchAcknowledgement,
+  type ManagedLaunchOutcome,
+  type ManagedLaunchRequest,
+  type ManagedLaunchRetry,
+} from "./managed-launch-contract.ts"
 import type {
   RuntimeAssociationMessage,
   RuntimeExtensionStartup,
@@ -120,6 +133,11 @@ export type RuntimeExtensionLifecycleInbound =
   | RuntimeExtensionLifecycleRequest
   | RuntimeExtensionLifecycleAcknowledgement
 
+export type RuntimeExtensionManagedLaunchInbound =
+  | ManagedLaunchRequest
+  | ManagedLaunchAcknowledgement
+  | ManagedLaunchRetry
+
 export type RuntimeExtensionState = "starting" | "ready" | "degraded" | "closing" | "closed"
 
 export type RuntimeExtensionErrorCode =
@@ -191,10 +209,16 @@ export type RuntimeExtensionInlineSourceHandler = (
   signal: AbortSignal,
 ) => void | Promise<void>
 
+export type RuntimeExtensionManagedLaunchHandler = (
+  message: RuntimeExtensionManagedLaunchInbound,
+  signal: AbortSignal,
+) => void | Promise<void>
+
 export type RuntimeExtensionSupervisorOptions = {
   onRequest: RuntimeExtensionRequestHandler
   onLifecycleMessage?: RuntimeExtensionLifecycleHandler
   onInlineLaunchSourceRequest?: RuntimeExtensionInlineSourceHandler
+  onManagedLaunchMessage?: RuntimeExtensionManagedLaunchHandler
   onDisconnect?: (error: RuntimeExtensionError) => void | Promise<void>
   cwd?: string
   env?: Record<string, string | undefined>
@@ -219,6 +243,7 @@ type NormalizedOptions = {
   onRequest: RuntimeExtensionRequestHandler
   onLifecycleMessage?: RuntimeExtensionLifecycleHandler
   onInlineLaunchSourceRequest?: RuntimeExtensionInlineSourceHandler
+  onManagedLaunchMessage?: RuntimeExtensionManagedLaunchHandler
   onDisconnect?: (error: RuntimeExtensionError) => void | Promise<void>
   cwd?: string
   env?: Record<string, string | undefined>
@@ -390,6 +415,17 @@ export class RuntimeExtensionSupervisor {
     assertLifecycleReceipt(receipt, "outbound lifecycle receipt")
     this.assertLifecycleIdentity(receipt)
     await this.writeOrFail(generation, receipt)
+  }
+
+  /** Publish one retained managed-launch outcome until its exact acknowledgement arrives. */
+  async publishManagedLaunchOutcome(outcome: ManagedLaunchOutcome): Promise<void> {
+    const generation = this.requireReady()
+    const parsed = managedLaunchMessageSchema.safeParse(outcome)
+    if (!parsed.success || parsed.data.message_type !== "launch_outcome") {
+      throw new RuntimeExtensionError("protocol_error", "outbound managed launch outcome is invalid")
+    }
+    this.assertManagedLaunchIdentity(outcome)
+    await this.writeOrFail(generation, outcome)
   }
 
   /** Forward the one opaque human-only Recovery-card action and await its exact response. */
@@ -668,6 +704,21 @@ export class RuntimeExtensionSupervisor {
             this.handleLifecycleMessage(generation, lifecycle.data as EnsureLifecycleMessage)
             continue
           }
+          if (schemaIdOf(message) === MANAGED_LAUNCH_SCHEMA_ID) {
+            const managed = managedLaunchMessageSchema.safeParse(message)
+            if (!managed.success) {
+              throw {
+                code: "protocol_error",
+                message: "child sent an invalid managed-launch message",
+              } satisfies Failure
+            }
+            this.handleManagedLaunchMessage(
+              generation,
+              managed.data as ManagedLaunchRequest | ManagedLaunchOutcome |
+                ManagedLaunchAcknowledgement | ManagedLaunchRetry,
+            )
+            continue
+          }
           if (schemaIdOf(message) === INLINE_LAUNCH_SOURCE_SCHEMA_ID) {
             let source: InlineLaunchSourceRequest
             try {
@@ -684,7 +735,7 @@ export class RuntimeExtensionSupervisor {
           }
           throw {
             code: "protocol_error",
-            message: "child sent a message outside the Runtime-extension and ensure-lifecycle link families",
+            message: "child sent a message outside the Runtime-extension, lifecycle, and managed-launch link families",
           } satisfies Failure
         }
       }
@@ -778,6 +829,33 @@ export class RuntimeExtensionSupervisor {
           message: `child sent ${message.message_type} in the extension-to-Runtime direction`,
         } satisfies Failure
     }
+  }
+
+  private handleManagedLaunchMessage(
+    generation: Generation,
+    message: ManagedLaunchRequest | ManagedLaunchOutcome | ManagedLaunchAcknowledgement |
+      ManagedLaunchRetry,
+  ): void {
+    if (generation.phase === "starting") {
+      throw {
+        code: "protocol_error",
+        message: `child sent ${message.message_type} before exact readiness`,
+      } satisfies Failure
+    }
+    if (generation.phase !== "ready") return
+    if (message.message_type === "launch_outcome") {
+      throw {
+        code: "protocol_error",
+        message: "child sent launch_outcome in the extension-to-Runtime direction",
+      } satisfies Failure
+    }
+    const exact = message.message_type === "launch_request"
+      ? parseManagedLaunchRequest(message)
+      : message.message_type === "retry_request"
+      ? parseManagedLaunchRetry(message)
+      : parseManagedLaunchAcknowledgement(message)
+    this.assertManagedLaunchIdentity(exact)
+    this.acceptManagedLaunchInbound(generation, exact)
   }
 
   private handleInlineSourceRequest(
@@ -900,6 +978,25 @@ export class RuntimeExtensionSupervisor {
     }
   }
 
+  private assertManagedLaunchIdentity(
+    message: ManagedLaunchRequest | ManagedLaunchOutcome | ManagedLaunchAcknowledgement |
+      ManagedLaunchRetry,
+  ): void {
+    if (message.workplace_instance_id !== this.startup.association.workplace_instance_id) {
+      throw new RuntimeExtensionError(
+        "protocol_error",
+        `managed launch names Workplace ${message.workplace_instance_id}; ` +
+          `expected ${this.startup.association.workplace_instance_id}`,
+      )
+    }
+    if (message.fmx_session !== this.startup.fmxSession) {
+      throw new RuntimeExtensionError(
+        "protocol_error",
+        `managed launch names fmx Session ${message.fmx_session}; expected ${this.startup.fmxSession}`,
+      )
+    }
+  }
+
   private acceptLifecycleInbound(
     generation: Generation,
     message: RuntimeExtensionLifecycleInbound,
@@ -968,6 +1065,50 @@ export class RuntimeExtensionSupervisor {
     const abort = new AbortController()
     generation.inbound.set(request.request_id, { abort })
     void this.dispatchInlineSourceInbound(generation, request, abort)
+  }
+
+  private acceptManagedLaunchInbound(
+    generation: Generation,
+    message: RuntimeExtensionManagedLaunchInbound,
+  ): void {
+    if (this.options.onManagedLaunchMessage === undefined) {
+      throw {
+        code: "protocol_error",
+        message: `child sent ${message.message_type} without a managed-launch handler`,
+      } satisfies Failure
+    }
+    const requestId = message.message_type === "outcome_acknowledgement" ? null : message.request_id
+    const inboundKey = message.message_type !== "outcome_acknowledgement"
+      ? message.request_id
+      : `managed-acknowledgement/${message.acknowledgement_id}`
+    if (requestId !== null && generation.activeRequestIds.has(requestId)) {
+      throw {
+        code: "protocol_error",
+        message: `child reused Runtime-extension request id ${requestId}`,
+      } satisfies Failure
+    }
+    if (generation.inbound.has(inboundKey)) {
+      throw {
+        code: "protocol_error",
+        message: `child reused managed-launch message ${inboundKey}`,
+      } satisfies Failure
+    }
+    if (generation.inbound.size >= this.options.maxPendingRequests) {
+      throw {
+        code: "request_limit",
+        message: `child exceeded ${this.options.maxPendingRequests} concurrent Runtime-extension request(s)`,
+      } satisfies Failure
+    }
+    if (requestId !== null) generation.activeRequestIds.add(requestId)
+    const abort = new AbortController()
+    generation.inbound.set(inboundKey, { abort })
+    void this.dispatchManagedLaunchInbound(
+      generation,
+      message,
+      inboundKey,
+      requestId,
+      abort,
+    )
   }
 
   private async dispatchInboundRequest(
@@ -1039,6 +1180,46 @@ export class RuntimeExtensionSupervisor {
         `Lifecycle handler failed for ${lifecycleMessageIdentity(message)}`,
       )
       this.recordFailure(generation, failure)
+    } finally {
+      generation.inbound.delete(inboundKey)
+      if (requestId !== null) generation.activeRequestIds.delete(requestId)
+    }
+  }
+
+  private async dispatchManagedLaunchInbound(
+    generation: Generation,
+    message: RuntimeExtensionManagedLaunchInbound,
+    inboundKey: string,
+    requestId: string | null,
+    abort: AbortController,
+  ): Promise<void> {
+    try {
+      await withTimeout(
+        (async () => {
+          const result = await Promise.resolve(
+            this.options.onManagedLaunchMessage!(message, abort.signal),
+          )
+          if (result !== undefined) {
+            throw {
+              code: "handler_failed",
+              message: `${message.message_type} managed-launch handler must not return a link response`,
+            } satisfies Failure
+          }
+        })(),
+        this.options.requestTimeoutMs,
+        () => ({
+          code: "request_timeout",
+          message: `Managed-launch handler for ${inboundKey} timed out after ` +
+            `${this.options.requestTimeoutMs}ms`,
+        } satisfies Failure),
+      )
+    } catch (error) {
+      if (this.active !== generation || generation.phase === "stopping") return
+      this.recordFailure(generation, asFailure(
+        error,
+        "handler_failed",
+        `Managed-launch handler failed for ${inboundKey}`,
+      ))
     } finally {
       generation.inbound.delete(inboundKey)
       if (requestId !== null) generation.activeRequestIds.delete(requestId)
@@ -1199,7 +1380,9 @@ export class RuntimeExtensionSupervisor {
       let frame: Uint8Array
       try {
         assertHostToChildMessage(next, "outbound Runtime-extension link message")
-        frame = encodeAgentWorkplaceFrame(next as AgentWorkplaceMessage)
+        frame = schemaIdOf(next) === MANAGED_LAUNCH_SCHEMA_ID
+          ? encodeManagedLaunchFrame(next as ManagedLaunchOutcome)
+          : encodeAgentWorkplaceFrame(next as AgentWorkplaceMessage)
       } catch (error) {
         throw {
           code: "protocol_error",
@@ -1380,6 +1563,7 @@ function normalizeOptions(options: RuntimeExtensionSupervisorOptions): Normalize
     onRequest: options.onRequest,
     onLifecycleMessage: options.onLifecycleMessage,
     onInlineLaunchSourceRequest: options.onInlineLaunchSourceRequest,
+    onManagedLaunchMessage: options.onManagedLaunchMessage,
     onDisconnect: options.onDisconnect,
     cwd: options.cwd,
     env: options.env,
@@ -1477,6 +1661,18 @@ function assertHostToChildMessage(message: unknown, label: string): void {
   if (lifecycle.success) {
     assertLifecycleReceipt(lifecycle.data, label)
     return
+  }
+
+  const managed = managedLaunchMessageSchema.safeParse(message)
+  if (managed.success) {
+    if (managed.data.message_type === "launch_outcome") {
+      parseManagedLaunchOutcome(managed.data)
+      return
+    }
+    throw new RuntimeExtensionError(
+      "protocol_error",
+      `${label} is invalid: ${managed.data.message_type} travels only in the extension-to-Runtime direction`,
+    )
   }
 
   const schemaId = typeof message === "object" && message !== null && "schema_id" in message
