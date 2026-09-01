@@ -90,8 +90,8 @@ export class ExactAgentRetirement {
     this.labelTimeoutMs = options.labelTimeoutMs ?? 1_000
     this.outcomeTimeoutMs = options.outcomeTimeoutMs ?? 5_000
     // The pinned daemon's forced teardown window is two seconds. Observe a
-    // refused/draining name across that whole bounded window before yielding
-    // pending recovery to the next call.
+    // refused/draining or briefly absent name across that whole bounded window
+    // before yielding pending recovery to the next call.
     this.refusedReinspectionAttempts = options.refusedReinspectionAttempts ?? 61
     this.refusedReinspectionDelayMs = options.refusedReinspectionDelayMs ?? 50
   }
@@ -197,7 +197,7 @@ export class ExactAgentRetirement {
         this.companionDirectory,
         request.agent_id,
       )
-      if (observation.kind !== "refused") return observation
+      if (observation.kind !== "refused" && observation.kind !== "absent") return observation
       if (attempt + 1 < attempts) {
         await new Promise((resolvePromise) =>
           setTimeout(resolvePromise, this.refusedReinspectionDelayMs))
@@ -218,6 +218,7 @@ type ExactSessionObservation =
   | { kind: "live"; socketPath: string; sessionName: string }
   | { kind: "exit"; exit: ExactExit }
   | { kind: "refused" }
+  | { kind: "absent" }
   | { kind: "pending" }
 
 function inspectInventory(
@@ -232,7 +233,9 @@ function inspectInventory(
     throw retirementError("ambiguous_session", `Companion repeats session ${identity.zmxName}`)
   }
   const session = named[0]
-  if (!session || session.state === "absent") return { kind: "pending" }
+  // Daemon socket deletion can briefly precede publication of its retained
+  // exit record, so exact absence remains bounded-pollable after Kill.
+  if (!session || session.state === "absent") return { kind: "absent" }
   // Companion cannot read labels from non-live sockets. These states are
   // uncertainty only: refused is bounded-pollable, while unreachable remains
   // pending. Neither can prove end or ownership.

@@ -159,6 +159,77 @@ describe("exact started-Agent retirement", () => {
     expect(authority.closes).toBe(1)
   })
 
+  test("socket deletion remains pending until the exact labelled exit record is visible", async () => {
+    const fixture = await retirementFixture("ensure-a")
+    const agentId = fixture.ensure.request.agent_id
+    const ledger = await ExactRetirementLedger.open(await ledgerRoot())
+    const authority = fakeAuthority(
+      [
+        [session(agentId, "live")],
+        [],
+        [session(agentId, "exited")],
+      ],
+      { kind: "closed", reason: { kind: "peer-closed" } },
+    )
+    const receipt = await new ExactAgentRetirement(
+      ledger,
+      HOME_ID,
+      COMPANION_DIRECTORY,
+      authority,
+      { refusedReinspectionAttempts: 2, refusedReinspectionDelayMs: 0 },
+    ).end(fixture.ensure, fixture.endRequest)
+
+    expect(receipt?.proof).toMatchObject({
+      kind: "ended",
+      companion_session: `fmx-${agentId}`,
+      reason: "requested",
+    })
+    expect(authority.connections).toBe(1)
+    expect(authority.kills).toHaveLength(1)
+    expect(authority.closes).toBe(1)
+    expect((await ledger.get(fixture.endRequest.ensure_id))?.end).toMatchObject({
+      kill: { write_flushed_at: expect.any(String) },
+      receipt: { proof: { kind: "ended" } },
+    })
+  })
+
+  test("transient absence never admits a foreign replacement", async () => {
+    const fixture = await retirementFixture("ensure-a")
+    const agentId = fixture.ensure.request.agent_id
+    const ledger = await ExactRetirementLedger.open(await ledgerRoot())
+    const authority = fakeAuthority(
+      [
+        [session(agentId, "live")],
+        [],
+        [session(agentId, "live", {
+          labels: {
+            owner: "fmx",
+            home: HOME_ID,
+            agent: "f".repeat(32),
+            pane: `p_${"f".repeat(32)}`,
+          },
+        })],
+      ],
+      { kind: "closed", reason: { kind: "peer-closed" } },
+    )
+
+    await expect(new ExactAgentRetirement(
+      ledger,
+      HOME_ID,
+      COMPANION_DIRECTORY,
+      authority,
+      { refusedReinspectionAttempts: 2, refusedReinspectionDelayMs: 0 },
+    ).end(fixture.ensure, fixture.endRequest)).rejects.toMatchObject({
+      name: "ExactAgentRetirementError",
+      code: "ownership_mismatch",
+    } satisfies Partial<ExactAgentRetirementError>)
+    expect(authority.kills).toHaveLength(1)
+    expect((await ledger.get(fixture.endRequest.ensure_id))?.end).toMatchObject({
+      kill: { write_flushed_at: expect.any(String) },
+      receipt: null,
+    })
+  })
+
   test("entry replay polls label-less refused until only an exact labelled exit proves end", async () => {
     const fixture = await retirementFixture("ensure-a")
     const agentId = fixture.ensure.request.agent_id
