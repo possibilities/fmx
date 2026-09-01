@@ -257,6 +257,18 @@ export class LifecycleCoordinator {
     string,
     { attempts: number; timer: ReturnType<typeof setTimeout> | null }
   >()
+  // The first non-null admitInitial delivery observed per managed ensureId,
+  // held only in this coordinator's memory for the bounded pending-redrive
+  // window. A held delivery is reused verbatim instead of resubmitting the
+  // exact initial Work text on every internal pending redrive. Cleared on
+  // every terminal outcome/admitted completion and on close(); deliberately
+  // NOT cleared merely because the bounded pending budget exhausts, so a
+  // later same-runtime redrive (an explicit recover() call, for instance)
+  // still cannot duplicate the submission.
+  private readonly managedInitialDeliveries = new Map<
+    string,
+    Readonly<{ admission: FxWorkControlResult; conversationId: string }>
+  >()
   private closed = false
   private activeEffects = 0
   private readonly maxConcurrentEffects: number
@@ -401,6 +413,7 @@ export class LifecycleCoordinator {
       if (timer !== null) clearTimeout(timer)
     }
     this.pendingRetries.clear()
+    this.managedInitialDeliveries.clear()
     for (const ensureId of this.queued.splice(0)) {
       const completion = this.scheduled.get(ensureId)
       if (completion === undefined) continue
@@ -633,10 +646,12 @@ export class LifecycleCoordinator {
         const record = await this.requireManaged(ensureId)
         if (this.closed) return false
         if (record.outcome.receipt !== null) {
+          this.managedInitialDeliveries.delete(ensureId)
           await this.publishManaged(record)
           return false
         }
         if (record.stage === "fx_started") {
+          this.managedInitialDeliveries.delete(ensureId)
           const outcome = buildManagedLaunchSuccess(record)
           const retained = await this.options.ledger.retainManagedOutcome(ensureId, outcome)
           await this.publishManaged(retained)
@@ -703,16 +718,26 @@ export class LifecycleCoordinator {
             kind: "fx_started",
             conversation_id: prepared.conversationId,
           })
+          this.managedInitialDeliveries.delete(ensureId)
           continue
         }
         const bytes = managedLaunchSourceBytes(current.request)
         const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.initialWork)
-        const delivered = await ports.workControl.admitInitial({
+        // A prior redrive's non-null delivery is held for this coordinator's
+        // lifetime (see managedInitialDeliveries): a bounded pending redrive
+        // must never resubmit initial Work that Fx already queued. A held
+        // delivery is reused verbatim rather than re-derived, so `delivered`
+        // stays byte-identical to what Fx actually admitted.
+        const held = this.managedInitialDeliveries.get(ensureId)
+        const delivered = held ?? await ports.workControl.admitInitial({
           binding: workControl,
           text,
           request: current.request,
           conversationId: prepared.conversationId,
         })
+        if (held === undefined && delivered !== null) {
+          this.managedInitialDeliveries.set(ensureId, delivered)
+        }
         const admission = await ports.admission.import({
           record: current,
           delivered,
@@ -723,7 +748,9 @@ export class LifecycleCoordinator {
         // pendingAdmissionRetryDelayMs budget the ordinary (non-managed)
         // ensure path uses, via pump()'s deferPendingRetry. Fabricating a
         // durable managed outcome here would turn Fx's "not yet decided"
-        // into a false failure before the bounded budget is even spent.
+        // into a false failure before the bounded budget is even spent. The
+        // held delivery above (if any) deliberately survives this return so
+        // a later redrive on this same coordinator cannot duplicate it.
         if (admission.kind === "pending") return true
         if (admission.kind !== "admitted") {
           throw new ManagedCoordinatorFailure({
@@ -743,12 +770,14 @@ export class LifecycleCoordinator {
           kind: "fx_started",
           conversation_id: admission.conversationId,
         })
+        this.managedInitialDeliveries.delete(ensureId)
         continue
       }
     } catch (error) {
       if (this.closed) return false
       const record = await this.requireManaged(ensureId)
       if (record.outcome.receipt !== null) {
+        this.managedInitialDeliveries.delete(ensureId)
         await this.publishManaged(record)
         return false
       }
@@ -757,6 +786,7 @@ export class LifecycleCoordinator {
         : ports.classify(error, record)
       const outcome = buildManagedLaunchOutcome(record, failure)
       const retained = await this.options.ledger.retainManagedOutcome(ensureId, outcome)
+      this.managedInitialDeliveries.delete(ensureId)
       await this.publishManaged(retained)
       try {
         this.options.ports.onError?.(error, ensureId)

@@ -441,7 +441,7 @@ describe("managed-launch bounded pending admission", () => {
       .toBe(request.fx_conversation.resume_conversation_id)
   })
 
-  test("resubmits the idempotent Work-control request on every pending redrive (no dedupe seam exists)", async () => {
+  test("submits the initial Work-control request at most once across a pending redrive", async () => {
     const root = await temporaryDirectory()
     const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
     const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
@@ -476,11 +476,12 @@ describe("managed-launch bounded pending admission", () => {
     await waitFor(async () => (await ledger.getManaged(request.ensure_id))?.stage === "fx_started")
     await coordinator.settled()
 
-    // Documented invariant: the coordinator has no seam that recognizes a
-    // still-pending redrive as "the same Work-control submission" and skips
-    // it. It resubmits the exact initial text once per attempt, relying on
-    // Fx's own admission path to be idempotent for the same launch identity.
-    expect(admitInitialCalls).toEqual(["managed hello", "managed hello"])
+    // The coordinator holds the first non-null delivery per ensureId for as
+    // long as it remains alive, reusing it verbatim on a still-pending
+    // redrive instead of resubmitting the exact initial text a second time.
+    // See the "pending redrive holds the first initial-work delivery"
+    // describe block below for the full turn-id-based proof of this.
+    expect(admitInitialCalls).toEqual(["managed hello"])
     expect(admissionAttempts).toBe(2)
   })
 
@@ -678,6 +679,232 @@ describe("managed-launch bounded pending admission", () => {
     expect(record?.fx_admission_decision).toBeNull()
   })
 })
+
+describe("managed-launch pending redrive holds the first initial-work delivery", () => {
+  // The bounded pending redrive above resubmits Work-control's initial text
+  // on every internal attempt UNLESS the coordinator already holds a
+  // non-null delivery from an earlier attempt on this same ensureId. Fx's
+  // admission decision correlates to whichever turn it actually queued
+  // first; a coordinator that calls admitInitial again on every pending
+  // redrive would (a) duplicate real Work submitted to Fx and (b) produce a
+  // delivered turn_id that no longer matches the turn Fx eventually admits,
+  // since incrementing-turn_id providers key each admitInitial call to a
+  // fresh turn. These tests pin: at most one admitInitial call per ensureId
+  // while a coordinator instance is alive, using incrementing turn_ids to
+  // make an accidental duplicate call immediately visible.
+
+  test("reuses the first delivered turn across a pending redrive instead of resubmitting Work", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-dedupe")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    const published: ManagedLaunchOutcome[] = []
+    const ports = managedPorts(published, [])
+    let admitInitialCalls = 0
+    ports.managed!.workControl.admitInitial = async ({ conversationId }) => {
+      admitInitialCalls++
+      return {
+        admission: {
+          disposition: "queued",
+          // A real Fx provider keys each accepted submission to its own
+          // turn_id; incrementing this on every call is what makes a
+          // duplicate admitInitial call observable as a turn mismatch below.
+          turn_id: String(admitInitialCalls),
+          snapshot: {} as FxWorkControlResult["snapshot"],
+        },
+        conversationId,
+      }
+    }
+    let admissionAttempts = 0
+    ports.managed!.admission.import = async ({ expectedConversationId }) => {
+      admissionAttempts++
+      if (admissionAttempts === 1) return { kind: "pending" }
+      // Fx admits against the FIRST turn it actually queued, whichever
+      // admitInitial call that was.
+      return {
+        kind: "admitted",
+        decision: managedAdmittedDecisionFor(request, expectedConversationId, "1"),
+        conversationId: expectedConversationId,
+      }
+    }
+
+    const coordinator = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports,
+      pendingAdmissionRetryDelayMs: 0,
+    })
+
+    await coordinator.recover()
+    await waitFor(async () => (await ledger.getManaged(request.ensure_id))?.stage === "fx_started")
+    await coordinator.settled()
+    coordinator.close()
+
+    // Before this correction, the second (redriven) attempt called
+    // admitInitial again, producing turn_id "2" while Fx's decision stayed
+    // keyed to turn "1" — a hard mismatch that failed the launch instead of
+    // reaching fx_started.
+    expect(admitInitialCalls).toBe(1)
+    expect(admissionAttempts).toBe(2)
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({ status: "succeeded" })
+    expect((await ledger.getManaged(request.ensure_id))?.stage).toBe("fx_started")
+  })
+
+  test("close() drops the held delivery; a fresh coordinator instance resubmits Work once more", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-close-cache")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    let admitInitialCalls = 0
+    const firstPorts = managedPorts([], [])
+    firstPorts.managed!.workControl.admitInitial = async ({ conversationId }) => {
+      admitInitialCalls++
+      return {
+        admission: {
+          disposition: "queued",
+          turn_id: String(admitInitialCalls),
+          snapshot: {} as FxWorkControlResult["snapshot"],
+        },
+        conversationId,
+      }
+    }
+    firstPorts.managed!.admission.import = async () => ({ kind: "pending" })
+    const first = new LifecycleCoordinator({
+      ledger,
+      sources,
+      ports: firstPorts,
+      pendingAdmissionRetryDelayMs: 10_000,
+    })
+    await first.recover()
+    await first.settled()
+    // Held only in coordinator #1's memory; nothing external observes it
+    // directly, but exactly one admitInitial call happened for the one
+    // pending attempt this coordinator drove before its delay was deferred.
+    expect(admitInitialCalls).toBe(1)
+    first.close()
+
+    const published: ManagedLaunchOutcome[] = []
+    const secondPorts = managedPorts(published, [])
+    secondPorts.managed!.workControl.admitInitial = async ({ conversationId }) => {
+      admitInitialCalls++
+      return {
+        admission: {
+          disposition: "queued",
+          turn_id: String(admitInitialCalls),
+          snapshot: {} as FxWorkControlResult["snapshot"],
+        },
+        conversationId,
+      }
+    }
+    secondPorts.managed!.admission.import = async ({ expectedConversationId }) => ({
+      kind: "admitted",
+      decision: managedAdmittedDecisionFor(request, expectedConversationId, "2"),
+      conversationId: expectedConversationId,
+    })
+    const second = new LifecycleCoordinator({ ledger, sources, ports: secondPorts })
+    await second.recover()
+    await second.settled()
+
+    // A fresh coordinator instance (the process-restart case) has no
+    // in-memory record of coordinator #1's held delivery — by design, this
+    // held cache is a same-runtime redrive optimization only, not a durable
+    // dedupe seam (Fx's own admission path is idempotent by launch identity
+    // across restarts; see the "resubmits the idempotent Work-control
+    // request" test above).
+    expect(admitInitialCalls).toBe(2)
+    expect(published).toHaveLength(1)
+    expect(published[0]).toMatchObject({ status: "succeeded" })
+  })
+
+  test("clears the held delivery on a terminal failure outcome, so a same-runtime retry resubmits Work fresh", async () => {
+    const root = await temporaryDirectory()
+    const ledger = await EnsureLifecycleLedger.open(join(root, "ensure"))
+    const sources = await InlineLaunchSourceLedger.open(join(root, "source"))
+    const request = await managedRequest("pending-terminal-clear")
+    await placeManagedAtCompanionStarted(ledger, request)
+
+    const published: ManagedLaunchOutcome[] = []
+    const ports = managedPorts(published, [])
+    let admitInitialCalls = 0
+    ports.managed!.workControl.admitInitial = async ({ conversationId }) => {
+      admitInitialCalls++
+      return {
+        admission: {
+          disposition: "queued",
+          turn_id: String(admitInitialCalls),
+          snapshot: {} as FxWorkControlResult["snapshot"],
+        },
+        conversationId,
+      }
+    }
+    // Attempt 1's very first admission observation is a real, non-pending
+    // terminal outcome (cancelled_before_start): this both caches a
+    // delivery AND must clear it again immediately, since the launch is now
+    // durably done for this attempt.
+    ports.managed!.admission.import = async () => ({
+      kind: "cancelled_before_start",
+      decision: managedCancelledDecisionFor(request),
+    })
+
+    const coordinator = new LifecycleCoordinator({ ledger, sources, ports })
+    await coordinator.recover()
+    await coordinator.settled()
+    expect(admitInitialCalls).toBe(1)
+    const failed = published[0]!
+    expect(failed.status).toBe("failed")
+    await coordinator.acceptManaged(managedAcknowledgement(failed))
+
+    // retryManaged does not reset stage: this record's stage stayed at
+    // "companion_started" through the failure, so attempt 2 resumes
+    // directly at fx_admission on the SAME live coordinator — exactly the
+    // scenario where a stale held delivery from attempt 1 would otherwise
+    // leak into attempt 2 and never be resubmitted.
+    ports.managed!.admission.import = async ({ expectedConversationId }) => ({
+      kind: "admitted",
+      decision: managedAdmittedDecisionFor(request, expectedConversationId, String(admitInitialCalls)),
+      conversationId: expectedConversationId,
+    })
+    await coordinator.acceptManaged(managedRetry(failed))
+    await coordinator.settled()
+
+    expect(admitInitialCalls).toBe(2)
+    expect(published.map((outcome) => [outcome.attempt, outcome.status])).toEqual([
+      [1, "failed"],
+      [2, "succeeded"],
+    ])
+    const record = await ledger.getManaged(request.ensure_id)
+    expect(record?.stage).toBe("fx_started")
+    expect(record?.attempt).toBe(2)
+  })
+})
+
+function managedAdmittedDecisionFor(
+  request: ManagedLaunchRequest,
+  conversationId: string,
+  turnId: string,
+): AdmittedFxAdmissionDecision {
+  void conversationId
+  const decision = {
+    schema_id: "fx.launch-admission-final",
+    schema_version: 1,
+    message_type: "admission_decision",
+    receipt_id: `managed-admission-${request.ensure_id}-turn-${turnId}`,
+    receipt_digest: "",
+    launch_id: request.launch_id,
+    launch_digest: request.launch_digest,
+    admission_key: request.source.admission_key,
+    decision: { kind: "admitted", turn_id: turnId, disposition: "queued" },
+  } as FxAdmissionDecision
+  return {
+    ...decision,
+    receipt_digest: deriveFxAdmissionDecisionDigest(decision),
+  } as AdmittedFxAdmissionDecision
+}
 
 async function placeManagedAtCompanionStarted(
   ledger: EnsureLifecycleLedger,

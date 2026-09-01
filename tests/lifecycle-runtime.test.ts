@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { readFile, realpath, rm, mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { encodeCanonicalJson } from "../src/contract-codec.ts"
 import {
   identityFor,
   AgentManifest,
@@ -48,6 +49,12 @@ import {
 } from "../src/lifecycle-runtime.ts"
 import type { AgentDefaults } from "../src/config.ts"
 import { mintFxWorkControlBinding } from "../src/fx-work-control.ts"
+import {
+  deriveManagedLaunchEnsureDigest,
+  deriveManagedLaunchSourceDigest,
+  parseManagedLaunchRequest,
+  type ManagedLaunchRequest,
+} from "../src/managed-launch-contract.ts"
 import type { ManagedAgentClaim, ManagedAgentInvocation } from "../src/multiplexer.ts"
 
 const CONTRACTS = resolve(import.meta.dir, "../contracts/agentworkplace/v1")
@@ -506,6 +513,81 @@ describe("production lifecycle Runtime composition", () => {
       await harness.runtime.close()
     }
   })
+
+  // Fx admission polling is fallible in the ordinary course of a live
+  // Runtime; LifecycleRuntime wires its LifecycleCoordinator construction to
+  // a fixed 16-attempt/1000 ms bounded pending-admission budget (fifteen
+  // delays, fifteen seconds bounded) rather than the coordinator's own
+  // lower defaults. These are behavioral composition proofs of the real
+  // production wiring end to end, not a check that the source text contains
+  // "16" or "1000" — and, driven through the managed-launch path, they
+  // double as the Runtime-composition proof that the held initial-work
+  // delivery (this correction's other half) survives every bounded pending
+  // attempt through exhaustion without a second Work-control submission.
+  test(
+    "wires production LifecycleCoordinator to 16 bounded managed pending-admission attempts, " +
+      "issuing Work-control exactly once and leaving no durable outcome",
+    async () => {
+      const request = await managedRuntimeFixture("pending16")
+      const harness = await runtimeHarness(await lifecycleFixture("ensure-a", "launch-a", "pending16-carrier"), {
+        neverAdmit: true,
+        preloadedManagedRequest: request,
+        // Test-only seam (LifecycleRuntimeOptions.pendingAdmissionRetryDelayMsForTests):
+        // proves the 16-attempt budget without waiting out fifteen real
+        // production-length (1000 ms) delays. The attempts count itself
+        // (16) is never overridable — only this delay is, and only here.
+        pendingAdmissionRetryDelayMsForTests: 0,
+      })
+      try {
+        await harness.runtime.recover()
+        await waitFor(() => harness.errors.length === 1)
+
+        const inspectCalls = harness.provider.operations.filter((op) => op === "inspect").length
+        expect(inspectCalls).toBe(16)
+        expect(harness.errors).toHaveLength(1)
+        expect(harness.errors.map(String).join("\n")).toContain("bounded admission attempts")
+        // The held-delivery correction: sixteen inspections, one submission.
+        expect(harness.workControl.requests).toHaveLength(1)
+        expect(harness.workControl.requests[0]).toMatchObject({ method: "work.queue" })
+
+        const durable = await EnsureLifecycleLedger.open(harness.runtime.roots.ensure)
+        const record = await durable.getManaged(request.ensure_id)
+        expect(record?.stage).toBe("companion_started")
+        expect(record?.fx_admission_decision).toBeNull()
+        expect(record?.outcome.receipt).toBeNull()
+        expect(record?.attempt).toBe(1)
+      } finally {
+        await harness.runtime.close()
+      }
+    },
+  )
+
+  test("does not fire production's first managed pending-admission redrive early", async () => {
+    const request = await managedRuntimeFixture("pending-delay")
+    // No pendingAdmissionRetryDelayMsForTests override here: this is the
+    // literal 1000 ms production value wired in the constructor.
+    const harness = await runtimeHarness(await lifecycleFixture("ensure-a", "launch-a", "pending-delay-carrier"), {
+      neverAdmit: true,
+      preloadedManagedRequest: request,
+    })
+    try {
+      await harness.runtime.recover()
+      await waitFor(() => harness.provider.operations.includes("inspect"))
+      expect(harness.provider.operations.filter((op) => op === "inspect").length).toBe(1)
+      expect(harness.workControl.requests).toHaveLength(1)
+
+      await new Promise((resolve) => setTimeout(resolve, 900))
+      // One-sided proof: the second bounded-pending redrive has not fired
+      // after 900 ms, so production's delay is meaningfully close to its
+      // wired 1000 ms — not the coordinator's own 100 ms default and not a
+      // near-zero test-seam value. Work-control stays issued exactly once
+      // either way, held for the redrive that has not fired yet.
+      expect(harness.provider.operations.filter((op) => op === "inspect").length).toBe(1)
+      expect(harness.workControl.requests).toHaveLength(1)
+    } finally {
+      await harness.runtime.close()
+    }
+  })
 })
 
 async function runtimeHarness(
@@ -521,6 +603,10 @@ async function runtimeHarness(
     projectionGate?: Promise<void>
     retirementGate?: Promise<void>
     cleanupGate?: Promise<void>
+    neverAdmit?: boolean
+    pendingAdmissionRetryDelayMsForTests?: number
+    /** Seeds a managed-launch record directly at companion_started, plus its Manifest claim. */
+    preloadedManagedRequest?: ManagedLaunchRequest
   } = {},
 ) {
   const home = await temporaryDirectory()
@@ -528,24 +614,68 @@ async function runtimeHarness(
   const retirementLedger = await ExactRetirementLedger.open(runtimeRoots.retirement)
   let preloadedEnsureLedger: EnsureLifecycleLedger | undefined
   let preloadedSourceLedger: InlineLaunchSourceLedger | undefined
-  if (choices.preloadManifestClaim) {
+  if (choices.preloadManifestClaim || choices.preloadedManagedRequest !== undefined) {
     preloadedEnsureLedger = await EnsureLifecycleLedger.open(runtimeRoots.ensure)
     preloadedSourceLedger = await InlineLaunchSourceLedger.open(runtimeRoots.inlineSource)
-    await preloadedSourceLedger.claim(fixture.source)
-    await preloadedEnsureLedger.claim(fixture.ensure)
-    await preloadedSourceLedger.bindEnsureRequestForEnsure(fixture.ensure)
-    await preloadedEnsureLedger.advance(fixture.ensure.ensure_id, {
+  }
+  if (choices.preloadManifestClaim) {
+    await preloadedSourceLedger!.claim(fixture.source)
+    await preloadedEnsureLedger!.claim(fixture.ensure)
+    await preloadedSourceLedger!.bindEnsureRequestForEnsure(fixture.ensure)
+    await preloadedEnsureLedger!.advance(fixture.ensure.ensure_id, {
       kind: "worktree_created",
       directory: fixture.ensure.planned_worktree.directory,
       head_commit: fixture.ensure.planned_worktree.base_commit,
     })
-    await preloadedEnsureLedger.advance(fixture.ensure.ensure_id, {
+    await preloadedEnsureLedger!.advance(fixture.ensure.ensure_id, {
       kind: "manifest_claimed",
       agent_id: fixture.ensure.agent_id,
     })
   }
   const manifest = AgentManifest.ephemeral("lifecycle-runtime-test")
   const runtimeSocketPath = `/tmp/fmx-lr-${process.pid}-${temporaryDirectories.length}.bus`
+  if (choices.preloadedManagedRequest !== undefined) {
+    const request = choices.preloadedManagedRequest
+    await preloadedEnsureLedger!.claimManaged(request)
+    await preloadedEnsureLedger!.advanceManaged(request.ensure_id, {
+      kind: "directory_validated",
+      directory: request.workspace.directory,
+      repository: request.workspace.repository,
+      checkout_root: request.workspace.checkout_root,
+      head_commit: request.workspace.head_commit,
+    })
+    await preloadedEnsureLedger!.advanceManaged(request.ensure_id, {
+      kind: "manifest_claimed",
+      agent_id: request.agent_id,
+    })
+    await preloadedEnsureLedger!.bindManagedFxFinalReceiptAuthority(request.ensure_id, {
+      admission_key: request.source.admission_key,
+      state_root: request.source.launch_request.state_root,
+    })
+    await preloadedEnsureLedger!.retainManagedPreparedConversation(
+      request.ensure_id,
+      request.fx_conversation.resume_conversation_id!,
+    )
+    await preloadedEnsureLedger!.advanceManaged(request.ensure_id, {
+      kind: "companion_started",
+      session_name: `fmx-${request.agent_id}`,
+      pane_id: `p_${request.agent_id}`,
+    })
+    // The Companion is already durably started for this managed Agent: seed
+    // the Manifest claim + Work-control binding the way projectManagedAgent
+    // would have, without going through the FakeMultiplexer.
+    const workControlBinding = mintFxWorkControlBinding(runtimeSocketPath, request.agent_id)
+    const { saved } = manifest.ensureClaim({
+      identity: identityFor(request.agent_id),
+      cwd: request.workspace.directory,
+      fxPath: "/resolved/fmx-fx",
+      fxArgs: null,
+      workControl: workControlBinding,
+      createdAt: 1,
+    })
+    await saved
+    await manifest.markRunning(request.agent_id)
+  }
   const multiplexer = new FakeMultiplexer(
     manifest,
     choices.delayedStart ?? false,
@@ -557,6 +687,7 @@ async function runtimeHarness(
     workControl,
     choices.cancellation ?? false,
     choices.providerEnvironment,
+    choices.neverAdmit ?? false,
   )
   const retirement = choices.retirementGate === undefined
     ? undefined
@@ -602,6 +733,7 @@ async function runtimeHarness(
       list: async () => [],
       connect: async () => { throw new Error("never-started retirement must not connect") },
     },
+    pendingAdmissionRetryDelayMsForTests: choices.pendingAdmissionRetryDelayMsForTests,
   } satisfies LifecycleRuntimeOptions
   const runtime = await LifecycleRuntime.open(options)
   runtime.bindMultiplexer(multiplexer)
@@ -704,6 +836,8 @@ class FakeProvider {
     private readonly workControl: FakeWorkControl,
     private readonly cancellation: boolean,
     private readonly providerEnvironment: Record<string, string> = {},
+    /** Fx never decides: every inspect() stays pending regardless of admission. */
+    private readonly neverAdmit: boolean = false,
   ) {}
 
   async prepare() {
@@ -748,7 +882,10 @@ class FakeProvider {
 
   async inspect() {
     this.operations.push("inspect")
-    return this.authority(this.final, this.workControl.admitted ? this.admittedDecision() : null)
+    return this.authority(
+      this.final,
+      !this.neverAdmit && this.workControl.admitted ? this.admittedDecision() : null,
+    )
   }
 
   async cancel(_stateRoot: string, request: { request_id: string }) {
@@ -1018,6 +1155,65 @@ async function lifecycleFixture(
     cleanup.cleanup_digest = deriveCleanupDigest(cleanup)
   }
   return { ensure, source, end, cleanup }
+}
+
+async function managedRuntimeFixture(suffix: string): Promise<ManagedLaunchRequest> {
+  const launches = await messages("fx-launch-admission-final.jsonl", fxLaunchAdmissionFinalMessageSchema)
+  const base = launches.find((message): message is FrozenLaunchRequest =>
+    message.message_type === "launch_request" && message.launch_id === "launch-a"
+  )!
+  const serial = suffix.replace(/[^a-z0-9]/gu, "").slice(0, 12) || "x"
+  const directory = `/var/tmp/fmx-lifecycle-runtime-managed-${serial}`
+  const conversationId = "1788123456789-1788123456789000000-a1b2c3d4"
+  const initialWork = encodeInlineSourceBytes(Buffer.from("managed runtime hello", "utf8"))
+  const launchControls = encodeInlineSourceBytes(
+    encodeCanonicalJson({ remaining_global_args: [] }),
+  )
+  const launch = structuredClone(base)
+  launch.request_id = `runtime-managed-launch-request-${serial}`
+  launch.launch_id = `runtime-managed-launch-${serial}`
+  launch.admission_key = `runtime-managed-admission-${serial}`
+  launch.directory = directory
+  launch.conversation_name = `runtime-managed-${serial}`
+  launch.resume = { mode: "exact", conversation_id: conversationId }
+  launch.initial_work_digest = initialWork.sha256
+  launch.remaining_launch_controls_digest = launchControls.sha256
+  launch.launch_digest = deriveFrozenLaunchDigest(launch)
+  const request = {
+    schema_id: "fmx.managed-launch",
+    schema_version: 1,
+    message_type: "launch_request",
+    request_id: `runtime-managed-request-${serial}`,
+    workplace_instance_id: "workplace-lifecycle-runtime-test",
+    fmx_session: "default",
+    ensure_id: `runtime-managed-ensure-${serial}`,
+    ensure_digest: "0".repeat(64),
+    launch_id: launch.launch_id,
+    launch_digest: launch.launch_digest,
+    agent_id: serial.padEnd(32, "a").slice(0, 32).replace(/[^0-9a-f]/gu, "a"),
+    workspace: {
+      kind: "existing_directory",
+      directory,
+      repository: "/var/tmp/fmx-lifecycle-runtime-managed-repository",
+      checkout_root: directory,
+      head_commit: "b".repeat(40),
+    },
+    fx_conversation: {
+      name: launch.conversation_name,
+      resume_conversation_id: conversationId,
+    },
+    source: {
+      source_id: `runtime-managed-source-${serial}`,
+      source_digest: "0".repeat(64),
+      admission_key: launch.admission_key,
+      launch_request: launch,
+      initial_work: initialWork,
+      launch_controls: launchControls,
+    },
+  } as ManagedLaunchRequest
+  request.source.source_digest = deriveManagedLaunchSourceDigest(request)
+  request.ensure_digest = deriveManagedLaunchEnsureDigest(request)
+  return parseManagedLaunchRequest(request)
 }
 
 async function messages<T>(file: string, schema: { parse(value: unknown): T }): Promise<T[]> {

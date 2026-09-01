@@ -162,6 +162,14 @@ export type LifecycleRuntimeOptions = {
   launchProvider?: LaunchProvider
   workControl?: FxWorkControlRequester
   companionAuthority?: RetirementCompanionAuthority
+  /**
+   * Test-only: overrides the fixed 1000 ms pendingAdmissionRetryDelayMs this
+   * class wires into its LifecycleCoordinator construction below. Production
+   * callers must never set this; it exists solely so a focused composition
+   * test can observe the real 16-attempt bounded-pending budget without
+   * waiting out fifteen full production-length delays.
+   */
+  pendingAdmissionRetryDelayMsForTests?: number
 }
 
 /** Stable, private per-Home locations. None of these records lives in `/tmp`. */
@@ -220,6 +228,12 @@ export class LifecycleRuntime {
       ledger: ensureLedger,
       sources,
       ports: this.coordinatorPorts(),
+      // Fx admission polling is fallible in the ordinary course of a live
+      // Runtime: sixteen attempts spaced one second apart (fifteen delays,
+      // fifteen seconds bounded) give Fx a realistic window to decide before
+      // this correlation is left durably pending for the next recover().
+      pendingAdmissionAttempts: 16,
+      pendingAdmissionRetryDelayMs: options.pendingAdmissionRetryDelayMsForTests ?? 1000,
     })
   }
 
