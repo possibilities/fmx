@@ -16,12 +16,12 @@ import {
 const roots: string[] = []
 const INSTALLED_FX = join(process.env.HOME ?? "", ".local", "bin", "fmx-fx")
 const EXPECTED_INSTALLED_FX: Phase1aFxIdentity = {
-  bytes: 11_097_952,
-  commit: "561a74e442b4b551b815a9f45230c486fe0e5f38",
+  bytes: 11_114_368,
+  commit: "2b88952d123868c36407ef284917ad3e0522ee2f",
   fxnk: "0.5.0",
   mode: "0755",
-  sha256: "sha256:57dfa1cfcdf2f45cca038b7c4c48138fe0a4a746f6489c84ccfebe2d59357b10",
-  tree: "107d63b5a57470097f701cb9c8ea9ef1f5bd86c7",
+  sha256: "sha256:31c57e35659c08bef0404d023159ef43fb87f541ac21c1348b30fefe79418e80",
+  tree: "0b852c580243221fca9d865091b1ad742f5309e6",
   version: "0.0.7",
 }
 
