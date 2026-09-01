@@ -85,11 +85,12 @@ const releaseMarker = process.env.FMX_PHASE1C_FIXTURE_RELEASE_MARKER
 const logPath = process.env.FMX_PHASE1C_FIXTURE_LOG
 const crashAfter = process.env.FMX_PHASE1C_FIXTURE_CRASH_AFTER
 const emission = parseEmission(process.env.FMX_PHASE1C_FIXTURE_EMISSION)
+const testWakeReleaseDuringReceipt = process.env.FMX_PHASE1C_FIXTURE_TEST_WAKE_RELEASE_DURING_RECEIPT === "1"
 const decoder = new ContractFrameDecoder()
 let initialized = false
 let state = await readState(statePath)
 let fixture: FixtureMessages | null = null
-let releaseTail: Promise<void> = Promise.resolve()
+let stateTransitionTail: Promise<void> = Promise.resolve()
 let releaseReady = false
 let endSent = false
 let cleanupSent = false
@@ -107,8 +108,9 @@ for await (const chunk of Bun.stdin.stream()) {
         throw new Error("phase1c fixture expected Runtime-extension initialize")
       }
       initialized = true
-      fixture = buildFixture(parsed.data as unknown as Initialize)
-      await bindAuthority(fixture)
+      const currentFixture = buildFixture(parsed.data as unknown as Initialize)
+      fixture = currentFixture
+      await runStateTransition(() => bindAuthority(currentFixture))
       writeRuntime(readyFor(parsed.data as unknown as Initialize))
       if (emission === "ensure_then_source") {
         writeLifecycle(fixture.ensure)
@@ -128,8 +130,15 @@ for await (const chunk of Bun.stdin.stream()) {
 
     await evidence("inbound", message)
     const lifecycle = ensureLifecycleMessageSchema.safeParse(message)
-    if (lifecycle.success && isReceipt(lifecycle.data)) await retainReceipt(lifecycle.data)
-    await releasePending()
+    if (lifecycle.success && isReceipt(lifecycle.data)) {
+      const receipt = lifecycle.data
+      await runStateTransition(async () => {
+        await retainReceipt(receipt)
+        await releaseAvailable()
+      })
+    } else {
+      await releasePending()
+    }
   }
 }
 decoder.finish()
@@ -423,6 +432,12 @@ async function retainReceipt(receipt: LifecycleReceipt): Promise<void> {
     conversation_id: conversation,
     acknowledgement: null,
   })
+  // The focused regression queues the same wake a marker watcher may deliver
+  // while this receipt transition is active. The shared tail must keep that
+  // wake behind this receipt's durable save.
+  if (testWakeReleaseDuringReceipt && releaseMarker !== undefined && existsSync(releaseMarker)) {
+    void releasePending()
+  }
   await saveState()
 }
 
@@ -447,8 +462,16 @@ function deriveEnsureReceiptDigest(receipt: EnsureReceipt): string {
 }
 
 async function releasePending(): Promise<void> {
-  releaseTail = releaseTail.then(releaseAvailable)
-  return releaseTail
+  return runStateTransition(releaseAvailable)
+}
+
+function runStateTransition(operation: () => Promise<void>): Promise<void> {
+  // Authority binding, receipt retention, and every marker/probe release are
+  // one ordered transaction stream. This is stronger than distinct temporary
+  // names: it also prevents an older state snapshot from landing last.
+  const transition = stateTransitionTail.then(operation)
+  stateTransitionTail = transition
+  return transition
 }
 
 async function releaseAvailable(): Promise<void> {

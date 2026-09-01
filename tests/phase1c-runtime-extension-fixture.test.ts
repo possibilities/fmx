@@ -146,7 +146,43 @@ test.each(["ensure", "end"])("fails closed for a digest-tampered correlated %s r
     expect(persisted.receipts.map((entry: { kind: string }) => entry.kind)).toEqual(["ensure"])
     expect(persisted.cleanup).toBeNull()
   } finally {
-    await harness.close(1)
+    await harness.close(
+      1,
+      `phase1c fixture rejected ${kind} receipt with an invalid canonical digest`,
+    )
+  }
+})
+
+test("serializes a marker-already-present release wake behind receipt retention", async () => {
+  const harness = await start(undefined, {
+    env: { FMX_PHASE1C_FIXTURE_TEST_WAKE_RELEASE_DURING_RECEIPT: "1" },
+  })
+  try {
+    const { ensure } = await initializeAndReadIntents(harness)
+    await writeFile(harness.marker, "release\n", { mode: 0o600 })
+    const receipt = completeEnsureReceipt(ensure)
+    harness.write(receipt)
+
+    const acknowledgement = await harness.frames.nextLifecycle()
+    const end = await harness.frames.nextLifecycle() as EndRequest
+    expect(acknowledgement).toMatchObject({
+      message_type: "receipt_acknowledgement",
+      receipt_kind: "ensure",
+      receipt_id: receipt.receipt_id,
+      receipt_digest: receipt.receipt_digest,
+    })
+    expect(end).toMatchObject({ message_type: "end_request", conversation_id: receipt.effects.fx.conversation_id })
+    const persisted = await state(harness)
+    expect(persisted.receipts).toEqual([
+      expect.objectContaining({
+        receipt_id: receipt.receipt_id,
+        receipt_digest: receipt.receipt_digest,
+        acknowledgement: expect.objectContaining({ receipt_id: receipt.receipt_id }),
+      }),
+    ])
+    expect(canonical(persisted.end)).toEqual(canonical(end))
+  } finally {
+    await harness.close()
   }
 })
 
@@ -297,12 +333,13 @@ async function start(
       await child.stdin.flush()
     },
     write: (message: AgentWorkplaceMessage) => child.stdin.write(encodeAgentWorkplaceFrame(message)),
-    close: async (expectedExitCode = 0) => {
+    close: async (expectedExitCode = 0, expectedStderr?: string) => {
       child.stdin.end()
       const code = await child.exited
       const stderr = await new Response(child.stderr).text()
       if (code !== expectedExitCode) throw new Error(`fixture exit ${code}; stderr: ${stderr}`)
-      if (expectedExitCode === 0) expect(stderr).toBe("")
+      if (expectedStderr !== undefined) expect(stderr).toContain(expectedStderr)
+      else if (expectedExitCode === 0) expect(stderr).toBe("")
     },
   }
 }
@@ -316,7 +353,7 @@ type Harness = {
   frames: FrameReader
   initialize(): Promise<void>
   write(message: AgentWorkplaceMessage): void
-  close(expectedExitCode?: number): Promise<void>
+  close(expectedExitCode?: number, expectedStderr?: string): Promise<void>
 }
 
 async function initializeAndReadIntents(harness: Harness) {
