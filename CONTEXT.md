@@ -71,45 +71,6 @@ uses its `homes/<name>` child. A short digest of that internal state directory
 labels its Companion sessions and stable ADE-feed and Runtime-bridge sockets.
 _Avoid_: Home, profile, workspace, instance, Fx Conversation.
 
-**Workplace association** — one explicit shared-configuration record that
-maps exactly two distinct fmx Session selectors to opaque placement labels and
-names one Workplace instance, Runtime extension, and reusable configuration.
-Fmx treats both members uniformly, allows a Session in at most one
-association, and never starts the other member. No association is the default.
-_Avoid_: role mapping, Manager Session, Worker Session, peer launch.
-
-**Runtime extension** — one implementation-private child process supervised
-by an associated Runtime after its ordinary terminal bootstrap. Its explicit
-manifest under `runtime-extensions/` supplies an absolute argv, protocol
-range, and required headless-liveness declaration; canonical bounded framed
-stdio carries exact readiness, snapshots, presentation, and the recovery-card
-seam. A cold associated Runtime fails closed before its first frame when this
-contract is unavailable or incompatible, while a later child loss degrades
-only extension functionality.
-_Avoid_: plugin, MCP server, Runtime bridge, second Agent transport.
-
-**Member snapshot** — the authoritative point-in-time view an associated
-Runtime returns for its own fmx Session: its monotonic member revision,
-selected stable Agent identity, and exact visible or Manifest-retained Agent
-facts. Relevant changes coalesce into a level-triggered invalidation; the
-extension pulls another complete snapshot, so neither ADE nor UI transitions
-become a replay stream.
-_Avoid_: event log, Observation stream, durable transition history.
-
-**Recovery card** — the one bounded Runtime-extension-owned placeholder fmx
-may keep visible and selectable for an unavailable managed slot. Fmx renders
-only its causal title, message, and single action label, then forwards the
-opaque correlated human action; it assigns no Conversation, Position, role,
-restart, or resume meaning and exposes no MCP equivalent.
-_Avoid_: arbitrary TUI injection, dialog, Agent row, policy fallback.
-
-**Associated Runtime** — a Runtime whose cold-start snapshot accepted one
-Workplace association and Runtime extension. After the ordinary real-terminal
-bootstrap it remains Companion-held with its extension when zero Clients are
-attached; it is not started at login, does not start its peer, and is not
-resurrected after a crash. An unassociated Runtime retains final-Detach exit.
-_Avoid_: service, hidden Client, OS supervisor, live configuration view.
-
 **Manifest** — the fmx Session's `agents.json` (`~/.config/fmx/agents.json` for the
 default, `~/.config/fmx/homes/<name>/agents.json` when named), its own record of
 the Agents its Companion holds: one entry per Agent carrying its identity,

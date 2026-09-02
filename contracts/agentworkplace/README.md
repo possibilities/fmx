@@ -1,5 +1,10 @@
 # AgentWorkplace-facing fmx contracts
 
+> Superseded: fmx's AgentWorkplace Runtime subsystem was retired, so the
+> later implementation phases these fixtures anticipate do not exist in
+> fmx. The frozen Phase 0 data, its checker, and its provider generator
+> remain byte-exact for any consumer that still reads them.
+
 This directory is the canonical fmx owner for the Phase 0 contract fixtures.
 They freeze data and wire behavior for later implementation; loading them does
 not start fmx, Fx, a Runtime extension, an Agent, or a Worktree.
