@@ -6,7 +6,6 @@ import {
   type FxWorkControlBinding,
 } from "./fx-work-control.ts"
 import { INHERITED_COMPANION_VARIABLES } from "./zmx-environment.ts"
-import { RUNTIME_STARTUP_SNAPSHOT_ENV_VAR } from "./runtime-startup.ts"
 
 /**
  * Fx may inherit a Herdr integration from fmx's own parent. That integration
@@ -40,7 +39,6 @@ const OUTER_MULTIPLEXER_VARIABLES = [
   // hidden Runtime role or its one-use bootstrap marker.
   "FMX_RUNTIME_PROCESS",
   "FMX_RUNTIME_BOOTSTRAP_PATH",
-  RUNTIME_STARTUP_SNAPSHOT_ENV_VAR,
   // The Companion's own names: an fmx started inside a human's zmx must not
   // hand that session on to fx, and the Companion sets its own when it
   // starts the child.

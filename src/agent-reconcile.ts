@@ -1,4 +1,4 @@
-import { lstat, unlink } from "node:fs/promises"
+import { unlink } from "node:fs/promises"
 import { identityFor, isAgentId, type AgentManifest, type ManifestEntry } from "./agent-manifest.ts"
 import { removeFxWorkControlResidue } from "./fx-work-control.ts"
 import type { CompanionCommand, SessionEntry } from "./zmx-command.ts"
@@ -92,8 +92,6 @@ export type ReconcileOutcome = {
   attached: ReconciledAgent[]
   adopted: ReconciledAgent[]
   removed: { entry: ManifestEntry; session: SessionEntry | null }[]
-  /** Entries deliberately retained by a removal authority or after an isolated startup failure. */
-  preserved: AgentRemoval[]
   /** Stale sockets cleared after the settle window: nothing held them, so nothing can come back. */
   cleared: SessionEntry[]
   /** Still unreachable after the settle window; left for the next start. */
@@ -114,28 +112,6 @@ export type ReconcileOptions = {
   now?: () => number
   /** Exact Runtime path used to validate dead Agents' work-control residue. */
   runtimeSocketPath?: string
-  /**
-   * Persist any external correlation/finalization which must precede removal
-   * of this exact Manifest identity. A rejection is fail-closed: neither the
-   * claim nor its Work-control endpoint is removed, so the next startup can
-   * retry the same durable operation.
-   */
-  beforeRemove?: (
-    removal: AgentRemoval,
-  ) => void | "preserve" | Promise<void | "preserve">
-  /**
-   * Startup-only isolation for a failed removal. Without this explicit hook,
-   * reconciliation retains its fail-fast behavior and rejects.
-   */
-  continueAfterRemoveFailure?: (removal: AgentRemoval, error: unknown) => void
-}
-
-export type AgentRemovalReason = "absent" | "exited" | "foreign" | "refused"
-
-export type AgentRemoval = {
-  entry: ManifestEntry
-  reason: AgentRemovalReason
-  session: SessionEntry | null
 }
 
 /**
@@ -150,70 +126,13 @@ export async function reconcileAgents(
 ): Promise<ReconcileOutcome> {
   const settleMs = options.settleMs ?? 3000
   const now = options.now ?? Date.now
-  const removeEntry = async (
-    removal: AgentRemoval,
-    actions: { removeResidue?: boolean; forgetExit?: boolean; clearRefused?: boolean } = {},
-  ): Promise<"removed" | "preserved"> => {
-    const candidate = {
-      entry: structuredClone(removal.entry),
-      reason: removal.reason,
-      session: removal.session === null ? null : structuredClone(removal.session),
+  const removeEntry = async (entry: ManifestEntry, removeResidue = true) => {
+    if (removeResidue) {
+      await removeFxWorkControlResidue(entry.workControl, options.runtimeSocketPath ?? null)
     }
-    if (await options.beforeRemove?.(candidate) === "preserve") return "preserved"
-    const revalidate = () => assertRemovalStillValid(companion, manifest.homeId, removal)
-    if (actions.removeResidue !== false) {
-      await revalidate()
-      await removeFxWorkControlResidue(
-        removal.entry.workControl,
-        options.runtimeSocketPath ?? null,
-        { beforeUnlink: revalidate },
-      )
-    }
-    if (actions.forgetExit) {
-      await revalidate()
-      await companion.forget(removal.entry.zmxName)
-    }
-    if (actions.clearRefused && removal.session?.socketPath) {
-      await unlinkStablePath(removal.session.socketPath, revalidate)
-    }
-    if (actions.forgetExit || actions.clearRefused) {
-      await assertRemovalConsumedOrStillValid(companion, manifest.homeId, removal)
-    } else {
-      await revalidate()
-    }
-    await manifest.remove(removal.entry.agentId)
-    return "removed"
+    await manifest.remove(entry.agentId)
   }
-  const outcome: ReconcileOutcome = {
-    attached: [],
-    adopted: [],
-    removed: [],
-    preserved: [],
-    cleared: [],
-    unresolved: [],
-    ignored: [],
-  }
-  const removeWithIsolation = async (
-    removal: AgentRemoval,
-    actions: { removeResidue?: boolean; forgetExit?: boolean; clearRefused?: boolean } = {},
-  ): Promise<"removed" | "preserved"> => {
-    try {
-      return await removeEntry(removal, actions)
-    } catch (error) {
-      if (options.continueAfterRemoveFailure === undefined) throw error
-      try {
-        options.continueAfterRemoveFailure({
-          entry: structuredClone(removal.entry),
-          reason: removal.reason,
-          session: removal.session === null ? null : structuredClone(removal.session),
-        }, error)
-      } catch {
-        // A startup diagnostic cannot turn an isolated fail-closed removal
-        // back into an all-Agent reconciliation failure.
-      }
-      return manifest.get(removal.entry.agentId) === null ? "removed" : "preserved"
-    }
-  }
+  const outcome: ReconcileOutcome = { attached: [], adopted: [], removed: [], cleared: [], unresolved: [], ignored: [] }
 
   let sessions = await companion.list()
   let plan = reconcile(manifest.entries, sessions, manifest.homeId)
@@ -246,23 +165,20 @@ export async function reconcileAgents(
       session,
     })
   }
-  const ignoredByName = new Map(plan.ignored.map((session) => [session.name, session]))
+  const ignoredNames = new Set(plan.ignored.map((session) => session.name))
   for (const { entry, session } of plan.remove) {
     // A live foreign session under our old name is left wholly alone: it may
     // have taken the filesystem endpoint too. Absence, exit, and a dead
     // refused socket prove no process remains to own the old endpoint.
-    const foreign = ignoredByName.get(entry.zmxName) ?? null
-    const removal = {
-      entry,
-      reason: foreign !== null ? "foreign" : session?.state === "exited" ? "exited" : "absent",
-      session: foreign ?? session,
-    } satisfies AgentRemoval
-    const disposition = await removeWithIsolation(removal, {
-      removeResidue: foreign === null,
-      forgetExit: session?.state === "exited",
-    })
-    if (disposition === "preserved") outcome.preserved.push(removal)
-    else outcome.removed.push({ entry, session })
+    await removeEntry(entry, !ignoredNames.has(entry.zmxName))
+    if (session?.state === "exited") {
+      try {
+        await companion.forget(session.name)
+      } catch {
+        // The record is advisory once the entry is gone; a later start forgets it again.
+      }
+    }
+    outcome.removed.push({ entry, session })
   }
   for (const session of plan.forget) {
     try {
@@ -282,93 +198,12 @@ export async function reconcileAgents(
       continue
     }
     if (entry) {
-      const removal = { entry, reason: "refused", session } satisfies AgentRemoval
-      const disposition = await removeWithIsolation(
-        removal,
-        { clearRefused: session.socketPath !== null },
-      )
-      if (disposition === "preserved") {
-        outcome.preserved.push(removal)
-        continue
-      }
+      await removeEntry(entry)
       outcome.removed.push({ entry, session })
-    } else if (session.socketPath) await unlink(session.socketPath).catch(() => {})
+    }
+    if (session.socketPath) await unlink(session.socketPath).catch(() => {})
     outcome.cleared.push(session)
   }
   outcome.ignored = plan.ignored
   return outcome
-}
-
-async function assertRemovalConsumedOrStillValid(
-  companion: CompanionCommand,
-  homeId: string,
-  removal: AgentRemoval,
-): Promise<void> {
-  const named = (await companion.list()).filter(({ name }) => name === removal.entry.zmxName)
-  if (named.length > 1) {
-    throw new Error(`Companion repeats session ${removal.entry.zmxName} after finalization`)
-  }
-  const current = named[0] ?? null
-  if (current === null || current.state === "absent") return
-  if (removal.reason === "exited" && current.state === "exited") return
-  if (
-    removal.reason === "refused" && current.state === "refused" &&
-    current.socketPath === removal.session?.socketPath
-  ) return
-  if (current.state === "live" && ownedAgentId(current, homeId) !== removal.entry.agentId) {
-    throw new Error(
-      `foreign Companion session ${removal.entry.zmxName} appeared after managed finalization`,
-    )
-  }
-  throw new Error(
-    `Companion session ${removal.entry.zmxName} changed after its managed identity was finalized`,
-  )
-}
-
-async function assertRemovalStillValid(
-  companion: CompanionCommand,
-  homeId: string,
-  removal: AgentRemoval,
-): Promise<void> {
-  const named = (await companion.list()).filter(({ name }) => name === removal.entry.zmxName)
-  if (named.length > 1) {
-    throw new Error(`Companion repeats session ${removal.entry.zmxName} during finalization`)
-  }
-  const current = named[0] ?? null
-  switch (removal.reason) {
-    case "absent":
-      if (current === null || current.state === "absent") return
-      break
-    case "exited":
-      if (current?.state === "exited") return
-      break
-    case "foreign":
-      if (current?.state === "live" && ownedAgentId(current, homeId) !== removal.entry.agentId) return
-      break
-    case "refused":
-      if (
-        current?.state === "refused" &&
-        current.socketPath === removal.session?.socketPath
-      ) return
-      break
-  }
-  throw new Error(
-    `Companion session ${removal.entry.zmxName} changed while its managed identity was finalized`,
-  )
-}
-
-async function unlinkStablePath(
-  path: string,
-  revalidate: () => Promise<void>,
-): Promise<void> {
-  const before = await lstat(path)
-  await revalidate()
-  const current = await lstat(path)
-  if (
-    current.dev !== before.dev || current.ino !== before.ino || current.mode !== before.mode ||
-    current.uid !== before.uid
-  ) {
-    throw new Error(`Companion endpoint changed before removal: ${path}`)
-  }
-  await unlink(path)
 }

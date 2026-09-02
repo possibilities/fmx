@@ -7,23 +7,13 @@ import { AdeSocket, HomeActiveError } from "./ade-events.ts"
 import { parseArgs, usage, VERSION } from "./cli.ts"
 import { loadConfig } from "./config.ts"
 import { RuntimeBridge } from "./runtime-bridge.ts"
-import {
-  RuntimeExtensionHost,
-  RuntimeExtensionReceiptQueue,
-} from "./runtime-extension-host.ts"
-import { LifecycleRuntime } from "./lifecycle-runtime.ts"
 import { doctor } from "./doctor.ts"
 import { resolveFx } from "./executable.ts"
 import { AgentManifest } from "./agent-manifest.ts"
-import {
-  reconcileAgents,
-  type AgentRemoval,
-  type ReconciledAgent,
-  type ReconcileOutcome,
-} from "./agent-reconcile.ts"
+import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./agent-reconcile.ts"
 import { stringEnvironment } from "./agent-transport.ts"
 import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
-import { DEFAULT_FMX_NAME, resolveFmxHome, type FmxHome } from "./home.ts"
+import { resolveFmxHome, type FmxHome } from "./home.ts"
 import {
   type FxnkThemeResolution,
   FxnkThemeMonitor,
@@ -41,12 +31,6 @@ import {
   RUNTIME_BOOTSTRAP_ENV_VAR,
   waitForRuntimeBootstrap,
 } from "./runtime-session.ts"
-import {
-  decodeRuntimeStartupSnapshot,
-  resolveRuntimeStartupSnapshot,
-  RUNTIME_STARTUP_SNAPSHOT_ENV_VAR,
-  runtimeStartupEnvironment,
-} from "./runtime-startup.ts"
 import { concealClientCursor, revealClientCursor, runTerminalClient } from "./terminal-client.ts"
 import {
   beginSynchronizedFrame,
@@ -129,11 +113,6 @@ async function main(): Promise<void> {
     throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${home.configPath}`)
   }
   const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
-  const fmxSession = home.name ?? DEFAULT_FMX_NAME
-  const encodedStartup = process.env[RUNTIME_STARTUP_SNAPSHOT_ENV_VAR]
-  const acceptedStartup = encodedStartup
-    ? decodeRuntimeStartupSnapshot(encodedStartup, fmxSession)
-    : await resolveRuntimeStartupSnapshot(loadedConfig, home)
   const fxPath = await resolveFx()
   const companionPath = await resolveCompanion()
   const persistedState = await loadState(home.statePath)
@@ -149,13 +128,10 @@ async function main(): Promise<void> {
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
   const adeSocket = new AdeSocket({ homeId: home.id })
   let runtimeBridge: RuntimeBridge | null = null
-  let runtimeExtensionHost: RuntimeExtensionHost | null = null
-  let lifecycleRuntime: LifecycleRuntime | null = null
   let transport: CompanionTransportFactory | null = null
   let manifest: AgentManifest | null = null
   let runtimeResizeHandler: (() => void) | null = null
   let runtimeTheme: FxnkThemeResolution | null = null
-  let runtimeClosing = false
 
   try {
     // fmx's own files live in a directory only this user can reach, created
@@ -207,32 +183,7 @@ async function main(): Promise<void> {
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
     manifest = await AgentManifest.open(home.manifestPath, home.id)
     const runtimeSocketPath = RuntimeBridge.pathFor(adeSocket.path)
-    if (acceptedStartup.runtimeExtension !== null) {
-      lifecycleRuntime = await LifecycleRuntime.open({
-        home,
-        homeId: home.id,
-        fmxSession: acceptedStartup.fmxSession,
-        agentDefaults: acceptedStartup.agentDefaults,
-        fxPath,
-        runtimeSocketPath,
-        adeBinding: (agentId) => ({ socketPath: adeSocket.path, instanceId: agentId }),
-        manifest,
-        companion,
-        companionDirectory: companionDirectory(),
-        environment: process.env,
-        onError: (error, correlation) => {
-          process.stderr.write(`fmx: lifecycle ${correlation}: ${errorMessage(error)}\n`)
-        },
-      })
-    }
-    const restored = await reconcileAtStartup(
-      manifest,
-      companion,
-      runtimeSocketPath,
-      lifecycleRuntime === null
-        ? undefined
-        : (removal) => lifecycleRuntime!.beforeRemove(removal),
-    )
+    const restored = await reconcileAtStartup(manifest, companion, runtimeSocketPath)
     transport = new CompanionTransportFactory(companion, home.id, {
       attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
     })
@@ -279,7 +230,6 @@ async function main(): Promise<void> {
       adeSocket,
       worktreeRoot: loadedConfig.worktreeRoot,
       projectRoots: loadedConfig.projectRoots,
-      agentDefaults: acceptedStartup.agentDefaults,
       runtimeSocketPath,
       initialTrayWidth: persistedState.trayWidth,
       initialTrayHidden: persistedState.trayHidden,
@@ -308,15 +258,7 @@ async function main(): Promise<void> {
         }
         persistState()
       },
-      onRecoveryCardAction: (correlation) => {
-        void runtimeExtensionHost?.forwardRecoveryAction(correlation)
-      },
-      runtimeMemberCorrelationSource: lifecycleRuntime?.correlationSource,
-      beforeDefinitiveAgentForget: lifecycleRuntime === null
-        ? undefined
-        : (entry, exit) => lifecycleRuntime!.beforeDefinitiveAgentForget(entry, exit),
     })
-    lifecycleRuntime?.bindMultiplexer(app)
 
     for (const [signal, exitCode] of [
       ["SIGHUP", 129],
@@ -332,52 +274,9 @@ async function main(): Promise<void> {
     // The complete theme was fixed above, before the renderer can expose an
     // empty or partially restored application. Multiplexer holds the restored
     // Session list until every durable source and discovered identity is read.
-    await app.start()
-    if (acceptedStartup.runtimeExtension !== null) {
-      // Readiness and a first lifecycle request may share one stdout chunk.
-      // Queue retained receipts without blocking that chunk, then flush their
-      // exact order once the host is ready. A crash only loses this memory;
-      // the durable unacknowledged receipts remain available to recovery.
-      const receiptQueue = new RuntimeExtensionReceiptQueue()
-      lifecycleRuntime!.bindReceiptPublisher((receipt) => receiptQueue.publish(receipt))
-      let recoveryTail: Promise<void> = Promise.resolve()
-      const recoverLifecycle = () => {
-        const operation = recoveryTail.then(() => lifecycleRuntime!.recover())
-        recoveryTail = operation.catch(() => {})
-        return operation
-      }
-      runtimeExtensionHost = await RuntimeExtensionHost.start(
-        acceptedStartup.runtimeExtension,
-        app.extension,
-        {
-          cwd: workspace,
-          env: stringEnvironment(process.env),
-          onLifecycleMessage: (message, signal) =>
-            lifecycleRuntime!.acceptLifecycle(message, signal),
-          onInlineLaunchSourceRequest: (request, signal) =>
-            lifecycleRuntime!.acceptInlineSource(request, signal),
-          onManagedLaunchMessage: (message, signal) =>
-            lifecycleRuntime!.acceptManagedLaunch(message, signal),
-          onRestartReady: async () => {
-            if (runtimeClosing) return
-            try {
-              await recoverLifecycle()
-            } catch (error) {
-              process.stderr.write(`fmx: could not replay lifecycle after Runtime-extension restart: ${errorMessage(error)}\n`)
-            }
-          },
-        },
-      )
-      try {
-        await receiptQueue.bind(runtimeExtensionHost)
-      } catch (error) {
-        process.stderr.write(
-          `fmx: could not flush pre-ready lifecycle receipts; retained for replay: ${errorMessage(error)}\n`,
-        )
-      }
-      await recoverLifecycle()
-    }
+    const startup = app.start()
     renderer.start()
+    await startup
 
     // The implementation-private MCP bridge lives beside the ADE feed under
     // its Home singleton. Do not accept control requests until
@@ -395,16 +294,13 @@ async function main(): Promise<void> {
     else renderer?.destroy()
     throw error
   } finally {
-    runtimeClosing = true
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
-    runtimeBridge?.close()
-    await lifecycleRuntime?.close()
-    await runtimeExtensionHost?.close()
     // Nothing the Companion is still being asked about is waited for; what
     // is not consumed is the next start's. The Manifest's last write is.
     transport?.close()
     await manifest?.settled()
     await stateSave
+    runtimeBridge?.close()
     adeSocket.close()
     themeMonitor?.dispose()
     if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)
@@ -439,19 +335,6 @@ async function startTerminalClient(
     env: stringEnvironment(process.env),
     agentPicker,
     hideSingleAgentPicker,
-    prepareCreation: async () => {
-      const startup = await resolveRuntimeStartupSnapshot(loadedConfig, home)
-      return {
-        env: runtimeStartupEnvironment(startup),
-        exitOnLastClient: startup.runtimeExtension === null,
-        labels: startup.runtimeExtension === null
-          ? undefined
-          : {
-              extension: startup.runtimeExtension.registration.extension_id,
-              workplace: startup.runtimeExtension.association.workplace_instance_id,
-            },
-      }
-    },
   })
   process.exitCode = await runTerminalClient({
     socketPath: runtime.socketPath,
@@ -500,24 +383,10 @@ async function reconcileAtStartup(
   manifest: AgentManifest,
   companion: CompanionCommand,
   runtimeSocketPath: string,
-  beforeRemove?: (
-    removal: AgentRemoval,
-  ) => void | "preserve" | Promise<void | "preserve">,
 ): Promise<ReconciledAgent[]> {
   let outcome: ReconcileOutcome
   try {
-    outcome = await reconcileAgents(manifest, companion, {
-      runtimeSocketPath,
-      beforeRemove,
-      continueAfterRemoveFailure: beforeRemove === undefined
-        ? undefined
-        : (removal, error) => {
-          process.stderr.write(
-            `fmx: could not reconcile managed Agent ${removal.entry.zmxName}; ` +
-            `preserved for lifecycle recovery: ${errorMessage(error)}\n`,
-          )
-        },
-    })
+    outcome = await reconcileAgents(manifest, companion, { runtimeSocketPath })
   } catch (error) {
     process.stderr.write(`fmx: could not reconcile agents: ${errorMessage(error)}\n`)
     return []

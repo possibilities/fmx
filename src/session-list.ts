@@ -11,21 +11,6 @@ import type { AgentAttention, DisplayState } from "./agent-registry.ts"
 import { type FxnkTheme, fxnkRamp, RAMP_FALLBACK, type Ramp } from "./host-palette.ts"
 import { indentFor, type TreeRow } from "./session-tree.ts"
 
-/** One extension-owned unavailable slot in the navigation list, never an Agent row. */
-export type RecoveryCardListRow = {
-  kind: "recovery-card"
-  depth: 0
-  label: string
-  slotId: string
-  agentId: null
-  state: "unknown"
-  attention: null
-  active: boolean
-  onPath: boolean
-}
-
-export type SessionListRow = TreeRow | RecoveryCardListRow
-
 /** Inset the text; the row's shading still spans the full tray width. */
 const ROW_PADDING_LEFT = 1
 const ICON_COLUMN = 2
@@ -89,14 +74,14 @@ export function truncate(value: string, width: number): string {
 }
 
 /** What a row's text is, once its rails and icon have taken their columns. */
-export function rowText(row: SessionListRow, width: number): string {
+export function rowText(row: TreeRow, width: number): string {
   const available = width - ROW_PADDING_LEFT - indentFor(row.depth).length
-  if (!isAgentRow(row) && row.kind !== "recovery-card") return truncate(row.label, available)
+  if (!isAgentRow(row)) return truncate(row.label, available)
   return truncate(row.label || MISSING_SESSION, available - ICON_COLUMN)
 }
 
 /** What the row's click handler reads; kept mutable so a reused row rebinds. */
-type RowBinding = { agentId: number | null; recoveryCardId: string | null }
+type RowBinding = { agentId: number | null }
 
 /** One drawn row: its renderables, what it was drawn from, and its identity. */
 type RenderedRow = {
@@ -108,8 +93,7 @@ type RenderedRow = {
 }
 
 /** An Agent keeps its row; structural rows are identified by their position. */
-function rowKey(row: SessionListRow, index: number): string {
-  if (row.kind === "recovery-card") return `recovery-card-${row.slotId}`
+function rowKey(row: TreeRow, index: number): string {
   return row.agentId !== null ? `agent-${row.agentId}` : `${row.kind}-${index}`
 }
 
@@ -129,7 +113,6 @@ export class SessionList {
   constructor(
     private readonly renderer: CliRenderer,
     private readonly onSelect: (agentId: number) => void,
-    private readonly onSelectRecoveryCard: (slotId: string) => void = () => {},
   ) {
     this.root = new BoxRenderable(renderer, {
       id: "fmx-session-list",
@@ -139,7 +122,7 @@ export class SessionList {
     })
   }
 
-  render(rows: SessionListRow[], width: number): void {
+  render(rows: TreeRow[], width: number): void {
     const keys = rows.map((row, index) => rowKey(row, index))
     const shapeChanged =
       keys.length !== this.rows.length || keys.some((key, index) => this.rows[index]!.key !== key)
@@ -179,18 +162,17 @@ export class SessionList {
   }
 
   /** Bring one already-built row up to date, in place. */
-  private paint(rendered: RenderedRow, row: SessionListRow, width: number): boolean {
+  private paint(rendered: RenderedRow, row: TreeRow, width: number): boolean {
     const signature = this.signatureOf(row, width)
     if (rendered.signature === signature) return false
     rendered.signature = signature
     rendered.binding.agentId = row.agentId
-    rendered.binding.recoveryCardId = row.kind === "recovery-card" ? row.slotId : null
     rendered.container.backgroundColor = row.active ? this.ramp.surface : undefined
     rendered.text.content = this.styleRow(row, width)
     return true
   }
 
-  private signatureOf(row: SessionListRow, width: number): string {
+  private signatureOf(row: TreeRow, width: number): string {
     return [
       width,
       this.themeGeneration,
@@ -204,11 +186,8 @@ export class SessionList {
     ].join("\u0000")
   }
 
-  private buildRow(row: SessionListRow, key: string, width: number): RenderedRow {
-    const binding: RowBinding = {
-      agentId: row.agentId,
-      recoveryCardId: row.kind === "recovery-card" ? row.slotId : null,
-    }
+  private buildRow(row: TreeRow, key: string, width: number): RenderedRow {
+    const binding: RowBinding = { agentId: row.agentId }
     const container = new BoxRenderable(this.renderer, {
       id: `fmx-session-row-${key}`,
       width: "100%",
@@ -224,7 +203,6 @@ export class SessionList {
         event.preventDefault()
         event.stopPropagation()
         if (binding.agentId !== null) this.onSelect(binding.agentId)
-        else if (binding.recoveryCardId !== null) this.onSelectRecoveryCard(binding.recoveryCardId)
       },
       onMouseUp: (event) => {
         event.preventDefault()
@@ -242,14 +220,9 @@ export class SessionList {
     return { key, signature: this.signatureOf(row, width), container, text, binding }
   }
 
-  private styleRow(row: SessionListRow, width: number): StyledText {
+  private styleRow(row: TreeRow, width: number): StyledText {
     const ramp = this.ramp
     const chunks: TextChunk[] = [fg(ramp.foreground)(indentFor(row.depth))]
-    if (row.kind === "recovery-card") {
-      chunks.push(bold(fg(ramp.accent)("! ")))
-      chunks.push(fg(row.active ? ramp.foreground : ramp.dim)(rowText(row, width)))
-      return new StyledText(chunks)
-    }
     if (isAgentRow(row)) {
       const glyph = fg(ramp[stateRole(row.state)])(`${stateIcon(row.state, row.attention)} `)
       chunks.push(row.state === "blocked" ? bold(glyph) : glyph)
@@ -267,6 +240,6 @@ export class SessionList {
   }
 }
 
-function isAgentRow(row: SessionListRow): boolean {
+function isAgentRow(row: TreeRow): boolean {
   return row.kind === "agent" || row.kind === "subagent"
 }

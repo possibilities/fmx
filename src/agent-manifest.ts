@@ -267,26 +267,6 @@ export class AgentManifest {
     return this.apply((manifest) => this.claimIn(manifest, params))
   }
 
-  /**
-   * Claim one predetermined Agent identity, or durably replay the exact same
-   * claim. Managed lifecycle recovery can re-enter after the in-memory change
-   * but before its write completed; replay therefore queues a fresh snapshot
-   * even when the entry already exists.
-   */
-  ensureClaim(params: CreateParams & { identity: AgentIdentity }): {
-    result: ManifestEntry
-    saved: Promise<void>
-  } {
-    return this.apply((manifest) => {
-      const existing = manifest.agents.find((entry) => entry.agentId === params.identity.agentId)
-      if (!existing) return this.claimIn(manifest, params)
-      if (!sameClaim(existing, params)) {
-        throw new Error(`conflicting manifest claim for agent: ${params.identity.agentId}`)
-      }
-      return copy(existing)
-    })
-  }
-
   private claimIn(manifest: Manifest, params: CreateParams): ManifestEntry {
     const identity = params.identity ?? mintIdentity()
     if (manifest.agents.some((entry) => entry.agentId === identity.agentId)) {
@@ -415,36 +395,6 @@ function sameAgentStatus(
   right: AgentStatusCheckpoint,
 ): boolean {
   return left?.state === right.state && left.attention === right.attention && left.seen === right.seen
-}
-
-function sameClaim(
-  entry: ManifestEntry,
-  params: CreateParams & { identity: AgentIdentity },
-): boolean {
-  return entry.agentId === params.identity.agentId &&
-    entry.paneId === params.identity.paneId &&
-    entry.zmxName === params.identity.zmxName &&
-    entry.cwd === params.cwd &&
-    entry.fxPath === params.fxPath &&
-    sameNullableStrings(entry.fxArgs, params.fxArgs) &&
-    sameWorkControl(entry.workControl, params.workControl ?? null)
-}
-
-function sameNullableStrings(left: readonly string[] | null, right: readonly string[] | null): boolean {
-  return left === null || right === null
-    ? left === right
-    : left.length === right.length && left.every((value, index) => value === right[index])
-}
-
-function sameWorkControl(
-  left: FxWorkControlBinding | null,
-  right: FxWorkControlBinding | null,
-): boolean {
-  return left === null || right === null
-    ? left === right
-    : left.socketPath === right.socketPath &&
-      left.instanceId === right.instanceId &&
-      left.token === right.token
 }
 
 function find(manifest: Manifest, agentId: string): ManifestEntry {

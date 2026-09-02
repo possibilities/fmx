@@ -99,11 +99,6 @@ const modelSchema = boundedText("model", 160)
 const effortSchema = boundedText("effort", 64)
 const branchSchema = boundedText("Git branch", 256)
 
-/** Reuse the frozen v1/Fx Conversation identity boundary in private adapters. */
-export function isAgentWorkplaceConversationId(value: unknown): value is string {
-  return conversationIdSchema.safeParse(value).success
-}
-
 const absolutePathSchema = boundedText("path", 4096).superRefine((value, context) => {
   if (!isAbsolute(value)) context.addIssue({ code: "custom", message: "path must be absolute" })
   if (normalize(value) !== value) context.addIssue({ code: "custom", message: "path must be normalized" })

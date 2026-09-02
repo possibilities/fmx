@@ -6,7 +6,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { AdeAgentState, AdeAttentionKind, AdeRecord } from "../src/ade-events.ts"
-import type { AgentDefaults } from "../src/config.ts"
 import { ControlFailure, type Snapshot } from "../src/control-protocol.ts"
 import {
   FxWorkControlError,
@@ -16,12 +15,7 @@ import {
   type FxWorkControlResult,
 } from "../src/fx-work-control.ts"
 import { resolveKeybindings } from "../src/keybindings.ts"
-import { fmxTerminalTitle, Multiplexer, RuntimeExtensionSurfaceError } from "../src/multiplexer.ts"
-import type {
-  RuntimeMemberCorrelation,
-  RuntimeMemberCorrelationEntry,
-  RuntimeMemberCorrelationSource,
-} from "../src/runtime-member-correlation.ts"
+import { fmxTerminalTitle, Multiplexer } from "../src/multiplexer.ts"
 import { instanceIdForPane, record as feedRecord, TestAdeSocket } from "./fixtures/ade-feed.ts"
 import { initRepository } from "./fixtures/git-workspace.ts"
 import { agentOptions } from "./fixtures/pty-transport.ts"
@@ -70,27 +64,6 @@ class FakeWorkControl implements FxWorkControlRequester {
   }
 }
 
-class FakeRuntimeMemberCorrelationSource implements RuntimeMemberCorrelationSource {
-  calls = 0
-  entries: RuntimeMemberCorrelationEntry[] = []
-  failure: Error | null = null
-
-  async snapshot(): Promise<readonly RuntimeMemberCorrelationEntry[]> {
-    this.calls++
-    if (this.failure) throw this.failure
-    return structuredClone(this.entries)
-  }
-}
-
-function memberCorrelation(index: number): RuntimeMemberCorrelation {
-  return {
-    ensure_id: `ensure-${index}`,
-    ensure_digest: index.toString(16).padStart(64, "0"),
-    launch_id: `launch-${index}`,
-    launch_digest: (index + 16).toString(16).padStart(64, "0"),
-  }
-}
-
 async function workspace(): Promise<{ home: string; code: string }> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "fmx-control-")))
   const code = join(home, "code")
@@ -100,12 +73,7 @@ async function workspace(): Promise<{ home: string; code: string }> {
   return { home, code }
 }
 
-async function harness(
-  name: string,
-  fmxName?: string,
-  agentDefaults?: AgentDefaults,
-  runtimeMemberCorrelationSource?: RuntimeMemberCorrelationSource,
-) {
+async function harness(name: string, fmxName?: string) {
   const { home, code } = await workspace()
   const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
   const adeSocket = new TestAdeSocket(`/tmp/fmx-control-test-${name}-${process.pid}.ade.sock`)
@@ -121,9 +89,7 @@ async function harness(
     adeSocket,
     runtimeSocketPath: RUNTIME_PATH,
     projectRoots: [code],
-    agentDefaults,
     fxWorkControl,
-    runtimeMemberCorrelationSource,
   })
   const control = (method: Parameters<typeof multiplexer.control.handle>[0], params: Record<string, unknown> = {}) =>
     multiplexer.control.handle(method, params, NEVER)
@@ -302,32 +268,6 @@ test("creates background Agents from explicit, caller, and configured projects",
   }
 })
 
-test("applies exact Session defaults field by field beneath explicit launch values", async () => {
-  const h = await harness("defaults", undefined, {
-    stateDir: "/var/tmp/fmx-session-state",
-    model: "fixture/default-model",
-    effort: "medium",
-  })
-  try {
-    await h.control("agent.create", { effort: "max" })
-    await h.control("agent.create", { model: "fixture/explicit-model" })
-    expect(h.options.transport.started[0]?.request).toMatchObject({
-      command: [FAKE_FX, "--state-dir", "/var/tmp/fmx-session-state"],
-      env: { FX_MODEL: "fixture/default-model", FX_EFFORT: "max" },
-    })
-    expect(h.options.transport.started[1]?.request).toMatchObject({
-      command: [FAKE_FX, "--state-dir", "/var/tmp/fmx-session-state"],
-      env: { FX_MODEL: "fixture/explicit-model", FX_EFFORT: "medium" },
-    })
-    expect(h.options.manifest.entries.map((entry) => entry.fxArgs)).toEqual([
-      ["--state-dir", "/var/tmp/fmx-session-state"],
-      ["--state-dir", "/var/tmp/fmx-session-state"],
-    ])
-  } finally {
-    await h.close()
-  }
-})
-
 test("routes every semantic work operation to the targeted Fx authority", async () => {
   const h = await harness("work")
   try {
@@ -474,220 +414,6 @@ test("focuses by position, id, and name, and refuses while something is open", a
     const busy = await failure(h.control("focus", { target: "next" }))
     expect(busy.code).toBe("busy")
     expect(busy.data).toEqual({ surface: { kind: "help" } })
-  } finally {
-    await h.close()
-  }
-})
-
-test("publishes authoritative member snapshots and presents through modal-safe selection", async () => {
-  const h = await harness("runtime-extension-surface")
-  const revisions: string[] = []
-  const unsubscribe = h.multiplexer.extension.subscribeInvalidation((revision) => revisions.push(revision))
-  try {
-    expect(revisions).toEqual(["1"])
-    await h.start()
-    await h.start({ directory: join(h.code, "beta"), focus: false })
-    const orientation = (await h.control("orient")) as Snapshot
-    const [first, second] = orientation.agents
-    await h.report("p_1", "working")
-
-    const snapshot = await h.multiplexer.extension.snapshot()
-    expect(snapshot.revision).toMatch(/^[1-9]\d*$/u)
-    expect(revisions.at(-1)).toBe(snapshot.revision)
-    expect(snapshot.selected_agent_id).toBe(first!.agent_id)
-    expect(snapshot.agents).toEqual([
-      {
-        agent_id: first!.agent_id,
-        pane_id: first!.pane_id,
-        display_id: 1,
-        created_at_ms: expect.any(Number),
-        lifecycle: "running",
-        state: "working",
-        attention: null,
-        directory: join(h.code, "alpha"),
-        worktree: false,
-        fx_conversation: null,
-        correlation: null,
-      },
-      {
-        agent_id: second!.agent_id,
-        pane_id: second!.pane_id,
-        display_id: 2,
-        created_at_ms: expect.any(Number),
-        lifecycle: "running",
-        state: "unknown",
-        attention: null,
-        directory: join(h.code, "beta"),
-        worktree: false,
-        fx_conversation: null,
-        correlation: null,
-      },
-    ])
-
-    h.multiplexer.extension.present(second!.agent_id, false)
-    const presentedWithoutFocus = await h.multiplexer.extension.snapshot()
-    expect(presentedWithoutFocus.selected_agent_id).toBe(second!.agent_id)
-    expect(BigInt(presentedWithoutFocus.revision)).toBeGreaterThan(BigInt(snapshot.revision))
-    expect(terminal(h.setup, 2).visible).toBe(true)
-    expect(terminal(h.setup, 2).focused).toBe(false)
-    h.multiplexer.extension.present(first!.agent_id, true)
-    expect(terminal(h.setup, 1).focused).toBe(true)
-
-    const semanticRevisionCount = revisions.length
-    h.multiplexer.setTheme({ theme: "light", background: "#ffffff", source: "osc11", explicit: false })
-    await h.control("tray", { width: 31, hidden: true })
-    expect(revisions).toHaveLength(semanticRevisionCount)
-
-    h.setup.mockInput.pressKey("b", { ctrl: true })
-    h.setup.mockInput.pressKey("?")
-    await h.setup.renderOnce()
-    h.multiplexer.extension.present(second!.agent_id, false)
-    const presented = await h.multiplexer.extension.snapshot()
-    expect(presented.selected_agent_id).toBe(second!.agent_id)
-    expect(BigInt(presented.revision)).toBeGreaterThan(BigInt(presentedWithoutFocus.revision))
-    expect(revisions.at(-1)).toBe(presented.revision)
-    expect(terminal(h.setup, 2).focused).toBe(false)
-    expect(() => h.multiplexer.extension.present(first!.agent_id, true)).toThrow(RuntimeExtensionSurfaceError)
-    try {
-      h.multiplexer.extension.present(first!.agent_id, true)
-    } catch (error) {
-      expect(error).toMatchObject({ code: "busy" })
-    }
-    h.setup.mockInput.pressKey("?")
-    await h.setup.renderOnce()
-    h.multiplexer.extension.present(first!.agent_id, true)
-    expect((await h.multiplexer.extension.snapshot()).selected_agent_id).toBe(first!.agent_id)
-    expect(() => h.multiplexer.extension.present("f".repeat(32), false)).toThrow("no switchable Agent")
-
-    const duplicateConversation = "1787362101399-1787362101399156000-2897385323da2699"
-    await h.session("p_1", duplicateConversation)
-    await h.session("p_2", duplicateConversation)
-    try {
-      await h.multiplexer.extension.snapshot()
-      throw new Error("expected duplicate Fx Conversation validation to fail")
-    } catch (error) {
-      expect(error).toMatchObject({ code: "snapshot_unavailable" })
-    }
-  } finally {
-    unsubscribe()
-    await h.close()
-  }
-})
-
-test("keeps ordinary fmx Agents uncorrelated without a durable correlation source", async () => {
-  const h = await harness("runtime-member-correlation-null")
-  try {
-    await h.start()
-    expect((await h.multiplexer.extension.snapshot()).agents).toMatchObject([
-      { correlation: null },
-    ])
-  } finally {
-    await h.close()
-  }
-})
-
-test("joins one correlation-source snapshot to exact Agent identities independent of order", async () => {
-  const source = new FakeRuntimeMemberCorrelationSource()
-  const h = await harness(
-    "runtime-member-correlation-exact",
-    undefined,
-    undefined,
-    source,
-  )
-  try {
-    await h.start()
-    await h.start({ directory: join(h.code, "beta"), focus: false })
-    const [first, second] = ((await h.control("orient")) as Snapshot).agents
-    const firstCorrelation = memberCorrelation(1)
-    const secondCorrelation = memberCorrelation(2)
-    source.entries = [
-      { agent_id: second!.agent_id, correlation: secondCorrelation },
-      { agent_id: first!.agent_id, correlation: firstCorrelation },
-    ]
-
-    const snapshot = await h.multiplexer.extension.snapshot()
-    expect(source.calls).toBe(1)
-    expect(snapshot.agents.map(({ agent_id, correlation }) => [agent_id, correlation])).toEqual([
-      [first!.agent_id, firstCorrelation],
-      [second!.agent_id, secondCorrelation],
-    ])
-  } finally {
-    await h.close()
-  }
-})
-
-test("refuses conflicting injected correlation data instead of choosing a record", async () => {
-  const source = new FakeRuntimeMemberCorrelationSource()
-  const h = await harness(
-    "runtime-member-correlation-conflict",
-    undefined,
-    undefined,
-    source,
-  )
-  try {
-    await h.start()
-    const [agent] = ((await h.control("orient")) as Snapshot).agents
-    source.entries = [
-      { agent_id: agent!.agent_id, correlation: memberCorrelation(1) },
-      { agent_id: agent!.agent_id, correlation: memberCorrelation(2) },
-    ]
-
-    await expect(h.multiplexer.extension.snapshot()).rejects.toMatchObject({
-      name: "RuntimeExtensionSurfaceError",
-      code: "snapshot_unavailable",
-    })
-    expect(source.calls).toBe(1)
-  } finally {
-    await h.close()
-  }
-})
-
-test("refuses invalid injected correlation data even when its Agent exists", async () => {
-  const source = new FakeRuntimeMemberCorrelationSource()
-  const h = await harness(
-    "runtime-member-correlation-invalid",
-    undefined,
-    undefined,
-    source,
-  )
-  try {
-    await h.start()
-    const [agent] = ((await h.control("orient")) as Snapshot).agents
-    source.entries = [{
-      agent_id: agent!.agent_id,
-      correlation: {
-        ...memberCorrelation(1),
-        ensure_digest: "not-a-digest",
-      },
-    }]
-
-    await expect(h.multiplexer.extension.snapshot()).rejects.toMatchObject({
-      name: "RuntimeExtensionSurfaceError",
-      code: "snapshot_unavailable",
-    })
-    expect(source.calls).toBe(1)
-  } finally {
-    await h.close()
-  }
-})
-
-test("fails the whole member snapshot when its correlation source fails", async () => {
-  const source = new FakeRuntimeMemberCorrelationSource()
-  source.failure = new Error("ledger read failed")
-  const h = await harness(
-    "runtime-member-correlation-failure",
-    undefined,
-    undefined,
-    source,
-  )
-  try {
-    await h.start()
-    await expect(h.multiplexer.extension.snapshot()).rejects.toMatchObject({
-      name: "RuntimeExtensionSurfaceError",
-      code: "snapshot_unavailable",
-      message: "Runtime member correlation is unavailable",
-    })
-    expect(source.calls).toBe(1)
   } finally {
     await h.close()
   }

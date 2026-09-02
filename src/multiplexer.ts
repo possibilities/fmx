@@ -13,23 +13,17 @@ import {
   TextRenderable,
 } from "@opentui/core"
 import { homedir } from "node:os"
-import { basename, isAbsolute, normalize, resolve } from "node:path"
+import { basename, resolve } from "node:path"
 import {
-  type AgentAttention,
   AgentRegistry,
   type DisplayState,
   displayStateFor,
   shortSessionId,
 } from "./agent-registry.ts"
-import { AgentPicker, type AgentPickerNavigationEntry } from "./agent-picker.ts"
-import {
-  AGENTWORKPLACE_CONTRACT_VERSION,
-  RUNTIME_EXTENSION_SCHEMA_ID,
-  runtimeExtensionMessageSchema,
-} from "./agentworkplace-contracts.ts"
+import { AgentPicker } from "./agent-picker.ts"
 import type { AdeEventSource, AdeRecord } from "./ade-events.ts"
 import { VERSION } from "./cli.ts"
-import { DEFAULT_WORKTREE_ROOT, type AgentDefaults } from "./config.ts"
+import { DEFAULT_WORKTREE_ROOT } from "./config.ts"
 import {
   ControlFailure,
   type ControlMethod,
@@ -52,40 +46,26 @@ import {
   type FxAdeBinding,
   type FxStartLevel,
 } from "./fx-environment.ts"
-import {
-  identityFor,
-  isAgentId,
-  mintIdentity,
-  type AgentManifest,
-  type ManifestEntry,
-} from "./agent-manifest.ts"
+import { mintIdentity, type AgentManifest, type ManifestEntry } from "./agent-manifest.ts"
 import {
   FxWorkControlClient,
   FxWorkControlError,
   mintFxWorkControlBinding,
   removeFxWorkControlResidue,
-  type FxWorkControlBinding,
   type FxWorkControlMethod,
   type FxWorkControlRequester,
   type FxWorkControlResult,
 } from "./fx-work-control.ts"
 import {
   AgentEndedError,
-  AgentStartConflictError,
   AgentUnreachableError,
   type AgentExit,
-  type AgentStart,
   type AgentTransport,
   type AgentTransportFactory,
   stringEnvironment,
   type TerminalSize,
 } from "./agent-transport.ts"
 import { FxTerminalRenderable } from "./fx-terminal.ts"
-import {
-  indexRuntimeMemberCorrelations,
-  type RuntimeMemberCorrelation,
-  type RuntimeMemberCorrelationSource,
-} from "./runtime-member-correlation.ts"
 import {
   type FxnkThemeResolution,
   fxnkRamp,
@@ -112,13 +92,7 @@ import {
 } from "./git-context.ts"
 import { isSessionId } from "./fx-sessions.ts"
 import { expandTilde, scanProjectRoots } from "./projects.ts"
-import {
-  RecoveryCard,
-  type RecoveryCardActionCorrelation,
-  type RecoveryCardSpec,
-  parseRecoveryCard,
-} from "./recovery-card.ts"
-import { type RecoveryCardListRow, SessionList, stateIcon } from "./session-list.ts"
+import { SessionList, stateIcon } from "./session-list.ts"
 import { SessionNames } from "./session-names.ts"
 import { buildTree, type SessionEntry } from "./session-tree.ts"
 import { type SubagentEntry, SubagentObserver } from "./subagents.ts"
@@ -196,23 +170,8 @@ type MultiplexerOptions = {
   runtimeSocketPath?: string
   /** Configured discovery roots used when MCP creation has no caller or directory. */
   projectRoots?: readonly string[]
-  /** Exact current fmx Session's independent launch defaults. */
-  agentDefaults?: AgentDefaults
   /** The per-Fx semantic work requester; replaceable only for deterministic tests. */
   fxWorkControl?: FxWorkControlRequester
-  /** Opaque human recovery actions forwarded by the Runtime-extension supervisor. */
-  onRecoveryCardAction?: (correlation: RecoveryCardActionCorrelation) => void
-  /** One exact durable ensure/launch correlation view per member snapshot. */
-  runtimeMemberCorrelationSource?: RuntimeMemberCorrelationSource
-  /**
-   * Persist exact managed-lifecycle finalization before a definitive Agent
-   * end is allowed to remove its Manifest claim and Work-control binding.
-   * Rejecting keeps those durable identities for startup recovery.
-   */
-  beforeDefinitiveAgentForget?: (
-    entry: ManifestEntry,
-    exit: AgentExit | null,
-  ) => void | Promise<void>
   /** Resolved before the first frame: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
   initialTheme?: FxnkThemeResolution
 }
@@ -222,89 +181,6 @@ export type AgentCreateRequest = {
   worktree?: boolean
   focus?: boolean
   startLevel?: FxStartLevel | null
-}
-
-/**
- * Implementation-private projection inputs for a lifecycle-owned Agent.
- * Its stable identity and Work-control bearer authority are supplied by the
- * lifecycle composition; fmx derives the Companion and pane names from the
- * Agent id and never mints replacements during replay.
- */
-export type ManagedAgentClaim = {
-  agentId: string
-  cwd: string
-  fxPath: string
-  fxArgs: string[] | null
-  workControl: FxWorkControlBinding
-  createdAt?: number
-  focus?: boolean
-}
-
-/** Provider-independent exact Fx invocation handed to the transport seam. */
-export type ManagedAgentInvocation = Pick<
-  AgentStart,
-  "command" | "cwd" | "env"
->
-
-export type ManagedAgentStartResult = {
-  sessionName: string
-  paneId: string
-}
-
-export type RuntimeMemberAgentSnapshot = {
-  agent_id: string
-  pane_id: string
-  display_id: number
-  created_at_ms: number
-  lifecycle: "creating" | "running" | "unreachable"
-  state: DisplayState
-  attention: AgentAttention | null
-  directory: string
-  worktree: boolean
-  fx_conversation: { conversation_id: string; name: string | null } | null
-  correlation: RuntimeMemberCorrelation | null
-}
-
-export type RuntimeMemberSnapshot = {
-  revision: string
-  selected_agent_id: string | null
-  agents: RuntimeMemberAgentSnapshot[]
-}
-
-function runtimeMemberIdentity(entries: readonly ManifestEntry[]): string {
-  return JSON.stringify(entries.map((entry) => [
-    entry.agentId,
-    entry.paneId,
-    entry.displayId,
-    entry.createdAt,
-    entry.cwd,
-  ]))
-}
-
-export type RuntimeExtensionSurface = {
-  /** Emits semantic revisions; the framed-link supervisor coalesces them into one pending wire level. */
-  subscribeInvalidation(listener: (revision: string) => void): () => void
-  snapshot(): Promise<RuntimeMemberSnapshot>
-  present(agentId: string, focus: boolean): void
-  publishRecoveryCard(card: RecoveryCardSpec): void
-  clearRecoveryCard(slotId: string, cardRevision: string): void
-}
-
-export class RuntimeExtensionSurfaceError extends Error {
-  constructor(
-    readonly code:
-      | "busy"
-      | "invalid_card"
-      | "not_found"
-      | "shutting_down"
-      | "snapshot_unavailable"
-      | "stale"
-      | "starting_up",
-    message: string,
-  ) {
-    super(message)
-    this.name = "RuntimeExtensionSurfaceError"
-  }
 }
 
 const DEFAULT_THEME: FxnkThemeResolution = {
@@ -500,10 +376,6 @@ export class Multiplexer {
   private readonly divider: BoxRenderable
   private readonly content: BoxRenderable
   private readonly emptyState: TextRenderable
-  private recoveryCard: RecoveryCard | null = null
-  private recoveryCardSpec: RecoveryCardSpec | null = null
-  private recoveryCardSelected = false
-  private recoveryCardReturnAgentId: string | null = null
   private readonly adeSocket: AdeEventSource | null
   private adeSubscribed = false
   private readonly registry = new AgentRegistry()
@@ -513,17 +385,6 @@ export class Multiplexer {
   private readonly adeStoppedInstances = new Set<string>()
   /** Consecutive records refused as non-increasing, per Fx instance. */
   private readonly adeStaleRecords = new Map<string, number>()
-  /** Managed finalization which shutdown must not strand before Manifest removal. */
-  private readonly definitiveAgentFinalizations = new Set<Promise<void>>()
-  /** Exact Agent identities whose terminal durable finalization still owns their claim. */
-  private readonly definitiveAgentFinalizationsById = new Map<string, Promise<void>>()
-  /** A projected managed claim is not startable until this exact write lands. */
-  private readonly managedAgentClaimSaves = new Map<string, Promise<void>>()
-  /** One exact managed start effect may be in flight for each stable Agent. */
-  private readonly managedAgentStarts = new Map<
-    string,
-    { invocationKey: string; operation: Promise<ManagedAgentStartResult> }
-  >()
   private readonly sessionList: SessionList
   private readonly agentPicker: AgentPicker
   private readonly pickerMode: boolean
@@ -560,22 +421,9 @@ export class Multiplexer {
   private readonly swallowedReleases = new Set<string>()
   private readonly fxWorkControl: FxWorkControlRequester
   private creationTail: Promise<void> = Promise.resolve()
-  private extensionRevision = 1n
-  private extensionProjectionKey = ""
-  private extensionProjectionReady = false
-  private readonly extensionInvalidationListeners = new Set<(revision: string) => void>()
-  private readonly definitivelyEndedAgentIds = new Set<string>()
   /** The small Runtime surface fmx-mcp drives. */
   readonly control: ControlSurface = {
     handle: (method, params, signal) => this.handleControl(method, params, signal),
-  }
-  /** Capability-limited implementation-private Runtime-extension surface. */
-  readonly extension: RuntimeExtensionSurface = {
-    subscribeInvalidation: (listener) => this.subscribeExtensionInvalidation(listener),
-    snapshot: () => this.runtimeMemberSnapshot(),
-    present: (agentId, focus) => this.presentAgent(agentId, focus),
-    publishRecoveryCard: (card) => this.publishRecoveryCard(card),
-    clearRecoveryCard: (slotId, cardRevision) => this.clearRecoveryCard(slotId, cardRevision),
   }
   private readonly donePromise: Promise<void>
   private resolveDone!: () => void
@@ -667,11 +515,7 @@ export class Multiplexer {
     this.content.add(this.emptyState)
 
     this.adeSocket = options.adeSocket ?? null
-    this.sessionList = new SessionList(
-      renderer,
-      (agentId) => this.selectAgent(agentId),
-      (slotId) => this.selectRecoveryCard(slotId),
-    )
+    this.sessionList = new SessionList(renderer, (agentId) => this.selectAgent(agentId))
     this.sessionList.applyTheme(this.theme.theme)
     this.navigationPublicationHeld = (options.survivors?.length ?? 0) > 0
     this.sessionList.root.visible = !this.navigationPublicationHeld
@@ -680,7 +524,6 @@ export class Multiplexer {
     this.agentPicker = new AgentPicker(renderer, {
       theme: this.theme.theme,
       onSelect: (agentId) => this.selectAgent(agentId),
-      onSelectRecoveryCard: (slotId) => this.selectRecoveryCard(slotId),
       onOpenChange: (open) => {
         this.cancelPrefix()
         if (open) this.activeAgent()?.terminal.blur()
@@ -760,10 +603,7 @@ export class Multiplexer {
     // Subscribe only after their stable Manifest identities exist so replay
     // can fold them instead of discarding them as unknown instances.
     this.subscribeAde()
-    if (restoring.length === 0) {
-      this.publishExtensionSurface()
-      return
-    }
+    if (restoring.length === 0) return
 
     const savedIndex = restoring.findIndex(
       (agent) => agent.entry.agentId === this.options.initialActiveAgentId,
@@ -795,7 +635,6 @@ export class Multiplexer {
     this.sessionList.root.visible = true
     this.agentPicker.setPublished(true)
     this.refreshAgentNavigation()
-    this.publishExtensionSurface()
   }
 
   setTheme(resolution: FxnkThemeResolution): void {
@@ -804,7 +643,6 @@ export class Multiplexer {
     const ramp = fxnkRamp(resolution.theme)
     this.renderer.setBackgroundColor(ramp.background)
     this.agentPicker.applyTheme(resolution.theme)
-    this.recoveryCard?.applyTheme(resolution.theme)
     this.applyModalTheme()
     this.applyDividerTheme()
     this.refreshEmptyState()
@@ -819,7 +657,6 @@ export class Multiplexer {
   async shutdown(exitCode = 0): Promise<void> {
     if (this.shuttingDown) return this.donePromise
     this.shuttingDown = true
-    this.extensionInvalidationListeners.clear()
     this.cancelPrefix()
     if (this.exitConfirmationTimer !== null) clearTimeout(this.exitConfirmationTimer)
     this.exitConfirmationTimer = null
@@ -838,7 +675,6 @@ export class Multiplexer {
       this.renderer.off(CliRenderEvents.RESIZE, this.resizeHandler)
       this.renderer.clearSelection()
       for (const agent of this.agents) agent.destroy()
-      await Promise.all([...this.definitiveAgentFinalizations])
     } finally {
       this.agents.length = 0
       this.renderer.destroy()
@@ -873,171 +709,6 @@ export class Multiplexer {
   }
 
   /**
-   * Durably claim and project one lifecycle-owned Agent. Replaying the exact
-   * claim retries a failed Manifest write and returns the same display row;
-   * a different claim for that stable identity fails closed.
-   */
-  async projectManagedAgent(claim: ManagedAgentClaim): Promise<ManifestEntry> {
-    if (this.shuttingDown) {
-      throw new ControlFailure("shutting_down", "fmx is shutting down")
-    }
-    assertManagedClaim(claim)
-    this.assertManagedAgentNotFinalizing(claim.agentId)
-    if (this.options.runtimeSocketPath) {
-      const expected = mintFxWorkControlBinding(
-        this.options.runtimeSocketPath,
-        claim.agentId,
-        claim.workControl.token,
-      )
-      if (claim.workControl.socketPath !== expected.socketPath) {
-        throw new Error(`managed Agent ${claim.agentId} has a foreign Work-control path`)
-      }
-    }
-    const identity = identityFor(claim.agentId)
-    const existing = this.options.manifest.get(claim.agentId)
-    const { result: entry, saved } = this.options.manifest.ensureClaim({
-      identity,
-      cwd: claim.cwd,
-      fxPath: claim.fxPath,
-      fxArgs: claim.fxArgs,
-      createdAt: existing?.createdAt ?? claim.createdAt ?? Date.now(),
-      workControl: claim.workControl,
-    })
-    this.managedAgentClaimSaves.set(entry.agentId, saved)
-    const clearSaved = () => {
-      if (this.managedAgentClaimSaves.get(entry.agentId) === saved) {
-        this.managedAgentClaimSaves.delete(entry.agentId)
-      }
-    }
-    // A failed write remains the start barrier until an exact projection
-    // replay replaces it with a new save. Dropping a rejected barrier would
-    // expose the in-memory-only claim again.
-    void saved.then(clearSaved, () => {})
-    if (!this.agents.some((candidate) => candidate.entry.agentId === entry.agentId)) {
-      this.addAgent(entry, entry.cwd, claim.focus ?? false)
-    }
-    await saved
-    this.assertManagedAgentNotFinalizing(entry.agentId)
-    return this.options.manifest.get(entry.agentId) ?? entry
-  }
-
-  /**
-   * Idempotently start or recover the exact preclaimed Companion session.
-   * The transport is not adopted until the existing Manifest entry is
-   * durably `running`; a failed write leaves the process available for the
-   * next exact replay without starting a second one.
-   */
-  async startManagedAgent(
-    agentId: string,
-    invocation: ManagedAgentInvocation,
-  ): Promise<ManagedAgentStartResult> {
-    if (this.shuttingDown) {
-      throw new ControlFailure("shutting_down", "fmx is shutting down")
-    }
-    this.assertManagedAgentNotFinalizing(agentId)
-    await this.managedAgentClaimSaves.get(agentId)
-    this.assertManagedAgentNotFinalizing(agentId)
-    const entry = this.options.manifest.get(agentId)
-    if (!entry) throw new Error(`managed Agent is not claimed: ${agentId}`)
-    assertManagedInvocation(entry, invocation)
-    const agent = this.agents.find((candidate) => candidate.entry.agentId === agentId)
-    if (!agent) throw new Error(`managed Agent is not projected: ${agentId}`)
-    if (agent.connected) {
-      return { sessionName: entry.zmxName, paneId: entry.paneId }
-    }
-
-    const invocationKey = managedInvocationKey(invocation)
-    const active = this.managedAgentStarts.get(agentId)
-    if (active) {
-      if (active.invocationKey !== invocationKey) {
-        throw new Error(`conflicting managed Fx invocation for agent: ${agentId}`)
-      }
-      return active.operation
-    }
-
-    const operation = this.runManagedAgentStart(agent, invocation)
-    this.managedAgentStarts.set(agentId, { invocationKey, operation })
-    const clear = () => {
-      if (this.managedAgentStarts.get(agentId)?.operation === operation) {
-        this.managedAgentStarts.delete(agentId)
-      }
-    }
-    void operation.then(clear, clear)
-    return operation
-  }
-
-  /**
-   * Remove only an inert managed projection after the lifecycle Runtime has
-   * proven a never-started cancellation. This is not a process-stop surface.
-   */
-  async removeManagedAgentProjection(agentId: string): Promise<void> {
-    const agent = this.agents.find((candidate) => candidate.entry.agentId === agentId)
-    if (!agent) return
-    if (agent.connected || this.managedAgentStarts.has(agentId)) {
-      throw new Error(`managed Agent ${agentId} is not an inert projection`)
-    }
-    this.removeAgent(agent)
-  }
-
-  /** Refresh extension membership only after the Runtime removed its claim. */
-  refreshManagedAgentProjection(agentId: string): void {
-    if (this.options.manifest.get(agentId) !== null) {
-      throw new Error(`managed Agent ${agentId} is still claimed during projection refresh`)
-    }
-    this.refreshExtensionRevision()
-  }
-
-  private async runManagedAgentStart(
-    agent: FxAgent,
-    invocation: ManagedAgentInvocation,
-  ): Promise<ManagedAgentStartResult> {
-    const entry = this.options.manifest.get(agent.entry.agentId)
-    if (!entry) throw new Error(`managed Agent is not claimed: ${agent.entry.agentId}`)
-    const size = agent.currentSize()
-    let transport: AgentTransport | null = null
-    try {
-      transport = entry.phase === "running"
-        ? await this.options.transport.attach(entry, size, { foreignAsConflict: true })
-        : await this.options.transport.start({
-          entry,
-          command: [...invocation.command],
-          cwd: invocation.cwd,
-          env: { ...invocation.env },
-          size,
-          recoverExisting: true,
-        })
-      // Queue this write even when an earlier failed write already changed
-      // the in-memory phase. Replay must repair the durable snapshot before
-      // any risky fmx adoption or renderer operation.
-      const running = await this.options.manifest.markRunning(entry.agentId)
-      if (this.shuttingDown || !this.agents.includes(agent)) {
-        throw new ControlFailure("shutting_down", "fmx is shutting down")
-      }
-      agent.adopt(transport)
-      this.refreshAgentNavigation()
-      return { sessionName: running.zmxName, paneId: running.paneId }
-    } catch (error) {
-      transport?.detach()
-      if (error instanceof AgentStartConflictError) {
-        // A foreign process may have taken both the Companion name and the
-        // filesystem endpoint. Remove only fmx's stale claim; neither that
-        // session nor the persisted Work-control path is ours to touch.
-        await this.options.manifest.remove(entry.agentId)
-        if (!this.shuttingDown) this.removeAgent(agent)
-        this.refreshExtensionRevision()
-      } else if (error instanceof AgentEndedError) {
-        // This is the same definitive proof used by restored attach and live
-        // Exit. Managed finalization owns receipt retention and safe residue
-        // cleanup before the Manifest identity is forgotten.
-        this.markAgentDefinitivelyEnded(entry.agentId)
-        if (!this.shuttingDown) this.removeAgent(agent)
-        await this.trackDefinitiveAgentFinalization(entry, error.exit)
-      }
-      throw error
-    }
-  }
-
-  /**
    * Start an fx. `focus` false leaves the screen where it is unless nothing is
    * on it yet. The Manifest is written first and the Companion asked second,
    * so a crash in between leaves a claim the next start can reconcile.
@@ -1053,14 +724,10 @@ export class Multiplexer {
     const workControl = this.options.runtimeSocketPath
       ? mintFxWorkControlBinding(this.options.runtimeSocketPath, identity.agentId)
       : null
-    const resolvedStartLevel = resolveStartLevel(startLevel, this.options.agentDefaults)
-    const fxArgs = this.options.agentDefaults?.stateDir === undefined
-      ? []
-      : ["--state-dir", this.options.agentDefaults.stateDir]
     const { result: entry, saved } = this.options.manifest.claim({
       cwd,
       fxPath: this.options.fxPath,
-      fxArgs,
+      fxArgs: [],
       createdAt: Date.now(),
       identity,
       workControl,
@@ -1081,7 +748,7 @@ export class Multiplexer {
             entry.displayId,
             cwd,
             this.options.runtimeSocketPath ?? null,
-            resolvedStartLevel,
+            startLevel,
             this.adeBinding(entry.agentId),
             entry.workControl,
           ),
@@ -1093,11 +760,9 @@ export class Multiplexer {
         // fx is running; only the way to it failed. It is recovered like a
         // lost transport, never removed — the Manifest says so first.
         await this.options.manifest.markRunning(entry.agentId).catch(() => {})
-        this.refreshExtensionRevision()
         void this.recoverAgent(agent, error)
         return agent
       }
-      this.markAgentDefinitivelyEnded(entry.agentId)
       this.removeAgent(agent)
       // A write that fails here is the same disk that failed above; the
       // reason the start failed is the one to show.
@@ -1113,7 +778,6 @@ export class Multiplexer {
       return null
     }
     agent.adopt(transport)
-    this.refreshAgentNavigation()
     return agent
   }
 
@@ -1148,12 +812,10 @@ export class Multiplexer {
         return
       }
       agent.adopt(transport)
-      this.refreshAgentNavigation()
     } catch (error) {
-      if (error instanceof AgentEndedError) this.markAgentDefinitivelyEnded(entry.agentId)
       this.removeAgent(agent)
       if (error instanceof AgentEndedError) {
-        await this.trackDefinitiveAgentFinalization(entry, error.exit)
+        await this.forgetAgent(entry).catch(() => {})
         return
       }
       // Unreachable is not ended: the claim stays for the next start.
@@ -1172,92 +834,29 @@ export class Multiplexer {
       onTitleChange: (candidate) => {
         if (this.activeAgent() === candidate) this.refreshTerminalTitle()
       },
-      onExit: (candidate, exit) => this.handleAgentExit(candidate, exit),
-      onLost: (candidate, error) => {
-        this.refreshExtensionRevision()
-        void this.recoverAgent(candidate, error)
-      },
+      onExit: (candidate) => this.handleAgentExit(candidate),
+      onLost: (candidate, error) => void this.recoverAgent(candidate, error),
     })
     this.agents.push(agent)
     this.content.add(agent.terminal)
     this.refreshAgentChrome()
-    if (focus || (selectIfEmpty && this.activeIndex === -1 && !this.recoveryCardSelected)) {
-      this.switchTo(this.agents.length - 1)
-    }
+    if (focus || (selectIfEmpty && this.activeIndex === -1)) this.switchTo(this.agents.length - 1)
     this.loadGitContext(cwd)
     this.refreshAgentNavigation()
     return agent
   }
 
   /**
-   * Fx ended: remove it from the live projection immediately, then forget
-   * its durable identities only after managed finalization succeeds.
+   * fx ended: the Agent, its claim, and whatever the Companion recorded
+   * all go.
    */
-  private handleAgentExit(agent: FxAgent, exit: AgentExit | null): void {
+  private handleAgentExit(agent: FxAgent): void {
     // The claim goes even mid-shutdown: the record is being consumed
     // regardless, and an entry without one is an exit the next start
     // cannot explain.
-    this.markAgentDefinitivelyEnded(agent.entry.agentId)
-    if (!this.shuttingDown) this.removeAgent(agent)
-    this.queueDefinitiveAgentFinalization(agent.entry, exit)
-  }
-
-  private queueDefinitiveAgentFinalization(
-    entry: ManifestEntry,
-    exit: AgentExit | null,
-  ): void {
-    void this.trackDefinitiveAgentFinalization(entry, exit)
-  }
-
-  private trackDefinitiveAgentFinalization(
-    entry: ManifestEntry,
-    exit: AgentExit | null,
-  ): Promise<void> {
-    this.markAgentDefinitivelyEnded(entry.agentId)
-    const active = this.definitiveAgentFinalizationsById.get(entry.agentId)
-    if (active) return active
-    // Install the identity gate before invoking an external finalizer: it may
-    // synchronously re-enter the managed projection surface before its first
-    // await otherwise.
-    const operation = Promise.resolve().then(() => this.finalizeDefinitiveAgentExit(entry, exit))
-    this.definitiveAgentFinalizationsById.set(entry.agentId, operation)
-    this.definitiveAgentFinalizations.add(operation)
-    const clear = () => {
-      this.definitiveAgentFinalizations.delete(operation)
-      if (this.definitiveAgentFinalizationsById.get(entry.agentId) === operation) {
-        this.definitiveAgentFinalizationsById.delete(entry.agentId)
-      }
-    }
-    void operation.then(clear, clear)
-    return operation
-  }
-
-  private assertManagedAgentNotFinalizing(agentId: string): void {
-    if (
-      this.definitiveAgentFinalizationsById.has(agentId) ||
-      this.definitivelyEndedAgentIds.has(agentId)
-    ) {
-      throw new Error(`managed Agent is being definitively finalized: ${agentId}`)
-    }
-  }
-
-  private async finalizeDefinitiveAgentExit(
-    entry: ManifestEntry,
-    exit: AgentExit | null,
-  ): Promise<void> {
-    try {
-      const durableEntry = this.options.manifest.get(entry.agentId) ?? entry
-      await this.options.beforeDefinitiveAgentForget?.(
-        structuredClone(durableEntry),
-        exit === null ? null : { ...exit },
-      )
-      await this.forgetAgent(durableEntry)
-    } catch (error) {
-      // The Agent is definitively gone from the live projection, but its
-      // durable identity must survive when managed finalization did not.
-      // Startup reconciliation replays the same hook before removal.
-      if (!this.shuttingDown) this.showError(`could not finalize agent ${entry.displayId}`, error)
-    }
+    void this.forgetAgent(agent.entry).catch(() => {})
+    if (this.shuttingDown) return
+    this.removeAgent(agent)
   }
 
   /**
@@ -1279,11 +878,10 @@ export class Multiplexer {
           return
         }
         agent.adopt(transport)
-        this.refreshAgentNavigation()
         return
       } catch (caught) {
         if (caught instanceof AgentEndedError) {
-          this.handleAgentExit(agent, caught.exit)
+          this.handleAgentExit(agent)
           return
         }
         error = caught
@@ -1307,19 +905,15 @@ export class Multiplexer {
     this.seenSeq.delete(agent.id)
     this.refreshAgentChrome()
     if (this.agents.length === 0) {
-      if (this.recoveryCard) this.selectRecoveryCard(this.recoveryCardSpec!.slot_id)
-      else {
-        this.activeIndex = -1
-        this.options.onActiveAgentChange?.(null)
-        this.refreshTerminalTitle()
-        this.refreshAgentNavigation()
-      }
+      this.activeIndex = -1
+      this.options.onActiveAgentChange?.(null)
+      this.refreshTerminalTitle()
+      this.refreshAgentNavigation()
     } else if (wasActive) {
       this.activeIndex = -1
       this.switchTo(Math.min(index, this.agents.length - 1))
     } else if (index < this.activeIndex) {
       this.activeIndex -= 1
-      this.refreshAgentNavigation()
     }
     return true
   }
@@ -1327,22 +921,15 @@ export class Multiplexer {
   private async forgetAgent(entry: ManifestEntry): Promise<void> {
     await removeFxWorkControlResidue(entry.workControl, this.options.runtimeSocketPath ?? null)
     await this.options.manifest.remove(entry.agentId)
-    this.definitivelyEndedAgentIds.delete(entry.agentId)
-    this.refreshExtensionRevision()
   }
 
-  private switchTo(index: number, focus = true): void {
+  private switchTo(index: number): void {
     this.renderer.clearSelection()
     if (this.agents.length === 0) {
       this.activeIndex = -1
       this.options.onActiveAgentChange?.(null)
       this.refreshTerminalTitle()
       return
-    }
-    if (this.recoveryCardSelected) {
-      this.recoveryCardSelected = false
-      this.recoveryCard?.setSelected(false)
-      if (this.recoveryCard) this.recoveryCard.visible = false
     }
     const normalized = ((index % this.agents.length) + this.agents.length) % this.agents.length
     const previous = this.activeAgent()
@@ -1359,7 +946,7 @@ export class Multiplexer {
     active.terminal.setHostSelectionEnabled(true)
     // A surface drawn over fx keeps the keys; it hands them back when it
     // closes, so an agent shown behind it must not take them now.
-    if (focus && !this.modalKind && !this.agentPicker.open) this.restoreFocus()
+    if (!this.modalKind && !this.agentPicker.open) this.restoreFocus()
     this.markSeen(active)
     this.refreshTerminalTitle()
     this.refreshAgentNavigation()
@@ -1369,417 +956,12 @@ export class Multiplexer {
     return this.agents[this.activeIndex] ?? null
   }
 
-  private cycleSelectableSurface(delta: -1 | 1): void {
-    const hasCard = this.recoveryCard !== null
-    const count = this.agents.length + (hasCard ? 1 : 0)
-    if (count === 0) return
-    const current = this.recoveryCardSelected ? this.agents.length : this.activeIndex
-    const next = ((current + delta) % count + count) % count
-    if (hasCard && next === this.agents.length) {
-      this.selectRecoveryCard(this.recoveryCardSpec!.slot_id)
-      return
-    }
-    this.switchTo(next)
-  }
-
   private refreshAgentNavigation(): void {
-    this.refreshExtensionRevision()
     if (this.navigationPublicationHeld) return
     void this.syncSubagentParents()
     const entries = this.sessionEntries()
-    const rows: Array<ReturnType<typeof buildTree>[number] | RecoveryCardListRow> = buildTree(entries)
-    if (this.recoveryCardSpec) rows.unshift(this.recoveryCardListRow(this.recoveryCardSpec))
-    this.sessionList.render(rows, this.trayWidth)
-    const pickerEntries: AgentPickerNavigationEntry[] = [...entries]
-    if (this.recoveryCardSpec) {
-      pickerEntries.push({
-        kind: "recovery-card",
-        slotId: this.recoveryCardSpec.slot_id,
-        title: this.recoveryCardSpec.title,
-        active: this.recoveryCardSelected,
-      })
-    }
-    this.agentPicker.setEntries(pickerEntries)
-  }
-
-  private recoveryCardListRow(card: RecoveryCardSpec): RecoveryCardListRow {
-    return {
-      kind: "recovery-card",
-      depth: 0,
-      label: card.title,
-      slotId: card.slot_id,
-      agentId: null,
-      state: "unknown",
-      attention: null,
-      active: this.recoveryCardSelected,
-      onPath: this.recoveryCardSelected,
-    }
-  }
-
-  private subscribeExtensionInvalidation(listener: (revision: string) => void): () => void {
-    if (this.shuttingDown) {
-      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
-    }
-    this.assertExtensionReady()
-    this.extensionInvalidationListeners.add(listener)
-    try {
-      listener(this.extensionRevision.toString())
-    } catch (error) {
-      this.extensionInvalidationListeners.delete(listener)
-      throw error
-    }
-    return () => this.extensionInvalidationListeners.delete(listener)
-  }
-
-  private publishExtensionSurface(): void {
-    if (this.extensionProjectionReady || this.shuttingDown) return
-    this.extensionProjectionKey = this.runtimeMemberProjectionKey()
-    this.extensionProjectionReady = true
-  }
-
-  private assertExtensionReady(): void {
-    if (!this.extensionProjectionReady) {
-      throw new RuntimeExtensionSurfaceError("starting_up", "fmx startup is not complete")
-    }
-  }
-
-  private markAgentDefinitivelyEnded(agentId: string): void {
-    if (this.definitivelyEndedAgentIds.has(agentId)) return
-    this.definitivelyEndedAgentIds.add(agentId)
-    this.refreshExtensionRevision()
-  }
-
-  private refreshExtensionRevision(): void {
-    if (!this.extensionProjectionReady || this.shuttingDown) return
-    const projection = this.runtimeMemberProjectionKey()
-    if (projection === this.extensionProjectionKey) return
-    this.extensionProjectionKey = projection
-    this.extensionRevision += 1n
-    const revision = this.extensionRevision.toString()
-    for (const listener of this.extensionInvalidationListeners) {
-      try {
-        listener(revision)
-      } catch {
-        // One extension callback cannot interrupt Agent/UI state mutation.
-      }
-    }
-  }
-
-  /** A cheap semantic projection makes broad UI refresh calls harmless. */
-  private runtimeMemberProjectionKey(): string {
-    const activeAgentId = this.activeAgent()?.entry.agentId ?? null
-    const liveById = new Map(this.agents.map((agent) => [agent.entry.agentId, agent]))
-    return JSON.stringify({
-      selected_agent_id: activeAgentId,
-      agents: this.runtimeManifestEntries().map((entry) => {
-        const live = liveById.get(entry.agentId) ?? null
-        const record = live ? this.registry.get(live.paneId) : null
-        const sessionId = live ? this.sessionIdOf(live) : entry.fxSessionId
-        const git = this.gitContexts.get(entry.cwd) ?? null
-        return {
-          agent_id: entry.agentId,
-          display_id: entry.displayId,
-          created_at_ms: entry.createdAt,
-          directory: entry.cwd,
-          lifecycle: this.runtimeLifecycle(entry, live),
-          state: live
-            ? displayStateFor(record, this.seenSeq.get(live.id) ?? 0)
-            : displayStateForCheckpoint(entry),
-          attention: live ? record?.attention ?? null : entry.agentStatus?.attention ?? null,
-          conversation_id: sessionId,
-          conversation_name: sessionId ? this.sessionNames.nameFor(sessionId) : null,
-          git: git ? [git.root, git.mainRoot] : null,
-        }
-      }),
-    })
-  }
-
-  private runtimeManifestEntries(): ManifestEntry[] {
-    return this.options.manifest.entries
-      .filter((entry) => !this.definitivelyEndedAgentIds.has(entry.agentId))
-      .sort((left, right) => left.displayId - right.displayId)
-  }
-
-  private runtimeLifecycle(
-    entry: ManifestEntry,
-    live: FxAgent | null,
-  ): RuntimeMemberAgentSnapshot["lifecycle"] {
-    if (!live) return "unreachable"
-    if (live.connected) return "running"
-    return entry.phase === "creating" ? "creating" : "unreachable"
-  }
-
-  private async runtimeMemberSnapshot(): Promise<RuntimeMemberSnapshot> {
-    if (this.shuttingDown) {
-      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
-    }
-    this.assertExtensionReady()
-
-    // New Agents can arrive while a required Git query is in flight. Repeat
-    // until every member in one synchronous capture has exact Worktree facts.
-    let entries: ManifestEntry[] = []
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      entries = this.runtimeManifestEntries()
-      const missing = [...new Set(
-        entries.filter((entry) => !this.gitContexts.has(entry.cwd)).map((entry) => entry.cwd),
-      )]
-      if (missing.length === 0) break
-      const contexts = await Promise.all(missing.map((cwd) => this.loadGitContext(cwd)))
-      const failed = contexts.findIndex((context) => context === null)
-      if (failed !== -1) {
-        throw new RuntimeExtensionSurfaceError(
-          "snapshot_unavailable",
-          `Git context is unavailable for ${missing[failed]}`,
-        )
-      }
-      if (attempt === 3) {
-        throw new RuntimeExtensionSurfaceError(
-          "snapshot_unavailable",
-          "Agent membership kept changing while the snapshot was prepared",
-        )
-      }
-    }
-
-    entries = this.runtimeManifestEntries()
-    if (entries.some((entry) => !this.gitContexts.has(entry.cwd))) {
-      throw new RuntimeExtensionSurfaceError(
-        "snapshot_unavailable",
-        "an Agent has no exact Git context",
-      )
-    }
-
-    let correlations: ReadonlyMap<string, RuntimeMemberCorrelation> = new Map()
-    const correlationSource = this.options.runtimeMemberCorrelationSource
-    if (correlationSource) {
-      const membership = runtimeMemberIdentity(entries)
-      try {
-        correlations = indexRuntimeMemberCorrelations(await correlationSource.snapshot())
-      } catch (error) {
-        const unavailable = new RuntimeExtensionSurfaceError(
-          "snapshot_unavailable",
-          "Runtime member correlation is unavailable",
-        )
-        unavailable.cause = error
-        throw unavailable
-      }
-      const currentEntries = this.runtimeManifestEntries()
-      if (runtimeMemberIdentity(currentEntries) !== membership) {
-        throw new RuntimeExtensionSurfaceError(
-          "snapshot_unavailable",
-          "Agent membership changed while Runtime member correlation was read",
-        )
-      }
-      entries = currentEntries
-    }
-    for (const entry of entries) {
-      if (entry.fxSessionId) this.sessionNames.recover(entry.fxSessionId)
-    }
-    this.refreshExtensionRevision()
-    const liveById = new Map(this.agents.map((agent) => [agent.entry.agentId, agent]))
-    const snapshot: RuntimeMemberSnapshot = {
-      revision: this.extensionRevision.toString(),
-      selected_agent_id: this.activeAgent()?.entry.agentId ?? null,
-      agents: entries.map((entry) => this.runtimeMemberAgentSnapshot(
-        entry,
-        liveById.get(entry.agentId) ?? null,
-        correlations.get(entry.agentId) ?? null,
-      )),
-    }
-    this.validateRuntimeMemberSnapshot(snapshot)
-    return snapshot
-  }
-
-  private validateRuntimeMemberSnapshot(snapshot: RuntimeMemberSnapshot): void {
-    const result = runtimeExtensionMessageSchema.safeParse({
-      schema_id: RUNTIME_EXTENSION_SCHEMA_ID,
-      schema_version: AGENTWORKPLACE_CONTRACT_VERSION,
-      message_type: "snapshot_result",
-      request_id: "fmx-snapshot-validation",
-      fmx_session: this.options.fmxName ?? "default",
-      ...snapshot,
-    })
-    if (result.success) return
-    const issue = result.error.issues[0]
-    const at = issue?.path.length ? ` at ${issue.path.join(".")}` : ""
-    throw new RuntimeExtensionSurfaceError(
-      "snapshot_unavailable",
-      `Runtime member snapshot violates the v1 contract: ${issue?.message ?? "invalid snapshot"}${at}`,
-    )
-  }
-
-  private runtimeMemberAgentSnapshot(
-    entry: ManifestEntry,
-    live: FxAgent | null,
-    correlation: RuntimeMemberCorrelation | null,
-  ): RuntimeMemberAgentSnapshot {
-    const git = this.gitContexts.get(entry.cwd)
-    if (!git) {
-      throw new RuntimeExtensionSurfaceError(
-        "snapshot_unavailable",
-        `Git context is unavailable for Agent ${entry.displayId}`,
-      )
-    }
-    const record = live ? this.registry.get(live.paneId) : null
-    const state = live
-      ? displayStateFor(record, this.seenSeq.get(live.id) ?? 0)
-      : displayStateForCheckpoint(entry)
-    const attention = live ? record?.attention ?? null : entry.agentStatus?.attention ?? null
-    if ((state === "blocked") !== (attention !== null)) {
-      throw new RuntimeExtensionSurfaceError(
-        "snapshot_unavailable",
-        `Agent ${entry.displayId} has inconsistent attention state`,
-      )
-    }
-    if (!Number.isSafeInteger(entry.createdAt) || entry.createdAt < 0) {
-      throw new RuntimeExtensionSurfaceError(
-        "snapshot_unavailable",
-        `Agent ${entry.displayId} has an invalid creation time`,
-      )
-    }
-    if (!isAbsolute(entry.cwd) || normalize(entry.cwd) !== entry.cwd || entry.cwd === "/") {
-      throw new RuntimeExtensionSurfaceError(
-        "snapshot_unavailable",
-        `Agent ${entry.displayId} has an invalid directory`,
-      )
-    }
-    const sessionId = live ? this.sessionIdOf(live) : entry.fxSessionId
-    if (sessionId !== null && !isSessionId(sessionId)) {
-      throw new RuntimeExtensionSurfaceError(
-        "snapshot_unavailable",
-        `Agent ${entry.displayId} has an invalid Fx Conversation identity`,
-      )
-    }
-    return {
-      agent_id: entry.agentId,
-      pane_id: entry.paneId,
-      display_id: entry.displayId,
-      created_at_ms: entry.createdAt,
-      lifecycle: this.runtimeLifecycle(entry, live),
-      state,
-      attention,
-      directory: entry.cwd,
-      worktree: git.root !== git.mainRoot,
-      fx_conversation: sessionId === null
-        ? null
-        : { conversation_id: sessionId, name: this.sessionNames.nameFor(sessionId) },
-      correlation,
-    }
-  }
-
-  private presentAgent(agentId: string, focus: boolean): void {
-    if (this.shuttingDown) {
-      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
-    }
-    this.assertExtensionReady()
-    const agent = this.agents.find((candidate) => candidate.entry.agentId === agentId)
-    if (!agent) {
-      throw new RuntimeExtensionSurfaceError("not_found", `no switchable Agent ${agentId}`)
-    }
-    if (focus && (this.modalKind || this.agentPicker.open)) {
-      throw new RuntimeExtensionSurfaceError("busy", "something is already open")
-    }
-    this.selectAgent(agent.id, focus)
-  }
-
-  private publishRecoveryCard(value: RecoveryCardSpec): void {
-    if (this.shuttingDown) {
-      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
-    }
-    this.assertExtensionReady()
-    let card: RecoveryCardSpec
-    try {
-      card = parseRecoveryCard(value)
-    } catch (error) {
-      throw new RuntimeExtensionSurfaceError("invalid_card", errorMessage(error))
-    }
-
-    if (this.recoveryCard) {
-      this.recoveryCard.setCard(card)
-    } else {
-      this.recoveryCard = new RecoveryCard(this.renderer, {
-        card,
-        selected: false,
-        theme: this.theme.theme,
-        visible: false,
-        onAction: (correlation) => this.options.onRecoveryCardAction?.(correlation),
-      })
-      this.content.add(this.recoveryCard)
-    }
-    this.recoveryCardSpec = card
-    if (this.agents.length === 0 || (this.activeIndex === -1 && !this.recoveryCardSelected)) {
-      this.selectRecoveryCard(card.slot_id)
-      return
-    }
-    this.refreshAgentChrome()
-  }
-
-  private clearRecoveryCard(slotId: string, cardRevision: string): void {
-    if (this.shuttingDown) {
-      throw new RuntimeExtensionSurfaceError("shutting_down", "fmx is shutting down")
-    }
-    this.assertExtensionReady()
-    const spec = this.recoveryCardSpec
-    if (!this.recoveryCard || !spec || spec.slot_id !== slotId) {
-      throw new RuntimeExtensionSurfaceError("not_found", `no recovery card for unavailable slot ${slotId}`)
-    }
-    if (spec.card_revision !== cardRevision) {
-      throw new RuntimeExtensionSurfaceError(
-        "stale",
-        `recovery card ${slotId} is at revision ${spec.card_revision}, not ${cardRevision}`,
-      )
-    }
-
-    const selected = this.recoveryCardSelected
-    const returnAgentId = this.recoveryCardReturnAgentId
-    const card = this.recoveryCard
-    this.content.remove(card)
-    card.destroyRecursively()
-    this.recoveryCard = null
-    this.recoveryCardSpec = null
-    this.recoveryCardSelected = false
-    this.recoveryCardReturnAgentId = null
-
-    if (selected && this.agents.length > 0) {
-      const retained = returnAgentId === null
-        ? -1
-        : this.agents.findIndex((agent) => agent.entry.agentId === returnAgentId)
-      this.switchTo(retained >= 0 ? retained : this.agents.length - 1)
-      this.refreshAgentChrome()
-      return
-    }
-    if (selected) {
-      this.activeIndex = -1
-      this.options.onActiveAgentChange?.(null)
-      this.refreshTerminalTitle()
-    }
-    this.refreshAgentChrome()
-  }
-
-  private selectRecoveryCard(slotId: string): void {
-    const card = this.recoveryCard
-    const spec = this.recoveryCardSpec
-    if (!card || !spec || spec.slot_id !== slotId) return
-    this.cancelExitConfirmation()
-    if (this.recoveryCardSelected) {
-      card.setSelected(true)
-      card.visible = true
-      return
-    }
-
-    const previous = this.activeAgent()
-    if (previous) {
-      this.recoveryCardReturnAgentId = previous.entry.agentId
-      previous.terminal.setHostSelectionEnabled(false)
-      previous.terminal.blur()
-      previous.terminal.visible = false
-    }
-    this.activeIndex = -1
-    this.recoveryCardSelected = true
-    card.setSelected(true)
-    card.visible = true
-    this.options.onActiveAgentChange?.(null)
-    this.refreshTerminalTitle()
-    this.refreshAgentChrome()
+    this.sessionList.render(buildTree(entries), this.trayWidth)
+    this.agentPicker.setEntries(entries)
   }
 
   private syncSubagentParents(): Promise<void> {
@@ -1805,19 +987,16 @@ export class Multiplexer {
 
   private refreshAgentChrome(): void {
     const hasAgents = this.agents.length > 0
-    const hasRecoveryCard = this.recoveryCard !== null
-    const hasSelectableSurface = hasAgents || hasRecoveryCard
-    const showTray = hasSelectableSurface && !this.pickerMode && !this.trayHidden
-    const showPicker = hasSelectableSurface
+    const showTray = hasAgents && !this.pickerMode && !this.trayHidden
+    const showPicker = hasAgents
       && this.pickerMode
-      && (!this.hideSingleAgentPicker || hasRecoveryCard || this.agents.length > 1)
+      && (!this.hideSingleAgentPicker || this.agents.length > 1)
     this.tray.visible = showTray
     this.divider.visible = showTray
     this.agentPicker.visible = showPicker
     if (!showPicker) this.agentPicker.close()
-    if (this.recoveryCard) this.recoveryCard.visible = this.recoveryCardSelected
-    this.emptyState.visible = !hasSelectableSurface
-    if (!hasSelectableSurface) this.refreshEmptyState()
+    this.emptyState.visible = !hasAgents
+    if (!hasAgents) this.refreshEmptyState()
     this.applyLayout()
   }
 
@@ -1924,14 +1103,10 @@ export class Multiplexer {
     }).catch(() => {})
   }
 
-  private selectAgent(agentId: number, focus = true): void {
+  private selectAgent(agentId: number): void {
     const index = this.agents.findIndex((agent) => agent.id === agentId)
-    if (index === -1) return
-    if (index === this.activeIndex) {
-      if (focus) this.restoreFocus()
-      return
-    }
-    this.switchTo(index, focus)
+    if (index === -1 || index === this.activeIndex) return
+    this.switchTo(index)
   }
 
   private acceptAdeRecord(record: AdeRecord): void {
@@ -2168,13 +1343,8 @@ export class Multiplexer {
       return
     }
 
-    if (this.recoveryCardSelected && this.recoveryCard?.handleKeyPress(key)) {
-      this.swallow(key)
-      return
-    }
-
     const emptyStateExitKey = isCancelKey(key) ? "ctrl+c" : keyMatchesCombo(key, CTRL_D_KEY) ? "ctrl+d" : null
-    if (this.agents.length === 0 && !this.recoveryCard && emptyStateExitKey !== null) {
+    if (this.agents.length === 0 && emptyStateExitKey !== null) {
       this.swallow(key)
       this.cancelPrefix()
       this.requestExitConfirmation(emptyStateExitKey)
@@ -2219,10 +1389,10 @@ export class Multiplexer {
         // must never turn one Client's Detach into a shared shutdown.
         return
       case "previous_tab":
-        this.cycleSelectableSurface(-1)
+        this.switchTo(this.activeIndex - 1)
         return
       case "next_tab":
-        this.cycleSelectableSurface(1)
+        this.switchTo(this.activeIndex + 1)
         return
       case "help":
         this.showHelp()
@@ -2707,80 +1877,6 @@ function emptyStateContent(): string {
 
 function bindingLabel(bindings: ResolvedBinding[]): string {
   return bindings.map((binding) => binding.label).join(" / ") || "unset"
-}
-
-function resolveStartLevel(
-  explicit: FxStartLevel | null,
-  defaults: AgentDefaults | undefined,
-): FxStartLevel | null {
-  const model = explicit?.model ?? defaults?.model
-  const effort = explicit?.effort ?? defaults?.effort
-  return model === undefined && effort === undefined ? null : { model, effort }
-}
-
-function assertManagedClaim(claim: ManagedAgentClaim): void {
-  if (!isAgentId(claim.agentId)) throw new Error(`invalid managed Agent id: ${claim.agentId}`)
-  if (!isAbsolute(claim.cwd) || normalize(claim.cwd) !== claim.cwd || claim.cwd === "/") {
-    throw new Error(`managed Agent ${claim.agentId} has an invalid directory`)
-  }
-  if (claim.fxPath.length === 0 || claim.fxArgs?.some((value) => typeof value !== "string")) {
-    throw new Error(`managed Agent ${claim.agentId} has invalid Fx launch metadata`)
-  }
-  if (
-    claim.createdAt !== undefined &&
-    (!Number.isSafeInteger(claim.createdAt) || claim.createdAt < 0)
-  ) {
-    throw new Error(`managed Agent ${claim.agentId} has an invalid creation time`)
-  }
-  if (
-    claim.workControl.instanceId !== claim.agentId ||
-    !isAbsolute(claim.workControl.socketPath) ||
-    claim.workControl.socketPath.includes("\0") ||
-    !/^[0-9a-f]{64}$/u.test(claim.workControl.token)
-  ) {
-    throw new Error(`managed Agent ${claim.agentId} has an invalid Work-control binding`)
-  }
-}
-
-function assertManagedInvocation(
-  entry: ManifestEntry,
-  invocation: ManagedAgentInvocation,
-): void {
-  if (invocation.cwd !== entry.cwd) {
-    throw new Error(`managed Fx invocation directory does not match agent: ${entry.agentId}`)
-  }
-  if (
-    invocation.command.length === 0 ||
-    invocation.command.some((value) => typeof value !== "string") ||
-    invocation.command[0] !== entry.fxPath
-  ) {
-    throw new Error(`managed Fx invocation does not match agent: ${entry.agentId}`)
-  }
-  if (
-    entry.fxArgs !== null &&
-    (invocation.command.length !== entry.fxArgs.length + 1 ||
-      entry.fxArgs.some((value, index) => invocation.command[index + 1] !== value))
-  ) {
-    throw new Error(`managed Fx invocation does not match agent: ${entry.agentId}`)
-  }
-  if (Object.values(invocation.env).some((value) => typeof value !== "string")) {
-    throw new Error(`managed Fx invocation environment is invalid: ${entry.agentId}`)
-  }
-}
-
-function managedInvocationKey(invocation: ManagedAgentInvocation): string {
-  return JSON.stringify([
-    invocation.command,
-    invocation.cwd,
-    Object.entries(invocation.env).sort(([left], [right]) => left.localeCompare(right)),
-  ])
-}
-
-function displayStateForCheckpoint(entry: ManifestEntry): DisplayState {
-  const checkpoint = entry.agentStatus
-  if (!checkpoint) return "unknown"
-  if (checkpoint.state === "idle") return checkpoint.seen ? "idle" : "done"
-  return checkpoint.state
 }
 
 function wrapText(value: string, width: number): string[] {
