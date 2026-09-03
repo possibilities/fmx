@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { displayState, SubagentObserver } from "../src/subagents.ts"
+import { displayState, stateFromPhase, SubagentObserver } from "../src/subagents.ts"
 import { record } from "./fixtures/ade-feed.ts"
 
 const PARENT = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
@@ -46,6 +46,50 @@ async function writeControl(
   )
 }
 
+type RegistryChild = {
+  id: string
+  agent?: string | null
+  phase?: string
+  lastOutcome?: string | null
+}
+
+/** One parent's children as fx's registry records them. */
+async function writeRegistry(
+  home: string,
+  parentId: string,
+  children: RegistryChild[],
+  options: { generation?: number; owner?: string } = {},
+): Promise<void> {
+  const directory = join(home, ".fx", "sessions", parentId, "subagent")
+  await mkdir(directory, { recursive: true })
+  await writeFile(
+    join(directory, "children.json"),
+    JSON.stringify({
+      schema_version: 1,
+      parent_id: options.owner ?? parentId,
+      generation: options.generation ?? 1,
+      children: children.map((child) => ({
+        id: child.id,
+        kind: child.agent ? "persistent" : "one_off",
+        persistent: child.agent ? { agent: child.agent, instructions: "do the work" } : null,
+        phase: child.phase ?? "idle",
+        work_generation: 1,
+        active: null,
+        last_work_id: null,
+        last_request_fingerprint: null,
+        last_outcome: child.lastOutcome ?? null,
+      })),
+    }),
+  )
+}
+
+/** The file fx wrote beside a retired control record. */
+async function writeOwner(home: string, childId: string, parentId: string): Promise<void> {
+  const directory = join(home, ".fx", "sessions", childId, "subagent")
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, "owner.json"), JSON.stringify({ parent_id: parentId }))
+}
+
 describe("subagent state projection", () => {
   test("maps fx lifecycle and observed locks onto the Session list states", () => {
     expect(displayState("queued", false)).toEqual({ state: "working", attention: null })
@@ -59,9 +103,170 @@ describe("subagent state projection", () => {
       expect(displayState(state, false)).toEqual({ state: "unknown", attention: null })
     }
   })
+
+  test("narrows the registry's phase to a state the Session list can draw", () => {
+    expect(stateFromPhase("idle", null)).toBe("idle")
+    expect(stateFromPhase("running", null)).toBe("running")
+    expect(stateFromPhase("awaiting_approval", null)).toBe("awaiting_approval")
+    expect(stateFromPhase("interrupted", null)).toBe("interrupted")
+    expect(stateFromPhase("finished", "completed")).toBe("completed")
+    expect(stateFromPhase("finished", "failed")).toBe("failed")
+    expect(stateFromPhase("finished", "cancelled")).toBe("cancelled")
+    expect(stateFromPhase("finished", "interrupted")).toBe("interrupted")
+    // Fx has finished but has not said how: a finished child is a done child.
+    expect(stateFromPhase("finished", null)).toBe("completed")
+  })
 })
 
 describe("SubagentObserver", () => {
+  test("restores a parent's children from fx's registry, nesting a child that is a parent in turn", async () => {
+    const home = await homeDirectory()
+    await writeRegistry(home, PARENT, [
+      { id: CHILD_A, agent: "first-worker", phase: "running" },
+      { id: CHILD_B, phase: "awaiting_approval" },
+    ])
+    await writeRegistry(home, CHILD_A, [{ id: GRANDCHILD, agent: "nested-worker", phase: "idle" }])
+
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false, lockProbe: () => true })
+    await observer.setParents([PARENT])
+    try {
+      expect(observer.childrenOf(PARENT)).toEqual([
+        {
+          sessionId: CHILD_A,
+          label: "first-worker",
+          state: "working",
+          attention: null,
+          children: [
+            {
+              sessionId: GRANDCHILD,
+              label: "nested-worker",
+              state: "idle",
+              attention: null,
+              children: [],
+            },
+          ],
+        },
+        {
+          // A one-off child has no configured name to draw.
+          sessionId: CHILD_B,
+          label: "aaaaaaaaaaaaaaaa",
+          state: "blocked",
+          attention: "permission",
+          children: [],
+        },
+      ])
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("restores an awaiting_approval child as blocked on permission", async () => {
+    const home = await homeDirectory()
+    await writeRegistry(home, PARENT, [{ id: CHILD_A, agent: "reviewer", phase: "awaiting_approval" }])
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      expect(observer.childrenOf(PARENT)).toEqual([
+        { sessionId: CHILD_A, label: "reviewer", state: "blocked", attention: "permission", children: [] },
+      ])
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("leaves a finished child off the screen unless its live feed is still speaking", async () => {
+    const home = await homeDirectory()
+    await writeRegistry(home, PARENT, [
+      { id: CHILD_A, agent: "done-worker", phase: "finished", lastOutcome: "completed" },
+      { id: CHILD_B, agent: "idle-worker", phase: "idle" },
+    ])
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      // An Agent that ended took its children with it, so a child fx has
+      // finished is not restored onto the Session list.
+      expect(observer.childrenOf(PARENT).map((child) => child.sessionId)).toEqual([CHILD_B])
+
+      observer.applyAdeRecord(childRecord("TurnStarted", "working"))
+      await observer.refresh()
+      expect(observer.childrenOf(PARENT)[0]).toMatchObject({
+        sessionId: CHILD_A,
+        label: "done-worker",
+        state: "working",
+      })
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("prefers the registry over a control record the session still carries", async () => {
+    const home = await homeDirectory()
+    await writeControl(home, CHILD_A, PARENT, { name: "legacy-worker", state: "completed", createdAt: 10 })
+    await writeControl(home, CHILD_B, PARENT, { name: "retired-worker", state: "idle", createdAt: 20 })
+    await writeRegistry(home, PARENT, [{ id: CHILD_A, agent: "registry-worker", phase: "running" }])
+
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false, lockProbe: () => true })
+    await observer.setParents([PARENT])
+    try {
+      // The registry is the file fx maintains: it owns the whole child set,
+      // so a control record it does not list is not a second child.
+      expect(observer.childrenOf(PARENT)).toEqual([
+        { sessionId: CHILD_A, label: "registry-worker", state: "working", attention: null, children: [] },
+      ])
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("restores an older session directory from the control records beside its owner file", async () => {
+    const home = await homeDirectory()
+    await writeControl(home, CHILD_A, PARENT, { name: "legacy-worker", state: "awaiting_approval" })
+    await writeOwner(home, CHILD_A, PARENT)
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      expect(observer.childrenOf(PARENT)).toEqual([
+        { sessionId: CHILD_A, label: "legacy-worker", state: "blocked", attention: "permission", children: [] },
+      ])
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("skips a registry entry it could not draw a row for", async () => {
+    const home = await homeDirectory()
+    await writeRegistry(home, PARENT, [
+      { id: "", agent: "nameless-worker" },
+      { id: "../escape", agent: "traversing-worker" },
+      { id: CHILD_B, agent: "future-worker", phase: "reticulating" },
+      { id: CHILD_A, agent: "session-worker", phase: "idle" },
+    ])
+    const observer = new SubagentObserver({ home, onChange: () => {}, watch: false })
+    await observer.setParents([PARENT])
+    try {
+      expect(observer.childrenOf(PARENT).map((child) => child.sessionId)).toEqual([CHILD_A])
+    } finally {
+      observer.stop()
+    }
+  })
+
+  test("follows a later registry revision", async () => {
+    const home = await homeDirectory()
+    await mkdir(join(home, ".fx", "sessions"), { recursive: true })
+    const observer = new SubagentObserver({ home, onChange: () => {}, pollIntervalMs: 20, lockProbe: () => true })
+    observer.start()
+    await observer.setParents([PARENT])
+    try {
+      await writeRegistry(home, PARENT, [{ id: CHILD_A, agent: "worker", phase: "idle" }], { generation: 1 })
+      await waitFor(() => observer.childrenOf(PARENT)[0]?.state === "idle")
+
+      await writeRegistry(home, PARENT, [{ id: CHILD_A, agent: "worker", phase: "running" }], { generation: 2 })
+      await waitFor(() => observer.childrenOf(PARENT)[0]?.state === "working")
+    } finally {
+      observer.stop()
+    }
+  })
+
   test("joins children to a live parent recursively and preserves creation order", async () => {
     const home = await homeDirectory()
     await writeControl(home, CHILD_A, PARENT, { name: "first-worker", createdAt: 10 })

@@ -95,8 +95,8 @@ whole terminal as it stands, between a `RestoreBegin` the visible terminal
 resets at and a `Ready` after which bytes are live. A reconnect replays onto
 a clean screen for the same reason a first attach does. The Agent's last
 reported agent status is seeded before its row can render; subagent status is
-derived again from fx's control records and live locks, then driven by live ADE
-snapshots.
+derived again from fx's children registry and live locks, then driven by live
+ADE snapshots.
 _Avoid_: replay, resync, history.
 
 **ADE feed** — the private, one-way, stable-per-fmx-Session Unix socket over which Fx
@@ -155,11 +155,12 @@ machine state, restored before the first frame so detach and reattach do not
 move focus back to agent one.
 _Avoid_: agent panel, tab bar, session picker.
 
-**Subagent row** — a non-selectable Agent list row for an fx subagent whose
-filesystem control record names a visible Agent's Fx Conversation as its parent.
-It uses the agent-row status icon and nests recursively beneath that parent;
-its state comes from the control record and the subagent's own session lock.
-_Avoid_: child pane, sub-agent.
+**Subagent row** — a non-selectable Agent list row for an fx subagent that
+fx's children registry lists under a visible Agent's Fx Conversation. It uses
+the agent-row status icon and nests recursively beneath that parent; its state
+comes from the registry's phase and the subagent's own session lock, and a
+child the registry reports as finished is not restored onto the list at all.
+_Avoid_: child pane, sub-agent, control record.
 
 **Path** — the active agent and its ancestors. The active row takes the
 Ramp's surface fill and its ancestors are set in bold; nothing else marks

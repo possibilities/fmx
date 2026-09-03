@@ -96,7 +96,7 @@ export type AgentInfo = {
   state: DisplayState
   attention: AgentAttention | null
   active: boolean
-  /** The fx subagents whose control records name this agent's session as
+  /** The fx subagents whose children registry names this agent's session as
    * their parent, nested as the tray nests them. Not targets: the tray
    * cannot select one either. */
   subagents: SubagentInfo[]

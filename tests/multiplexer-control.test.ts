@@ -312,8 +312,72 @@ test("routes every semantic work operation to the targeted Fx authority", async 
   }
 })
 
-test("includes filesystem subagents in the tray orientation", async () => {
+test("includes the children fx's registry lists in the tray orientation", async () => {
   const h = await harness("subagents")
+  const parent = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
+  const child = "1787368609310-1787368609310138000-3e38dc7a8d7c16c2"
+  const finished = "1787368610000-1787368610000000000-aaaaaaaaaaaaaaaa"
+  try {
+    await h.start()
+    const subagentDirectory = join(h.home, ".fx", "sessions", parent, "subagent")
+    await mkdir(subagentDirectory, { recursive: true })
+    await writeFile(
+      join(subagentDirectory, "children.json"),
+      JSON.stringify({
+        schema_version: 1,
+        parent_id: parent,
+        generation: 1,
+        children: [
+          {
+            id: child,
+            kind: "persistent",
+            persistent: { agent: "test-subagent", instructions: "review the diff" },
+            phase: "awaiting_approval",
+            work_generation: 1,
+            active: null,
+            last_work_id: null,
+            last_request_fingerprint: null,
+            last_outcome: null,
+          },
+          // A child that finished took its row with it.
+          {
+            id: finished,
+            kind: "one_off",
+            persistent: null,
+            phase: "finished",
+            work_generation: 1,
+            active: null,
+            last_work_id: "7",
+            last_request_fingerprint: null,
+            last_outcome: "completed",
+          },
+        ],
+      }),
+    )
+    await h.session("p_1", parent)
+
+    const snapshot = await waitForSnapshot(
+      () => h.control("orient") as Promise<Snapshot>,
+      (candidate) => candidate.tray.rows.some((row) => row.kind === "subagent"),
+    )
+    expect(snapshot.tray.rows.map((row) => [row.kind, row.depth, row.text, row.agent])).toEqual([
+      ["project", 0, "alpha", null],
+      ["branch", 1, "trunk", null],
+      ["agent", 2, "○ ba9a9f7e16e5ef8c", 1],
+      ["subagent", 3, "× test-subagent", null],
+    ])
+    // The model carries them too, so an agent need not parse the drawing.
+    expect(snapshot.agents[0]?.subagents).toEqual([
+      { session_id: child, label: "test-subagent", state: "blocked", attention: "permission", children: [] },
+    ])
+    expect(((await h.control("orient", { caller: 1 })) as Snapshot).you?.subagents).toHaveLength(1)
+  } finally {
+    await h.close()
+  }
+})
+
+test("restores subagents from an older session directory's control records", async () => {
+  const h = await harness("legacy-subagents")
   const parent = "1787368596567-1787368596567934000-ba9a9f7e16e5ef8c"
   const child = "1787368609310-1787368609310138000-3e38dc7a8d7c16c2"
   try {
@@ -345,11 +409,9 @@ test("includes filesystem subagents in the tray orientation", async () => {
       ["agent", 2, "○ ba9a9f7e16e5ef8c", 1],
       ["subagent", 3, "✓ test-subagent", null],
     ])
-    // The model carries them too, so an agent need not parse the drawing.
     expect(snapshot.agents[0]?.subagents).toEqual([
       { session_id: child, label: "test-subagent", state: "done", attention: null, children: [] },
     ])
-    expect(((await h.control("orient", { caller: 1 })) as Snapshot).you?.subagents).toHaveLength(1)
   } finally {
     await h.close()
   }

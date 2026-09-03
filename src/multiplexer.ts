@@ -622,7 +622,7 @@ export class Multiplexer {
         if (!this.shuttingDown) await this.attachRestoredAgent(agent)
       },
     )
-    // Git, fx's display metadata, and subagent control records are durable
+    // Git, fx's display metadata, and subagent registry records are durable
     // authorities, not copies in fmx. An older Manifest may not carry every
     // session identity, so install the final parent set after attach has had a
     // chance to supply it, then query both filesystem authorities together.

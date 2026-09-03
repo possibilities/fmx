@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from "node:fs"
-import { readdir, readFile } from "node:fs/promises"
+import { readdir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import type { AdeRecord } from "./ade-events.ts"
 import type { AgentAttention, DisplayState } from "./agent-registry.ts"
@@ -7,7 +7,13 @@ import { exclusiveLockHeld } from "./file-lock.ts"
 import { fxProfileDirectory, isSessionId } from "./fx-sessions.ts"
 import { sanitizeTitle } from "./title-parser.ts"
 
-const CONTROL_STATES = [
+/**
+ * Where fmx understands a child to stand. Fx's children registry reports a
+ * `phase` that `last_outcome` narrows once the child has finished; the retired
+ * per-child control record spelled these states directly, and `queued` and
+ * `archived` survive only for the session directories that still carry one.
+ */
+const SUBAGENT_STATES = [
   "idle",
   "queued",
   "running",
@@ -19,15 +25,41 @@ const CONTROL_STATES = [
   "archived",
 ] as const
 
-type ControlState = (typeof CONTROL_STATES)[number]
+export type SubagentState = (typeof SUBAGENT_STATES)[number]
+
+/** The registry's own lifecycle spelling. */
+const REGISTRY_PHASES = ["idle", "running", "awaiting_approval", "interrupted", "finished"] as const
+
+export type RegistryPhase = (typeof REGISTRY_PHASES)[number]
+
+/** How a finished child's last work ended. */
+const REGISTRY_OUTCOMES = ["completed", "failed", "cancelled", "interrupted"] as const
+
+type RegistryOutcome = (typeof REGISTRY_OUTCOMES)[number]
+
+/**
+ * Which of fx's files a record came from. Generations compare only within one
+ * source: a registry counts its own revisions, and a retired control record
+ * counted that one child's.
+ */
+type RecordSource = "registry" | "legacy" | "live"
 
 type SubagentRecord = {
   childId: string
   parentId: string
+  source: RecordSource
   generation: number
   label: string
-  state: ControlState
-  createdAt: number
+  state: SubagentState
+  /** Position among one parent's children: the registry's own order, or the
+   * legacy record's creation time. */
+  order: number
+}
+
+type Registry = {
+  parentId: string
+  generation: number
+  records: SubagentRecord[]
 }
 
 type StableState = {
@@ -54,7 +86,7 @@ export type SubagentObserverOptions = {
 }
 
 /**
- * ADE drives live child lifecycle. Fx's control records and session locks are
+ * ADE drives live child lifecycle. Fx's children registry and session locks are
  * retained as cold-restore truth and as metadata for labels and nested
  * ancestry that the lifecycle envelope deliberately does not duplicate.
  */
@@ -69,7 +101,7 @@ export class SubagentObserver {
   private byParent = new Map<string, SubagentRecord[]>()
   private readonly stableStates = new Map<string, StableState>()
   /** Children whose current lifecycle comes from ADE rather than the cold
-   * control-record/lock projection. */
+   * registry/lock projection. */
   private readonly liveParents = new Map<string, string>()
   private readonly childWatchers = new Map<string, FSWatcher>()
   private readonly discoveryTimers = new Set<ReturnType<typeof setTimeout>>()
@@ -151,11 +183,13 @@ export class SubagentObserver {
       current.attention !== next.attention
     this.stableStates.set(childId, { ...next, pending: null, pendingSamples: 0 })
 
-    // ADE can arrive just before control.json is durably visible. Read now and
-    // schedule bounded retries so the fallback short id is replaced by fx's
-    // configured child label without a store-wide live-state poll.
+    // ADE can arrive just before the registry is durably visible. Read the
+    // captured parent's now and schedule bounded retries so the fallback short
+    // id is replaced by fx's configured child label without a store-wide
+    // live-state poll.
     if (!this.records.has(childId)) {
-      void this.refreshChild(childId)
+      void this.refreshSubagentDirectory(parentId)
+      void this.refreshLegacyChild(childId)
       this.scheduleDiscovery(75)
       this.scheduleDiscovery(750)
     }
@@ -196,24 +230,48 @@ export class SubagentObserver {
     if (changed) this.notify()
   }
 
+  /**
+   * Walk down from the tracked parents through each session's children
+   * registry. A session fx has not written a registry for is an older session
+   * directory, and its children come from the per-child control records fx
+   * wrote before the registry existed. Where both are present the registry
+   * wins: it is the file fx maintains.
+   */
   private async scanAll(): Promise<void> {
     this.ensureRootWatcher()
-    let directories: string[]
-    try {
-      directories = (await readdir(this.sessionsDirectory, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory() && isSessionId(entry.name))
-        .map((entry) => entry.name)
-    } catch {
-      directories = []
+    let legacy: Map<string, SubagentRecord> | null = null
+    const registryRecords = new Map<string, SubagentRecord>()
+    const registryParents = new Set<string>()
+    const visited = new Set<string>()
+    const frontier = [...this.parents]
+    while (frontier.length > 0) {
+      const sessionId = frontier.pop()!
+      if (visited.has(sessionId)) continue
+      visited.add(sessionId)
+      const registry = await this.readRegistry(sessionId)
+      if (registry) {
+        registryParents.add(registry.parentId)
+        for (const record of registry.records) {
+          registryRecords.set(record.childId, record)
+          frontier.push(record.childId)
+        }
+        continue
+      }
+      if (legacy === null) legacy = await this.readLegacyRecords()
+      for (const record of legacy.values()) {
+        if (record.parentId === sessionId) frontier.push(record.childId)
+      }
     }
 
-    const scanned = await Promise.all(directories.map((childId) => this.readRecord(childId)))
     const next = new Map<string, SubagentRecord>()
-    for (const record of scanned) {
-      if (!record) continue
-      const current = this.records.get(record.childId)
-      next.set(record.childId, current && current.generation > record.generation ? current : record)
+    if (legacy) {
+      for (const [childId, record] of legacy) {
+        if (registryParents.has(record.parentId)) continue
+        next.set(childId, this.keepNewer(childId, record))
+      }
     }
+    for (const [childId, record] of registryRecords) next.set(childId, this.keepNewer(childId, record))
+
     const recordsChanged = !sameRecords(this.records, next)
     this.records = next
     if (recordsChanged) this.rebuildParentIndex()
@@ -222,37 +280,139 @@ export class SubagentObserver {
     if (recordsChanged || stateChanged) this.notify()
   }
 
-  private async refreshChild(childId: string): Promise<void> {
-    if (this.stopped) return
-    const record = await this.readRecord(childId)
-    if (!record) return
+  /** A targeted read must not lose to the full scan that raced it. */
+  private keepNewer(childId: string, record: SubagentRecord): SubagentRecord {
     const current = this.records.get(childId)
-    if (current && current.generation >= record.generation) return
-    this.records.set(childId, record)
+    if (!current || current.source !== record.source) return record
+    return current.generation > record.generation ? current : record
+  }
+
+  /** One session's subagent files changed: re-read the registry it may hold,
+   * and the retired control record it may itself still be. */
+  private async refreshSubagentDirectory(sessionId: string): Promise<void> {
+    await this.refreshRegistry(sessionId)
+    await this.refreshLegacyChild(sessionId)
+  }
+
+  private async refreshRegistry(sessionId: string): Promise<void> {
+    if (this.stopped) return
+    const registry = await this.readRegistry(sessionId)
+    if (!registry) return
+    const previous = [...this.records.values()].filter(
+      (record) => record.parentId === registry.parentId && record.source === "registry",
+    )
+    if (previous.some((record) => record.generation > registry.generation)) return
+    const next = new Map(this.records)
+    for (const record of previous) next.delete(record.childId)
+    for (const record of registry.records) next.set(record.childId, record)
+    if (sameRecords(this.records, next)) return
+    this.records = next
     this.rebuildParentIndex()
+    this.syncChildWatchers()
     this.sampleReachableStatesWithoutNotify()
     this.notify()
   }
 
-  private async readRecord(childId: string): Promise<SubagentRecord | null> {
-    let value: unknown
-    try {
-      value = JSON.parse(await readFile(this.controlPath(childId), "utf8"))
-    } catch {
-      return null
-    }
-    if (!isRecord(value) || value.child_id !== childId || !isSessionId(childId)) return null
+  private async refreshLegacyChild(childId: string): Promise<void> {
+    if (this.stopped) return
+    const record = await this.readLegacyRecord(childId)
+    if (!record) return
+    const current = this.records.get(childId)
+    if (current && current.source === "registry") return
+    if (current && current.generation >= record.generation) return
+    this.records.set(childId, record)
+    this.rebuildParentIndex()
+    this.syncChildWatchers()
+    this.sampleReachableStatesWithoutNotify()
+    this.notify()
+  }
+
+  /**
+   * One parent's children as fx records them. Parent attribution is the
+   * registry's own `parent_id`: fx names the session its children stand under,
+   * whatever directory the file was read from.
+   */
+  private async readRegistry(sessionId: string): Promise<Registry | null> {
+    const value = await readJson(this.registryPath(sessionId))
+    if (!isRecord(value) || !Array.isArray(value.children)) return null
     const parentId = nonEmptyString(value.parent_id)
-    const state = CONTROL_STATES.includes(value.state as ControlState) ? (value.state as ControlState) : null
+    if (!parentId || !isSessionId(parentId)) return null
+    const generation = nonNegativeNumber(value.generation) ?? 0
+    const records: SubagentRecord[] = []
+    value.children.forEach((entry, index) => {
+      const record = this.registryRecord(entry, parentId, generation, index)
+      if (record) records.push(record)
+    })
+    return { parentId, generation, records }
+  }
+
+  private registryRecord(
+    entry: unknown,
+    parentId: string,
+    generation: number,
+    index: number,
+  ): SubagentRecord | null {
+    if (!isRecord(entry)) return null
+    const childId = nonEmptyString(entry.id)
+    if (!childId || !isSessionId(childId)) return null
+    const phase = REGISTRY_PHASES.includes(entry.phase as RegistryPhase) ? (entry.phase as RegistryPhase) : null
+    if (!phase) return null
+    // A child that finished took its row with it. Only a live ADE feed keeps
+    // one on screen, and from there the feed owns its state.
+    if (phase === "finished" && !this.liveParents.has(childId)) return null
+    const persistent = isRecord(entry.persistent) ? entry.persistent : null
+    return {
+      childId,
+      parentId,
+      source: "registry",
+      generation,
+      label: drawableLabel(persistent?.agent) ?? shortSessionId(childId),
+      state: stateFromPhase(phase, entry.last_outcome),
+      // The registry's order is the parent's order. One is added so a child
+      // fx has not written down yet still sorts ahead of every recorded one.
+      order: index + 1,
+    }
+  }
+
+  private async readLegacyRecords(): Promise<Map<string, SubagentRecord>> {
+    let directories: string[]
+    try {
+      directories = (await readdir(this.sessionsDirectory, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && isSessionId(entry.name))
+        .map((entry) => entry.name)
+    } catch {
+      directories = []
+    }
+    const scanned = await Promise.all(directories.map((childId) => this.readLegacyRecord(childId)))
+    const records = new Map<string, SubagentRecord>()
+    for (const record of scanned) if (record) records.set(record.childId, record)
+    return records
+  }
+
+  /**
+   * The per-child record fx wrote before the children registry. An older
+   * session directory is recognised by an `owner.json` beside it or by a
+   * `control.json` that still names its parent; `control.json` is read to
+   * recognise one and for nothing else, and fmx never writes it.
+   */
+  private async readLegacyRecord(childId: string): Promise<SubagentRecord | null> {
+    if (!isSessionId(childId)) return null
+    const value = await readJson(this.controlPath(childId))
+    const named = isRecord(value) && typeof value.parent_id === "string"
+    if (!named && !(await pathExists(this.ownerPath(childId)))) return null
+    if (!isRecord(value) || value.child_id !== childId) return null
+    const parentId = nonEmptyString(value.parent_id)
+    const state = SUBAGENT_STATES.includes(value.state as SubagentState) ? (value.state as SubagentState) : null
     if (!parentId || !isSessionId(parentId) || !state) return null
     const configuration = isRecord(value.configuration) ? value.configuration : null
     return {
       childId,
       parentId,
+      source: "legacy",
       generation: nonNegativeNumber(value.generation) ?? 0,
       label: drawableLabel(configuration?.name) ?? shortSessionId(childId),
       state,
-      createdAt: nonNegativeNumber(value.created_at_ms) ?? 0,
+      order: nonNegativeNumber(value.created_at_ms) ?? 0,
     }
   }
 
@@ -270,10 +430,11 @@ export class SubagentObserver {
         : {
             childId,
             parentId,
+            source: "live",
             generation: 0,
             label: shortSessionId(childId),
             state: "running",
-            createdAt: 0,
+            order: 0,
           })
     }
     for (const record of combined.values()) {
@@ -282,7 +443,7 @@ export class SubagentObserver {
       else next.set(record.parentId, [record])
     }
     for (const children of next.values()) {
-      children.sort((left, right) => left.createdAt - right.createdAt || left.childId.localeCompare(right.childId))
+      children.sort((left, right) => left.order - right.order || left.childId.localeCompare(right.childId))
     }
     this.byParent = next
   }
@@ -424,28 +585,33 @@ export class SubagentObserver {
     this.discoveryTimers.add(timer)
   }
 
+  /**
+   * A child's record lives in its parent's registry, so every session that may
+   * hold one is watched: the tracked parents, and the children that are
+   * parents in turn.
+   */
   private syncChildWatchers(): void {
     if (!this.shouldWatch || !this.started || this.stopped) return
-    const reachable = this.reachableChildren()
-    for (const [childId, watcher] of this.childWatchers) {
-      if (reachable.has(childId)) continue
+    const watched = new Set<string>([...this.parents, ...this.reachableChildren()])
+    for (const [sessionId, watcher] of this.childWatchers) {
+      if (watched.has(sessionId)) continue
       watcher.close()
-      this.childWatchers.delete(childId)
+      this.childWatchers.delete(sessionId)
     }
-    for (const childId of reachable) {
-      if (this.childWatchers.has(childId)) continue
+    for (const sessionId of watched) {
+      if (this.childWatchers.has(sessionId)) continue
       try {
-        const watcher = watch(this.subagentDirectory(childId), { persistent: false }, () => {
-          void this.refreshChild(childId)
+        const watcher = watch(this.subagentDirectory(sessionId), { persistent: false }, () => {
+          void this.refreshSubagentDirectory(sessionId)
         })
         watcher.on("error", () => {
           watcher.close()
-          this.childWatchers.delete(childId)
+          this.childWatchers.delete(sessionId)
         })
-        this.childWatchers.set(childId, watcher)
+        this.childWatchers.set(sessionId, watcher)
       } catch {
-        // A later discovery pass retries a directory that was replaced while
-        // watchers were being installed.
+        // A later discovery pass retries a directory that did not exist yet or
+        // was replaced while watchers were being installed.
       }
     }
   }
@@ -454,12 +620,20 @@ export class SubagentObserver {
     if (!this.stopped) this.onChange()
   }
 
-  private subagentDirectory(childId: string): string {
-    return join(this.sessionsDirectory, childId, "subagent")
+  private subagentDirectory(sessionId: string): string {
+    return join(this.sessionsDirectory, sessionId, "subagent")
+  }
+
+  private registryPath(sessionId: string): string {
+    return join(this.subagentDirectory(sessionId), "children.json")
   }
 
   private controlPath(childId: string): string {
     return join(this.subagentDirectory(childId), "control.json")
+  }
+
+  private ownerPath(sessionId: string): string {
+    return join(this.subagentDirectory(sessionId), "owner.json")
   }
 
   private lockPath(childId: string): string {
@@ -484,8 +658,28 @@ function liveDisplayState(
   return { state: "idle", attention: null }
 }
 
+/**
+ * The registry's `phase` in fmx's own spelling. A finished child is only as
+ * specific as its last outcome, which is the one thing that still separates a
+ * completed child's mark from an abandoned one's.
+ */
+export function stateFromPhase(phase: RegistryPhase, outcome: unknown): SubagentState {
+  switch (phase) {
+    case "idle":
+      return "idle"
+    case "running":
+      return "running"
+    case "awaiting_approval":
+      return "awaiting_approval"
+    case "interrupted":
+      return "interrupted"
+    case "finished":
+      return REGISTRY_OUTCOMES.includes(outcome as RegistryOutcome) ? (outcome as RegistryOutcome) : "completed"
+  }
+}
+
 export function displayState(
-  state: ControlState,
+  state: SubagentState,
   lockHeld: boolean | null,
 ): { state: DisplayState; attention: AgentAttention | null } {
   switch (state) {
@@ -517,7 +711,7 @@ function sameRecords(left: Map<string, SubagentRecord>, right: Map<string, Subag
 }
 
 function recordKey(record: SubagentRecord): string {
-  return [record.parentId, record.generation, record.label, record.state, record.createdAt].join("\0")
+  return [record.parentId, record.source, record.generation, record.label, record.state, record.order].join("\0")
 }
 
 function sameSet(left: Set<string>, right: Set<string>): boolean {
@@ -544,6 +738,23 @@ function shortSessionId(sessionId: string): string {
 function drawableLabel(value: unknown): string | null {
   const name = nonEmptyString(value)
   return name === null ? null : nonEmptyString(sanitizeTitle(name))
+}
+
+async function readJson(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(path, "utf8"))
+  } catch {
+    return null
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function nonEmptyString(value: unknown): string | null {
