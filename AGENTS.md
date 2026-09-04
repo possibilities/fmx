@@ -53,6 +53,34 @@
 - The Layout carries a revision, moved on by every apply and every divider
   drag. `layout.apply` with an older revision is refused as a conflict so a
   human's drag is never silently undone; omitting it writes unconditionally.
+  The guard holds in both directions: a drag whose tree moved under it
+  re-baselines on what the apply wrote instead of putting the old tree back.
+- A drag moves the boundary under the pointer, by the distance asked, and
+  touches only the two Panes it lies between. Changing one adjacent child by
+  the delta is not the same thing: an elastic sibling absorbs from the same
+  pool, so the grabbed divider can sit still while a different one walks the
+  other way. `dragDivider` measures each way of spending the drag against the
+  real fit and takes the one that lands the boundary.
+- A container's floor is whatever its subtree needs (`requiredLength`), so a
+  container is never handed fewer cells than it can draw in. A band of the
+  stage that nothing could appear in, with a divider under it, is worse than
+  one Pane fewer.
+- A squeezed-out Pane is reported at zero, never dropped: `panes` is in tree
+  order and a caller zipping it against its own leaves must not misalign as
+  the stage narrows.
+- `Stage.apply` draws before it commits. A tree it cannot draw is rolled back,
+  or every later refit would throw again for the life of the Runtime.
+- A frame is refused before `JSON.parse` sees it when it nests too deep: the
+  parser is recursive and its overflow is a `RangeError`, not a validation
+  failure, so the caller would get no reply at all. Every refusal carries the
+  id it read out of the raw line, because a response a caller cannot correlate
+  is one it waits on forever.
+- Both sides of the API socket queue their writes. A socket takes what it
+  takes, and a frame written without handling a partial write is a request
+  that never completes.
+- fmx's clear goes straight to the terminal, which OpenTUI's diff cannot see,
+  so `Runtime.repaint` forces the next frame to draw in full. Without it a
+  same-size resize or a same-theme retint leaves the cleared stage standing.
 - **The API socket is the Instance singleton.** It is claimed under a lock
   before anything is adopted, so two Runtimes can never hold the same
   Sessions, and requests arriving during adoption wait rather than being told

@@ -14,6 +14,8 @@ import {
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void }
 
+const encoder = new TextEncoder()
+
 export type ApiClientOptions = {
   onEvent?: (event: EventFrame) => void
   onClose?: () => void
@@ -26,6 +28,8 @@ export class ApiClient {
   private nextId = 1
   private socket: Socket | null = null
   private closed = false
+  /** Frames not yet fully written: a socket takes what it takes. */
+  private outgoing: Uint8Array[] = []
 
   private constructor(private readonly options: ApiClientOptions) {}
 
@@ -40,6 +44,7 @@ export class ApiClient {
       unix: path,
       socket: {
         open: () => opened.resolve(),
+        drain: () => client.flush(),
         data: (_socket, data) => client.data(data),
         close: () => client.handleClose(),
         error: () => client.handleClose(),
@@ -88,7 +93,7 @@ export class ApiClient {
     }
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
-      this.socket!.write(encodeFrame(frame))
+      this.write(encodeFrame(frame))
     })
   }
 
@@ -97,6 +102,33 @@ export class ApiClient {
     this.closed = true
     this.socket?.end()
     this.failPending()
+  }
+
+  /** Queue a frame and write what the socket will take; the rest waits for `drain`. */
+  private write(line: string): void {
+    this.outgoing.push(encoder.encode(line))
+    this.flush()
+  }
+
+  private flush(): void {
+    const socket = this.socket
+    if (!socket) return
+    while (this.outgoing.length > 0) {
+      const chunk = this.outgoing[0]!
+      let written: number
+      try {
+        written = socket.write(chunk)
+      } catch {
+        return
+      }
+      // A negative result is an errored or closed socket; `close` cleans up.
+      if (written < 0) return
+      if (written < chunk.byteLength) {
+        this.outgoing[0] = chunk.subarray(written)
+        return
+      }
+      this.outgoing.shift()
+    }
   }
 
   private data(data: Buffer): void {
@@ -121,7 +153,14 @@ export class ApiClient {
       this.options.onEvent?.(frame)
       return
     }
-    if (frame.type !== "response" || frame.id === null) return
+    if (frame.type !== "response") return
+    if (frame.id === null) {
+      // A refusal the Runtime could not correlate: it could not tell what was
+      // asked, so nothing in flight can be trusted to be answered. Failing
+      // them is honest; waiting forever is not.
+      if (!frame.ok) this.failPending(new ApiFailure(frame.error.code, frame.error.message))
+      return
+    }
     const pending = this.pending.get(frame.id)
     if (!pending) return
     this.pending.delete(frame.id)
@@ -136,8 +175,9 @@ export class ApiClient {
     this.options.onClose?.()
   }
 
-  private failPending(): void {
-    for (const pending of this.pending.values()) pending.reject(new ApiFailure("internal", "connection closed"))
+  private failPending(error = new ApiFailure("internal", "connection closed")): void {
+    for (const pending of this.pending.values()) pending.reject(error)
     this.pending.clear()
+    this.outgoing = []
   }
 }

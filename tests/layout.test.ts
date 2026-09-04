@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { dragDivider, fitLayout, fitLengths, layoutSessions, paneGeometries } from "../src/layout.ts"
+import { dragDivider, fitLayout, fitLengths, layoutSessions, paneGeometries, requiredLength } from "../src/layout.ts"
 import type { LayoutNode } from "../src/protocol.ts"
 
 const stage = { cols: 100, rows: 30 }
@@ -137,5 +137,81 @@ describe("dragDivider", () => {
   test("a divider that does not exist is refused", () => {
     expect(dragDivider(sixPanels, "9:9", 1, stage)).toBeNull()
     expect(dragDivider(sixPanels, "nonsense", 1, stage)).toBeNull()
+  })
+
+  test("the boundary under the pointer is the one that moves, by the distance asked", () => {
+    // A remainder before the divider: adjusting the child before it would let
+    // that remainder absorb the change, pinning the grabbed boundary while a
+    // different one walks the other way.
+    const tree: LayoutNode = { row: [{ session: "a" }, { session: "b", size: 10 }, { session: "c", size: 10 }] }
+    const small = { cols: 60, rows: 20 }
+    const at = (node: LayoutNode, id: string) => fitLayout(node, small).dividers.find((divider) => divider.id === id)!.rect.x
+    const before = { first: at(tree, ":0"), second: at(tree, ":1") }
+
+    for (const delta of [1, 3, 6, -4]) {
+      const dragged = dragDivider(tree, ":1", delta, small)!
+      expect(at(dragged, ":1"), `dragging by ${delta}`).toBe(before.second + delta)
+      // Nothing else moves, and the elastic Pane keeps every cell it had.
+      expect(at(dragged, ":0"), `dragging by ${delta}`).toBe(before.first)
+    }
+  })
+
+  test("a drag between two fixed Panes moves cells across and leaves the rest alone", () => {
+    const tree: LayoutNode = {
+      row: [{ session: "a" }, { session: "b", size: 10 }, { session: "c", size: 10 }],
+    }
+    const small = { cols: 60, rows: 20 }
+    const widths = (node: LayoutNode) => fitLayout(node, small).leaves.map((leaf) => leaf.rect.cols)
+    expect(widths(tree)).toEqual([38, 10, 10])
+    expect(widths(dragDivider(tree, ":1", 3, small)!)).toEqual([38, 13, 7])
+  })
+
+  test("a container is never handed fewer cells than its subtree needs", () => {
+    // A column whose only child needs ten rows cannot be drawn in three, so
+    // the fit gives it what it needs or gives it up — never a blank band.
+    const tree: LayoutNode = {
+      column: [{ column: [{ text: "drawer", size: 10, min: 10 }], size: 3, min: 3 }, { session: "main" }],
+    }
+    expect(requiredLength(tree.column[0]!, "column")).toBe(10)
+    const fitted = fitLayout(tree, { cols: 40, rows: 20 })
+    const drawn = fitted.leaves.filter((leaf) => leaf.rect.rows > 0)
+    expect(drawn.map((leaf) => [leaf.rect.y, leaf.rect.rows])).toEqual([
+      [0, 10],
+      [11, 9],
+    ])
+    // No divider without a Pane on both sides of it.
+    for (const divider of fitted.dividers) {
+      expect(drawn.some((leaf) => leaf.rect.y + leaf.rect.rows === divider.rect.y)).toBe(true)
+    }
+  })
+
+  test("a squeezed-out Pane is reported at zero rather than dropped", () => {
+    const tree: LayoutNode = {
+      row: [
+        { session: "a", size: 40, min: 40 },
+        { session: "b", size: 40, min: 40 },
+        { session: "c", size: 40, min: 40 },
+      ],
+    }
+    // The contract says every Pane appears in tree order; a caller zipping
+    // this against its own leaves must not silently misalign.
+    for (const [cols, expected] of [
+      [122, [40, 40, 40]],
+      [81, [40, 40, 0]],
+      [60, [60, 0, 0]],
+    ] as const) {
+      const panes = paneGeometries(fitLayout(tree, { cols, rows: 20 }), null)
+      expect(panes.map((pane) => pane.session), `at ${cols}`).toEqual(["a", "b", "c"])
+      expect(panes.map((pane) => pane.cols), `at ${cols}`).toEqual([...expected])
+    }
+  })
+
+  test("one Session named twice reports one focused Pane", () => {
+    const panes = paneGeometries(
+      fitLayout({ row: [{ session: "a", size: 20 }, { session: "a" }] }, { cols: 60, rows: 20 }),
+      "a",
+    )
+    expect(panes).toHaveLength(2)
+    expect(panes.filter((pane) => pane.focused)).toHaveLength(1)
   })
 })

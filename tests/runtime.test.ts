@@ -377,6 +377,22 @@ test("adoption hands the endpoint it already read to the first attach", async ()
   }
 })
 
+test("a repaint after an external clear forces a full frame", async () => {
+  const app = await harness()
+  try {
+    const renderer = app.setup.renderer as unknown as { forceFullRepaintRequested: boolean }
+    await app.setup.renderOnce()
+    expect(renderer.forceFullRepaintRequested).toBe(false)
+    // fmx's own clear goes straight to the terminal, so the next frame has to
+    // be told to draw everything rather than diffing against a screen that is
+    // no longer there.
+    app.runtime.repaint()
+    expect(renderer.forceFullRepaintRequested).toBe(true)
+  } finally {
+    await app.close()
+  }
+})
+
 test("a theme change retints in one pass and says so", async () => {
   const app = await harness()
   try {

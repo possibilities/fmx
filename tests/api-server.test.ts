@@ -170,6 +170,48 @@ test("a subscriber that stops reading is dropped rather than growing the heap", 
   }
 })
 
+test("a Layout too deep to validate is refused, not left to overflow the stack", async () => {
+  const server = await serve(async () => ({ ok: true }))
+  const client = await connect(server)
+  const nest = (depth: number) => {
+    let node: unknown = { session: "a" }
+    for (let index = 0; index < depth; index += 1) node = { row: [node] }
+    return node
+  }
+  // A frame can carry far more nesting than JSON.parse itself can walk; the
+  // overflow is a RangeError, so the caller would get no reply at all.
+  for (const depth of [40, 500, 5_000]) {
+    await expect(client.call("layout.apply", { root: nest(depth) }), `at depth ${depth}`).rejects.toMatchObject({
+      code: "invalid_request",
+    })
+  }
+  // The connection is still good afterwards.
+  expect(await client.call("layout.get")).toEqual({ ok: true })
+  expect(await client.call("layout.apply", { root: nest(4) })).toEqual({ ok: true })
+})
+
+test("a refusal names the request it refuses, so a caller never waits on it", async () => {
+  const server = await serve(async () => ({ ok: true }))
+  const client = await connect(server)
+  // Malformed JSON carrying a readable id is still correlated.
+  const answered = Promise.withResolvers<string>()
+  const socket = await Bun.connect({
+    unix: server.path,
+    socket: {
+      data: (_socket, data) => answered.resolve(data.toString("utf8")),
+      open: () => {},
+    },
+  })
+  try {
+    socket.write(`{"v":1,"type":"request","id":"7","method":"layout.get",}\n`)
+    const reply = JSON.parse(await answered.promise)
+    expect(reply).toMatchObject({ id: "7", ok: false, error: { code: "invalid_request" } })
+  } finally {
+    socket.end()
+  }
+  expect(await client.call("layout.get")).toEqual({ ok: true })
+})
+
 test("names the paths an earlier fmx bound for the same Instance", () => {
   expect(retiredSocketPathsFor("/tmp/fmx-501/abc.api")).toEqual([
     "/tmp/fmx-501/abc.ade.sock",

@@ -169,10 +169,19 @@ export class PaneTerminalRenderable extends EmbeddedTerminalRenderable {
   protected override renderSelf(buffer: OptimizedBuffer): void {
     super.renderSelf(buffer)
     if (!this.focused || this.cursorPositionEstablished) return
-    const cursor = this.screen().cursor
-    if (cursor.visible && (cursor.x !== 0 || cursor.y !== 0)) {
+    // Read the cursor from the emulator: OpenTUI's `screen()` decodes the
+    // whole frame buffer to text to answer the same question, every frame.
+    const internals = this as unknown as {
+      handle: unknown
+      lib: { embeddedTerminalCursor: (handle: unknown) => { x: number; y: number; visible: boolean; hasValue: boolean } }
+    }
+    const cursor = internals.handle ? internals.lib.embeddedTerminalCursor(internals.handle) : null
+    // A Session that homes its cursor and stops — an editor on an empty
+    // buffer — never leaves the origin, so one drawn frame is the latch: by
+    // then the emulator has whatever the Session put there.
+    if (cursor?.hasValue) {
       this.cursorPositionEstablished = true
-      return
+      if (cursor.visible) return
     }
     this._ctx.setCursorPosition(0, 0, false)
   }

@@ -51,6 +51,14 @@ export type LayoutNode =
   | { session: string; size?: number; min?: number }
   | { text: string; size?: number; min?: number }
 
+/**
+ * How deep a Layout may nest. A frame may carry far more nesting than a
+ * recursive validator can walk, and a stack overflow there is a `RangeError`
+ * rather than a validation failure — the caller would get no reply at all.
+ * Nothing legible needs more than this.
+ */
+export const MAX_LAYOUT_DEPTH = 32
+
 export const layoutNodeSchema: z.ZodType<LayoutNode> = z.lazy(() =>
   z.union([
     z.object({ row: z.array(layoutNodeSchema).min(1), ...sizedLeaf }).strict(),
@@ -59,6 +67,37 @@ export const layoutNodeSchema: z.ZodType<LayoutNode> = z.lazy(() =>
     z.object({ text: z.string().max(200), ...sizedLeaf }).strict(),
   ]),
 )
+
+/**
+ * How deep a request frame nests, measured on the raw line. `JSON.parse` is
+ * itself recursive, so a frame deep enough to overflow it must be refused
+ * before it is parsed, not after. Stops counting once past `limit`.
+ */
+export function frameNestingDepth(line: string, limit = MAX_LAYOUT_DEPTH): number {
+  let depth = 0
+  let deepest = 0
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]!
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === "\\") escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') inString = true
+    else if (character === "{" || character === "[") {
+      depth += 1
+      if (depth > deepest) {
+        deepest = depth
+        // A frame past the limit is refused whatever else it holds.
+        if (deepest > limit) return deepest
+      }
+    } else if (character === "}" || character === "]") depth -= 1
+  }
+  return deepest
+}
 
 export const paneGeometrySchema = z.object({
   session: sessionName.or(NONE),

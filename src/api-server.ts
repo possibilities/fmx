@@ -8,7 +8,9 @@ import {
   type ErrorCode,
   type EventFrame,
   failureFrame,
+  frameNestingDepth,
   isMethod,
+  MAX_LAYOUT_DEPTH,
   METHODS,
   type Method,
   requestSchema,
@@ -25,6 +27,25 @@ const MAX_FRAME_BYTES = 1 << 20
  * up with its own events is not one worth keeping.
  */
 const MAX_OUTGOING_BYTES = 4 * 1024 * 1024
+/** The frame envelope nests a few levels above the deepest Layout it carries. */
+const MAX_FRAME_DEPTH = MAX_LAYOUT_DEPTH + 8
+/** How much of a frame is scanned for its id when the frame itself is refused. */
+const ID_SCAN_LIMIT = 512
+
+/**
+ * A refusal has to name what it refuses: a response the caller cannot
+ * correlate is one it will wait on forever. When a frame is rejected before
+ * it can be parsed, its id is read straight out of the text.
+ */
+function frameId(line: string): string | null {
+  const match = /"id"\s*:\s*"((?:[^"\\]|\\.){1,128})"/u.exec(line.slice(0, ID_SCAN_LIMIT))
+  if (!match) return null
+  try {
+    return JSON.parse(`"${match[1]!}"`) as string
+  } catch {
+    return null
+  }
+}
 const SINGLETON_HANDOFF_TIMEOUT_MS = 1_000
 const SINGLETON_HANDOFF_INTERVAL_MS = 25
 
@@ -193,7 +214,7 @@ export class ApiServer {
     const connection = socket.data
     connection.buffer += data.toString("utf8")
     if (connection.buffer.length > MAX_FRAME_BYTES) {
-      this.send(connection, encodeFrame(failureFrame(null, "invalid_request", "frame too large")))
+      this.send(connection, encodeFrame(failureFrame(frameId(connection.buffer), "invalid_request", "frame too large")))
       socket.end()
       return
     }
@@ -201,17 +222,39 @@ export class ApiServer {
     while (newline >= 0) {
       const line = connection.buffer.slice(0, newline).trim()
       connection.buffer = connection.buffer.slice(newline + 1)
-      if (line.length > 0) void this.accept(line, connection)
+      // A handler that rejects would otherwise reach OpenTUI's
+      // unhandledRejection handler, which draws on the screen.
+      if (line.length > 0) {
+        void this.accept(line, connection).catch((error) => {
+          this.send(
+            connection,
+            encodeFrame(failureFrame(null, "internal", error instanceof Error ? error.message : String(error))),
+          )
+        })
+      }
       newline = connection.buffer.indexOf("\n")
     }
   }
 
   private async accept(line: string, connection: Connection): Promise<void> {
+    // `JSON.parse` is recursive, so a frame deep enough to overflow it is
+    // refused before it is parsed: the overflow would be a RangeError, and
+    // the caller would get no reply at all.
+    if (frameNestingDepth(line, MAX_FRAME_DEPTH) > MAX_FRAME_DEPTH) {
+      this.send(
+        connection,
+        encodeFrame(failureFrame(frameId(line), "invalid_request", `a request may nest at most ${MAX_LAYOUT_DEPTH} deep`)),
+      )
+      return
+    }
     let parsed: unknown
     try {
       parsed = JSON.parse(line)
     } catch {
-      this.send(connection, encodeFrame(failureFrame(null, "invalid_request", "expected one JSON object per line")))
+      this.send(
+        connection,
+        encodeFrame(failureFrame(frameId(line), "invalid_request", "expected one JSON object per line")),
+      )
       return
     }
     const request = requestSchema.safeParse(parsed)
@@ -225,7 +268,17 @@ export class ApiServer {
       this.send(connection, encodeFrame(failureFrame(id, "unknown_method", `unknown method ${JSON.stringify(method)}`)))
       return
     }
-    const checked = METHODS[method].params.safeParse(params ?? {})
+    // Anything the params parse throws is a refusal, never an escape.
+    let checked: ReturnType<(typeof METHODS)[Method]["params"]["safeParse"]>
+    try {
+      checked = METHODS[method].params.safeParse(params ?? {})
+    } catch (error) {
+      this.send(
+        connection,
+        encodeFrame(failureFrame(id, "invalid_params", error instanceof Error ? error.message : String(error))),
+      )
+      return
+    }
     if (!checked.success) {
       const reasons = checked.error.issues.map((issue) =>
         issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message,

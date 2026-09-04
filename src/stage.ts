@@ -50,7 +50,7 @@ export class Stage {
   private focusName: string | null = null
   /** Sessions with a Pane right now, in tree order. */
   private shown: string[] = []
-  private drag: { id: string; root: LayoutNode; x: number; y: number } | null = null
+  private drag: { id: string; root: LayoutNode; revision: number; x: number; y: number } | null = null
 
   constructor(options: StageOptions) {
     this.renderer = options.renderer
@@ -100,10 +100,21 @@ export class Stage {
         `the Layout has moved on: revision ${this.treeRevision}, not ${options.revision}`,
       )
     }
+    const previousTree = this.tree
+    const previousFocus = this.focusName
     this.tree = root
-    this.treeRevision += 1
     if (focus !== undefined) this.focusName = focus
-    this.draw()
+    try {
+      this.draw()
+    } catch (error) {
+      // A tree that cannot be drawn is not one to keep: every later refit
+      // would throw again for the life of the Runtime.
+      this.tree = previousTree
+      this.focusName = previousFocus
+      this.draw()
+      throw error
+    }
+    this.treeRevision += 1
     this.onChanged(options.cause ?? "apply")
     return this.view
   }
@@ -142,14 +153,17 @@ export class Stage {
 
     const shown: string[] = []
     const liveText = new Set<string>()
+    const placed = new Set<string>()
     for (const leaf of this.fitted.leaves) {
       if (leaf.rect.cols <= 0 || leaf.rect.rows <= 0) continue
       if ("session" in leaf.node) {
         const terminal = this.panes.terminalFor(leaf.node.session)
         // A Pane naming a Session that does not exist draws nothing; the
         // Layout stays as the caller wrote it, so creating that Session later
-        // fills the Pane without another apply.
-        if (!terminal) continue
+        // fills the Pane without another apply. A Session named twice has one
+        // emulator, so only its first Pane draws it.
+        if (!terminal || placed.has(leaf.node.session)) continue
+        placed.add(leaf.node.session)
         if (terminal.parent !== this.root) this.root.add(terminal)
         placeAt(terminal, leaf.rect)
         terminal.visible = true
@@ -265,7 +279,7 @@ export class Stage {
     if (!this.tree) return
     event.preventDefault()
     event.stopPropagation()
-    this.drag = { id, root: this.tree, x: event.x, y: event.y }
+    this.drag = { id, root: this.tree, revision: this.treeRevision, x: event.x, y: event.y }
     // Capture immediately: OpenTUI latches drag capture on the first drag
     // event, and a fast flick can put that event past a one-cell divider.
     const capturer = this.renderer as unknown as { setCapturedRenderable?: (renderable: BoxRenderable) => void }
@@ -274,10 +288,22 @@ export class Stage {
   }
 
   private continueDrag(divider: FittedDivider, event: MouseEvent): void {
-    const drag = this.drag
+    let drag = this.drag
     if (!drag || drag.id !== divider.id) return
     event.preventDefault()
     event.stopPropagation()
+    if (drag.revision !== this.treeRevision) {
+      // An apply landed mid-gesture. Re-baseline on what it wrote rather than
+      // dragging from a tree that is gone: the guard that keeps a caller from
+      // clobbering a human's drag has to hold in this direction too.
+      if (this.tree === null) {
+        this.drag = null
+        return
+      }
+      drag = { id: drag.id, root: this.tree, revision: this.treeRevision, x: event.x, y: event.y }
+      this.drag = drag
+      return
+    }
     // Cumulative from the tree the drag started on, so a slow drag does not
     // accumulate rounding the way per-event deltas would.
     const delta = divider.axis === "row" ? event.x - drag.x : event.y - drag.y

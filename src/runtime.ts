@@ -120,6 +120,20 @@ export class Runtime {
     return this.shuttingDown
   }
 
+  /**
+   * Draw the next frame in full. OpenTUI renders by diffing against what it
+   * believes is on screen, and fmx's own clear goes out behind its back, so
+   * without this the next frame can decide nothing changed and leave the
+   * cleared stage standing. The flag is the one OpenTUI's own clear sets;
+   * there is no public spelling for it.
+   */
+  repaint(): void {
+    if (this.shuttingDown) return
+    const renderer = this.renderer as unknown as { forceFullRepaintRequested?: boolean }
+    renderer.forceFullRepaintRequested = true
+    this.renderer.requestRender()
+  }
+
   setTheme(resolution: FxnkThemeResolution): void {
     if (this.shuttingDown) return
     this.theme = resolution

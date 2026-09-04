@@ -187,6 +187,7 @@ async function runRuntime(instance: Instance): Promise<void> {
       // Publish the physical clear and the atomically retinted frame together.
       process.stdout.write(beginSynchronizedResizeClear(next.theme))
       app.setTheme(next)
+      app.repaint()
     })
     themeMonitor.start()
 
@@ -219,6 +220,10 @@ async function runRuntime(instance: Instance): Promise<void> {
         Math.max(1, process.stdout.rows || createdRenderer.height),
       )
       process.stdout.write(beginSynchronizedResizeClear(theme?.theme ?? "dark"))
+      // OpenTUI renders by diffing against what it believes is on screen, and
+      // this clear went out behind its back. Without a forced repaint a
+      // same-size resize leaves the cleared stage standing.
+      app.repaint()
     }
     process.stdout.on("resize", resizeHandler)
     createdRenderer.start()

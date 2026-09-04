@@ -8,9 +8,14 @@ import type { LayoutNode, PaneGeometry, Stage } from "./protocol.ts"
  * Fitting rule: a container's sized children keep their sizes while they
  * fit and every remainder child keeps its `min`; when they do not fit, sized
  * children are squeezed from the last to the first down to their `min`, then
- * remainder children from the last to the first down to nothing. Remainder
- * children share what is left equally, the first ones taking the odd cells.
- * A child squeezed to nothing is not drawn and its divider goes with it.
+ * children are dropped from the last until what remains fits — by position,
+ * whatever their kind, so a trailing fixed child goes before a leading
+ * elastic one. Remainder children share what is left equally, the first ones
+ * taking the odd cells.
+ *
+ * A container's own floor is whatever its subtree needs, so a container is
+ * never handed fewer cells than it can draw in: a band of the stage that
+ * nothing could appear in is worse than one Pane fewer.
  */
 
 export type Rect = { x: number; y: number; cols: number; rows: number }
@@ -53,12 +58,18 @@ function place(node: LayoutNode, path: string, rect: Rect, fitted: FittedLayout)
   }
   const axis: Axis = "row" in node ? "row" : "column"
   const length = axis === "row" ? rect.cols : rect.rows
-  const lengths = fitLengths(children, length)
+  const lengths = fitLengths(children, length, axis)
   let cursor = axis === "row" ? rect.x : rect.y
   let drawn = 0
   for (const [index, child] of children.entries()) {
     const size = lengths[index]!
-    if (size === 0) continue
+    const childPath = path === "" ? String(index) : `${path}/${index}`
+    if (size === 0) {
+      // A Pane the fit squeezed out is still a Pane the caller wrote, and the
+      // contract reports it at zero rather than dropping it from the list.
+      collapse(child, childPath, axis === "row" ? { ...rect, x: cursor, cols: 0 } : { ...rect, y: cursor, rows: 0 }, fitted)
+      continue
+    }
     if (drawn > 0) {
       fitted.dividers.push({
         id: `${path}:${index - 1}`,
@@ -69,9 +80,21 @@ function place(node: LayoutNode, path: string, rect: Rect, fitted: FittedLayout)
     }
     const childRect: Rect =
       axis === "row" ? { x: cursor, y: rect.y, cols: size, rows: rect.rows } : { x: rect.x, y: cursor, cols: rect.cols, rows: size }
-    place(child, path === "" ? String(index) : `${path}/${index}`, childRect, fitted)
+    place(child, childPath, childRect, fitted)
     cursor += size
     drawn += 1
+  }
+}
+
+/** Report a squeezed-out subtree's leaves at zero, in tree order. */
+function collapse(node: LayoutNode, path: string, rect: Rect, fitted: FittedLayout): void {
+  const children = containerChildren(node)
+  if (children === null) {
+    fitted.leaves.push({ path, node, rect: { ...rect, cols: 0, rows: 0 } })
+    return
+  }
+  for (const [index, child] of children.entries()) {
+    collapse(child, path === "" ? String(index) : `${path}/${index}`, rect, fitted)
   }
 }
 
@@ -81,11 +104,29 @@ function containerChildren(node: LayoutNode): LayoutNode[] | null {
   return null
 }
 
+/**
+ * The smallest length a node can be drawn in along `axis`. A leaf answers its
+ * own `min`; a container answers what its children need, which is their sum
+ * plus dividers along its own axis and their largest across it.
+ */
+export function requiredLength(node: LayoutNode, axis: Axis): number {
+  const declared = Math.max(1, node.min ?? 1)
+  const children = containerChildren(node)
+  if (children === null) return declared
+  const own: Axis = "row" in node ? "row" : "column"
+  const parts = children.map((child) => requiredLength(child, axis))
+  const needed =
+    own === axis
+      ? parts.reduce((sum, value) => sum + value, 0) + DIVIDER * (children.length - 1)
+      : Math.max(...parts)
+  return Math.max(declared, needed)
+}
+
 /** How long each child is along the container's axis; 0 is squeezed out. */
-export function fitLengths(children: readonly LayoutNode[], length: number): number[] {
+export function fitLengths(children: readonly LayoutNode[], length: number, axis: Axis = "row"): number[] {
   const count = children.length
   const sized = children.map((child) => child.size !== undefined)
-  const mins = children.map((child) => Math.max(1, child.min ?? 1))
+  const mins = children.map((child) => requiredLength(child, axis))
   const wants = children.map((child, index) => (sized[index] ? Math.max(child.size!, mins[index]!) : mins[index]!))
   // Try to keep every child; give up children from the last one when even
   // their minimums and dividers cannot fit.
@@ -113,7 +154,7 @@ function fitKept(wants: number[], mins: number[], sized: boolean[], available: n
   if (need > available) return null
   const remainder = lengths.map((_, index) => !sized[index])
   const remainderCount = remainder.filter(Boolean).length
-  let leftover = available - need
+  const leftover = available - need
   if (remainderCount > 0) {
     const share = Math.floor(leftover / remainderCount)
     let extra = leftover - share * remainderCount
@@ -131,14 +172,22 @@ function fitKept(wants: number[], mins: number[], sized: boolean[], available: n
 
 /** Fitted leaves as the API reports them. */
 export function paneGeometries(fitted: FittedLayout, focus: string | null): PaneGeometry[] {
-  return fitted.leaves.map((leaf) => ({
+  // A tree may name one Session twice, and only one Pane can hold the
+  // keyboard: the last drawn one, which is the one `Stage.draw` leaves the
+  // renderable at.
+  const drawnFocus = fitted.leaves.reduce(
+    (last, leaf, index) =>
+      "session" in leaf.node && leaf.node.session === focus && leaf.rect.cols > 0 && leaf.rect.rows > 0 ? index : last,
+    -1,
+  )
+  return fitted.leaves.map((leaf, index) => ({
     session: "session" in leaf.node ? leaf.node.session : null,
     text: "text" in leaf.node ? leaf.node.text : null,
     x: leaf.rect.x,
     y: leaf.rect.y,
     cols: leaf.rect.cols,
     rows: leaf.rect.rows,
-    focused: "session" in leaf.node && leaf.node.session === focus,
+    focused: index === drawnFocus,
   }))
 }
 
@@ -154,10 +203,17 @@ export function layoutSessions(root: LayoutNode | null): string[] {
 }
 
 /**
- * A divider drag: move the boundary after `index` in the container at
- * `containerPath` by `delta` cells. The sized child beside the divider
- * changes — the one before it, or the one after — and neither side may drop
- * below its minimum. Two remainder children have no size to change.
+ * A divider drag: put the boundary after `index` in the container at
+ * `containerPath` `delta` cells from where it is.
+ *
+ * A drag changes only the two children the boundary lies between. Changing
+ * one of them by `delta` is not the same as moving the boundary by `delta`,
+ * because a remainder sibling absorbs from the same pool: adjust the child
+ * before the divider while a remainder also precedes it and the boundary
+ * stays put while a different one walks the other way. So each way of
+ * spending the drag is measured against the real fit, and the one that lands
+ * the boundary wins.
+ *
  * Returns the new tree, or null when nothing can move.
  */
 export function dragDivider(
@@ -171,45 +227,84 @@ export function dragDivider(
   const containerPath = dividerId.slice(0, separator)
   const index = Number(dividerId.slice(separator + 1))
   if (!Number.isInteger(index) || index < 0) return null
-  const copy = cloneNode(root)
-  const container = nodeAt(copy, containerPath)
+  const container = nodeAt(root, containerPath)
   const children = container ? containerChildren(container) : null
   if (!children || index + 1 >= children.length) return null
+  if (delta === 0) return null
 
-  const before = children[index]!
-  const after = children[index + 1]!
-  const fitted = fitLayout(copy, stage)
   const axis: Axis = container && "row" in container ? "row" : "column"
-  const extent = (child: LayoutNode, childPath: string): number => {
-    const own = fitted.leaves.find((leaf) => leaf.path === childPath || leaf.path.startsWith(`${childPath}/`))
-    if (!own) return 0
-    // A container's extent along the axis is the union of its leaves.
-    const leaves = fitted.leaves.filter((leaf) => leaf.path === childPath || leaf.path.startsWith(`${childPath}/`))
-    const start = Math.min(...leaves.map((leaf) => (axis === "row" ? leaf.rect.x : leaf.rect.y)))
-    const end = Math.max(...leaves.map((leaf) => (axis === "row" ? leaf.rect.x + leaf.rect.cols : leaf.rect.y + leaf.rect.rows)))
-    return child === undefined ? 0 : end - start
-  }
-  const beforePath = containerPath === "" ? String(index) : `${containerPath}/${index}`
-  const afterPath = containerPath === "" ? String(index + 1) : `${containerPath}/${index + 1}`
-  const beforeLength = extent(before, beforePath)
-  const afterLength = extent(after, afterPath)
-  const beforeMin = Math.max(1, before.min ?? 1)
-  const afterMin = Math.max(1, after.min ?? 1)
-  const pair = beforeLength + afterLength
+  const from = boundaryOf(root, dividerId, axis, stage)
+  if (from === null) return null
+  const target = from + delta
 
-  if (before.size !== undefined) {
-    const next = clamp(beforeLength + delta, beforeMin, Math.max(beforeMin, pair - afterMin))
-    if (next === beforeLength) return null
-    before.size = next
-    return copy
+  const fitted = fitLayout(root, stage)
+  const beforeLength = extentOf(fitted, childPathOf(containerPath, index), axis)
+  const afterLength = extentOf(fitted, childPathOf(containerPath, index + 1), axis)
+  const beforeSized = children[index]!.size !== undefined
+  const afterSized = children[index + 1]!.size !== undefined
+  const beforeFloor = requiredLength(children[index]!, axis)
+  const afterFloor = requiredLength(children[index + 1]!, axis)
+
+  const candidates: LayoutNode[] = []
+  if (beforeSized && afterSized) {
+    // Both fixed: move cells straight across, so every other child — elastic
+    // or not — keeps exactly what it had.
+    const room = Math.min(delta > 0 ? afterLength - afterFloor : beforeLength - beforeFloor, Math.abs(delta))
+    if (room > 0) {
+      const step = delta > 0 ? room : -room
+      candidates.push(
+        withSizes(root, containerPath, [
+          [index, beforeLength + step],
+          [index + 1, afterLength - step],
+        ]),
+      )
+    }
   }
-  if (after.size !== undefined) {
-    const next = clamp(afterLength - delta, afterMin, Math.max(afterMin, pair - beforeMin))
-    if (next === afterLength) return null
-    after.size = next
-    return copy
+  // Otherwise spend the drag on whichever adjacent child is fixed. Both are
+  // tried, because which one actually moves the boundary depends on where the
+  // elastic children are.
+  if (beforeSized) candidates.push(withSizes(root, containerPath, [[index, Math.max(beforeFloor, beforeLength + delta)]]))
+  if (afterSized) candidates.push(withSizes(root, containerPath, [[index + 1, Math.max(afterFloor, afterLength - delta)]]))
+  if (candidates.length === 0) return null
+
+  let best: { tree: LayoutNode; distance: number } | null = null
+  for (const candidate of candidates) {
+    const landed = boundaryOf(candidate, dividerId, axis, stage)
+    if (landed === null || landed === from) continue
+    const distance = Math.abs(landed - target)
+    if (best === null || distance < best.distance) best = { tree: candidate, distance }
+    if (distance === 0) break
   }
-  return null
+  return best?.tree ?? null
+}
+
+/** Where a divider sits along its axis in a given tree, or null when it is not drawn. */
+function boundaryOf(root: LayoutNode, dividerId: string, axis: Axis, stage: Stage): number | null {
+  const divider = fitLayout(root, stage).dividers.find((candidate) => candidate.id === dividerId)
+  if (!divider) return null
+  return axis === "row" ? divider.rect.x : divider.rect.y
+}
+
+/** How much of the axis a child occupies, including anything nested in it. */
+function extentOf(fitted: FittedLayout, path: string, axis: Axis): number {
+  const leaves = fitted.leaves.filter(
+    (leaf) => (leaf.path === path || leaf.path.startsWith(`${path}/`)) && leaf.rect.cols > 0 && leaf.rect.rows > 0,
+  )
+  if (leaves.length === 0) return 0
+  const start = Math.min(...leaves.map((leaf) => (axis === "row" ? leaf.rect.x : leaf.rect.y)))
+  const end = Math.max(...leaves.map((leaf) => (axis === "row" ? leaf.rect.x + leaf.rect.cols : leaf.rect.y + leaf.rect.rows)))
+  return end - start
+}
+
+function childPathOf(containerPath: string, index: number): string {
+  return containerPath === "" ? String(index) : `${containerPath}/${index}`
+}
+
+function withSizes(root: LayoutNode, containerPath: string, sizes: [number, number][]): LayoutNode {
+  const copy = cloneNode(root)
+  const children = containerChildren(nodeAt(copy, containerPath)!)!
+  for (const [index, size] of sizes) children[index] = { ...children[index]!, size: Math.max(1, size) }
+  return copy
 }
 
 function nodeAt(root: LayoutNode, path: string): LayoutNode | null {
@@ -228,8 +323,4 @@ function cloneNode(node: LayoutNode): LayoutNode {
   if ("row" in node) return { ...node, row: node.row.map(cloneNode) }
   if ("column" in node) return { ...node, column: node.column.map(cloneNode) }
   return { ...node }
-}
-
-function clamp(value: number, low: number, high: number): number {
-  return Math.max(low, Math.min(high, value))
 }

@@ -201,6 +201,56 @@ test("a stale apply is refused so a human's drag is never clobbered", async () =
   }
 })
 
+test("a drag in flight re-baselines on an apply rather than reverting it", async () => {
+  const stage = await harness(["a", "b"])
+  try {
+    stage.stage.apply({ row: [{ session: "a", size: 20 }, { session: "b" }] }, "a")
+    const divider = { id: ":0", axis: "row" as const, rect: { x: 20, y: 0, cols: 1, rows: 30 } }
+    const event = (x: number) => ({ x, y: 0, preventDefault: () => {}, stopPropagation: () => {} })
+
+    // The human grabs the divider.
+    ;(stage.stage as never as { beginDrag(id: string, event: unknown): void }).beginDrag(":0", event(20))
+
+    // A caller applies a different Layout mid-gesture, and is told it worked.
+    const applied = stage.stage.apply({ row: [{ session: "b", size: 40 }, { session: "a" }] }, "b")
+    expect(applied.root).toEqual({ row: [{ session: "b", size: 40 }, { session: "a" }] })
+
+    // The next drag event must not put the old tree back.
+    ;(stage.stage as never as { continueDrag(divider: unknown, event: unknown): void }).continueDrag(divider, event(25))
+    const after = stage.stage.view
+    expect((after.root as { row: { session?: string }[] }).row[0]!.session).toBe("b")
+    expect(after.focus).toBe("b")
+  } finally {
+    stage.close()
+  }
+})
+
+test("a Layout that cannot be drawn is not the one the Stage keeps", async () => {
+  const stage = await harness(["a"])
+  try {
+    const good = stage.stage.apply({ session: "a" }, "a")
+    const panes = stage.terminals.get("a")!
+    // Make the next draw throw the way a renderer failure would.
+    const original = panes.captureScreen.bind(panes)
+    Object.defineProperty(panes, "visible", {
+      set() {
+        throw new Error("renderer is gone")
+      },
+      get() {
+        return true
+      },
+      configurable: true,
+    })
+    expect(() => stage.stage.apply({ row: [{ session: "a" }, { text: "next" }] }, "a")).toThrow("renderer is gone")
+    void original
+    // The Stage still holds the tree it could draw, and its revision did not move.
+    expect(stage.stage.view.root).toEqual(good.root)
+    expect(stage.stage.view.revision).toBe(good.revision)
+  } finally {
+    stage.close()
+  }
+})
+
 test("an empty Layout leaves the stage to the terminal's own canvas", async () => {
   const stage = await harness(["tray"])
   try {
