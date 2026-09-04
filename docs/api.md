@@ -113,9 +113,13 @@ Companion, so it costs no round trip and works for a Session whose transport
 is currently lost. A visible-only capture is unaffected; asking for the full
 10,000 lines costs about 20 ms.
 
-Two things it cannot give you. History older than the emulator kept is gone,
-and a run of identical blank screens in the middle of history collapses,
-because pages are joined where they overlap.
+Three things it cannot give you. History older than the emulator kept is gone.
+A run of identical blank screens in the middle of history collapses, because
+pages are joined where they overlap. And a Session that has reattached, which
+happens whenever its transport drops or a Runtime restarts, is missing about
+one screenful of history per reattach: the Companion's restore clears the
+screen between replaying scrollback and redrawing the viewport, so the lines
+just above the viewport are lost. The visible screen always survives intact.
 
 ### `layout.apply`
 

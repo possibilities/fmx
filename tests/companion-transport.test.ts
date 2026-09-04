@@ -228,6 +228,76 @@ test.skipIf(!ENABLED)("a session under our name that is not ours is left alone",
   expect((await companion.inspect(identity.companionName)).state).toBe("live")
 })
 
+test.skipIf(!ENABLED)("a reattach keeps the visible screen exactly, and loses at most one screenful of history", async () => {
+  // What a Restore replays is what a Session's history can ever hold, and
+  // `session.capture`'s scrollback reads that same emulator. The Companion's
+  // restore serializer clears the visible screen between the scrollback pass
+  // and the viewport, which costs the screenful just above the viewport;
+  // measured at the pinned build as exactly `rows` lines. Asserting a bound
+  // rather than the number means a Companion that fixes it still passes.
+  const { createTestRenderer } = await import("@opentui/core/testing")
+  const { PaneTerminalRenderable } = await import("../src/pane-terminal.ts")
+  const identity = sessionIdentity(INSTANCE, "nine")
+  const rows = 8
+  const cols = 40
+  const setup = await createTestRenderer({ width: 60, height: 12 })
+  const pane = (id: string) => {
+    const terminal = new PaneTerminalRenderable(setup.renderer, {
+      id,
+      cols,
+      rows,
+      position: "absolute",
+      left: 0,
+      top: 0,
+      width: cols,
+      height: rows,
+      visible: true,
+      maxScrollback: 10_000_000,
+    })
+    setup.renderer.root.add(terminal)
+    return terminal
+  }
+  const feed = (terminal: InstanceType<typeof PaneTerminalRenderable>, transport: SessionTransport) =>
+    transport.bind({
+      output: (bytes) => terminal.write(bytes),
+      restoreBegin: () => terminal.write(new Uint8Array([0x1b, 0x63])),
+      ready: () => {},
+      exit: () => {},
+      lost: () => {},
+    })
+  const numbered = (terminal: InstanceType<typeof PaneTerminalRenderable>) =>
+    terminal.captureScreen(cols, rows, 400).lines.filter((line) => /^L\d+$/u.test(line))
+
+  const live = pane("live")
+  const first = await factory.start({
+    identity,
+    command: ["/bin/sh", "-c", "i=1; while [ $i -le 120 ]; do printf 'L%s\\r\\n' $i; i=$((i+1)); done; cat"],
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm" },
+    size: { cols, rows },
+  })
+  feed(live, first)
+  await waitFor(() => numbered(live).includes("L120"))
+  const before = numbered(live)
+  const visibleBefore = live.captureScreen(cols, rows).lines
+  first.detach()
+
+  const rejoined = pane("rejoined")
+  const second = await factory.attach(identity, { cols, rows })
+  feed(rejoined, second)
+  await waitFor(() => numbered(rejoined).includes("L120"))
+  const after = numbered(rejoined)
+  const lost = before.filter((line) => !after.includes(line))
+
+  // The viewport itself always survives; a consumer reading the screen is safe.
+  expect(rejoined.captureScreen(cols, rows).lines).toEqual(visibleBefore)
+  expect(lost.length).toBeLessThanOrEqual(rows)
+  // Whatever is kept is still in order, with nothing duplicated at the seam.
+  expect(after).toEqual([...new Set(after)])
+  second.detach()
+  setup.renderer.destroy()
+}, 30_000)
+
 test("a create that may have started anyway is unreachable, not a failure", async () => {
   const identity = sessionIdentity(INSTANCE, "seven")
   const timedOut = new CompanionTransportFactory(

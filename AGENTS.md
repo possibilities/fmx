@@ -51,6 +51,13 @@
   a visible-only capture is 0.4 ms and the full 10,000 lines is 19 ms. The
   Companion's `History` frame would serialize its whole pagelist per call and
   need a fork change to bound, which is why fmx does not use it.
+- A Restore costs about one screenful of history, measured exactly `rows` at
+  the current pin: the Companion clears the screen between replaying
+  scrollback and redrawing the viewport, so the lines just above the viewport
+  go. The viewport itself always survives. It bounds what `session.capture`
+  can ever read back for a Session that has reattached, and
+  `tests/companion-transport.test.ts` asserts the bound rather than the
+  number so a Companion that fixes it still passes.
 - Reading history scrolls the viewport and puts it back **in the same
   synchronous turn**. Nothing may await in between: the render loop cannot
   preempt a synchronous function, which is the only reason a frame can never
