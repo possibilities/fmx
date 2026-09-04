@@ -281,6 +281,9 @@ test.skipIf(!ENABLED)("a reattach keeps the visible screen exactly, and loses at
   const before = numbered(live)
   const visibleBefore = live.captureScreen(cols, rows).lines
   first.detach()
+  // The daemon releases a client after the detach reaches it, so reattaching
+  // before that races its teardown.
+  await waitFor(async () => (await companion.inspect(identity.companionName)).clients === 0)
 
   const rejoined = pane("rejoined")
   const second = await factory.attach(identity, { cols, rows })
