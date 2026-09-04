@@ -262,7 +262,7 @@ export class FrameReader {
     if (this.head === this.tail) {
       this.head = this.tail = 0
       // One restore-sized frame would otherwise hold its buffer for the life
-      // of the connection, and there is one connection per Agent.
+      // of the connection, and there is one connection per Session.
       if (this.buffer.byteLength > INITIAL_BUFFER_BYTES) this.buffer = new Uint8Array(INITIAL_BUFFER_BYTES)
     }
     return { tag, payload }
