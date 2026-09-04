@@ -1,6 +1,6 @@
 import { StdinParser, type StdinEvent, type KeyEvent } from "@opentui/core"
-import { writeFile } from "node:fs/promises"
 import { CompanionConnection, type CloseReason } from "./companion-client.ts"
+import { colorFgBgIsLight, type FxnkTheme, parseOsc11Response, themeModeReport } from "./host-palette.ts"
 import { keyMatchesCombo, type Keybindings } from "./keybindings.ts"
 import { Tag, type Resize } from "./zmx-protocol.ts"
 
@@ -21,9 +21,11 @@ const TERMINAL_CLEANUP = [
 
 const MODIFIER_ONLY_KEYS = new Set(["shift", "control", "ctrl", "alt", "meta", "option", "super", "hyper"])
 
+/** How long this terminal is given to answer the one OSC 11 background query. */
+export const THEME_SAMPLE_TIMEOUT_MS = 200
+
 export type TerminalClientOptions = {
   socketPath: string
-  bootstrapPath: string
   keybindings: Keybindings
   stdin?: NodeJS.ReadStream
   stdout?: NodeJS.WriteStream
@@ -121,19 +123,24 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
     finish({ exitCode: 1, error: closeError(reason) })
   })
 
+  let theme: FxnkTheme | null = null
   const ready = Promise.withResolvers<void>()
   let readyHandled = false
   connection.onReady(() => {
     outputRelay.ready()
     if (readyHandled) return
     readyHandled = true
-    void writeFile(options.bootstrapPath, "", { mode: 0o600 })
-      .then(() => ready.resolve())
-      .catch((error) => ready.reject(error))
+    // The Runtime is headless until a terminal arrives, so it cannot ask this
+    // terminal what its background is. Tell it the way a terminal would: the
+    // notification its live-theme path already listens for, after which the
+    // Runtime samples OSC 11 through this Client itself.
+    if (theme && !connection.isClosed) connection.write(themeModeReport(theme))
+    ready.resolve()
   })
 
   try {
     stdin.setRawMode?.(true)
+    theme = await sampleTerminalTheme(stdin, stdout)
     inputFilter = new ClientInputFilter(
       options.keybindings,
       (bytes) => {
@@ -288,6 +295,51 @@ function terminalSize(stdout: NodeJS.WriteStream): Resize {
 
 function clampDimension(value: number | undefined): number {
   return Math.max(1, Math.min(0xffff, value || 1))
+}
+
+/**
+ * Ask this terminal for its background before any relaying begins, so the
+ * reply cannot race the Runtime's byte stream. `FMX_THEME` fixes it without
+ * a query, exactly as it fixes the Runtime's.
+ */
+async function sampleTerminalTheme(
+  stdin: NodeJS.ReadStream,
+  stdout: NodeJS.WriteStream,
+  env: NodeJS.ProcessEnv = process.env,
+  timeoutMs = THEME_SAMPLE_TIMEOUT_MS,
+): Promise<FxnkTheme | null> {
+  const override = env.FMX_THEME?.toLowerCase()
+  if (override === "light" || override === "dark") return override
+  if (!stdin.isTTY || !stdout.isTTY) return null
+
+  const { promise, resolve } = Promise.withResolvers<FxnkTheme | null>()
+  let buffer = ""
+  let settled = false
+  const finish = (theme: FxnkTheme | null): void => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    stdin.off("data", onData)
+    resolve(theme)
+  }
+  const onData = (chunk: Buffer): void => {
+    buffer = (buffer + chunk.toString("latin1")).slice(-256)
+    const start = buffer.lastIndexOf("\x1b]11;")
+    if (start === -1) return
+    const parsed = parseOsc11Response(buffer.slice(start))
+    if (parsed) finish(parsed.light ? "light" : "dark")
+  }
+  const timer = setTimeout(() => finish(colorFgBgIsLight(env.COLORFGBG) ? "light" : null), Math.max(0, timeoutMs))
+  stdin.on("data", onData)
+  stdin.resume()
+  try {
+    stdout.write("\x1b]11;?\x1b\\")
+  } catch {
+    finish(null)
+  }
+  const theme = await promise
+  stdin.pause()
+  return theme
 }
 
 function closeError(reason: CloseReason): Error {

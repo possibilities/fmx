@@ -1,66 +1,29 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import packageMetadata from "../package.json" with { type: "json" }
-import { parseArgs, usage, VERSION } from "../src/cli.ts"
+import { COMMANDS, parseArgs, usage, VERSION } from "../src/cli.ts"
 
 describe("parseArgs", () => {
-  test("keeps the fmx executable to the TUI and installation diagnostics", () => {
-    expect(parseArgs([])).toEqual({
-      help: false,
-      version: false,
-      doctor: false,
-      name: null,
-      agentPicker: false,
-      hideSingleAgentPicker: false,
-    })
-    expect(parseArgs(["doctor"])).toEqual({
-      help: false,
-      version: false,
-      doctor: true,
-      name: null,
-      agentPicker: false,
-      hideSingleAgentPicker: false,
-    })
+  test("keeps the executable to start, stop, attach, and reporting", () => {
+    expect(parseArgs([])).toEqual({ help: false, version: false, command: null, name: "default" })
+    expect(parseArgs(["start"]).command).toBe("start")
+    expect(parseArgs(["attach"]).command).toBe("attach")
+    expect(parseArgs(["stop"]).command).toBe("stop")
+    expect(parseArgs(["status"]).command).toBe("status")
+    expect(parseArgs(["api"]).command).toBe("api")
+    expect(parseArgs(["doctor"]).command).toBe("doctor")
     expect(parseArgs(["-h"]).help).toBe(true)
     expect(parseArgs(["--version"]).version).toBe(true)
     expect(VERSION).toBe(packageMetadata.version)
-    expect(packageMetadata.bin).toEqual({
-      fmx: "./src/index.ts",
-      "fmx-mcp": "./src/mcp.ts",
-    })
+    expect(packageMetadata.bin).toEqual({ fmx: "./src/index.ts" })
   })
 
-  test("selects one independent fmx Session", () => {
-    expect(parseArgs(["--name", "foo"])).toMatchObject({ name: "foo", agentPicker: false })
-    expect(parseArgs(["--name=work_2", "doctor"])).toMatchObject({ doctor: true, name: "work_2" })
-    expect(parseArgs(["doctor", "--name", "foo-bar"]).name).toBe("foo-bar")
-    expect(parseArgs(["--name", "default"]).name).toBeNull()
+  test("selects one independent Instance", () => {
+    expect(parseArgs(["--name", "foo"])).toMatchObject({ name: "foo", command: null })
+    expect(parseArgs(["--name=work_2", "status"])).toMatchObject({ command: "status", name: "work_2" })
+    expect(parseArgs(["start", "--name", "foo-bar"]).name).toBe("foo-bar")
+    expect(parseArgs(["--name", "default"]).name).toBe("default")
     expect(usage()).toContain("--name NAME")
-    expect(usage()).toContain("select an independent fmx Session")
-  })
-
-  test("selects the alternate top Agent picker", () => {
-    expect(parseArgs(["--agent-picker"])).toMatchObject({ agentPicker: true, name: null })
-    expect(parseArgs(["--name", "review", "--agent-picker"])).toMatchObject({
-      agentPicker: true,
-      name: "review",
-    })
-    expect(usage()).toContain("--agent-picker")
-    expect(usage()).toContain("use the top Agent picker instead of the Tray")
-  })
-
-  test("optionally hides an otherwise redundant single-Agent picker", () => {
-    expect(parseArgs(["--hide-single-agent-picker", "--agent-picker"])).toMatchObject({
-      agentPicker: true,
-      hideSingleAgentPicker: true,
-    })
-    expect(() => parseArgs(["--hide-single-agent-picker"])).toThrow(
-      "--hide-single-agent-picker requires --agent-picker",
-    )
-    expect(usage()).toContain("--hide-single-agent-picker")
-    expect(usage()).toContain("hide the Agent picker while only one Agent runs")
+    expect(usage()).toContain("select an independent Instance")
   })
 
   test("rejects missing, repeated, and unsafe names as usage errors", () => {
@@ -68,98 +31,27 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--name="])).toThrow("--name requires a value")
     expect(() => parseArgs(["--name", "foo", "--name", "bar"])).toThrow("only once")
     for (const invalid of ["A", "2fast", "has.dot", "has/slash", `a${"b".repeat(32)}`]) {
-      expect(() => parseArgs(["--name", invalid])).toThrow("invalid fmx Session name")
+      expect(() => parseArgs(["--name", invalid])).toThrow("invalid Instance name")
     }
   })
 
-  test("has no automation or socket subcommands", () => {
-    expect(() => parseArgs(["control", "orient"])).toThrow("unknown command: control")
-    expect(() => parseArgs(["bus"])).toThrow("unknown command: bus")
-    expect(() => parseArgs(["--socket", "/tmp/fmx.bus"])).toThrow("unknown option: --socket")
-    expect(() => parseArgs(["doctor", "now"])).toThrow("unexpected argument: now")
-    expect(() => parseArgs(["--record"])).toThrow("unknown option: --record")
-    expect(usage()).toContain("fmx-mcp")
-    expect(usage()).not.toContain("fmx control")
-  })
-})
-
-test.skipIf(typeof Bun.Terminal !== "function")("the TUI exits 1 with the config line when no project roots are configured", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-no-roots-"))
-  const path = join(directory, "config.toml")
-  let output = ""
-  const decoder = new TextDecoder()
-  const child = Bun.spawn([process.execPath, "src/index.ts"], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: {
-      ...process.env,
-      FMX_CONFIG_PATH: path,
-      FMX_FX_PATH: join(directory, "missing-fx"),
-    },
-    terminal: {
-      cols: 80,
-      rows: 24,
-      data: (_terminal, bytes) => {
-        output += decoder.decode(bytes, { stream: true })
-      },
-    },
+  test("has no verb for anything the API owns", () => {
+    for (const verb of ["session", "layout", "focus", "kill", "new", "capture", "send-keys"]) {
+      expect(() => parseArgs([verb])).toThrow(`unknown command: ${verb}`)
+    }
+    expect(() => parseArgs(["--socket", "/tmp/fmx.api"])).toThrow("unknown option: --socket")
+    expect(() => parseArgs(["status", "now"])).toThrow("unexpected argument: now")
+    expect(() => parseArgs(["--agent-picker"])).toThrow("unknown option: --agent-picker")
   })
 
-  try {
-    expect(await child.exited).toBe(1)
-    expect(output).toContain(`fmx: no project roots configured; add project_roots = ["~/code"] to ${path}`)
-    expect(output).not.toContain("missing-fx")
-    expect(output.startsWith("\x1b[?25l")).toBe(true)
-    expect(output.indexOf("\x1b[?25h")).toBeGreaterThan(output.indexOf("\x1b[?25l"))
-  } finally {
-    child.terminal?.close()
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test.skipIf(typeof Bun.Terminal !== "function")("a signal during concealed Client preflight restores the cursor", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-preflight-signal-"))
-  const path = join(directory, "config.toml")
-  expect(await Bun.spawn(["mkfifo", path], { stdout: "ignore", stderr: "ignore" }).exited).toBe(0)
-  let output = ""
-  const decoder = new TextDecoder()
-  const concealed = Promise.withResolvers<void>()
-  const child = Bun.spawn([process.execPath, "src/index.ts"], {
-    cwd: new URL("..", import.meta.url).pathname,
-    env: { ...process.env, FMX_CONFIG_PATH: path },
-    terminal: {
-      cols: 80,
-      rows: 24,
-      data: (_terminal, bytes) => {
-        output += decoder.decode(bytes, { stream: true })
-        if (output.includes("\x1b[?25l")) concealed.resolve()
-      },
-    },
+  test("keeps the hidden runtime verb out of the usage text", () => {
+    expect(COMMANDS).toContain("runtime")
+    expect(parseArgs(["runtime"]).command).toBe("runtime")
+    expect(usage()).not.toContain("runtime ")
   })
 
-  try {
-    await withTimeout(concealed.promise, 2_000, "Client did not conceal during preflight")
-    child.kill("SIGTERM")
-    expect(await withTimeout(child.exited, 2_000, "Client did not terminate after SIGTERM")).toBe(143)
-    const conceal = output.indexOf("\x1b[?25l")
-    expect(conceal).toBeGreaterThanOrEqual(0)
-    expect(output.indexOf("\x1b[?25h", conceal)).toBeGreaterThan(conceal)
-  } finally {
-    if (child.exitCode === null) child.kill("SIGKILL")
-    child.terminal?.close()
-    await rm(directory, { recursive: true, force: true })
-  }
+  test("names the one chord fmx claims", () => {
+    expect(usage()).toContain("ctrl-b d")
+    expect(usage()).toContain("detach this terminal")
+  })
 })
-
-async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), milliseconds)
-      }),
-    ])
-  } finally {
-    if (timer !== null) clearTimeout(timer)
-  }
-}

@@ -1,252 +1,125 @@
-import { watch, type FSWatcher } from "node:fs"
-import { stat, unlink } from "node:fs/promises"
-import { basename, dirname, join } from "node:path"
-import { OWNER_LABEL } from "./agent-reconcile.ts"
 import { CompanionCreateError, type CompanionCommand, type SessionEntry } from "./zmx-command.ts"
+import { OWNER_LABEL, RUNTIME_KIND, runtimeLabels, runtimeSessionName } from "./session-identity.ts"
+import { listenerAnswers } from "./unix-socket.ts"
 
+/** Set on the Runtime child so a human reading `ps` can tell it apart. */
 export const RUNTIME_PROCESS_ENV_VAR = "FMX_RUNTIME_PROCESS"
-export const RUNTIME_BOOTSTRAP_ENV_VAR = "FMX_RUNTIME_BOOTSTRAP_PATH"
 
-const RUNTIME_SESSION_PREFIX = "fmxr"
-const RUNTIME_SESSION_KIND = "runtime"
-const BOOTSTRAP_TIMEOUT_MS = 10_000
-/** A lost or unavailable filesystem notification still gets a bounded retry. */
-const BOOTSTRAP_FALLBACK_POLL_MS = 250
-
-export type RuntimeSessionIdentity = {
-  name: string
-  labels: Record<string, string>
-  bootstrapPath: string
-}
+/** How long `fmx start` waits for a new Runtime to answer its API socket. */
+export const RUNTIME_READY_TIMEOUT_MS = 15_000
+const RUNTIME_READY_INTERVAL_MS = 25
 
 export type RuntimeSession = {
+  /** The Companion terminal socket a Client attaches to. */
   socketPath: string
-  bootstrapPath: string
+  /** False when an already-live Runtime was joined. */
+  created: boolean
 }
 
 export type RuntimeSessionRequest = {
-  homeId: string
+  instanceId: string
   cwd: string
   command: string[]
   env: Record<string, string>
-  /** An explicit preference; false accepts either view on an existing Runtime. */
-  agentPicker?: boolean
-  /** An explicit picker behavior; false accepts either behavior on an existing picker Runtime. */
-  hideSingleAgentPicker?: boolean
-}
-
-/** One deterministic Companion session is the shared fmx Runtime for a Home. */
-export function runtimeSessionIdentity(
-  homeId: string,
-  companionDirectory: string,
-  options: { agentPicker?: boolean; hideSingleAgentPicker?: boolean } = {},
-): RuntimeSessionIdentity {
-  if (options.hideSingleAgentPicker && !options.agentPicker) {
-    throw new Error("--hide-single-agent-picker requires --agent-picker")
-  }
-  const name = `${RUNTIME_SESSION_PREFIX}-${homeId}`
-  return {
-    name,
-    labels: {
-      owner: OWNER_LABEL,
-      home: homeId,
-      kind: RUNTIME_SESSION_KIND,
-      ...(options.agentPicker ? { view: "agent-picker" } : {}),
-      ...(options.hideSingleAgentPicker ? { picker: "hide-single" } : {}),
-    },
-    bootstrapPath: join(companionDirectory, `.${name}.bootstrap`),
-  }
 }
 
 /**
- * Join the Home's live Runtime or create it. The Companion arbitrates a
+ * Join the Instance's live Runtime or create it. The Companion arbitrates a
  * simultaneous first launch: an AlreadyExists loser inspects and joins the
  * winner, while an unrelated session at the stable name is never touched.
+ *
+ * The Runtime is headless: it renders, binds its API socket, and holds its
+ * Sessions whether or not a terminal Client is attached, and it ends only on
+ * `instance.stop`, a signal, or a crash.
  */
 export async function ensureRuntimeSession(
   companion: CompanionCommand,
   request: RuntimeSessionRequest,
 ): Promise<RuntimeSession> {
-  const identity = runtimeSessionIdentity(request.homeId, companion.directory, {
-    agentPicker: request.agentPicker,
-    hideSingleAgentPicker: request.hideSingleAgentPicker,
-  })
-  let session = await companion.settle(identity.name)
-  if (session.state === "live") return attachedRuntime(identity, session)
+  const name = runtimeSessionName(request.instanceId)
+  const labels = runtimeLabels(request.instanceId)
+  let session = await companion.settle(name)
+  if (session.state === "live") return { socketPath: attachedRuntime(name, labels, session), created: false }
   if (session.state === "exited") {
-    assertOwnedRuntime(identity, session)
-    await companion.forget(identity.name)
+    assertOwnedRuntime(name, labels, session)
+    await companion.forget(name)
   } else if (session.state === "refused" || session.state === "unreachable") {
     throw new Error(`fmx Runtime is ${session.state}${session.detail ? ` (${session.detail})` : ""}`)
   }
 
-  // A marker from an earlier Runtime must never let a new child start before
-  // its first terminal has actually attached.
-  await unlink(identity.bootstrapPath).catch(() => {})
-  const runtimeEnvironment = {
-    ...request.env,
-    [RUNTIME_PROCESS_ENV_VAR]: "1",
-    [RUNTIME_BOOTSTRAP_ENV_VAR]: identity.bootstrapPath,
-  }
-
+  const environment = { ...request.env, [RUNTIME_PROCESS_ENV_VAR]: "1" }
   try {
     const created = await companion.create({
-      name: identity.name,
+      name,
       command: request.command,
       cwd: request.cwd,
-      env: runtimeEnvironment,
-      labels: identity.labels,
-      exitOnLastClient: true,
+      env: environment,
+      labels,
     })
-    return { socketPath: created.socketPath, bootstrapPath: identity.bootstrapPath }
+    return { socketPath: created.socketPath, created: true }
   } catch (error) {
     // A racing creator owns the same deterministic Runtime. A timeout also
     // may have crossed exec even though its acknowledgement did not arrive.
     if (!(error instanceof CompanionCreateError) || (error.code !== "AlreadyExists" && !error.sessionMayExist)) {
       throw error
     }
-    session = await companion.settle(identity.name)
+    session = await companion.settle(name)
     if (session.state !== "live") throw error
-    return attachedRuntime(identity, session)
+    return { socketPath: attachedRuntime(name, labels, session), created: false }
   }
 }
 
-function attachedRuntime(identity: RuntimeSessionIdentity, session: SessionEntry): RuntimeSession {
-  assertOwnedRuntime(identity, session)
-  assertCompatibleRuntimeView(identity, session)
-  if (!session.socketPath) throw new Error(`fmx Runtime ${identity.name} has no terminal socket`)
-  return { socketPath: session.socketPath, bootstrapPath: identity.bootstrapPath }
+/** The live Runtime for an Instance, or null when none answers. */
+export async function findRuntimeSession(
+  companion: CompanionCommand,
+  instanceId: string,
+): Promise<SessionEntry | null> {
+  const session = await companion.inspect(runtimeSessionName(instanceId))
+  return session.state === "live" ? session : null
 }
 
-function assertOwnedRuntime(identity: RuntimeSessionIdentity, session: SessionEntry): void {
-  const ownedLabels = { owner: OWNER_LABEL, home: identity.labels.home!, kind: RUNTIME_SESSION_KIND }
-  if (session.name !== identity.name || !Object.entries(ownedLabels).every(([key, value]) => session.labels[key] === value)) {
-    throw new Error(`Companion session ${identity.name} does not belong to this fmx Runtime`)
-  }
-}
-
-function assertCompatibleRuntimeView(identity: RuntimeSessionIdentity, session: SessionEntry): void {
-  if (identity.labels.view === "agent-picker" && session.labels.view !== "agent-picker") {
-    const requestedFlags = identity.labels.picker === "hide-single"
-      ? "--agent-picker --hide-single-agent-picker"
-      : "--agent-picker"
-    throw new Error(
-      `the live fmx Runtime is using the Tray; detach every Client, then start it again with ${requestedFlags}`,
-    )
-  }
-  if (identity.labels.picker === "hide-single" && session.labels.picker !== "hide-single") {
-    throw new Error(
-      "the live fmx Runtime keeps its Agent picker visible for one Agent; detach every Client, then start it again with --agent-picker --hide-single-agent-picker",
-    )
-  }
-}
-
-/**
- * The Runtime waits here before constructing OpenTUI. The first Client writes
- * the marker only after its terminal attach reaches Ready, so the OSC 11 theme
- * query and OpenTUI capability probes have a real host ready to answer. A failed first attach
- * cannot leave a headless Runtime behind forever.
- */
-export async function waitForRuntimeBootstrap(
+/** Wait for a Runtime to answer its API socket, so `start` returns something usable. */
+export async function waitForRuntimeApi(
   path: string,
-  timeoutMs = BOOTSTRAP_TIMEOUT_MS,
-  fallbackPollMs = BOOTSTRAP_FALLBACK_POLL_MS,
-): Promise<void> {
-  if (await consumeBootstrapMarker(path)) return
-
-  await new Promise<void>((resolve, reject) => {
-    let watcher: FSWatcher | null = null
-    let probing = false
-    let probeAgain = false
-    let finished = false
-
-    const finish = (error: Error | null): void => {
-      if (finished) return
-      finished = true
-      watcher?.close()
-      clearInterval(fallback)
-      clearTimeout(timeout)
-      if (error) reject(error)
-      else resolve()
-    }
-    const probe = async (): Promise<void> => {
-      if (finished) return
-      if (probing) {
-        probeAgain = true
-        return
-      }
-      probing = true
-      do {
-        probeAgain = false
-        if (await consumeBootstrapMarker(path)) {
-          finish(null)
-          return
-        }
-      } while (probeAgain && !finished)
-      probing = false
-    }
-
-    const fallback = setInterval(() => void probe(), Math.max(1, fallbackPollMs))
-    const timeout = setTimeout(() => {
-      // A marker arriving on the timeout boundary wins over the diagnostic.
-      void consumeBootstrapMarker(path).then((ready) => {
-        finish(ready ? null : new Error("the first terminal Client did not attach to the fmx Runtime"))
-      })
-    }, timeoutMs)
-
-    try {
-      const markerName = basename(path)
-      watcher = watch(dirname(path), { persistent: false }, (_event, filename) => {
-        if (filename === null || filename.toString() === markerName) void probe()
-      })
-      watcher.on("error", () => {
-        watcher?.close()
-        watcher = null
-      })
-    } catch {
-      // Some filesystems cannot be watched. The slow safety probe remains.
-    }
-
-    // Close the race between the first check and installing the watcher.
-    void probe()
-  })
+  timeoutMs = RUNTIME_READY_TIMEOUT_MS,
+  intervalMs = RUNTIME_READY_INTERVAL_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (await listenerAnswers(path)) return true
+    if (Date.now() >= deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
 }
 
-async function consumeBootstrapMarker(path: string): Promise<boolean> {
-  try {
-    if (!(await stat(path)).isFile()) return false
-    await unlink(path).catch(() => {})
-    return true
-  } catch {
-    return false
-  }
+function attachedRuntime(name: string, labels: Record<string, string>, session: SessionEntry): string {
+  assertOwnedRuntime(name, labels, session)
+  if (!session.socketPath) throw new Error(`fmx Runtime ${name} has no terminal socket`)
+  return session.socketPath
+}
+
+function assertOwnedRuntime(name: string, labels: Record<string, string>, session: SessionEntry): void {
+  const owned =
+    session.name === name &&
+    session.labels.owner === OWNER_LABEL &&
+    session.labels.instance === labels.instance &&
+    session.labels.kind === RUNTIME_KIND
+  if (!owned) throw new Error(`Companion session ${name} does not belong to this fmx Runtime`)
 }
 
 /** argv for this same fmx, whether it is a Bun source checkout or one binary. */
 export type RuntimeCommandOptions = {
   executable?: string
   main?: string
-  /** null leaves the default Runtime argv byte-for-byte unchanged. */
+  /** Omitted or `default` leaves the default Runtime argv unchanged. */
   name?: string | null
-  /** false leaves the default Runtime argv byte-for-byte unchanged. */
-  agentPicker?: boolean
-  /** Valid only with agentPicker; false leaves picker Runtime argv unchanged. */
-  hideSingleAgentPicker?: boolean
 }
 
 export function currentRuntimeCommand(options: RuntimeCommandOptions = {}): string[] {
-  if (options.hideSingleAgentPicker && !options.agentPicker) {
-    throw new Error("--hide-single-agent-picker requires --agent-picker")
-  }
   const executable = options.executable ?? process.execPath
   const main = options.main ?? Bun.main
   const command = main.startsWith("/$bunfs/") ? [executable] : [executable, main]
-  if (options.name) command.push("--name", options.name)
-  if (options.agentPicker) command.push("--agent-picker")
-  if (options.hideSingleAgentPicker) command.push("--hide-single-agent-picker")
+  command.push("runtime")
+  if (options.name && options.name !== "default") command.push("--name", options.name)
   return command
-}
-
-export function isRuntimeProcess(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[RUNTIME_PROCESS_ENV_VAR] === "1"
 }

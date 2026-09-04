@@ -4,30 +4,20 @@ type BindingConfig = string | string[]
 
 type KeysConfig = {
   prefix: string
-  help: BindingConfig
   detach: BindingConfig
-  previous_tab: BindingConfig
-  next_tab: BindingConfig
-  toggle_tray: BindingConfig
 }
 
+/**
+ * fmx claims exactly one chord. The prefix is a latch the thin Client holds
+ * until the next key proves it is not Detach; every other key, the prefix
+ * included, reaches the focused Session unchanged.
+ */
 const DEFAULT_KEYS_CONFIG: Readonly<KeysConfig> = {
   prefix: "ctrl+b",
-  help: "prefix+?",
   detach: "prefix+d",
-  previous_tab: "prefix+p",
-  next_tab: "prefix+n",
-  toggle_tray: "prefix+b",
 }
 
-const KEY_CONFIG_FIELDS = [
-  "prefix",
-  "help",
-  "detach",
-  "previous_tab",
-  "next_tab",
-  "toggle_tray",
-] as const
+const KEY_CONFIG_FIELDS = ["prefix", "detach"] as const
 
 export type KeyActionName = Exclude<(typeof KEY_CONFIG_FIELDS)[number], "prefix">
 type BindingTrigger = "direct" | "prefix"
@@ -53,14 +43,8 @@ export type ResolvedBinding = {
 export type Keybindings = {
   prefix: KeyCombo
   prefixLabel: string
-  help: ResolvedBinding[]
   detach: ResolvedBinding[]
-  previous_tab: ResolvedBinding[]
-  next_tab: ResolvedBinding[]
-  toggle_tray: ResolvedBinding[]
 }
-
-export type KeyAction = { name: KeyActionName }
 
 type ResolvedKeybindings = {
   keybindings: Keybindings
@@ -70,10 +54,8 @@ type ResolvedKeybindings = {
 type BindingSource = "default" | "user"
 type RegisteredBinding = { field: string; source: BindingSource }
 
-/** Every action a key can run, and therefore every row the help lists. */
-export const ACTION_FIELDS = KEY_CONFIG_FIELDS.filter(
-  (field): field is KeyActionName => field !== "prefix",
-)
+/** Every action a key can run. */
+const ACTION_FIELDS = KEY_CONFIG_FIELDS.filter((field): field is KeyActionName => field !== "prefix")
 const EMPTY_MODIFIERS: KeyModifiers = {
   ctrl: false,
   alt: false,
@@ -137,8 +119,6 @@ const SHIFTED_CHARACTERS: Readonly<Record<string, string>> = {
   "`": "~",
 }
 
-const CANCEL_COMBO = parseKeyCombo("ctrl+c")!
-
 export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
   const diagnostics: string[] = []
   const configured = isRecord(rawKeys) ? rawKeys : {}
@@ -167,11 +147,7 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
   const keybindings: Keybindings = {
     prefix,
     prefixLabel: formatKeyCombo(prefix),
-    help: [],
     detach: [],
-    previous_tab: [],
-    next_tab: [],
-    toggle_tray: [],
   }
 
   const registry = new Map<string, RegisteredBinding>()
@@ -203,15 +179,6 @@ export function resolveKeybindings(rawKeys?: unknown): ResolvedKeybindings {
   return { keybindings, diagnostics }
 }
 
-/**
- * ctrl+c leaves any fmx surface drawn over fx. It is fixed rather than
- * configurable, and paired with escape everywhere: a surface a human cannot
- * get out of is worse than one whose exit they had to guess at once.
- */
-export function isCancelKey(key: KeyEvent): boolean {
-  return keyMatchesCombo(key, CANCEL_COMBO)
-}
-
 export function keyMatchesCombo(key: KeyEvent, expected: KeyCombo): boolean {
   const actualModifiers = eventModifiers(key)
   const candidates = eventKeyCandidates(key)
@@ -239,20 +206,6 @@ export function keyMatchesCombo(key: KeyEvent, expected: KeyCombo): boolean {
   }
 
   return false
-}
-
-export function actionForKey(
-  keybindings: Keybindings,
-  key: KeyEvent,
-  trigger: BindingTrigger,
-): KeyAction | null {
-  for (const field of ACTION_FIELDS) {
-    if (keybindings[field].some((binding) => binding.trigger === trigger && keyMatchesCombo(key, binding.combo))) {
-      return { name: field }
-    }
-  }
-
-  return null
 }
 
 function parseActionBindings(
@@ -510,12 +463,3 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-type CommandKey = {
-  name: string
-  code?: string
-  baseCode?: number
-}
-
-export function keyIdentity(key: CommandKey): string {
-  return key.code ?? (key.baseCode === undefined ? key.name.toLowerCase() : String(key.baseCode))
-}

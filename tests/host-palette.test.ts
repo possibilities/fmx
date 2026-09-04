@@ -53,11 +53,11 @@ test("fxnk theme parsing matches fx's OSC 11 and COLORFGBG thresholds", () => {
   expect(colorFgBgIsLight("0;999")).toBe(false)
 })
 
-test("fxnk resolution uses FX_THEME, OSC 11, COLORFGBG, then dark", async () => {
+test("fxnk resolution uses FMX_THEME, OSC 11, COLORFGBG, then dark", async () => {
   const explicitPort = new FakeThemePort()
-  expect(await resolveFxnkTheme(explicitPort, { FX_THEME: "LIGHT", COLORFGBG: "0;0" }, 1)).toMatchObject({
+  expect(await resolveFxnkTheme(explicitPort, { FMX_THEME: "LIGHT", COLORFGBG: "0;0" }, 1)).toMatchObject({
     theme: "light",
-    source: "FX_THEME",
+    source: "FMX_THEME",
     explicit: true,
   })
   expect(explicitPort.writes).toEqual([])
@@ -78,6 +78,16 @@ test("fxnk resolution uses FX_THEME, OSC 11, COLORFGBG, then dark", async () => 
     theme: "dark",
     source: "default",
   })
+
+  // A headless Runtime has no terminal to answer, so it never asks and never
+  // waits: the first Client tells it instead.
+  const headlessPort = new FakeThemePort("\x1b]11;rgb:ffff/ffff/ffff\x1b\\")
+  expect(await resolveFxnkTheme(headlessPort, { COLORFGBG: "0;15" }, 0)).toMatchObject({
+    theme: "light",
+    source: "COLORFGBG",
+  })
+  expect(headlessPort.writes).toEqual([])
+  expect(await resolveFxnkTheme(new FakeThemePort(), {}, 0)).toMatchObject({ theme: "dark", source: "default" })
 })
 
 test("a late initial OSC 11 answer cannot retint the chosen fallback", async () => {

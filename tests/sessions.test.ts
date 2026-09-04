@@ -1,0 +1,257 @@
+import { expect, test } from "bun:test"
+import { createTestRenderer } from "@opentui/core/testing"
+import { fileURLToPath } from "node:url"
+import { CHANGE_DEBOUNCE_MS, childEnvironment, Sessions } from "../src/sessions.ts"
+import type { SessionExit } from "../src/session-transport.ts"
+import { sessionIdentity } from "../src/session-identity.ts"
+import { FakeCompanion } from "./fixtures/fake-companion.ts"
+import { PtyTransportFactory } from "./fixtures/pty-transport.ts"
+
+const FAKE_APP = fileURLToPath(new URL("./fixtures/fake-app.ts", import.meta.url))
+const INSTANCE = "0123456789ab"
+
+async function harness() {
+  const setup = await createTestRenderer({ width: 100, height: 30 })
+  const companion = new FakeCompanion()
+  const transport = new PtyTransportFactory()
+  const exits: { name: string; exit: SessionExit }[] = []
+  const changes: { name: string; title: string }[] = []
+  let rosters = 0
+  const sessions = new Sessions({
+    renderer: setup.renderer,
+    instanceId: INSTANCE,
+    companion: companion.asCompanion(),
+    transport,
+    theme: { theme: "dark", background: null, source: "default", explicit: false },
+    environment: { PATH: process.env.PATH ?? "", HOME: "/home/test", FMX_SECRET: "x", ZMX_DIR: "/tmp/z", TMUX: "outer" },
+    onExit: (name, exit) => exits.push({ name, exit }),
+    onChanged: (name, title) => changes.push({ name, title }),
+    onRoster: () => {
+      rosters += 1
+    },
+  })
+  return {
+    setup,
+    companion,
+    transport,
+    sessions,
+    exits,
+    changes,
+    get rosters() {
+      return rosters
+    },
+    close: () => {
+      sessions.shutdown()
+      setup.renderer.destroy()
+    },
+  }
+}
+
+const waitFor = async (check: () => boolean | Promise<boolean>, timeoutMs = 4000) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await check()) return true
+    await Bun.sleep(10)
+  }
+  return check()
+}
+
+test("a child's environment is fmx's own with its private variables removed", () => {
+  const env = childEnvironment(
+    { PATH: "/bin", HOME: "/home/test", FMX_RUNTIME_PROCESS: "1", ZMX_DIR: "/tmp/z", TMUX: "outer", HERDR_PANE_ID: "7" },
+    { EDITOR: "vi" },
+  )
+  expect(env).toEqual({ PATH: "/bin", HOME: "/home/test", EDITOR: "vi" })
+})
+
+test("creates a Session, labels it, and reports it in creation order", async () => {
+  const harnessed = await harness()
+  try {
+    const view = await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    expect(view).toMatchObject({ name: "tray", cwd: process.cwd(), argv: [FAKE_APP], shown: false, state: "live" })
+    expect(harnessed.transport.started).toHaveLength(1)
+    expect(harnessed.transport.started[0]!.request.identity.companionName).toBe(`fmx-${INSTANCE}-tray`)
+    expect(harnessed.transport.started[0]!.request.identity.labels).toEqual({
+      owner: "fmx",
+      instance: INSTANCE,
+      session: "tray",
+    })
+    // The private variables never reach the child.
+    expect(harnessed.transport.started[0]!.request.env.FMX_SECRET).toBeUndefined()
+    expect(harnessed.transport.started[0]!.request.env.ZMX_DIR).toBeUndefined()
+    expect(harnessed.transport.started[0]!.request.env.TMUX).toBeUndefined()
+
+    await harnessed.sessions.create({ name: "notes", argv: [FAKE_APP], cwd: process.cwd() })
+    expect(harnessed.sessions.list().map((session) => session.name)).toEqual(["tray", "notes"])
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("refuses a duplicate name and a label that is fmx's own", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await expect(harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })).rejects.toThrow(
+      "already exists",
+    )
+    await expect(
+      harnessed.sessions.create({ name: "other", argv: [FAKE_APP], cwd: process.cwd(), labels: { owner: "me" } }),
+    ).rejects.toThrow("label owner is fmx's own")
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("a Session that never started is dropped without an exit", async () => {
+  const harnessed = await harness()
+  try {
+    await expect(
+      harnessed.sessions.create({ name: "tray", argv: ["/definitely/missing/app"], cwd: process.cwd() }),
+    ).rejects.toThrow()
+    expect(harnessed.sessions.list()).toEqual([])
+    expect(harnessed.exits).toEqual([])
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("captures a Session's screen, cursor, and title whether or not it is shown", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({
+      name: "tray",
+      argv: [FAKE_APP],
+      cwd: process.cwd(),
+      env: { FMX_TEST_TITLE: "the tray", FMX_TEST_BANNER: "listening" },
+      cols: 40,
+      rows: 8,
+    })
+    await waitFor(() => harnessed.sessions.capture("tray").lines.join("").includes("listening"))
+    const capture = harnessed.sessions.capture("tray")
+    expect(capture.name).toBe("tray")
+    expect(capture.cols).toBe(40)
+    expect(capture.rows).toBe(8)
+    expect(capture.lines[0]).toContain("listening")
+    expect(capture.title).toBe("the tray")
+    expect(harnessed.sessions.view("tray").title).toBe("the tray")
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("announces a change once per debounce window, not once per byte", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await waitFor(() => harnessed.changes.length >= 1)
+    const first = harnessed.changes.length
+    const transport = harnessed.transport.forName("tray")!
+    for (let index = 0; index < 20; index += 1) transport.write(new TextEncoder().encode("x"))
+    await Bun.sleep(CHANGE_DEBOUNCE_MS * 3)
+    expect(harnessed.changes.length).toBeLessThanOrEqual(first + 2)
+    expect(harnessed.changes.every((change) => change.name === "tray")).toBe(true)
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("an ended Session is removed with its status and reported once", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await waitFor(() => harnessed.sessions.capture("tray").lines.join("").includes("ready"))
+    harnessed.transport.forName("tray")!.write(new TextEncoder().encode("quit\r"))
+    await waitFor(() => harnessed.exits.length === 1)
+    expect(harnessed.exits[0]).toMatchObject({ name: "tray", exit: { code: 7, reason: "natural" } })
+    expect(harnessed.sessions.list()).toEqual([])
+    expect(() => harnessed.sessions.capture("tray")).toThrow("no Session named tray")
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("a lost transport that cannot be reached leaves the Session unreachable, not gone", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    harnessed.transport.attachBehavior = "unreachable"
+    harnessed.transport.forName("tray")!.lose()
+    await waitFor(() => harnessed.sessions.view("tray").state === "unreachable")
+    expect(harnessed.exits).toEqual([])
+    expect(harnessed.transport.attaches.get("tray")).toBe(3)
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("a lost transport whose process ended removes the Session exactly as an exit would", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    harnessed.transport.attachBehavior = "ended"
+    harnessed.transport.forName("tray")!.lose()
+    await waitFor(() => harnessed.exits.length === 1)
+    expect(harnessed.exits[0]!.exit.reason).toBe("gone")
+    expect(harnessed.sessions.list()).toEqual([])
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("adoption takes the Companion's labels as the record and forgets ended residue", async () => {
+  const harnessed = await harness()
+  try {
+    const identity = sessionIdentity(INSTANCE, "tray", { role: "list" })
+    harnessed.companion.add({
+      name: identity.companionName,
+      labels: identity.labels,
+      cwd: "/work",
+      createdAt: 10,
+      pid: 42,
+    })
+    harnessed.companion.add({ name: `fmx-${INSTANCE}-gone`, state: "exited", labels: {} })
+    harnessed.companion.add({ name: "someone-elses-session", labels: { owner: "zmx" } })
+    harnessed.transport.attachBehavior = "unreachable"
+
+    const outcome = await harnessed.sessions.adopt()
+    expect(outcome.adopted).toBe(1)
+    expect(harnessed.companion.forgotten).toEqual([`fmx-${INSTANCE}-gone`])
+    const view = harnessed.sessions.view("tray")
+    expect(view).toMatchObject({ cwd: "/work", pid: 42, created_at: 10, state: "unreachable" })
+    // An adopted Session's argv is not recoverable from the Companion's
+    // shell-quoted display string.
+    expect(view.argv).toBeNull()
+    expect(view.labels.role).toBe("list")
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("adoption leaves a session it cannot read for the next start", async () => {
+  const harnessed = await harness()
+  try {
+    harnessed.companion.add({ name: `fmx-${INSTANCE}-tray`, state: "refused", labels: {} })
+    harnessed.companion.add({ name: "stranger", state: "refused", labels: {} })
+    const outcome = await harnessed.sessions.adopt()
+    expect(outcome.adopted).toBe(0)
+    expect(outcome.unresolved).toEqual([`fmx-${INSTANCE}-tray`])
+    expect(harnessed.companion.forgotten).toEqual([])
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("kill asks the Companion and lets the exit remove the Session", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await harnessed.sessions.kill("tray")
+    expect(harnessed.companion.killed).toEqual([`fmx-${INSTANCE}-tray`])
+    // The roster still holds it: the Companion's Exit is what removes it.
+    expect(harnessed.sessions.list().map((session) => session.name)).toEqual(["tray"])
+    await expect(harnessed.sessions.kill("missing")).rejects.toThrow("no Session named missing")
+  } finally {
+    harnessed.close()
+  }
+})

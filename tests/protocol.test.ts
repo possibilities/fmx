@@ -1,0 +1,135 @@
+import { describe, expect, test } from "bun:test"
+import {
+  contractDocument,
+  encodeFrame,
+  ERROR_CODES,
+  EVENTS,
+  eventFrame,
+  failureFrame,
+  isMethod,
+  layoutNodeSchema,
+  METHOD_NAMES,
+  METHODS,
+  PROTOCOL_VERSION,
+  requestSchema,
+  SESSION_NAME,
+  successFrame,
+} from "../src/protocol.ts"
+
+describe("the contract", () => {
+  test("is exactly the methods the design names, and no more", () => {
+    expect([...METHOD_NAMES].sort()).toEqual([
+      "events.subscribe",
+      "instance.status",
+      "instance.stop",
+      "layout.apply",
+      "layout.get",
+      "session.capture",
+      "session.create",
+      "session.kill",
+      "session.list",
+    ])
+  })
+
+  test("offers nothing that types into a Session or manages what a Pane runs", () => {
+    for (const forbidden of ["session.send", "session.write", "session.keys", "pane.set_app", "session.rename"]) {
+      expect(isMethod(forbidden)).toBe(false)
+    }
+  })
+
+  test("names its events and error codes", () => {
+    expect(Object.keys(EVENTS).sort()).toEqual([
+      "instance.stopping",
+      "layout.changed",
+      "session.changed",
+      "session.exited",
+      "stage.changed",
+      "theme.changed",
+    ])
+    expect(ERROR_CODES).toContain("companion_error")
+    expect(ERROR_CODES).not.toContain("tmux_error")
+  })
+
+  test("describes every method and event for `fmx api`", () => {
+    const document = contractDocument() as {
+      protocol: number
+      methods: Record<string, { description: string; params: unknown; result: unknown }>
+      events: Record<string, { description: string }>
+    }
+    expect(document.protocol).toBe(PROTOCOL_VERSION)
+    for (const name of METHOD_NAMES) {
+      expect(document.methods[name]!.description.length).toBeGreaterThan(10)
+      expect(document.methods[name]!.params).toBeDefined()
+      expect(document.methods[name]!.result).toBeDefined()
+    }
+    for (const name of Object.keys(EVENTS)) {
+      expect(document.events[name]!.description.length).toBeGreaterThan(10)
+    }
+  })
+})
+
+describe("frames", () => {
+  test("are one JSON object per line", () => {
+    const line = encodeFrame(successFrame("1", { ok: true }))
+    expect(line.endsWith("\n")).toBe(true)
+    expect(JSON.parse(line)).toEqual({ v: 1, type: "response", id: "1", ok: true, result: { ok: true } })
+    expect(JSON.parse(encodeFrame(failureFrame("2", "not_found", "no Session named x")))).toEqual({
+      v: 1,
+      type: "response",
+      id: "2",
+      ok: false,
+      error: { code: "not_found", message: "no Session named x" },
+    })
+    expect(JSON.parse(encodeFrame(eventFrame("theme.changed", { theme: "dark" })))).toEqual({
+      v: 1,
+      type: "event",
+      event: "theme.changed",
+      data: { theme: "dark" },
+    })
+  })
+
+  test("refuse a request that is not this protocol", () => {
+    expect(requestSchema.safeParse({ v: 1, type: "request", id: "1", method: "layout.get" }).success).toBe(true)
+    expect(requestSchema.safeParse({ v: 2, type: "request", id: "1", method: "layout.get" }).success).toBe(false)
+    expect(requestSchema.safeParse({ v: 1, type: "response", id: "1", method: "layout.get" }).success).toBe(false)
+    expect(requestSchema.safeParse({ v: 1, type: "request", id: "", method: "layout.get" }).success).toBe(false)
+  })
+})
+
+describe("parameter shapes", () => {
+  test("hold a Session name to its grammar", () => {
+    for (const name of ["tray", "a", "review-2", "work_2"]) expect(SESSION_NAME.test(name)).toBe(true)
+    for (const name of ["", "Tray", "2fast", "has.dot", "a".repeat(33)]) expect(SESSION_NAME.test(name)).toBe(false)
+  })
+
+  test("require an argv and a directory to create a Session", () => {
+    const create = METHODS["session.create"].params
+    expect(create.safeParse({ name: "tray", argv: ["/bin/sh"], cwd: "/work" }).success).toBe(true)
+    expect(create.safeParse({ name: "tray", argv: [], cwd: "/work" }).success).toBe(false)
+    expect(create.safeParse({ name: "tray", argv: ["/bin/sh"] }).success).toBe(false)
+    expect(create.safeParse({ name: "tray", argv: ["/bin/sh"], cwd: "/work", extra: 1 }).success).toBe(false)
+  })
+
+  test("accept a Layout of rows, columns, Sessions, and text", () => {
+    expect(
+      layoutNodeSchema.safeParse({
+        row: [
+          { column: [{ text: "notes", size: 8 }, { session: "tray" }], size: 26, min: 24 },
+          { session: "reviewer", min: 20 },
+        ],
+      }).success,
+    ).toBe(true)
+    expect(layoutNodeSchema.safeParse({ session: "tray", row: [] }).success).toBe(false)
+    expect(layoutNodeSchema.safeParse({ session: "Tray" }).success).toBe(false)
+    expect(layoutNodeSchema.safeParse({ row: [] }).success).toBe(false)
+    expect(layoutNodeSchema.safeParse({ session: "tray", size: 0 }).success).toBe(false)
+  })
+
+  test("let a Layout be cleared and focus be named or dropped", () => {
+    const apply = METHODS["layout.apply"].params
+    expect(apply.safeParse({ root: null }).success).toBe(true)
+    expect(apply.safeParse({ root: { session: "tray" }, focus: "tray" }).success).toBe(true)
+    expect(apply.safeParse({ root: { session: "tray" }, focus: null }).success).toBe(true)
+    expect(apply.safeParse({}).success).toBe(false)
+  })
+})

@@ -2,25 +2,19 @@
   "name": "fmx",
   "version": "0.3.1",
   "packageManager": "bun@1.4.0",
-  "description": "A lightweight terminal multiplexer for Fx Conversations",
+  "description": "A terminal multiplexer driven over a socket",
   "type": "module",
   "bin": {
-    "fmx": "./src/index.ts",
-    "fmx-mcp": "./src/mcp.ts"
+    "fmx": "./src/index.ts"
   },
   "scripts": {
-    "contracts:check": "bun scripts/check-agentworkplace-contracts.ts",
-    "contracts:provider": "bun scripts/generate-agentworkplace-provider.ts",
-    "gallery": "bun ui-gallery/cli.ts",
-    "gallery:check": "bun ui-gallery/cli.ts --check",
-    "install:source": "scripts/install.sh --install",
-    "gate:local": "scripts/local-gate.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "test:pty": "FMX_RUN_PTY_TESTS=1 bun test tests/multiplexer.e2e.test.ts"
+    "test:pty": "FMX_RUN_PTY_TESTS=1 bun test tests/instance.e2e.test.ts",
+    "install:source": "scripts/install.sh --install",
+    "gate:local": "scripts/local-gate.sh"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
     "@opentui/core": "0.5.6",
     "zod": "4.5.2"
   },

@@ -1,19 +1,18 @@
 import packageMetadata from "../package.json" with { type: "json" }
-import { normalizeFmxName } from "./home.ts"
+import { normalizeInstanceName } from "./instance.ts"
 
 export const VERSION = packageMetadata.version
+
+export const COMMANDS = ["start", "attach", "stop", "status", "api", "doctor", "runtime"] as const
+export type Command = (typeof COMMANDS)[number]
 
 export type CliOptions = {
   help: boolean
   version: boolean
-  /** `fmx doctor`: report the installation instead of running the TUI. */
-  doctor: boolean
-  /** null selects the existing unnamed/default fmx. */
-  name: string | null
-  /** Replace the Tray with the shared Runtime's top Agent picker. */
-  agentPicker: boolean
-  /** In picker mode, spend no chrome while only one Agent exists. */
-  hideSingleAgentPicker: boolean
+  /** Absent means start-if-needed and attach. */
+  command: Command | null
+  /** `default` for plain `fmx`. */
+  name: string
 }
 
 export class UsageError extends Error {
@@ -24,14 +23,7 @@ export class UsageError extends Error {
 }
 
 export function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = {
-    help: false,
-    version: false,
-    doctor: false,
-    name: null,
-    agentPicker: false,
-    hideSingleAgentPicker: false,
-  }
+  const options: CliOptions = { help: false, version: false, command: null, name: "default" }
   const positional: string[] = []
   let nameSpecified = false
 
@@ -42,7 +34,7 @@ export function parseArgs(args: string[]): CliOptions {
       const value = arg === "--name" ? args[++index] : arg.slice("--name=".length)
       if (value === undefined || value === "") throw new UsageError("--name requires a value")
       try {
-        options.name = normalizeFmxName(value)
+        options.name = normalizeInstanceName(value)
       } catch (error) {
         throw new UsageError(error instanceof Error ? error.message : String(error))
       }
@@ -58,12 +50,6 @@ export function parseArgs(args: string[]): CliOptions {
       case "--version":
         options.version = true
         break
-      case "--agent-picker":
-        options.agentPicker = true
-        break
-      case "--hide-single-agent-picker":
-        options.hideSingleAgentPicker = true
-        break
       default:
         if (arg.startsWith("-")) throw new UsageError(`unknown option: ${arg}`)
         positional.push(arg)
@@ -71,34 +57,39 @@ export function parseArgs(args: string[]): CliOptions {
     }
   }
 
-  if (options.hideSingleAgentPicker && !options.agentPicker) {
-    throw new UsageError("--hide-single-agent-picker requires --agent-picker")
-  }
   if (positional.length === 0) return options
-  if (positional[0] !== "doctor") {
-    throw new UsageError(`unknown command: ${positional[0]}\nCommands: doctor.`)
+  const [command, ...rest] = positional
+  if (!(COMMANDS as readonly string[]).includes(command!)) {
+    throw new UsageError(`unknown command: ${command}\nCommands: ${COMMANDS.filter((name) => name !== "runtime").join(", ")}.`)
   }
-  if (positional.length > 1) throw new UsageError(`unexpected argument: ${positional[1]}`)
-  options.doctor = true
+  if (rest.length > 0) throw new UsageError(`unexpected argument: ${rest[0]}`)
+  options.command = command as Command
   return options
 }
 
 export function usage(): string {
-  return `Usage: fmx [--name NAME] [--agent-picker [--hide-single-agent-picker]] [options]
-       fmx [--name NAME] doctor
+  return `Usage: fmx [--name NAME] [command]
 
-Open or attach a terminal Client for the selected fmx Runtime.
-Agent automation is provided by the separate fmx-mcp server.
-
-Options:
-      --name NAME                 select an independent fmx Session
-      --agent-picker              use the top Agent picker instead of the Tray
-      --hide-single-agent-picker  hide the Agent picker while only one Agent runs
-  -h, --help                      show this help
-  -v, --version                   print the version
+A terminal multiplexer driven over a socket. Start it, stop it, and attach a
+terminal to it from the command line; everything else — Sessions, the Layout,
+focus — is the API that \`fmx status\` reports the path of.
 
 Commands:
-  doctor         verify the Companion, its private directory, and Fx
+  (none)         start the Instance if it is not running, then attach
+  start          start the Instance without attaching, and print its API socket
+  attach         attach this terminal to a running Instance
+  stop           end every Session and the Instance
+  status         print the Instance as JSON
+  api            print the API contract as JSON
+  doctor         verify the Companion and its private directory
+
+Options:
+      --name NAME  select an independent Instance (default: default)
+  -h, --help       show this help
+  -v, --version    print the version
+
+Keys:
+  ctrl-b d       detach this terminal, leaving every Session running
 
 Configuration:
   ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)

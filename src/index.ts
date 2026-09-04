@@ -1,42 +1,37 @@
 #!/usr/bin/env bun
 
 import { CliRenderer } from "@opentui/core"
-import { realpath } from "node:fs/promises"
 import { homedir } from "node:os"
-import { AdeSocket, HomeActiveError } from "./ade-events.ts"
-import { parseArgs, usage, VERSION } from "./cli.ts"
+import { ApiClient } from "./api-client.ts"
+import { ApiServer, apiSocketPathFor, InstanceActiveError } from "./api-server.ts"
+import { type CliOptions, parseArgs, usage, VERSION } from "./cli.ts"
+import { CompanionTransportFactory } from "./companion-transport.ts"
 import { loadConfig } from "./config.ts"
-import { RuntimeBridge } from "./runtime-bridge.ts"
 import { doctor } from "./doctor.ts"
-import { resolveFx } from "./executable.ts"
-import { AgentManifest } from "./agent-manifest.ts"
-import { reconcileAgents, type ReconciledAgent, type ReconcileOutcome } from "./agent-reconcile.ts"
-import { stringEnvironment } from "./agent-transport.ts"
-import { FX_KEYBOARD_PROTOCOL } from "./fx-terminal.ts"
-import { resolveFmxHome, type FmxHome } from "./home.ts"
 import {
-  type FxnkThemeResolution,
   FxnkThemeMonitor,
+  type FxnkThemeResolution,
   resolveFxnkTheme,
 } from "./host-palette.ts"
-import { Multiplexer } from "./multiplexer.ts"
-import { expandTilde } from "./projects.ts"
-import { loadState, saveState, type PersistedState } from "./state.ts"
-import { CompanionTransportFactory } from "./companion-transport.ts"
-import { CompanionCommand } from "./zmx-command.ts"
+import { type Instance, resolveInstance } from "./instance.ts"
+import { HOST_KEYBOARD_PROTOCOL } from "./pane-terminal.ts"
+import { ensurePrivateDirectories } from "./private-directory.ts"
+import { ApiFailure, contractDocument, type EventName, eventFrame, type Method } from "./protocol.ts"
+import { Runtime } from "./runtime.ts"
 import {
   currentRuntimeCommand,
   ensureRuntimeSession,
-  isRuntimeProcess,
-  RUNTIME_BOOTSTRAP_ENV_VAR,
-  waitForRuntimeBootstrap,
+  findRuntimeSession,
+  waitForRuntimeApi,
 } from "./runtime-session.ts"
+import { stringEnvironment } from "./session-transport.ts"
 import { concealClientCursor, revealClientCursor, runTerminalClient } from "./terminal-client.ts"
 import {
   beginSynchronizedFrame,
   beginSynchronizedResizeClear,
   endSynchronizedFrame,
 } from "./unused-space.ts"
+import { CompanionCommand } from "./zmx-command.ts"
 import { PROTOCOL_VERSION } from "./zmx-protocol.ts"
 import {
   COMPANION_PIN,
@@ -48,10 +43,9 @@ import {
   privateRootDirectory,
   resolveCompanion,
 } from "./zmx-environment.ts"
-import { ensurePrivateDirectories } from "./private-directory.ts"
 
 async function main(): Promise<void> {
-  let options
+  let options: CliOptions
   try {
     options = parseArgs(Bun.argv.slice(2))
   } catch (error) {
@@ -68,70 +62,60 @@ async function main(): Promise<void> {
     process.stdout.write(`${VERSION}\n`)
     return
   }
-  const home = resolveFmxHome(options.name)
-  if (options.doctor) {
-    const report = await doctor(process.env, home)
-    process.stdout.write(`${report.lines.join("\n")}\n`)
-    process.exitCode = report.ok ? 0 : 1
-    return
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("fmx requires an interactive terminal (TTY)")
-  }
-  if (typeof Bun.Terminal !== "function") {
-    throw new Error("fmx requires Bun 1.4 or newer")
-  }
+  const instance = resolveInstance(options.name)
 
-  if (!isRuntimeProcess()) {
-    const releaseStartupSignals = installClientStartupSignalGuard()
-    // Own the physical cursor before any asynchronous Client preflight. A
-    // cold Runtime leaves the shell surface intact until its first frame, so
-    // this is the only visible startup state.
-    concealClientCursor()
-    try {
-      await startTerminalClient(
-        home,
-        options.agentPicker,
-        options.hideSingleAgentPicker,
-        releaseStartupSignals,
-      )
-    } finally {
-      // runTerminalClient performs the complete terminal cleanup. This guard
-      // covers failures before a Companion connection exists.
-      releaseStartupSignals()
-      revealClientCursor()
+  switch (options.command) {
+    case "api":
+      process.stdout.write(`${JSON.stringify(contractDocument(), null, 2)}\n`)
+      return
+    case "doctor": {
+      const report = await doctor(process.env, instance)
+      process.stdout.write(`${report.lines.join("\n")}\n`)
+      process.exitCode = report.ok ? 0 : 1
+      return
     }
-    return
+    case "runtime":
+      await runRuntime(instance)
+      return
+    case "status":
+      await printStatus(instance)
+      return
+    case "stop":
+      await stopInstance(instance)
+      return
+    case "start":
+      await startInstance(instance, true)
+      return
+    case "attach":
+      await attachClient(instance, false)
+      return
+    case null:
+      await attachClient(instance, true)
+      return
   }
-  const bootstrapPath = process.env[RUNTIME_BOOTSTRAP_ENV_VAR]
-  if (!bootstrapPath) throw new Error("fmx Runtime has no Client bootstrap path")
-  await waitForRuntimeBootstrap(bootstrapPath)
+}
 
-  const loadedConfig = await loadConfig(home.configPath)
+/* ----------------------------------------------------------------- runtime */
+
+async function runRuntime(instance: Instance): Promise<void> {
+  const loadedConfig = await loadConfig(instance.configPath)
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
-  if (loadedConfig.projectRoots.length === 0) {
-    throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${home.configPath}`)
-  }
-  const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
-  const fxPath = await resolveFx()
+
+  const socketPath = apiSocketPathFor(instance.id)
   const companionPath = await resolveCompanion()
-  const persistedState = await loadState(home.statePath)
-  let stateSave: Promise<void> = Promise.resolve()
-  const persistState = () => {
-    const snapshot: PersistedState = { ...persistedState }
-    stateSave = stateSave.then(() => saveState(snapshot, home.statePath)).catch(() => {})
-  }
 
   let renderer: CliRenderer | null = null
   let themeMonitor: FxnkThemeMonitor | null = null
-  let app: Multiplexer | null = null
-  const signalHandlers = new Map<NodeJS.Signals, () => void>()
-  const adeSocket = new AdeSocket({ homeId: home.id })
-  let runtimeBridge: RuntimeBridge | null = null
+  let runtime: Runtime | null = null
+  let apiServer: ApiServer | null = null
   let transport: CompanionTransportFactory | null = null
-  let manifest: AgentManifest | null = null
-  let runtimeResizeHandler: (() => void) | null = null
-  let runtimeTheme: FxnkThemeResolution | null = null
+  let resizeHandler: (() => void) | null = null
+  let theme: FxnkThemeResolution | null = null
+  const signalHandlers = new Map<NodeJS.Signals, () => void>()
+  const ready = Promise.withResolvers<void>()
+  // A request that arrives while Sessions are still being adopted waits for
+  // them rather than being told they do not exist.
+  ready.promise.catch(() => {})
 
   try {
     // fmx's own files live in a directory only this user can reach, created
@@ -139,41 +123,7 @@ async function main(): Promise<void> {
     // world-writable place can be taken by whoever gets there first once the
     // Runtime that held it exits and unlinks it.
     await ensurePrivateDirectories([privateRootDirectory()], "fmx")
-    // The ADE feed is the Home's singleton; only its holder may touch the
-    // Manifest, so the join runs after the bind and before anything is drawn.
-    await adeSocket.start()
-
-    // Start fx's one OSC 11 query as soon as this Runtime owns the Home, while
-    // the Companion join still runs. No palette or foreground query is made.
-    // Constructing the renderer starts its input parser but does not expose the
-    // alternate screen, so replies can arrive while nothing has been painted.
-    const createdRenderer = new CliRenderer(
-      process.stdin,
-      process.stdout,
-      process.stdout.columns || 80,
-      process.stdout.rows || 24,
-      {
-        exitOnCtrlC: false,
-        exitSignals: [],
-        useKittyKeyboard: FX_KEYBOARD_PROTOCOL,
-      },
-    )
-    renderer = createdRenderer
-    const themePort = {
-      write: (sequence: string) => process.stdout.write(sequence),
-      subscribeOsc: (handler: (sequence: string) => void) => createdRenderer.subscribeOsc(handler),
-      prependInputHandler: (handler: (sequence: string) => boolean) =>
-        createdRenderer.prependInputHandler(handler),
-      removeInputHandler: (handler: (sequence: string) => boolean) =>
-        createdRenderer.removeInputHandler(handler),
-    }
-    const themeDetection = resolveFxnkTheme(themePort)
-
     await ensureCompanionDirectories(companionDirectories())
-    // The pair is checked once the directory is ours: `version` creates the
-    // directory if it must, and a stock-built fork would create one fmx
-    // refuses. An installed Companion that is not the pinned build never
-    // runs; one named by the override runs with a word about it.
     const build = await companionBuild(companionPath.path)
     if (build !== COMPANION_PIN.build) {
       const message = companionMismatch(companionPath, build, PROTOCOL_VERSION)
@@ -181,84 +131,54 @@ async function main(): Promise<void> {
       process.stderr.write(`fmx: ${message}\n`)
     }
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
-    manifest = await AgentManifest.open(home.manifestPath, home.id)
-    const runtimeSocketPath = RuntimeBridge.pathFor(adeSocket.path)
-    const restored = await reconcileAtStartup(manifest, companion, runtimeSocketPath)
-    transport = new CompanionTransportFactory(companion, home.id, {
-      attachHints: new Map(restored.map(({ entry, session }) => [entry.agentId, session])),
+
+    const createdRenderer = new CliRenderer(
+      process.stdin,
+      process.stdout,
+      process.stdout.columns || 80,
+      process.stdout.rows || 24,
+      { exitOnCtrlC: false, exitSignals: [], useKittyKeyboard: HOST_KEYBOARD_PROTOCOL },
+    )
+    renderer = createdRenderer
+    const themePort = {
+      write: (sequence: string) => process.stdout.write(sequence),
+      subscribeOsc: (handler: (sequence: string) => void) => createdRenderer.subscribeOsc(handler),
+      prependInputHandler: (handler: (sequence: string) => boolean) => createdRenderer.prependInputHandler(handler),
+      removeInputHandler: (handler: (sequence: string) => boolean) => createdRenderer.removeInputHandler(handler),
+    }
+    // The Runtime starts with no terminal to answer an OSC 11 query, so it
+    // takes the environment's word and the first Client corrects it.
+    theme = await resolveFxnkTheme(themePort, process.env, 0)
+
+    // The API socket is the Instance singleton: claimed before anything is
+    // adopted, so two Runtimes can never hold the same Sessions.
+    apiServer = new ApiServer(socketPath, async (method: Method, params: unknown) => {
+      await ready.promise
+      if (!runtime) throw new ApiFailure("internal", "the Runtime is not ready")
+      return runtime.handle(method, params)
     })
-    const survivors = restored.map(({ entry }) => entry)
-    runtimeTheme = await themeDetection
-    themeMonitor = new FxnkThemeMonitor(themePort, runtimeTheme, (next) => {
-      runtimeTheme = next
-      if (!app) return
+    await apiServer.start()
+    const server = apiServer
+
+    transport = new CompanionTransportFactory(companion, instance.id)
+    runtime = new Runtime(createdRenderer, {
+      instanceId: instance.id,
+      instanceName: instance.name,
+      socketPath,
+      theme,
+      sessions: { instanceId: instance.id, companion, transport, environment: process.env },
+      publish: (event: EventName, data: unknown) => server.broadcast(eventFrame(event, data as never)),
+      report: (line) => process.stderr.write(`fmx: ${line}\n`),
+    })
+    const app = runtime
+
+    themeMonitor = new FxnkThemeMonitor(themePort, theme, (next) => {
+      theme = next
       // Publish the physical clear and the atomically retinted frame together.
       process.stdout.write(beginSynchronizedResizeClear(next.theme))
       app.setTheme(next)
     })
     themeMonitor.start()
-    // Do not expose OpenTUI's alternate-screen setup as a blank intermediate
-    // surface. Its first ordinary frame ends synchronized output after the
-    // complete application has been drawn.
-    process.stdout.write(beginSynchronizedFrame())
-    await renderer.setupTerminal()
-    // One Runtime frame is broadcast to every Client. Apply the new owner size
-    // synchronously before clearing every physical terminal; input can follow
-    // the resize before OpenTUI's debounced SIGWINCH handler runs, and that
-    // interaction must not paint one last frame at the previous owner's size.
-    // OpenTUI then repaints only the sizing owner's shared frame. Larger
-    // Clients retain the field at the right and bottom.
-    runtimeResizeHandler = () => {
-      createdRenderer.resize(
-        Math.max(1, process.stdout.columns || createdRenderer.width),
-        Math.max(1, process.stdout.rows || createdRenderer.height),
-      )
-      // Keep the clear and the resized frame in one synchronized terminal
-      // update. OpenTUI's frame closes the mode after restoring its cursor.
-      process.stdout.write(beginSynchronizedResizeClear(runtimeTheme?.theme ?? "dark"))
-    }
-    process.stdout.on("resize", runtimeResizeHandler)
-
-    app = new Multiplexer(renderer, {
-      fxPath,
-      cwd: workspace,
-      keybindings: loadedConfig.keybindings,
-      fmxName: home.name ?? undefined,
-      manifest,
-      transport,
-      survivors,
-      adeSocket,
-      worktreeRoot: loadedConfig.worktreeRoot,
-      projectRoots: loadedConfig.projectRoots,
-      runtimeSocketPath,
-      initialTrayWidth: persistedState.trayWidth,
-      initialTrayHidden: persistedState.trayHidden,
-      initialActiveAgentId: persistedState.activeAgentId,
-      initialTheme: runtimeTheme,
-      agentPicker: options.agentPicker,
-      hideSingleAgentPicker: options.hideSingleAgentPicker,
-      onTrayWidthChange: (width) => {
-        persistedState.trayWidth = width
-        // State persistence is an enhancement; a failed write must never
-        // disturb the running session.
-        persistState()
-      },
-      onTrayHiddenChange: (hidden) => {
-        if (hidden) persistedState.trayHidden = true
-        else delete persistedState.trayHidden
-        persistState()
-      },
-      onActiveAgentChange: (agentId) => {
-        if (agentId === null) {
-          if (persistedState.activeAgentId === undefined) return
-          delete persistedState.activeAgentId
-        } else {
-          if (persistedState.activeAgentId === agentId) return
-          persistedState.activeAgentId = agentId
-        }
-        persistState()
-      },
-    })
 
     for (const [signal, exitCode] of [
       ["SIGHUP", 129],
@@ -266,59 +186,51 @@ async function main(): Promise<void> {
       ["SIGQUIT", 131],
       ["SIGTERM", 143],
     ] as const) {
-      const handler = () => void app?.shutdown(exitCode)
+      const handler = () => void app.shutdown(exitCode)
       signalHandlers.set(signal, handler)
       process.once(signal, handler)
     }
 
-    // The complete theme was fixed above, before the renderer can expose an
-    // empty or partially restored application. Multiplexer holds the restored
-    // Session list until every durable source and discovered identity is read.
-    const startup = app.start()
-    renderer.start()
-    await startup
+    // Do not expose OpenTUI's alternate-screen setup as a blank intermediate
+    // surface. Its first ordinary frame ends synchronized output after the
+    // complete application has been drawn.
+    process.stdout.write(beginSynchronizedFrame())
+    await createdRenderer.setupTerminal()
+    // One Runtime frame is broadcast to every Client. Apply the new owner size
+    // synchronously before clearing every physical terminal; input can follow
+    // the resize before OpenTUI's debounced SIGWINCH handler runs, and that
+    // interaction must not paint one last frame at the previous owner's size.
+    resizeHandler = () => {
+      createdRenderer.resize(
+        Math.max(1, process.stdout.columns || createdRenderer.width),
+        Math.max(1, process.stdout.rows || createdRenderer.height),
+      )
+      process.stdout.write(beginSynchronizedResizeClear(theme?.theme ?? "dark"))
+    }
+    process.stdout.on("resize", resizeHandler)
+    createdRenderer.start()
 
-    // The implementation-private MCP bridge lives beside the ADE feed under
-    // its Home singleton. Do not accept control requests until
-    // restored Agents, their metadata, and the selected terminal are ready.
-    runtimeBridge = new RuntimeBridge(app.control, runtimeSocketPath)
-    runtimeBridge.start()
-
+    await app.start()
+    ready.resolve()
     await app.waitUntilDone()
   } catch (error) {
-    // Harmless before synchronization begins, and essential if setup or the
-    // application constructor failed after the alternate-screen transition
-    // was held but before OpenTUI could publish its first frame.
     process.stdout.write(endSynchronizedFrame())
-    if (app) await app.shutdown(1)
+    ready.reject(error instanceof Error ? error : new Error(String(error)))
+    if (runtime) await runtime.shutdown(1)
     else renderer?.destroy()
     throw error
   } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
-    // Nothing the Companion is still being asked about is waited for; what
-    // is not consumed is the next start's. The Manifest's last write is.
     transport?.close()
-    await manifest?.settled()
-    await stateSave
-    runtimeBridge?.close()
-    adeSocket.close()
+    apiServer?.stop()
     themeMonitor?.dispose()
-    if (runtimeResizeHandler) process.stdout.off("resize", runtimeResizeHandler)
+    if (resizeHandler) process.stdout.off("resize", resizeHandler)
   }
 }
 
-async function startTerminalClient(
-  home: FmxHome,
-  agentPicker: boolean,
-  hideSingleAgentPicker: boolean,
-  onSignalHandlersInstalled: () => void,
-): Promise<void> {
-  const loadedConfig = await loadConfig(home.configPath)
-  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
-  if (loadedConfig.projectRoots.length === 0) {
-    throw new Error(`no project roots configured; add project_roots = ["~/code"] to ${home.configPath}`)
-  }
-  const workspace = await realpath(expandTilde(loadedConfig.projectRoots[0]!, homedir()))
+/* ------------------------------------------------------------------ client */
+
+async function startInstance(instance: Instance, announce: boolean): Promise<string> {
   const companionPath = await resolveCompanion()
   await ensureCompanionDirectories(companionDirectories())
   const build = await companionBuild(companionPath.path)
@@ -329,23 +241,89 @@ async function startTerminalClient(
   }
   const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
   const runtime = await ensureRuntimeSession(companion, {
-    homeId: home.id,
-    cwd: workspace,
-    command: currentRuntimeCommand({ name: home.name, agentPicker, hideSingleAgentPicker }),
+    instanceId: instance.id,
+    cwd: homedir(),
+    command: currentRuntimeCommand({ name: instance.name }),
     env: stringEnvironment(process.env),
-    agentPicker,
-    hideSingleAgentPicker,
   })
-  process.exitCode = await runTerminalClient({
-    socketPath: runtime.socketPath,
-    bootstrapPath: runtime.bootstrapPath,
-    keybindings: loadedConfig.keybindings,
-    onSignalHandlersInstalled,
-  })
+  const socketPath = apiSocketPathFor(instance.id)
+  if (!(await waitForRuntimeApi(socketPath))) {
+    throw new Error(`the fmx Runtime did not answer ${socketPath}`)
+  }
+  if (announce) process.stdout.write(`${socketPath}\n`)
+  return runtime.socketPath
+}
+
+async function attachClient(instance: Instance, startIfNeeded: boolean): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("fmx attach requires an interactive terminal (TTY)")
+  }
+  if (typeof Bun.Terminal !== "function") throw new Error("fmx requires Bun 1.4 or newer")
+
+  const loadedConfig = await loadConfig(instance.configPath)
+  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
+
+  const releaseStartupSignals = installClientStartupSignalGuard()
+  // Own the physical cursor before any asynchronous Client preflight. A cold
+  // Runtime leaves the shell surface intact until its first frame, so this is
+  // the only visible startup state.
+  concealClientCursor()
+  try {
+    let terminalSocket: string
+    if (startIfNeeded) {
+      terminalSocket = await startInstance(instance, false)
+    } else {
+      const companionPath = await resolveCompanion()
+      await ensureCompanionDirectories(companionDirectories())
+      const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
+      const session = await findRuntimeSession(companion, instance.id)
+      if (!session?.socketPath) {
+        throw new Error(`no fmx Runtime is running for ${instance.name}; run \`fmx start\` first`)
+      }
+      terminalSocket = session.socketPath
+    }
+    process.exitCode = await runTerminalClient({
+      socketPath: terminalSocket,
+      keybindings: loadedConfig.keybindings,
+      onSignalHandlersInstalled: releaseStartupSignals,
+    })
+  } finally {
+    // runTerminalClient performs the complete terminal cleanup. This guard
+    // covers failures before a Companion connection exists.
+    releaseStartupSignals()
+    revealClientCursor()
+  }
+}
+
+async function printStatus(instance: Instance): Promise<void> {
+  const client = await connect(instance)
+  try {
+    process.stdout.write(`${JSON.stringify(await client.request("instance.status"), null, 2)}\n`)
+  } finally {
+    client.close()
+  }
+}
+
+async function stopInstance(instance: Instance): Promise<void> {
+  const client = await connect(instance)
+  try {
+    await client.request("instance.stop")
+  } finally {
+    client.close()
+  }
+}
+
+async function connect(instance: Instance): Promise<ApiClient> {
+  const socketPath = apiSocketPathFor(instance.id)
+  try {
+    return await ApiClient.connect(socketPath)
+  } catch {
+    throw new Error(`no fmx Runtime is running for ${instance.name} (${socketPath})`)
+  }
 }
 
 /**
- * The Client conceals before config and Companion preflight, earlier than its
+ * The Client conceals before Companion preflight, earlier than its
  * connection-level signal handlers can exist. Keep that gap safe, then remove
  * these temporary handlers only after runTerminalClient owns every signal.
  */
@@ -371,40 +349,11 @@ function installClientStartupSignalGuard(): () => void {
   return release
 }
 
-/**
- * Join the Manifest against the Companion's sessions before anything is
- * drawn: adopt what a crash left unrecorded, drop what has ended, and hand
- * back what survived for the multiplexer to attach. A join that fails is
- * reported and changes nothing — a failed read must never be taken for an
- * empty Companion — and fmx starts with nothing attached, the Agents
- * left where they are for the next start.
- */
-async function reconcileAtStartup(
-  manifest: AgentManifest,
-  companion: CompanionCommand,
-  runtimeSocketPath: string,
-): Promise<ReconciledAgent[]> {
-  let outcome: ReconcileOutcome
-  try {
-    outcome = await reconcileAgents(manifest, companion, { runtimeSocketPath })
-  } catch (error) {
-    process.stderr.write(`fmx: could not reconcile agents: ${errorMessage(error)}\n`)
-    return []
-  }
-  if (outcome.cleared.length > 0) {
-    process.stderr.write(`fmx: cleared ${outcome.cleared.length} stale Companion socket(s)\n`)
-  }
-  if (outcome.unresolved.length > 0) {
-    process.stderr.write(`fmx: ${outcome.unresolved.length} Companion session(s) unreachable; left for the next start\n`)
-  }
-  return [...outcome.attached, ...outcome.adopted]
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
 await main().catch((error) => {
   process.stderr.write(`fmx: ${errorMessage(error)}\n`)
-  process.exitCode = error instanceof HomeActiveError ? 2 : 1
+  process.exitCode = error instanceof InstanceActiveError ? 2 : 1
 })

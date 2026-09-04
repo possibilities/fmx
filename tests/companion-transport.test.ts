@@ -2,20 +2,25 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { CompanionTransportFactory } from "../src/companion-transport.ts"
-import { AgentManifest, identityFor, type ManifestEntry } from "../src/agent-manifest.ts"
-import { AgentEndedError, AgentUnreachableError, type AgentTransport, type TransportHandlers } from "../src/agent-transport.ts"
-import { ownershipLabels } from "../src/agent-reconcile.ts"
+import {
+  SessionEndedError,
+  SessionUnreachableError,
+  type SessionExit,
+  type SessionTransport,
+  type TransportHandlers,
+} from "../src/session-transport.ts"
+import { sessionIdentity, type SessionIdentity } from "../src/session-identity.ts"
 import { CompanionCommand, CompanionCreateError, type SessionEntry } from "../src/zmx-command.ts"
 
 /**
- * The Companion behind the Agent transport seam, against the real
- * binary: what the multiplexer sees when it starts, attaches to, loses, and
- * outlives an Agent. Needs FMX_ZMX_PATH; sessions live in a private
- * directory under /tmp and every one this file starts is ended by it.
+ * The Companion behind the Session transport seam, against the real binary:
+ * what the Runtime sees when it starts, attaches to, loses, and outlives a
+ * Session. Needs FMX_ZMX_PATH; sessions live in a private directory under
+ * /tmp and every one this file starts is ended by it.
  */
 const ZMX = process.env.FMX_ZMX_PATH
 const ENABLED = Boolean(ZMX && existsSync(ZMX))
-const HOME = "0123456789ab"
+const INSTANCE = "0123456789ab"
 
 const decoder = new TextDecoder()
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -39,18 +44,17 @@ const CHILD_SCRIPT = [
 let dir = ""
 let companion: CompanionCommand
 let factory: CompanionTransportFactory
-let manifest: AgentManifest
 
 /** A consumer of one transport: everything it was told, in order. */
 type Watcher = {
   text: string
   restores: number
   readies: number
-  exited: { code: number; signal: number } | null
+  exited: SessionExit | null
   lost: Error | null
 }
 
-const watch = (transport: AgentTransport): Watcher => {
+const watch = (transport: SessionTransport): Watcher => {
   const watcher: Watcher = { text: "", restores: 0, readies: 0, exited: null, lost: null }
   const handlers: TransportHandlers = {
     output: (bytes) => {
@@ -58,7 +62,7 @@ const watch = (transport: AgentTransport): Watcher => {
     },
     restoreBegin: () => {
       watcher.restores += 1
-      // A restore replaces the screen, as the multiplexer's reset does.
+      // A restore replaces the screen, as the Session's own reset does.
       watcher.text = ""
     },
     ready: () => {
@@ -75,128 +79,24 @@ const watch = (transport: AgentTransport): Watcher => {
   return watcher
 }
 
-const inertTransport: AgentTransport = {
-  bind() {},
-  write() {},
-  resize() {},
-  detach() {},
-}
-
-const restoredEntry = (agentId = "d".repeat(32)): ManifestEntry => ({
-  ...identityFor(agentId),
-  displayId: 1,
-  cwd: "/work",
-  fxPath: "/fx",
-  fxArgs: [],
-  createdAt: 1,
-  fxSessionId: null,
-  agentStatus: null,
-  workControl: null,
-  phase: "running",
-})
-
-const liveSession = (entry: ManifestEntry, socketPath: string): SessionEntry => ({
-  name: entry.zmxName,
+const liveSession = (identity: SessionIdentity, socketPath: string): SessionEntry => ({
+  name: identity.companionName,
   state: "live",
   socketPath,
   pid: 1,
   clients: 0,
   createdAt: 1,
-  command: [entry.fxPath],
-  cwd: entry.cwd,
-  labels: ownershipLabels(HOME, entry.agentId),
+  command: ["/bin/sh"],
+  cwd: "/work",
+  labels: identity.labels,
   exit: null,
   detail: null,
 })
 
-test("a reconciled live endpoint attaches without another Companion inspection", async () => {
-  const entry = restoredEntry()
-  const hint = liveSession(entry, "/tmp/reconciled-agent")
-  let inspections = 0
-  const paths: string[] = []
-  const hintedFactory = new CompanionTransportFactory(
-    {
-      settle: async () => {
-        inspections += 1
-        return hint
-      },
-    } as unknown as CompanionCommand,
-    HOME,
-    {
-      attachHints: new Map([[entry.agentId, hint]]),
-      connect: async (path) => {
-        paths.push(path)
-        return inertTransport
-      },
-    },
-  )
-
-  expect(await hintedFactory.attach(entry, { cols: 80, rows: 24 })).toBe(inertTransport)
-  expect(paths).toEqual([hint.socketPath!])
-  expect(inspections).toBe(0)
-})
-
-test("a stale reconciled endpoint falls back to inspection and its current endpoint", async () => {
-  const entry = restoredEntry("e".repeat(32))
-  const hint = liveSession(entry, "/tmp/stale-agent")
-  const current = liveSession(entry, "/tmp/current-agent")
-  let inspections = 0
-  const paths: string[] = []
-  const hintedFactory = new CompanionTransportFactory(
-    {
-      settle: async () => {
-        inspections += 1
-        return current
-      },
-    } as unknown as CompanionCommand,
-    HOME,
-    {
-      attachHints: new Map([[entry.agentId, hint]]),
-      connect: async (path) => {
-        paths.push(path)
-        if (path === hint.socketPath) throw new Error("stale endpoint")
-        return inertTransport
-      },
-    },
-  )
-
-  expect(await hintedFactory.attach(entry, { cols: 80, rows: 24 })).toBe(inertTransport)
-  expect(paths).toEqual([hint.socketPath!, current.socketPath!])
-  expect(inspections).toBe(1)
-})
-
-test("a stale endpoint never falls through to a foreign session under the Agent's name", async () => {
-  const entry = restoredEntry("f".repeat(32))
-  const hint = liveSession(entry, "/tmp/stale-agent")
-  const foreign = {
-    ...liveSession(entry, "/tmp/foreign-agent"),
-    labels: ownershipLabels("stranger", entry.agentId),
-  }
-  const paths: string[] = []
-  const hintedFactory = new CompanionTransportFactory(
-    { settle: async () => foreign } as unknown as CompanionCommand,
-    HOME,
-    {
-      attachHints: new Map([[entry.agentId, hint]]),
-      connect: async (path) => {
-        paths.push(path)
-        throw new Error("stale endpoint")
-      },
-    },
-  )
-
-  const error = await hintedFactory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
-  expect(error).toBeInstanceOf(AgentEndedError)
-  expect(paths).toEqual([hint.socketPath!])
-})
-
-const claim = async (): Promise<ManifestEntry> =>
-  manifest.beginCreate({ cwd: dir, fxPath: "/bin/sh", fxArgs: ["-c", CHILD_SCRIPT], createdAt: Date.now() })
-
-const start = async (entry: ManifestEntry): Promise<AgentTransport> =>
+const start = (identity: SessionIdentity): Promise<SessionTransport> =>
   factory.start({
-    entry,
-    command: [entry.fxPath, ...(entry.fxArgs ?? [])],
+    identity,
+    command: ["/bin/sh", "-c", CHILD_SCRIPT],
     cwd: dir,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm" },
     size: { cols: 80, rows: 24 },
@@ -206,8 +106,7 @@ beforeAll(async () => {
   if (!ENABLED) return
   dir = await mkdtemp("/tmp/fmxz-tr-")
   companion = new CompanionCommand(dir, { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" }, ZMX!)
-  factory = new CompanionTransportFactory(companion, HOME, { scrollbackLines: 200 })
-  manifest = AgentManifest.ephemeral(HOME)
+  factory = new CompanionTransportFactory(companion, INSTANCE, { scrollbackLines: 200 })
 })
 
 afterAll(async () => {
@@ -229,162 +128,144 @@ afterAll(async () => {
 })
 
 test.skipIf(!ENABLED)("start creates a labelled session, attaches with a restore, and writes through", async () => {
-  const entry = await claim()
-  const transport = await start(entry)
+  const identity = sessionIdentity(INSTANCE, "one", { role: "list" })
+  const transport = await start(identity)
   const watcher = watch(transport)
   await waitFor(() => watcher.readies === 1 && watcher.text.includes("READY"))
   expect(watcher.restores).toBe(1)
-  const session = await companion.inspect(entry.zmxName)
+  const session = await companion.inspect(identity.companionName)
   expect(session.state).toBe("live")
-  expect(session.labels).toEqual({ owner: "fmx", home: HOME, agent: entry.agentId, pane: entry.paneId })
+  expect(session.labels).toEqual({ role: "list", owner: "fmx", instance: INSTANCE, session: "one" })
   expect(session.clients).toBe(1)
 
   transport.write(new TextEncoder().encode("hello\n"))
   await waitFor(() => watcher.text.includes("got:hello"))
   transport.detach()
-  await waitFor(async () => (await companion.inspect(entry.zmxName)).clients === 0)
-  expect((await companion.inspect(entry.zmxName)).state).toBe("live")
+  await waitFor(async () => (await companion.inspect(identity.companionName)).clients === 0)
+  // A detach lets go; it never ends the process.
+  expect((await companion.inspect(identity.companionName)).state).toBe("live")
 })
 
-test.skipIf(!ENABLED)("a hinted socket revalidates its live daemon's ownership before attach", async () => {
-  const entry = restoredEntry("c".repeat(32))
-  const created = await companion.create({
-    name: entry.zmxName,
-    command: ["/bin/sh", "-c", CHILD_SCRIPT],
-    cwd: dir,
-    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm" },
-    labels: ownershipLabels("stranger", entry.agentId),
-    scrollbackLines: 200,
-  })
-  const hintedFactory = new CompanionTransportFactory(companion, HOME, {
-    attachHints: new Map([[entry.agentId, liveSession(entry, created.socketPath)]]),
-  })
-
-  const error = await hintedFactory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
-  expect(error).toBeInstanceOf(AgentEndedError)
-  expect(await companion.inspect(entry.zmxName)).toMatchObject({
-    state: "live",
-    labels: ownershipLabels("stranger", entry.agentId),
-    clients: 0,
-  })
-})
-
-test.skipIf(!ENABLED)("attach replays the screen onto a reset, and the child survives every detach", async () => {
-  const entry = await claim()
-  const first = await start(entry)
-  const before = watch(first)
-  await waitFor(() => before.text.includes("READY"))
-  first.write(new TextEncoder().encode("one\n"))
-  await waitFor(() => before.text.includes("got:one"))
+test.skipIf(!ENABLED)("attach replays the whole terminal onto a reconnecting consumer", async () => {
+  const identity = sessionIdentity(INSTANCE, "two")
+  const first = await start(identity)
+  const opening = watch(first)
+  await waitFor(() => opening.readies === 1)
+  first.write(new TextEncoder().encode("remembered\n"))
+  await waitFor(() => opening.text.includes("got:remembered"))
   first.detach()
 
-  const second = await factory.attach(entry, { cols: 80, rows: 24 })
-  const after = watch(second)
-  await waitFor(() => after.readies === 1)
-  expect(after.restores).toBe(1)
-  expect(after.text).toContain("got:one")
-  second.write(new TextEncoder().encode("two\n"))
-  await waitFor(() => after.text.includes("got:two"))
-  expect(after.exited).toBeNull()
-  expect(after.lost).toBeNull()
+  const second = await factory.attach(identity, { cols: 80, rows: 24 })
+  const reconnected = watch(second)
+  await waitFor(() => reconnected.readies === 1 && reconnected.text.includes("got:remembered"))
+  expect(reconnected.restores).toBe(1)
   second.detach()
 })
 
-test.skipIf(!ENABLED)("an exit is exact, final output comes first, and the record is consumed", async () => {
-  const entry = await claim()
-  const transport = await start(entry)
+test.skipIf(!ENABLED)("an ended Session reports its status and consumes its exit record", async () => {
+  const identity = sessionIdentity(INSTANCE, "three")
+  const transport = await start(identity)
   const watcher = watch(transport)
-  await waitFor(() => watcher.text.includes("READY"))
-  transport.write(new TextEncoder().encode("last\nquit\n"))
+  await waitFor(() => watcher.readies === 1)
+  transport.write(new TextEncoder().encode("quit\n"))
   await waitFor(() => watcher.exited !== null)
-  expect(watcher.text).toContain("got:last")
-  expect(watcher.exited).toEqual({ code: 7, signal: 0 })
-  expect(watcher.lost).toBeNull()
-  // The daemon records the exit after it has sent it; the factory waits and forgets.
-  await waitFor(async () => (await companion.inspect(entry.zmxName)).state === "absent", 8000)
-  expect((await companion.inspect(entry.zmxName)).state).toBe("absent")
+  expect(watcher.exited).toMatchObject({ code: 7, signal: 0, reason: "natural" })
+  await waitFor(async () => (await companion.inspect(identity.companionName)).state === "absent")
 })
 
-test.skipIf(!ENABLED)("attaching to an ended Agent says so, with its status", async () => {
-  const entry = await claim()
-  const transport = await start(entry)
+test.skipIf(!ENABLED)("attaching to a Session that ended is an ended error, not an unreachable one", async () => {
+  const identity = sessionIdentity(INSTANCE, "four")
+  const transport = await start(identity)
   const watcher = watch(transport)
-  await waitFor(() => watcher.text.includes("READY"))
-  transport.detach()
-  // End it while nobody is watching, the way an exit while fmx is down happens.
-  await companion.kill(entry.zmxName)
-  await waitFor(async () => (await companion.inspect(entry.zmxName)).state === "exited")
-
-  const error = await factory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
-  expect(error).toBeInstanceOf(AgentEndedError)
-  expect((error as AgentEndedError).exit?.signal).toBeGreaterThan(0)
-  expect((await companion.inspect(entry.zmxName)).state).toBe("absent")
+  await waitFor(() => watcher.readies === 1)
+  transport.write(new TextEncoder().encode("quit\n"))
+  await waitFor(() => watcher.exited !== null)
+  await expect(factory.attach(identity, { cols: 80, rows: 24 })).rejects.toBeInstanceOf(SessionEndedError)
 })
 
-test.skipIf(!ENABLED)("a daemon that vanishes is a lost transport, never an exit", async () => {
-  const entry = await claim()
-  const transport = await start(entry)
-  const watcher = watch(transport)
-  await waitFor(() => watcher.text.includes("READY"))
-  const session = await companion.inspect(entry.zmxName)
-  // The daemon's pid is not reported; the child's is, and its parent is the daemon.
-  const parent = await Bun.$`ps -o ppid= -p ${session.pid!}`.text()
-  process.kill(Number(parent.trim()), "SIGKILL")
-  await waitFor(() => watcher.lost !== null)
-  expect(watcher.exited).toBeNull()
-  // The child goes with its controlling terminal.
-  await waitFor(() => {
-    try {
-      process.kill(session.pid!, 0)
-      return false
-    } catch {
-      return true
-    }
-  })
-  // The socket file is what a SIGKILLed daemon leaves: still refused after
-  // the settle window, which an attach reads as ended and clears.
-  expect((await companion.inspect(entry.zmxName)).state).toBe("refused")
-  const error = await factory.attach(entry, { cols: 80, rows: 24 }).catch((caught) => caught)
-  expect(error).toBeInstanceOf(AgentEndedError)
-  expect((await companion.inspect(entry.zmxName)).state).toBe("absent")
-})
-
-test.skipIf(!ENABLED)("the child's environment is the one given, with nothing of the Companion's", async () => {
-  const entry = await manifest.beginCreate({ cwd: dir, fxPath: "/bin/sh", fxArgs: ["-c", "env; sleep 30"], createdAt: Date.now() })
-  const transport = await factory.start({
-    entry,
-    command: [entry.fxPath, ...(entry.fxArgs ?? [])],
+test.skipIf(!ENABLED)("a reconciled live endpoint attaches without another Companion inspection", async () => {
+  const identity = sessionIdentity(INSTANCE, "five")
+  const created = await companion.create({
+    name: identity.companionName,
+    command: ["/bin/sh", "-c", CHILD_SCRIPT],
     cwd: dir,
-    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm", MARK: "given" },
-    size: { cols: 120, rows: 24 },
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm" },
+    labels: identity.labels,
+    scrollbackLines: 200,
   })
-  const watcher = watch(transport)
-  await waitFor(() => watcher.readies === 1 && watcher.text.includes("MARK=given"))
-  expect(watcher.text).not.toContain("ZMX_SESSION=")
-  expect(watcher.text).not.toContain("ZMX_DIR=")
-  expect(watcher.text).not.toContain("ZMX_NO_DETACH_KEY=")
+  const inspections: string[] = []
+  const hinted = new CompanionTransportFactory(
+    new Proxy(companion, {
+      get(target, property, receiver) {
+        if (property === "inspect" || property === "settle") {
+          return (name: string) => {
+            inspections.push(name)
+            return Reflect.get(target, property, receiver).call(target, name)
+          }
+        }
+        return Reflect.get(target, property, receiver)
+      },
+    }),
+    INSTANCE,
+    { attachHints: new Map([["five", liveSession(identity, created.socketPath)]]) },
+  )
+  const transport = await hinted.attach(identity, { cols: 80, rows: 24 })
+  expect(inspections).toEqual([])
   transport.detach()
 })
 
-test("a Companion lookup that fails after a create timeout keeps the Agent's claim", async () => {
-  const entry = restoredEntry("f".repeat(32))
-  const factory = new CompanionTransportFactory(
+test.skipIf(!ENABLED)("a session under our name that is not ours is left alone", async () => {
+  const identity = sessionIdentity(INSTANCE, "six")
+  await companion.create({
+    name: identity.companionName,
+    command: ["/bin/sh", "-c", CHILD_SCRIPT],
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm" },
+    labels: { owner: "fmx", instance: "stranger", session: "six" },
+    scrollbackLines: 200,
+  })
+  await expect(factory.attach(identity, { cols: 80, rows: 24 })).rejects.toBeInstanceOf(SessionEndedError)
+  // Refused, never ended: the foreign process keeps running.
+  expect((await companion.inspect(identity.companionName)).state).toBe("live")
+})
+
+test("a create that may have started anyway is unreachable, not a failure", async () => {
+  const identity = sessionIdentity(INSTANCE, "seven")
+  const timedOut = new CompanionTransportFactory(
     {
+      directory: "/tmp/none",
       create: async () => {
         throw new CompanionCreateError("Timeout", "create timed out", null)
       },
-      settle: async () => {
-        throw new Error("the Companion is not answering")
-      },
+      settle: async () => liveSession(identity, "/tmp/nothing-listens-here.sock"),
+      inspect: async () => liveSession(identity, "/tmp/nothing-listens-here.sock"),
     } as unknown as CompanionCommand,
-    HOME,
-    { connect: async () => inertTransport },
+    INSTANCE,
   )
+  await expect(
+    timedOut.start({
+      identity,
+      command: ["/bin/sh"],
+      cwd: "/tmp",
+      env: {},
+      size: { cols: 80, rows: 24 },
+    }),
+  ).rejects.toBeInstanceOf(SessionUnreachableError)
+})
 
-  // Nothing was learned about a session that may well be live, so the start
-  // is unreachable rather than a proof that fx never ran.
-  const failure = await factory
-    .start({ entry, cwd: entry.cwd, command: ["fx"], env: {}, size: { cols: 80, rows: 24 } })
-    .catch((error: unknown) => error)
-  expect(failure).toBeInstanceOf(AgentUnreachableError)
+test("a create that proves nothing started is a plain failure", async () => {
+  const identity = sessionIdentity(INSTANCE, "eight")
+  const failed = new CompanionTransportFactory(
+    {
+      directory: "/tmp/none",
+      create: async () => {
+        throw new CompanionCreateError("Timeout", "create timed out", null)
+      },
+      settle: async () => ({ ...liveSession(identity, ""), state: "exited" as const, socketPath: null }),
+    } as unknown as CompanionCommand,
+    INSTANCE,
+  )
+  await expect(
+    failed.start({ identity, command: ["/bin/sh"], cwd: "/tmp", env: {}, size: { cols: 80, rows: 24 } }),
+  ).rejects.toBeInstanceOf(CompanionCreateError)
 })

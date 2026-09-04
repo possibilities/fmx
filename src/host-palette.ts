@@ -2,7 +2,7 @@ import { RGBA } from "@opentui/core"
 
 export type FxnkTheme = "dark" | "light"
 
-export type FxnkThemeSource = "FX_THEME" | "osc11" | "COLORFGBG" | "default"
+export type FxnkThemeSource = "FMX_THEME" | "osc11" | "COLORFGBG" | "default"
 
 export type FxnkThemeResolution = {
   theme: FxnkTheme
@@ -86,15 +86,26 @@ export function fxnkRamp(theme: FxnkTheme): Ramp {
   return RAMPS[theme]
 }
 
-/** Match fx exactly: FX_THEME -> OSC 11 -> COLORFGBG -> dark. */
+/** Match fx's own order: FMX_THEME -> OSC 11 -> COLORFGBG -> dark. */
 export async function resolveFxnkTheme(
   port: Osc11Port,
   env: Record<string, string | undefined> = process.env,
   timeoutMs = OSC11_TIMEOUT_MS,
 ): Promise<FxnkThemeResolution> {
-  const override = explicitTheme(env.FX_THEME)
+  const override = explicitTheme(env.FMX_THEME)
   if (override) {
-    return { theme: override, background: null, source: "FX_THEME", explicit: true }
+    return { theme: override, background: null, source: "FMX_THEME", explicit: true }
+  }
+  // A headless Runtime has no terminal to answer, and waiting for the timeout
+  // would delay its first frame. The first Client tells it instead.
+  if (timeoutMs <= 0) {
+    const colorFgBg = colorFgBgIsLight(env.COLORFGBG)
+    return {
+      theme: colorFgBg ? "light" : "dark",
+      background: null,
+      source: colorFgBg ? "COLORFGBG" : "default",
+      explicit: false,
+    }
   }
 
   const background = await queryOsc11(port, timeoutMs)
@@ -134,7 +145,7 @@ export class FxnkThemeMonitor {
   private readonly inputHandler = (sequence: string): boolean => {
     const notification = notificationTheme(sequence)
     if (notification) {
-      // FX_THEME fixes the palette for the process lifetime. Still own the
+      // FMX_THEME fixes the palette for the process lifetime. Still own the
       // protocol byte so OpenTUI cannot start a second theme query path.
       if (this.current.explicit) return true
       this.notification = notification
@@ -306,7 +317,7 @@ export function buildEmbeddedThemeSequence(resolution: FxnkThemeResolution): str
   return `\x1b]11;${background}\x1b\\`
 }
 
-/** Ghostty's color-scheme notification consumed by fx's theme monitor. */
+/** Ghostty's color-scheme notification, which the live-theme monitor treats as a trigger. */
 export function themeModeReport(theme: FxnkTheme): Uint8Array {
   return new TextEncoder().encode(theme === "light" ? LIGHT_NOTIFICATION : DARK_NOTIFICATION)
 }

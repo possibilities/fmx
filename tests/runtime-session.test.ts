@@ -5,25 +5,38 @@ import { join } from "node:path"
 import {
   currentRuntimeCommand,
   ensureRuntimeSession,
-  runtimeSessionIdentity,
-  waitForRuntimeBootstrap,
+  findRuntimeSession,
+  waitForRuntimeApi,
 } from "../src/runtime-session.ts"
-import type { CompanionCommand, CreateRequest, SessionEntry } from "../src/zmx-command.ts"
+import { runtimeLabels, runtimeSessionName } from "../src/session-identity.ts"
+import { CompanionCreateError, type CompanionCommand, type CreateRequest, type SessionEntry } from "../src/zmx-command.ts"
 
-const HOME = "0123456789ab"
+const INSTANCE = "0123456789ab"
+const NAME = runtimeSessionName(INSTANCE)
+const LABELS = runtimeLabels(INSTANCE)
 
-test("Runtime identity is stable per Home and creation requests final-Client ownership", async () => {
-  const identity = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
-  expect(identity).toEqual({
-    name: `fmxr-${HOME}`,
-    labels: { owner: "fmx", home: HOME, kind: "runtime" },
-    bootstrapPath: `/tmp/fmx-runtime-test/.fmxr-${HOME}.bootstrap`,
-  })
+const session = (name: string, state: SessionEntry["state"], labels: Record<string, string>): SessionEntry => ({
+  name,
+  state,
+  socketPath: `/tmp/${name}`,
+  pid: 3,
+  clients: 0,
+  createdAt: 4,
+  command: ["fmx"],
+  cwd: "/work",
+  labels,
+  exit: null,
+  detail: null,
+})
+
+test("the Runtime is one deterministic Companion session per Instance, and it is headless", async () => {
+  expect(NAME).toBe(`fmxr-${INSTANCE}`)
+  expect(LABELS).toEqual({ owner: "fmx", instance: INSTANCE, kind: "runtime" })
 
   let created: CreateRequest | null = null
   const companion = {
     directory: "/tmp/fmx-runtime-test",
-    settle: async () => session(identity.name, "absent", {}),
+    settle: async () => session(NAME, "absent", {}),
     create: async (request: CreateRequest) => {
       created = request
       return { name: request.name, socketPath: `/tmp/${request.name}`, pid: 4, createdAt: 5 }
@@ -32,183 +45,133 @@ test("Runtime identity is stable per Home and creation requests final-Client own
 
   expect(
     await ensureRuntimeSession(companion, {
-      homeId: HOME,
+      instanceId: INSTANCE,
       cwd: "/work",
-      command: ["fmx"],
+      command: ["fmx", "runtime"],
       env: { PATH: "/bin" },
     }),
-  ).toEqual({ socketPath: `/tmp/fmxr-${HOME}`, bootstrapPath: identity.bootstrapPath })
+  ).toEqual({ socketPath: `/tmp/${NAME}`, created: true })
   expect(created).toMatchObject({
-    name: identity.name,
+    name: NAME,
     cwd: "/work",
-    command: ["fmx"],
-    labels: identity.labels,
-    exitOnLastClient: true,
-    env: {
-      PATH: "/bin",
-      FMX_RUNTIME_PROCESS: "1",
-      FMX_RUNTIME_BOOTSTRAP_PATH: identity.bootstrapPath,
-    },
+    command: ["fmx", "runtime"],
+    labels: LABELS,
+    env: { PATH: "/bin", FMX_RUNTIME_PROCESS: "1" },
   })
+  // The Runtime holds its Sessions whether or not a terminal is attached.
+  expect(created!).not.toHaveProperty("exitOnLastClient", true)
 })
 
 test("a live owned Runtime is joined and a label impostor is refused", async () => {
-  const identity = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
   const makeCompanion = (labels: Record<string, string>) =>
-    ({
-      directory: "/tmp/fmx-runtime-test",
-      settle: async () => session(identity.name, "live", labels),
-    }) as unknown as CompanionCommand
-  const request = { homeId: HOME, cwd: "/work", command: ["fmx"], env: {} }
+    ({ directory: "/tmp/x", settle: async () => session(NAME, "live", labels) }) as unknown as CompanionCommand
+  const request = { instanceId: INSTANCE, cwd: "/work", command: ["fmx"], env: {} }
 
-  expect(await ensureRuntimeSession(makeCompanion(identity.labels), request)).toEqual({
-    socketPath: `/tmp/${identity.name}`,
-    bootstrapPath: identity.bootstrapPath,
+  expect(await ensureRuntimeSession(makeCompanion(LABELS), request)).toEqual({
+    socketPath: `/tmp/${NAME}`,
+    created: false,
   })
-  await expect(ensureRuntimeSession(makeCompanion({ ...identity.labels, home: "stranger" }), request)).rejects.toThrow(
-    "does not belong",
-  )
+  await expect(
+    ensureRuntimeSession(makeCompanion({ ...LABELS, instance: "stranger" }), request),
+  ).rejects.toThrow("does not belong")
 })
 
-test("explicit picker preferences refuse incompatible live Runtimes while less specific Clients join", async () => {
-  const tray = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
-  const picker = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test", { agentPicker: true })
-  const hiddenSingle = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test", {
-    agentPicker: true,
-    hideSingleAgentPicker: true,
-  })
-  expect(picker.labels).toEqual({ ...tray.labels, view: "agent-picker" })
-  expect(hiddenSingle.labels).toEqual({ ...picker.labels, picker: "hide-single" })
-
-  const makeCompanion = (labels: Record<string, string>) =>
-    ({
-      directory: "/tmp/fmx-runtime-test",
-      settle: async () => session(tray.name, "live", labels),
-    }) as unknown as CompanionCommand
-  const request = { homeId: HOME, cwd: "/work", command: ["fmx"], env: {} }
-
-  await expect(ensureRuntimeSession(makeCompanion(tray.labels), { ...request, agentPicker: true })).rejects.toThrow(
-    "detach every Client",
-  )
-  await expect(
-    ensureRuntimeSession(makeCompanion(tray.labels), {
-      ...request,
-      agentPicker: true,
-      hideSingleAgentPicker: true,
-    }),
-  ).rejects.toThrow("--agent-picker --hide-single-agent-picker")
-  await expect(
-    ensureRuntimeSession(makeCompanion(picker.labels), {
-      ...request,
-      agentPicker: true,
-      hideSingleAgentPicker: true,
-    }),
-  ).rejects.toThrow("keeps its Agent picker visible for one Agent")
-  expect(await ensureRuntimeSession(makeCompanion(picker.labels), request)).toEqual({
-    socketPath: `/tmp/${tray.name}`,
-    bootstrapPath: tray.bootstrapPath,
-  })
-  expect(await ensureRuntimeSession(makeCompanion(hiddenSingle.labels), { ...request, agentPicker: true })).toEqual({
-    socketPath: `/tmp/${tray.name}`,
-    bootstrapPath: tray.bootstrapPath,
-  })
-  expect(() => runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test", { hideSingleAgentPicker: true })).toThrow(
-    "requires --agent-picker",
-  )
-})
-
-test("an explicit Agent picker request replaces an exited Tray Runtime", async () => {
-  const tray = runtimeSessionIdentity(HOME, "/tmp/fmx-runtime-test")
-  let forgotten = false
-  let created: CreateRequest | null = null
+test("an exited Runtime's record is consumed before a new one is created", async () => {
+  const forgotten: string[] = []
+  let states: SessionEntry["state"][] = ["exited", "absent"]
   const companion = {
-    directory: "/tmp/fmx-runtime-test",
-    settle: async () => session(tray.name, "exited", tray.labels),
-    forget: async () => {
-      forgotten = true
+    directory: "/tmp/x",
+    settle: async () => session(NAME, states.shift() ?? "absent", LABELS),
+    forget: async (name: string) => {
+      forgotten.push(name)
     },
-    create: async (request: CreateRequest) => {
-      created = request
-      return { name: request.name, socketPath: `/tmp/${request.name}`, pid: 4, createdAt: 5 }
+    create: async (request: CreateRequest) => ({
+      name: request.name,
+      socketPath: `/tmp/${request.name}`,
+      pid: 4,
+      createdAt: 5,
+    }),
+  } as unknown as CompanionCommand
+
+  expect(
+    await ensureRuntimeSession(companion, { instanceId: INSTANCE, cwd: "/work", command: ["fmx"], env: {} }),
+  ).toMatchObject({ created: true })
+  expect(forgotten).toEqual([NAME])
+  states = []
+})
+
+test("a racing creator's Runtime is joined rather than fought over", async () => {
+  let live = false
+  const companion = {
+    directory: "/tmp/x",
+    settle: async () => session(NAME, live ? "live" : "absent", LABELS),
+    create: async () => {
+      live = true
+      throw new CompanionCreateError("AlreadyExists", "already exists", null)
     },
   } as unknown as CompanionCommand
 
   expect(
-    await ensureRuntimeSession(companion, {
-      homeId: HOME,
-      cwd: "/work",
-      command: ["fmx", "--agent-picker"],
-      env: {},
-      agentPicker: true,
-    }),
-  ).toEqual({ socketPath: `/tmp/${tray.name}`, bootstrapPath: tray.bootstrapPath })
-  expect(forgotten).toBe(true)
-  expect(created).toMatchObject({ labels: { ...tray.labels, view: "agent-picker" } })
+    await ensureRuntimeSession(companion, { instanceId: INSTANCE, cwd: "/work", command: ["fmx"], env: {} }),
+  ).toEqual({ socketPath: `/tmp/${NAME}`, created: false })
 })
 
-test("Runtime bootstrap waits for a first Client marker and consumes it", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-runtime-bootstrap-"))
-  const marker = join(directory, "ready")
+test("a Runtime that is not live is not one a Client can attach to", async () => {
+  const companion = {
+    directory: "/tmp/x",
+    inspect: async () => session(NAME, "exited", LABELS),
+  } as unknown as CompanionCommand
+  expect(await findRuntimeSession(companion, INSTANCE)).toBeNull()
+
+  const liveCompanion = {
+    directory: "/tmp/x",
+    inspect: async () => session(NAME, "live", LABELS),
+  } as unknown as CompanionCommand
+  expect((await findRuntimeSession(liveCompanion, INSTANCE))?.socketPath).toBe(`/tmp/${NAME}`)
+})
+
+test("waiting for the API socket answers only when something listens", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-ready-"))
   try {
-    setTimeout(() => void writeFile(marker, ""), 20)
-    // The safety probe cannot fire within this deadline: success comes from
-    // the directory notification (or the post-watch race check) alone.
-    await waitForRuntimeBootstrap(marker, 1_000, 10_000)
-    await expect(Bun.file(marker).exists()).resolves.toBe(false)
+    const path = join(directory, "instance.api")
+    expect(await waitForRuntimeApi(path, 60, 10)).toBe(false)
+
+    const server = Bun.listen({ unix: path, socket: { data: () => {} } })
+    try {
+      expect(await waitForRuntimeApi(path, 1_000, 10)).toBe(true)
+    } finally {
+      server.stop(true)
+    }
+
+    // A file that is not a listener is not an answer.
+    await writeFile(join(directory, "not-a-socket"), "")
+    expect(await waitForRuntimeApi(join(directory, "not-a-socket"), 60, 10)).toBe(false)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
 test("the Runtime command distinguishes a source checkout from a compiled binary", () => {
-  expect(currentRuntimeCommand({ executable: "/bin/bun", main: "/work/src/index.ts" })).toEqual([
-    "/bin/bun",
-    "/work/src/index.ts",
+  expect(currentRuntimeCommand({ executable: "/usr/bin/bun", main: "/src/index.ts" })).toEqual([
+    "/usr/bin/bun",
+    "/src/index.ts",
+    "runtime",
   ])
-  expect(currentRuntimeCommand({ executable: "/bin/fmx", main: "/$bunfs/root/index.js" })).toEqual(["/bin/fmx"])
-  expect(currentRuntimeCommand({ executable: "/bin/bun", main: "/work/src/index.ts", name: "foo" })).toEqual([
-    "/bin/bun",
-    "/work/src/index.ts",
+  expect(currentRuntimeCommand({ executable: "/usr/local/bin/fmx", main: "/$bunfs/root/fmx" })).toEqual([
+    "/usr/local/bin/fmx",
+    "runtime",
+  ])
+  expect(currentRuntimeCommand({ executable: "/usr/bin/bun", main: "/src/index.ts", name: "review" })).toEqual([
+    "/usr/bin/bun",
+    "/src/index.ts",
+    "runtime",
     "--name",
-    "foo",
+    "review",
   ])
-  expect(currentRuntimeCommand({ executable: "/bin/fmx", main: "/$bunfs/root/index.js", name: "foo" })).toEqual([
-    "/bin/fmx",
-    "--name",
-    "foo",
+  // The default Instance's argv carries no name.
+  expect(currentRuntimeCommand({ executable: "/usr/bin/bun", main: "/src/index.ts", name: "default" })).toEqual([
+    "/usr/bin/bun",
+    "/src/index.ts",
+    "runtime",
   ])
-  expect(currentRuntimeCommand({
-    executable: "/bin/bun",
-    main: "/work/src/index.ts",
-    name: "foo",
-    agentPicker: true,
-  })).toEqual(["/bin/bun", "/work/src/index.ts", "--name", "foo", "--agent-picker"])
-  expect(currentRuntimeCommand({
-    executable: "/bin/fmx",
-    main: "/$bunfs/root/index.js",
-    agentPicker: true,
-  })).toEqual(["/bin/fmx", "--agent-picker"])
-  expect(currentRuntimeCommand({
-    executable: "/bin/fmx",
-    main: "/$bunfs/root/index.js",
-    agentPicker: true,
-    hideSingleAgentPicker: true,
-  })).toEqual(["/bin/fmx", "--agent-picker", "--hide-single-agent-picker"])
-  expect(() => currentRuntimeCommand({ hideSingleAgentPicker: true })).toThrow("requires --agent-picker")
 })
-
-function session(name: string, state: SessionEntry["state"], labels: Record<string, string>): SessionEntry {
-  return {
-    name,
-    state,
-    socketPath: state === "absent" ? null : `/tmp/${name}`,
-    pid: null,
-    clients: null,
-    createdAt: null,
-    command: null,
-    cwd: null,
-    labels,
-    exit: null,
-    detail: null,
-  }
-}

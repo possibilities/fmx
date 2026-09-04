@@ -1,30 +1,27 @@
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { resolveFmxHome } from "./home.ts"
+import { resolveInstance } from "./instance.ts"
 import { resolveKeybindings, type Keybindings } from "./keybindings.ts"
 
 type LoadedConfig = {
   keybindings: Keybindings
-  /** Directories fmx may use as a Home's working directory. */
-  projectRoots: string[]
-  /** Where a requested Agent Worktree is checked out. */
-  worktreeRoot: string
   diagnostics: string[]
 }
 
-const KNOWN_SECTIONS = new Set(["keys", "project_roots", "worktree_root"])
-
-/** Unlike the project roots, this one has a usable default: it names fmx's
- * own directory rather than guessing where anybody keeps their work. */
-export const DEFAULT_WORKTREE_ROOT = "~/.fmx/worktrees"
+const KNOWN_SECTIONS = new Set(["keys"])
 
 export function configPath(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
 ): string {
-  return resolveFmxHome(null, env, homeDirectory).configPath
+  return resolveInstance(null, env, homeDirectory).configPath
 }
 
+/**
+ * One shared file, read by every Instance. It holds the two keys fmx claims
+ * and nothing else: what runs in a Session and where its Pane goes are the
+ * API's, never a file's.
+ */
 export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
   let content: string
   try {
@@ -53,52 +50,11 @@ export async function loadConfig(path = configPath()): Promise<LoadedConfig> {
   }
   const resolved = resolveKeybindings(document.keys)
   diagnostics.push(...resolved.diagnostics)
-  return {
-    keybindings: resolved.keybindings,
-    projectRoots: resolveProjectRoots(document.project_roots, diagnostics),
-    worktreeRoot: resolveWorktreeRoot(document.worktree_root, diagnostics),
-    diagnostics,
-  }
-}
-
-/**
- * Where projects live on this machine, so the default is empty: a shipped
- * guess at someone's directory layout would offer a list that is wrong
- * everywhere it is not exactly right.
- */
-function resolveProjectRoots(raw: unknown, diagnostics: string[]): string[] {
-  if (raw === undefined) return []
-  if (!Array.isArray(raw)) {
-    diagnostics.push("invalid project_roots: must be an array of directories; ignoring it")
-    return []
-  }
-  const roots: string[] = []
-  for (const entry of raw) {
-    if (typeof entry !== "string" || entry.trim() === "") {
-      diagnostics.push(`invalid project root: ${JSON.stringify(entry)}; ignoring entry`)
-      continue
-    }
-    if (!roots.includes(entry)) roots.push(entry)
-  }
-  return roots
-}
-
-function resolveWorktreeRoot(raw: unknown, diagnostics: string[]): string {
-  if (raw === undefined) return DEFAULT_WORKTREE_ROOT
-  if (typeof raw !== "string" || raw.trim() === "") {
-    diagnostics.push("invalid worktree_root: must be a directory; using the default")
-    return DEFAULT_WORKTREE_ROOT
-  }
-  return raw
+  return { keybindings: resolved.keybindings, diagnostics }
 }
 
 function defaultConfig(...diagnostics: string[]): LoadedConfig {
-  return {
-    keybindings: resolveKeybindings().keybindings,
-    projectRoots: [],
-    worktreeRoot: DEFAULT_WORKTREE_ROOT,
-    diagnostics,
-  }
+  return { keybindings: resolveKeybindings().keybindings, diagnostics }
 }
 
 function isMissingFile(error: unknown): boolean {

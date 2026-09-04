@@ -1,9 +1,11 @@
 # fmx
 
-**fmx** /fʌks/ — An orchestration surface for [fx](https://fx.sh/).
+**fmx** /fʌks/ — A terminal multiplexer driven over a socket.
 
-Many Agents in one terminal: an Agent list and the active Agent. Agents live
-in a companion daemon, so they keep running when fmx is not.
+Start it, stop it, and attach a terminal to it from the command line.
+Everything else — what runs, where it sits on screen, what has the keyboard —
+is an API for programs. Each Session lives in a companion daemon, so it keeps
+running when fmx is not.
 
 ## Install
 
@@ -13,108 +15,87 @@ cd fmx
 scripts/install.sh --install
 ```
 
-This links `fmx` and `fmx-mcp` from the checkout and builds its exact pinned
-Companion and Fx fork sources as `fmx-zmx` and `fmx-fx`. Fmx publishes no binaries. See the
-[source installation guide](docs/source-install.md) for requirements,
-automation inputs, and the tested platform boundary. `fmx doctor` reports
-what an installation has.
+This links `fmx` from the checkout and builds its exact pinned Companion
+source as `fmx-zmx`. Fmx publishes no binaries. See the
+[source installation guide](docs/source-install.md) for requirements and the
+tested platform boundary. `fmx doctor` reports what an installation has.
 
-## Usage
+## Use
 
-`ctrl-b` is the prefix key. `ctrl-b ?` lists every binding.
+```sh
+fmx start            # start the Instance without attaching; prints its API socket
+fmx                  # start it if needed, then attach this terminal
+fmx attach           # attach this terminal to a running Instance
+fmx status           # the Instance as JSON
+fmx stop             # end every Session and the Instance
+fmx api              # the API contract as JSON
+```
 
-| | |
-|---|---|
-| `ctrl-b d` | detach this terminal, leaving every agent running |
-| `ctrl-b p` / `ctrl-b n` | switch to the previous / next agent |
-| `ctrl-b b` | toggle the tray, or the Agent picker when that view is active |
+`--name NAME` selects an independent Instance; several run side by side and
+share nothing but the config file.
 
-Configuration is `~/.config/fmx/config.toml`. At least one project root is
-required; everything else has a default:
+`ctrl-b d` detaches this terminal, leaving every Session running. That is the
+only chord fmx claims: the prefix is a latch the attached terminal holds until
+the next key proves it is not Detach, and every other key, the prefix
+included, reaches the focused Session unchanged.
+
+## Drive it
+
+Everything past start, stop, and attach is the API: one JSON object per line
+on the socket that `fmx start` and `fmx status` report.
+
+```
+{"v":1,"type":"request","id":"1","method":"session.create","params":{"name":"reviewer","argv":["claude"],"cwd":"/Users/you/code/fmx"}}
+{"v":1,"type":"request","id":"2","method":"layout.apply","params":{"root":{"row":[{"session":"tray","size":26},{"session":"reviewer"}]},"focus":"reviewer"}}
+{"v":1,"type":"request","id":"3","method":"events.subscribe"}
+```
+
+The methods are `instance.status`, `instance.stop`, `events.subscribe`,
+`session.create`, `session.kill`, `session.list`, `session.capture`,
+`layout.apply`, and `layout.get`. The events are `session.exited`,
+`session.changed`, `layout.changed`, `stage.changed`, `theme.changed`, and
+`instance.stopping`. The full reference is [docs/api.md](docs/api.md), and
+`fmx api` prints the same contract as JSON Schema.
+
+There is deliberately no way to type into a Session over the API, no MCP
+surface, and no byte-level observation: `session.changed` tells you a screen
+moved and `session.capture` reads it.
+
+## The model
+
+An **Instance** is one running fmx: a Runtime, its Sessions, and one Layout.
+
+A **Session** is a command in a Companion-held PTY, named by its caller. It
+runs whether or not a Pane shows it, and it outlives the Runtime — the
+Companion holds it, labelled with the Instance's id, and the next Runtime
+adopts it. fmx stores nothing of its own.
+
+The **Layout** is a tree of rows and columns whose leaves are **Panes**, each
+showing one Session or one line of text. Sizes live in the tree, so resizing
+is applying a tree with a different size. Every boundary between siblings is
+a divider a human can drag, and a drag moves the Layout's revision on, so a
+caller writing from a stale read is refused rather than undoing the gesture.
+
+The **Stage** is the drawn area. Several terminals can attach at once; the
+one that interacted most recently sets the size, larger ones have flat unused
+space, and smaller ones crop.
+
+## Configure
+
+One shared file, `~/.config/fmx/config.toml` (or `FMX_CONFIG_PATH`), read by
+every Instance. It holds the two keys fmx claims and nothing else:
 
 ```toml
-project_roots = ["~/code", "~/src"]
-worktree_root = "~/.fmx/worktrees"
+[keys]
+prefix = "ctrl+b"
+detach = "prefix+d"
 ```
 
-Run `fmx` again to attach another terminal to the same UI. The last one to
-interact sets the layout size.
+`FMX_THEME` fixes the palette to `dark` or `light`; otherwise fmx asks the
+attached terminal for its background and follows it.
 
-Use `--agent-picker` for a full-width Agent selector above the terminal instead
-of the Tray:
-
-```sh
-fmx --agent-picker
-```
-
-The picker lists the switchable Agents newest first, with their Fx Conversation name,
-Project context, and current state. `ctrl-b b` opens it; use the arrow keys and
-Enter to select, or Escape to close it.
-
-Add `--hide-single-agent-picker` when one Agent should receive the whole
-terminal and the picker should appear only after a second Agent starts:
-
-```sh
-fmx --agent-picker --hide-single-agent-picker
-```
-
-If the roster returns to one Agent, the picker closes and gives its three rows
-back to that Agent.
-
-The view belongs to the shared Runtime for that fmx Session. Plain `fmx` attaches to
-whichever view is already running and starts the Tray view when there is no
-Runtime. An explicit `fmx --agent-picker` refuses to attach when that fmx Session
-already has a Tray Runtime, so it never silently gives a different view than
-the one requested. An explicit `--hide-single-agent-picker` likewise refuses a
-live picker Runtime that was started without that behavior.
-
-Use `--name` to select an independent fmx Session:
-
-```sh
-fmx --name review
-fmx --name implementation
-```
-
-Each fmx Session has its own Agents and display numbering, saved UI state,
-Runtime, Clients, and private sockets. Running the same name again attaches to
-that fmx Session's existing Runtime. Every fmx Session shares `config.toml`,
-Fx's profile, credentials and saved Fx Conversations, project roots,
-repositories, and binaries. Plain `fmx` and `fmx --name default` select the
-original default fmx Session unchanged.
-
-An agent disappears only when it exits — end it from inside, the way you would
-at a terminal. `fmx-zmx list`, `attach`, and `kill` reach one by hand.
-
-## MCP
-
-`fmx-mcp` is the stdio MCP server for agent automation. Configure an MCP host
-to run that executable; when started inside an Agent it uses that Agent as the
-`current` Target, and outside one it connects only when exactly one Runtime is
-live.
-
-| Tool | Purpose |
-|---|---|
-| `get_orientation` | Read the selected fmx Session, caller, active Agent, all Agents and subagents, Tray tree, terminal size, and open fmx surface |
-| `create_agent` | Create an Agent in a repository, optionally in a new Worktree and with per-process model or effort overrides |
-| `focus_agent` | Focus an Agent by stable `agent_id`, `pane_id`, display id, relative Target, Fx Conversation name, or compatibility `session_id` prefix |
-| `configure_tray` | Read or change the Tray's width and visibility |
-| `get_agent_work` | Read Fx's authoritative active turn, paused state, and queued work |
-| `queue_agent_work` | Append plain-text work to Fx's native queue |
-| `steer_agent` | Steer the active Fx turn, or queue the work when no turn is active |
-| `interrupt_agent` | Interrupt active work and pause remaining queued work for inspection |
-| `update_queued_work` | Replace the plain text of one queued Turn |
-| `delete_queued_work` | Delete one queued Turn |
-| `resume_agent_queue` | Resume Fx's paused queue unchanged |
-
-Creation with no directory uses the caller's repository, then the first
-configured Project. Work tools default to the caller's Agent and use Fx's
-native semantic queue, steer, and interrupt operations—never terminal paste.
-There is deliberately no prompt-send, wait, event-stream, permission-answer,
-or Runtime-lifecycle surface. See the [agent integration guide](docs/agent-integration.md)
-for exact targeting, queue semantics, results, errors, and integration advice.
-
-The mode-0600 [Runtime bridge](docs/runtime-bridge.md) between `fmx-mcp` and a
-running Runtime is an implementation detail, not a supported automation API.
+A Session ends only when its process does. `fmx-zmx list`, `attach`, and
+`kill` reach one by hand.
 
 ## Development
 
@@ -122,12 +103,12 @@ running Runtime is an implementation detail, not a supported automation API.
 bun install --frozen-lockfile
 bun link                      # ~/.bun/bin/fmx runs this checkout
 bun test && bun run typecheck
-bun run gallery               # browse UI components and their states
 scripts/install-companion.sh  # the pinned companion, into ~/.local/bin
 scripts/local-gate.sh         # the only merge gate: this Mac architecture
 ```
 
-`AGENTS.md` is the working contract, `docs/adr/` the decisions behind it.
+`AGENTS.md` is the working contract, `CONTEXT.md` the glossary, and
+`docs/adr/` the decisions behind them.
 
 ## Design
 

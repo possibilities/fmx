@@ -1,0 +1,256 @@
+import { expect, test } from "bun:test"
+import { createTestRenderer } from "@opentui/core/testing"
+import { fileURLToPath } from "node:url"
+import type { EventName, InstanceStatus, LayoutView, SessionView } from "../src/protocol.ts"
+import { EMPTY_LAYOUT, Runtime } from "../src/runtime.ts"
+import { sessionIdentity } from "../src/session-identity.ts"
+import { FakeCompanion } from "./fixtures/fake-companion.ts"
+import { PtyTransportFactory } from "./fixtures/pty-transport.ts"
+
+const FAKE_APP = fileURLToPath(new URL("./fixtures/fake-app.ts", import.meta.url))
+const INSTANCE = "0123456789ab"
+
+async function harness(prepare?: (companion: FakeCompanion, transport: PtyTransportFactory) => void) {
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true, exitOnCtrlC: false })
+  const companion = new FakeCompanion()
+  const transport = new PtyTransportFactory()
+  prepare?.(companion, transport)
+  const events: { event: EventName; data: unknown }[] = []
+  const runtime = new Runtime(setup.renderer, {
+    instanceId: INSTANCE,
+    instanceName: "default",
+    socketPath: `/tmp/fmx-test/${INSTANCE}.api`,
+    theme: { theme: "dark", background: null, source: "default", explicit: false },
+    sessions: {
+      instanceId: INSTANCE,
+      companion: companion.asCompanion(),
+      transport,
+      environment: { PATH: process.env.PATH ?? "", HOME: "/home/test" },
+    },
+    publish: (event, data) => events.push({ event, data }),
+  })
+  await runtime.start()
+  return {
+    setup,
+    runtime,
+    companion,
+    transport,
+    events,
+    call: <T>(method: EventName extends never ? never : Parameters<Runtime["handle"]>[0], params: unknown = {}) =>
+      runtime.handle(method, params) as Promise<T>,
+    close: async () => {
+      await runtime.shutdown()
+    },
+  }
+}
+
+const waitFor = async (check: () => boolean | Promise<boolean>, timeoutMs = 4000) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await check()) return true
+    await Bun.sleep(10)
+  }
+  return check()
+}
+
+test("a fresh Instance draws its empty state and reports itself", async () => {
+  const app = await harness()
+  try {
+    const status = await app.call<InstanceStatus>("instance.status")
+    expect(status).toMatchObject({ name: "default", instance_id: INSTANCE, theme: "dark", sessions: [] })
+    expect(status.stage).toEqual({ cols: 100, rows: 30 })
+    expect(status.layout.root).toEqual(EMPTY_LAYOUT)
+    await app.setup.renderOnce()
+    expect(app.setup.captureCharFrame()).toContain("no sessions")
+  } finally {
+    await app.close()
+  }
+})
+
+test("an Instance that adopted Sessions shows the first one instead of the empty state", async () => {
+  const app = await harness((companion, transport) => {
+    const identity = sessionIdentity(INSTANCE, "tray")
+    companion.add({ name: identity.companionName, labels: identity.labels, cwd: "/work", createdAt: 10 })
+    // A PTY cannot be re-attached; the Session is adopted and stays unreachable.
+    transport.attachBehavior = "unreachable"
+  })
+  try {
+    const layout = await app.call<LayoutView>("layout.get")
+    expect(layout.root).toEqual({ session: "tray" })
+    expect(layout.focus).toBe("tray")
+  } finally {
+    await app.close()
+  }
+})
+
+test("creates a Session, puts it on the Layout, and reports it as shown", async () => {
+  const app = await harness()
+  try {
+    const created = await app.call<SessionView>("session.create", {
+      name: "tray",
+      argv: [FAKE_APP],
+      cwd: process.cwd(),
+    })
+    expect(created).toMatchObject({ name: "tray", shown: false })
+
+    const layout = await app.call<LayoutView>("layout.apply", {
+      root: { row: [{ session: "tray", size: 26 }, { text: "no agent" }] },
+      focus: "tray",
+    })
+    expect(layout.panes.map((pane) => [pane.session ?? pane.text, pane.cols])).toEqual([
+      ["tray", 26],
+      ["no agent", 73],
+    ])
+    const listed = await app.call<{ sessions: SessionView[] }>("session.list")
+    expect(listed.sessions[0]).toMatchObject({ name: "tray", shown: true })
+  } finally {
+    await app.close()
+  }
+})
+
+test("a Session that appears after its Pane fills it without another apply", async () => {
+  const app = await harness()
+  try {
+    await app.call("layout.apply", { root: { row: [{ session: "tray", size: 26 }, { session: "later" }] }, focus: "tray" })
+    await app.call("session.create", { name: "later", argv: [FAKE_APP], cwd: process.cwd() })
+    const layout = await app.call<LayoutView>("layout.get")
+    expect(layout.panes.map((pane) => pane.session)).toEqual(["tray", "later"])
+    const listed = await app.call<{ sessions: SessionView[] }>("session.list")
+    expect(listed.sessions.find((session) => session.name === "later")!.shown).toBe(true)
+  } finally {
+    await app.close()
+  }
+})
+
+test("captures a Session that no Pane shows", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", {
+      name: "hidden",
+      argv: [FAKE_APP],
+      cwd: process.cwd(),
+      env: { FMX_TEST_BANNER: "working" },
+      cols: 40,
+      rows: 6,
+    })
+    await waitFor(async () => {
+      const capture = await app.call<{ lines: string[] }>("session.capture", { name: "hidden" })
+      return capture.lines.join("").includes("working")
+    })
+    const capture = await app.call<{ lines: string[]; cols: number; rows: number }>("session.capture", { name: "hidden" })
+    expect(capture.cols).toBe(40)
+    expect(capture.lines[0]).toContain("working")
+    const listed = await app.call<{ sessions: SessionView[] }>("session.list")
+    expect(listed.sessions[0]!.shown).toBe(false)
+  } finally {
+    await app.close()
+  }
+})
+
+test("a shown Session captures correctly after it has been drawn", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", {
+      name: "tray",
+      argv: [FAKE_APP],
+      cwd: process.cwd(),
+      env: { FMX_TEST_BANNER: "drawn and read" },
+    })
+    await app.call("layout.apply", { root: { session: "tray" }, focus: "tray" })
+    await waitFor(async () => {
+      const capture = await app.call<{ lines: string[] }>("session.capture", { name: "tray" })
+      return capture.lines.join("").includes("drawn and read")
+    })
+    // A frame consumes the emulator's damage, so a capture that did not ask
+    // for the whole screen would read blanks from here on.
+    await app.setup.renderOnce()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const capture = await app.call<{ lines: string[] }>("session.capture", { name: "tray" })
+      expect(capture.lines.join("")).toContain("drawn and read")
+      await app.setup.renderOnce()
+    }
+    // And the frame still draws it.
+    expect(app.setup.captureCharFrame()).toContain("drawn and read")
+  } finally {
+    await app.close()
+  }
+})
+
+test("publishes the events a caller drives the surface from", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await app.call("layout.apply", { root: { session: "tray" }, focus: "tray" })
+    await waitFor(() => app.events.some((entry) => entry.event === "session.changed"))
+
+    const layoutChanges = app.events.filter((entry) => entry.event === "layout.changed")
+    expect(layoutChanges.length).toBeGreaterThanOrEqual(1)
+    expect((layoutChanges.at(-1)!.data as { cause: string }).cause).toBe("apply")
+    expect(app.events.find((entry) => entry.event === "session.changed")!.data).toMatchObject({ name: "tray" })
+
+    app.transport.forName("tray")!.write(new TextEncoder().encode("quit\r"))
+    await waitFor(() => app.events.some((entry) => entry.event === "session.exited"))
+    expect(app.events.find((entry) => entry.event === "session.exited")!.data).toMatchObject({
+      name: "tray",
+      code: 7,
+      reason: "natural",
+    })
+  } finally {
+    await app.close()
+  }
+})
+
+test("a stage resize refits and announces the new size once", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await app.call("layout.apply", { root: { session: "tray" }, focus: "tray" })
+    app.events.length = 0
+    app.setup.resize(60, 20)
+    await Bun.sleep(50)
+    const stageChanges = app.events.filter((entry) => entry.event === "stage.changed")
+    expect(stageChanges).toHaveLength(1)
+    expect(stageChanges[0]!.data).toEqual({ cols: 60, rows: 20 })
+    expect((await app.call<LayoutView>("layout.get")).stage).toEqual({ cols: 60, rows: 20 })
+  } finally {
+    await app.close()
+  }
+})
+
+test("kill goes to the Companion and the exit removes the Session", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await app.call("session.kill", { name: "tray" })
+    expect(app.companion.killed).toEqual([`fmx-${INSTANCE}-tray`])
+    await expect(app.call("session.capture", { name: "missing" })).rejects.toThrow("no Session named missing")
+  } finally {
+    await app.close()
+  }
+})
+
+test("stop answers first, then ends every Session and the Runtime", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    expect(await app.call<Record<string, never>>("instance.stop")).toEqual({})
+    expect(app.events.some((entry) => entry.event === "instance.stopping")).toBe(true)
+    await app.runtime.waitUntilDone()
+    expect(app.companion.killed).toEqual([`fmx-${INSTANCE}-tray`])
+  } finally {
+    await app.close()
+  }
+})
+
+test("a theme change retints in one pass and says so", async () => {
+  const app = await harness()
+  try {
+    app.runtime.setTheme({ theme: "light", background: "#ffffff", source: "osc11", explicit: false })
+    expect(app.events.filter((entry) => entry.event === "theme.changed")).toEqual([
+      { event: "theme.changed", data: { theme: "light" } },
+    ])
+    expect((await app.call<InstanceStatus>("instance.status")).theme).toBe("light")
+  } finally {
+    await app.close()
+  }
+})

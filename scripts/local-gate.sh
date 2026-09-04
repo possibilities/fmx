@@ -17,11 +17,10 @@ esac
 
 printf 'fmx local gate: gating on %s\n' "$platform"
 scripts/install.sh --install
-bun run contracts:check
 bun run typecheck
-bun test
+FMX_ZMX_PATH="${FMX_INSTALL_BIN_DIR:-$HOME/.local/bin}/fmx-zmx" bun test
 FMX_BINARY_PATH="${BUN_INSTALL:-$HOME/.bun}/bin/fmx" \
 FMX_ZMX_PATH="${FMX_INSTALL_BIN_DIR:-$HOME/.local/bin}/fmx-zmx" \
 FMX_RUN_PTY_TESTS=1 \
-bun test tests/multiplexer.e2e.test.ts
+bun test tests/instance.e2e.test.ts
 printf 'fmx local gate: PASS %s\n' "$platform"

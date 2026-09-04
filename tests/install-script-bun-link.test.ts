@@ -17,11 +17,10 @@ if [[ "\${1:-}" == "install" ]]; then
 fi
 if [[ "\${1:-}" == "link" ]]; then
   mkdir -p "\${FAKE_BUN_LINK_DIR:?}"
-  for name in fmx fmx-mcp; do
-    dest="\${FAKE_BUN_LINK_DIR}/\${name}"
-    printf '#!/usr/bin/env bash\\nexit 0\\n' > "\${dest}"
-    chmod 0755 "\${dest}"
-  done
+  mkdir -p "\${FAKE_BUN_LINK_DIR}"
+  dest="\${FAKE_BUN_LINK_DIR}/fmx"
+  printf '#!/usr/bin/env bash\\nexit 0\\n' > "\${dest}"
+  chmod 0755 "\${dest}"
   exit 0
 fi
 if [[ "\${1:-}" == *src/index.ts && "\${2:-}" == doctor ]]; then
@@ -49,9 +48,6 @@ chmod 0755 "\${dest}"
 exit 0
 `
 
-const FAKE_FX_COMMIT = "a".repeat(40)
-const FAKE_FXNK_VERSION = "9.9.9"
-
 async function writeExecutable(path: string, contents: string): Promise<void> {
   await writeFile(path, contents, "utf8")
   await chmod(path, 0o755)
@@ -75,20 +71,6 @@ test("installer discovers the bun link directory without bun pm bin -g", async (
     )
 
     await writeFile(
-      join(fixtureRoot, "fx.json"),
-      JSON.stringify(
-        {
-          repository: "https://example.invalid/fx.git",
-          branch: "integration",
-          commit: FAKE_FX_COMMIT,
-          fxnk: FAKE_FXNK_VERSION,
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    )
-    await writeFile(
       join(fixtureRoot, "companion.json"),
       JSON.stringify(
         {
@@ -109,12 +91,6 @@ test("installer discovers the bun link directory without bun pm bin -g", async (
     await writeExecutable(join(fakeBinDir, "git"), FAKE_GIT)
     await writeExecutable(join(fakeBinDir, "zig"), FAKE_ZIG)
 
-    const fakeFxBinary = join(fixtureRoot, "fake-fx")
-    await writeExecutable(
-      fakeFxBinary,
-      `#!/usr/bin/env bash\nif [[ "\${1:-}" == "--fxnk-version" ]]; then\n  printf 'fxnk ${FAKE_FXNK_VERSION} (fx fake)\\n'\n  exit 0\nfi\nexit 0\n`,
-    )
-
     const home = join(fixtureRoot, "home")
     const bunInstall = join(fixtureRoot, "bun-install")
     const bunLinkDir = join(bunInstall, "bin")
@@ -130,8 +106,6 @@ test("installer discovers the bun link directory without bun pm bin -g", async (
         HOME: home,
         BUN_INSTALL: bunInstall,
         FAKE_BUN_LINK_DIR: bunLinkDir,
-        FMX_FX_BINARY: fakeFxBinary,
-        FMX_FX_COMMIT: FAKE_FX_COMMIT,
         TMPDIR: fixtureRoot,
       },
       stderr: "pipe",
@@ -144,17 +118,13 @@ test("installer discovers the bun link directory without bun pm bin -g", async (
     if (result.exitCode !== 0) {
       throw new Error(`install.sh failed (${result.exitCode}):\n${stdout}\n${stderr}`)
     }
-    expect(stdout).toContain("installed Fx")
+    expect(stdout).toContain("linked fmx and installed the pinned Companion")
 
-    const fmxLink = Bun.file(join(bunLinkDir, "fmx"))
-    const fmxMcpLink = Bun.file(join(bunLinkDir, "fmx-mcp"))
-    expect(await fmxLink.exists()).toBe(true)
-    expect(await fmxMcpLink.exists()).toBe(true)
-
-    const fxInstalled = Bun.file(join(localBinDir, "fmx-fx"))
-    const companionInstalled = Bun.file(join(localBinDir, "fmx-zmx"))
-    expect(await fxInstalled.exists()).toBe(true)
-    expect(await companionInstalled.exists()).toBe(true)
+    expect(await Bun.file(join(bunLinkDir, "fmx")).exists()).toBe(true)
+    expect(await Bun.file(join(localBinDir, "fmx-zmx")).exists()).toBe(true)
+    // fmx installs no program to run inside a Session.
+    expect(await Bun.file(join(bunLinkDir, "fmx-mcp")).exists()).toBe(false)
+    expect(await Bun.file(join(localBinDir, "fmx-fx")).exists()).toBe(false)
   } finally {
     await rm(fixtureRoot, { force: true, recursive: true })
   }

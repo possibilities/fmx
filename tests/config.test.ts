@@ -3,8 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { configPath, loadConfig } from "../src/config.ts"
-import { actionForKey } from "../src/keybindings.ts"
-import type { KeyEvent } from "@opentui/core"
+import { keyMatchesCombo } from "../src/keybindings.ts"
 
 test("resolves the XDG config path and explicit override", () => {
   expect(configPath({ XDG_CONFIG_HOME: "/tmp/config" }, "/home/test")).toBe("/tmp/config/fmx/config.toml")
@@ -22,100 +21,46 @@ test("loads keys from TOML", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fmx-config-"))
   const path = join(directory, "fmx", "config.toml")
   await mkdir(join(directory, "fmx"))
-  await writeFile(
-    path,
-    `[keys]\nprefix = "ctrl+space"\nprevious_tab = ["prefix+p", "alt+1"]\n`,
-  )
+  await writeFile(path, `[keys]\nprefix = "ctrl+space"\ndetach = ["prefix+d", "alt+1"]\n`)
 
   try {
     const loaded = await loadConfig(path)
     expect(loaded.diagnostics).toEqual([])
     expect(loaded.keybindings.prefixLabel).toBe("ctrl+space")
-    expect(
-      actionForKey(
-        loaded.keybindings,
-        {
-          name: "1",
-          sequence: "\u001b1",
-          raw: "\u001b1",
-          ctrl: false,
-          shift: false,
-          meta: true,
-          option: false,
-        } as KeyEvent,
-        "direct",
-      ),
-    ).toEqual({ name: "previous_tab" })
+    expect(loaded.keybindings.detach.map((binding) => binding.label)).toEqual(["prefix+d", "alt+1"])
+    const space = { name: "space", sequence: "\0", raw: "\0", ctrl: true, shift: false, meta: false, option: false }
+    expect(keyMatchesCombo(space as never, loaded.keybindings.prefix)).toBe(true)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test("loads project roots and diagnoses entries it cannot use", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-roots-"))
-  const good = join(directory, "roots.toml")
-  const bad = join(directory, "bad-roots.toml")
-  await writeFile(good, `project_roots = ["~/code", "~/src", "~/code"]\n`)
-  await writeFile(bad, `project_roots = ["~/code", 7, ""]\n`)
+test("diagnoses a section it does not know and keeps the defaults", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-config-sections-"))
+  const path = join(directory, "config.toml")
+  await writeFile(path, `project_roots = ["~/code"]\n\n[panels]\nleft = 26\n`)
 
   try {
-    const loaded = await loadConfig(good)
-    expect(loaded.diagnostics).toEqual([])
-    expect(loaded.projectRoots).toEqual(["~/code", "~/src"])
-
-    const rejected = await loadConfig(bad)
-    expect(rejected.projectRoots).toEqual(["~/code"])
-    expect(rejected.diagnostics).toEqual([
-      "invalid project root: 7; ignoring entry",
-      'invalid project root: ""; ignoring entry',
+    const loaded = await loadConfig(path)
+    expect(loaded.keybindings.prefixLabel).toBe("ctrl+b")
+    expect(loaded.diagnostics.sort()).toEqual([
+      "unknown config section [panels]; ignoring section",
+      "unknown config section [project_roots]; ignoring section",
     ])
-
-    expect((await loadConfig("/definitely/missing/fmx-config.toml")).projectRoots).toEqual([])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test("loads a worktree root and falls back on one it cannot use", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-worktree-"))
-  const good = join(directory, "worktree.toml")
-  const bad = join(directory, "bad-worktree.toml")
-  await writeFile(good, `worktree_root = "~/trees"\n`)
-  await writeFile(bad, `worktree_root = 7\n`)
+test("falls back to the defaults on unreadable or malformed TOML", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "fmx-config-bad-"))
+  const path = join(directory, "config.toml")
+  await writeFile(path, "[keys\n")
 
   try {
-    expect((await loadConfig(good)).worktreeRoot).toBe("~/trees")
-    const rejected = await loadConfig(bad)
-    expect(rejected.worktreeRoot).toBe("~/.fmx/worktrees")
-    expect(rejected.diagnostics).toEqual([
-      "invalid worktree_root: must be a directory; using the default",
-    ])
-    expect((await loadConfig("/definitely/missing/fmx-config.toml")).worktreeRoot).toBe(
-      "~/.fmx/worktrees",
-    )
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test("falls back on malformed TOML and diagnoses unknown keys", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-errors-"))
-  const malformed = join(directory, "malformed.toml")
-  const unknown = join(directory, "unknown.toml")
-  await writeFile(malformed, "[keys\n")
-  await writeFile(
-    unknown,
-    "[keys]\nclose_tab = \"prefix+q\"\n[theme]\nname = \"terminal\"\n",
-  )
-
-  try {
-    const malformedConfig = await loadConfig(malformed)
-    expect(malformedConfig.keybindings.prefixLabel).toBe("ctrl+b")
-    expect(malformedConfig.diagnostics.join("\n")).toContain("config parse error")
-
-    const unknownConfig = await loadConfig(unknown)
-    expect(unknownConfig.diagnostics).toContain("unknown config key keys.close_tab; ignoring key")
-    expect(unknownConfig.diagnostics).toContain("unknown config section [theme]; ignoring section")
+    const loaded = await loadConfig(path)
+    expect(loaded.keybindings.prefixLabel).toBe("ctrl+b")
+    expect(loaded.diagnostics.join("\n")).toContain("config parse error")
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
