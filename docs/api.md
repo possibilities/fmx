@@ -102,6 +102,11 @@ Trailing blank lines are trimmed. Scrollback is not included.
 
 Replaces the Layout and names the Session the keyboard goes to.
 
+Before the first apply, the Layout on screen is the Runtime's own and follows
+the roster: the first Session, or the line `no sessions` when there are none.
+The first apply takes ownership, and the Runtime composes no Layout after
+that however the roster moves.
+
 ```json
 {"root":{"row":[
    {"column":[{"text":"notes","size":8},{"session":"tray"}],"size":26,"min":24},

@@ -20,6 +20,13 @@ and every drag; a caller passes back the revision its tree was built from and
 a stale write is refused as a conflict. Omitting it writes unconditionally,
 which is what a caller with no human in the loop wants.
 
+Before anyone applies a Layout there is nothing for fmx to draw but its own,
+so it composes one from the roster — the first Session, or the empty line —
+until the first apply takes ownership. The alternative, holding the startup
+Layout fixed, means a human attaching to an unarranged Instance reads "no
+sessions" while three are running. Ownership is one-way: once a caller has
+applied a Layout, the roster never moves it again.
+
 The costs: reacting to a drag is a whole-tree read rather than "this divider
 moved by four", because Panes have no identity in the API beyond their
 position in the caller's own tree. And a caller that ignores the revision can

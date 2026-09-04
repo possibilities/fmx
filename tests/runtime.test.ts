@@ -83,15 +83,60 @@ test("an Instance that adopted Sessions shows the first one instead of the empty
   }
 })
 
+test("the Runtime's own Layout follows the roster until a caller applies one", async () => {
+  const app = await harness()
+  try {
+    expect((await app.call<LayoutView>("layout.get")).root).toEqual(EMPTY_LAYOUT)
+
+    // A Session created with nobody arranging the screen is shown, rather
+    // than leaving an empty state that claims nothing is running.
+    await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    let layout = await app.call<LayoutView>("layout.get")
+    expect(layout.root).toEqual({ session: "tray" })
+    expect(layout.focus).toBe("tray")
+
+    // The first apply takes ownership; the Runtime composes no more.
+    await app.call("layout.apply", { root: { text: "held" }, focus: null })
+    await app.call("session.create", { name: "second", argv: [FAKE_APP], cwd: process.cwd() })
+    layout = await app.call<LayoutView>("layout.get")
+    expect(layout.root).toEqual({ text: "held" })
+
+    // Even back to none: an owned Layout stays the caller's.
+    app.transport.forName("tray")!.write(new TextEncoder().encode("quit\r"))
+    app.transport.forName("second")!.write(new TextEncoder().encode("quit\r"))
+    await waitFor(async () => (await app.call<{ sessions: SessionView[] }>("session.list")).sessions.length === 0)
+    expect((await app.call<LayoutView>("layout.get")).root).toEqual({ text: "held" })
+  } finally {
+    await app.close()
+  }
+})
+
+test("an unowned Layout returns to the empty state when the last Session ends", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    expect((await app.call<LayoutView>("layout.get")).root).toEqual({ session: "tray" })
+    app.transport.forName("tray")!.write(new TextEncoder().encode("quit\r"))
+    await waitFor(async () => (await app.call<{ sessions: SessionView[] }>("session.list")).sessions.length === 0)
+    const layout = await app.call<LayoutView>("layout.get")
+    expect(layout.root).toEqual(EMPTY_LAYOUT)
+    expect(layout.focus).toBeNull()
+  } finally {
+    await app.close()
+  }
+})
+
 test("creates a Session, puts it on the Layout, and reports it as shown", async () => {
   const app = await harness()
   try {
+    // Nobody has applied a Layout yet, so the Runtime's own one shows it.
     const created = await app.call<SessionView>("session.create", {
       name: "tray",
       argv: [FAKE_APP],
       cwd: process.cwd(),
     })
-    expect(created).toMatchObject({ name: "tray", shown: false })
+    // The result tells the truth about the screen it just landed on.
+    expect(created).toMatchObject({ name: "tray", shown: true, state: "live" })
 
     const layout = await app.call<LayoutView>("layout.apply", {
       root: { row: [{ session: "tray", size: 26 }, { text: "no agent" }] },
@@ -133,6 +178,8 @@ test("captures a Session that no Pane shows", async () => {
       cols: 40,
       rows: 6,
     })
+    // A Layout of the caller's that leaves it off screen; it keeps running.
+    await app.call("layout.apply", { root: { text: "nothing here" }, focus: null })
     await waitFor(async () => {
       const capture = await app.call<{ lines: string[] }>("session.capture", { name: "hidden" })
       return capture.lines.join("").includes("working")

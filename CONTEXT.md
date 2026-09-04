@@ -23,6 +23,14 @@ line of text. It has a size in columns or rows, or takes the remainder, and a
 `min` it will not be squeezed below.
 _Avoid_: panel, tile, slot, cell, viewport.
 
+**Default Layout** — what a Runtime draws before any caller has applied one:
+the first Session, or the line `no sessions` when there are none. It is the
+Runtime's own and follows the roster; the first `layout.apply` takes
+ownership, after which the Runtime composes no Layout however the roster
+moves.
+_Avoid_: fallback, empty state (that is the text it draws with no Sessions),
+initial layout.
+
 **Revision** — the counter the Layout carries, moved on by every apply and
 every divider drag. A caller passes back the revision its tree was built from
 and a stale write is refused, so a human's drag is never silently undone by a

@@ -45,6 +45,11 @@
   frame buffer a render pass fills, which a hidden Pane never gets, and
   `onScreenChange` fires per rendered frame and only while visible — neither
   is usable. Change detection is byte-driven and debounced instead.
+- Until a caller applies a Layout, the one on screen is the Runtime's own and
+  follows the roster: the first Session, or the empty state when there are
+  none. The first `layout.apply` takes ownership and the Runtime never
+  composes another. Without this a human attaching to an Instance nobody has
+  arranged reads "no sessions" while three are running.
 - The Layout carries a revision, moved on by every apply and every divider
   drag. `layout.apply` with an older revision is refused as a conflict so a
   human's drag is never silently undone; omitting it writes unconditionally.

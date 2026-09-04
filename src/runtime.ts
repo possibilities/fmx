@@ -25,8 +25,21 @@ export type RuntimeOptions = {
   report?: (line: string) => void
 }
 
-/** What a fresh Instance draws until a caller applies a Layout of its own. */
+/** What an Instance with no Sessions draws until a caller applies a Layout. */
 export const EMPTY_LAYOUT: LayoutNode = { text: "no sessions" }
+
+/**
+ * The Layout a Runtime draws before any caller has applied one: the first
+ * Session, or the empty state when there are none. It is the Runtime's own
+ * and follows the roster, so a human attaching to an Instance nobody has
+ * arranged yet sees what is running rather than a screen that says nothing
+ * is. The first `layout.apply` takes ownership and the Runtime never
+ * composes one again.
+ */
+export function defaultLayout(names: readonly string[]): { root: LayoutNode; focus: string | null } {
+  const first = names[0]
+  return first ? { root: { session: first }, focus: first } : { root: EMPTY_LAYOUT, focus: null }
+}
 
 /**
  * One Instance: the Stage, the roster, and the API's handler. It owns no
@@ -43,6 +56,8 @@ export class Runtime {
   private readonly selectionHandler = (selection: Selection) => this.onSelection(selection)
   private readonly resizeHandler = () => this.onResize()
   private lastStage: { cols: number; rows: number }
+  /** False until a caller applies a Layout; until then the Runtime composes one. */
+  private layoutOwned = false
 
   constructor(
     private readonly renderer: CliRenderer,
@@ -87,12 +102,8 @@ export class Runtime {
       // Sessions stay where they are for the next start.
       this.options.report?.(`could not adopt Sessions: ${message(error)}`)
     }
-    const names = this.sessions.list().map((session) => session.name)
-    const first = names[0]
-    this.stage.apply(
-      adopted > 0 && first ? { session: first } : EMPTY_LAYOUT,
-      first ?? null,
-    )
+    void adopted
+    this.applyDefaultLayout()
   }
 
   waitUntilDone(): Promise<void> {
@@ -155,9 +166,13 @@ export class Runtime {
         return this.sessions.capture((params as Params<"session.capture">).name)
       case "layout.apply": {
         const request = params as Params<"layout.apply">
-        return this.stage.apply(request.root, request.focus === undefined ? undefined : request.focus, {
+        const view = this.stage.apply(request.root, request.focus === undefined ? undefined : request.focus, {
           revision: request.revision,
         })
+        // The caller owns the Layout from here; the Runtime never composes
+        // another, however the roster moves.
+        this.layoutOwned = true
+        return view
       }
       case "layout.get":
         return this.stage.view
@@ -183,10 +198,26 @@ export class Runtime {
     await this.shutdown(0)
   }
 
-  /** The roster changed: re-fit so a new Session's Pane fills without another apply. */
+  /**
+   * The roster changed: re-fit so a new Session's Pane fills without another
+   * apply. While the Layout is still the Runtime's own, it follows the roster
+   * instead, so the empty state never claims nothing is running.
+   */
   private refit(): void {
     if (this.shuttingDown) return
-    this.stage.refit()
+    if (this.layoutOwned) this.stage.refit()
+    else this.applyDefaultLayout()
+  }
+
+  private applyDefaultLayout(): void {
+    const { root, focus } = defaultLayout(this.sessions.list().map((session) => session.name))
+    const current = this.stage.view
+    // Nothing to publish when the composed Layout is the one already drawn.
+    if (JSON.stringify(current.root) === JSON.stringify(root) && current.focus === focus) {
+      this.stage.refit()
+      return
+    }
+    this.stage.apply(root, focus)
   }
 
   /**
