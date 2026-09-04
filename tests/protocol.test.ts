@@ -26,12 +26,15 @@ describe("the contract", () => {
       "layout.get",
       "session.capture",
       "session.create",
+      "session.input",
       "session.kill",
       "session.list",
     ])
   })
 
-  test("offers nothing that types into a Session or manages what a Pane runs", () => {
+  test("takes input as intent, never as bytes, and still manages nothing a Pane runs", () => {
+    // session.input speaks keys, text, paste and mouse; encoding belongs to the
+    // Session's emulator, so nothing here accepts bytes or escape sequences.
     for (const forbidden of ["session.send", "session.write", "session.keys", "pane.set_app", "session.rename"]) {
       expect(isMethod(forbidden)).toBe(false)
     }

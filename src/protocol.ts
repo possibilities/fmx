@@ -145,6 +145,94 @@ export const captureSchema = z.object({
 })
 export type Capture = z.infer<typeof captureSchema>
 
+/**
+ * How much input one call may carry. Events are applied in order on one
+ * connection, so a batch is also the unit of ordering: a caller that needs
+ * two things to arrive in sequence puts them in one call.
+ */
+export const MAX_INPUT_EVENTS = 256
+export const MAX_INPUT_TEXT = 4_096
+export const MAX_INPUT_PASTE = 65_536
+
+/**
+ * Keys that are not a character. Anything else is the character itself, so
+ * `a`, `A` and `£` are keys; the list is closed because a name the encoder
+ * does not know would otherwise be delivered as nothing at all.
+ */
+export const NAMED_KEYS = [
+  "enter",
+  "escape",
+  "tab",
+  "backspace",
+  "delete",
+  "insert",
+  "home",
+  "end",
+  "pageup",
+  "pagedown",
+  "up",
+  "down",
+  "left",
+  "right",
+  "space",
+  ...Array.from({ length: 24 }, (_, index) => `f${index + 1}`),
+] as const
+
+const inputModifiers = {
+  ctrl: z.boolean().optional(),
+  alt: z.boolean().optional(),
+  shift: z.boolean().optional(),
+  super: z.boolean().optional(),
+}
+
+const keyInputSchema = z
+  .object({
+    key: z
+      .string()
+      .min(1)
+      .max(16)
+      .describe(`One named key (${NAMED_KEYS.slice(0, 15).join(", ")}, f1-f24) or a single character`),
+    action: z.enum(["press", "repeat", "release"]).optional().describe("default press"),
+    ...inputModifiers,
+  })
+  .strict()
+
+const textInputSchema = z
+  .object({ text: z.string().min(1).max(MAX_INPUT_TEXT).describe("Delivered as one key press per character, the way typing looks to a program") })
+  .strict()
+
+const pasteInputSchema = z
+  .object({
+    paste: z
+      .string()
+      .min(1)
+      .max(MAX_INPUT_PASTE)
+      .describe("Delivered whole, bracketed when the Session turned bracketed paste on, so a program can tell it from typing"),
+  })
+  .strict()
+
+const mouseInputSchema = z
+  .object({
+    mouse: z
+      .object({
+        action: z.enum(["down", "up", "move", "drag", "scroll"]),
+        button: z.enum(["left", "middle", "right"]).optional().describe("default left; ignored by move and scroll"),
+        x: z.int().min(0).describe("Cell from the Session's own left edge, not the stage's"),
+        y: z.int().min(0).describe("Cell from the Session's own top edge"),
+        scroll: z
+          .object({ direction: z.enum(["up", "down", "left", "right"]), delta: z.int().min(1).max(100) })
+          .strict()
+          .optional()
+          .describe("Required by scroll, and meaningless to every other action"),
+        ...inputModifiers,
+      })
+      .strict(),
+  })
+  .strict()
+
+export const inputEventSchema = z.union([keyInputSchema, textInputSchema, pasteInputSchema, mouseInputSchema])
+export type InputEvent = z.infer<typeof inputEventSchema>
+
 export const instanceStatusSchema = z.object({
   version: z.string(),
   pid: z.int(),
@@ -217,6 +305,17 @@ export const METHODS = {
       })
       .strict(),
     result: captureSchema,
+  },
+  "session.input": {
+    description:
+      "Deliver keyboard, text, paste and mouse input to a Session as a human at its keyboard would. Events apply in order and are encoded for the terminal modes that Session has turned on, so a caller never writes an escape sequence. Input never moves focus, and a Session takes input whether or not a Pane shows it — except mouse, which needs the coordinates only a Pane gives it.",
+    params: z
+      .object({
+        name: sessionName,
+        events: z.array(inputEventSchema).min(1).max(MAX_INPUT_EVENTS),
+      })
+      .strict(),
+    result: empty,
   },
   "layout.apply": {
     description:

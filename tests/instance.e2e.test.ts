@@ -143,6 +143,26 @@ test.skipIf(!ENABLED)(
         client.request("session.capture", { name: "tray", scrollback: 100_000 }),
       ).rejects.toMatchObject({ code: "invalid_params" })
 
+      // Input crosses the socket as intent and reaches the PTY as bytes: the
+      // fake app echoes a completed line back, so `got:` proves the whole
+      // path, encoder included.
+      await client.request("session.input", {
+        name: "main",
+        events: [{ text: "hello" }, { key: "enter" }],
+      })
+      await waitUntil(async () => {
+        const screen = await client!.request("session.capture", { name: "main" })
+        return screen.lines.join("\n").includes("got:hello")
+      })
+
+      // Mouse needs the coordinates only a Pane gives it.
+      await expect(
+        client.request("session.input", { name: "tray", events: [{ mouse: { action: "down", x: 0, y: 0 } }] }),
+      ).resolves.toBeDefined()
+      await expect(
+        client.request("session.input", { name: "nosuch", events: [{ text: "x" }] }),
+      ).rejects.toMatchObject({ code: "not_found" })
+
       // A stale Layout write is refused rather than clobbering what moved.
       await expect(
         client.request("layout.apply", { root: { session: "main" }, revision: layout.revision - 1 }),

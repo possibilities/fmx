@@ -1,5 +1,10 @@
 # A socket is the whole control surface
 
+One clause below is superseded by
+[ADR 0021](0021-input-is-part-of-the-control-surface.md): the socket now
+carries `session.input`. Everything else here still holds, and the original
+words are left as they were written.
+
 Supersedes [ADR 0013](0013-mcp-only-agent-automation.md), and with it the
 client choices of [the control socket beside the ADE
 feed](0002-control-socket-beside-ade-feed.md),

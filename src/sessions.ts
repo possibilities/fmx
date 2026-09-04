@@ -1,8 +1,15 @@
-import type { CliRenderer } from "@opentui/core"
+import { type CliRenderer, MouseEvent, PasteEvent } from "@opentui/core"
 import { CursorReportAdapter } from "./cursor-report-adapter.ts"
 import type { FxnkThemeResolution } from "./host-palette.ts"
 import { PaneTerminalRenderable } from "./pane-terminal.ts"
-import { ApiFailure, type Capture, type SessionView } from "./protocol.ts"
+import { ApiFailure, type Capture, type InputEvent, type SessionView } from "./protocol.ts"
+import {
+  isNamedKey,
+  keyEventFor,
+  keyEventsForText,
+  mouseDeliveryFor,
+  type PaneOrigin,
+} from "./session-input.ts"
 import {
   looksLikeOwnedSession,
   ownedSessionName,
@@ -206,6 +213,52 @@ class Session {
     }
   }
 
+  /**
+   * Deliver semantic input as a human at this Session's keyboard would.
+   *
+   * The emulator encodes, because it is the only thing that knows which modes
+   * this Session turned on, and `handleKeyPress`/`handlePaste` put the bytes on
+   * exactly the path a human's keystroke takes: out through `onData` to the
+   * transport. A left button-down cannot steal the keyboard here because a
+   * Pane's `focus()` is gated on the Stage's word.
+   *
+   * `origin` is the Pane's top-left cell, or null when no Pane shows this
+   * Session. The batch is checked before any of it is applied, so a call that
+   * cannot be delivered whole delivers nothing.
+   */
+  input(events: readonly InputEvent[], origin: PaneOrigin | null): void {
+    for (const event of events) {
+      if ("mouse" in event) {
+        if (origin === null) {
+          throw new ApiFailure(
+            "not_found",
+            `no Pane shows Session ${this.identity.name}: mouse input needs the coordinates a Pane gives it`,
+          )
+        }
+        if (event.mouse.action === "scroll" && event.mouse.scroll === undefined) {
+          throw new ApiFailure("invalid_params", "a scroll needs a direction and a delta")
+        }
+        continue
+      }
+      if ("key" in event && !isNamedKey(event.key) && [...event.key].length !== 1) {
+        throw new ApiFailure("invalid_params", `not a key: ${event.key}`)
+      }
+    }
+
+    for (const event of events) {
+      if ("text" in event) {
+        for (const key of keyEventsForText(event.text)) this.terminal.handleKeyPress(key)
+      } else if ("paste" in event) {
+        this.terminal.handlePaste(new PasteEvent(new TextEncoder().encode(event.paste)))
+      } else if ("mouse" in event) {
+        const delivery = mouseDeliveryFor(event.mouse, origin as PaneOrigin)
+        this.terminal.processMouseEvent(new MouseEvent(this.terminal, delivery))
+      } else {
+        this.terminal.handleKeyPress(keyEventFor(event))
+      }
+    }
+  }
+
   view(shown: boolean): SessionView {
     const size = this.currentSize
     return {
@@ -299,6 +352,10 @@ export class Sessions {
 
   capture(name: string, scrollback = 0): Capture {
     return this.require(name).capture(scrollback)
+  }
+
+  input(name: string, events: readonly InputEvent[], origin: PaneOrigin | null): void {
+    this.require(name).input(events, origin)
   }
 
   setTheme(resolution: FxnkThemeResolution): void {

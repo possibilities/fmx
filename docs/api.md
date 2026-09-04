@@ -121,6 +121,58 @@ one screenful of history per reattach: the Companion's restore clears the
 screen between replaying scrollback and redrawing the viewport, so the lines
 just above the viewport are lost. The visible screen always survives intact.
 
+### `session.input`
+
+Delivers input to a Session as a human at its keyboard would: keys, typed
+text, a paste, and mouse. Events apply in order, so one call is also the unit
+of ordering.
+
+```json
+{"name":"reviewer","events":[
+  {"text":"git status"},
+  {"key":"enter"},
+  {"key":"c","ctrl":true},
+  {"mouse":{"action":"down","button":"left","x":4,"y":2}}
+]}
+```
+
+Nothing here is an escape sequence, and nothing should be. The Session's own
+emulator encodes every event for the modes that Session turned on — Kitty or
+legacy keys, cursor-key mode, bracketed paste, whichever mouse reports it
+asked for — because it is the only thing that knows them. The bytes then take
+exactly the path a human's keystroke takes, out to the same PTY.
+
+Four kinds of event:
+
+- `{"key":…}` is one press. `key` is a named key — `enter`, `escape`, `tab`,
+  `backspace`, `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`,
+  `down`, `left`, `right`, `space`, `f1`–`f24` — or a single character.
+  `ctrl`, `alt`, `shift` and `super` are the modifiers; `action` is `press`
+  (the default), `repeat` or `release`.
+- `{"text":…}` is delivered one key press per character, which is what typing
+  looks like to a program.
+- `{"paste":…}` is delivered whole, bracketed when the Session turned
+  bracketed paste on, so a program can tell it from typing and decline to act
+  on it.
+- `{"mouse":…}` is an `action` of `down`, `up`, `move`, `drag` or `scroll`,
+  with `button` (`left` by default), the modifiers, and `x`/`y`. A `scroll`
+  needs its `direction` and `delta`.
+
+`x` and `y` are cells from the Session's own top-left corner, never the
+stage's, so a caller addresses one Session's screen and cannot reach past it
+into a neighbour. Mouse therefore needs a Pane: a Session no Pane shows has no
+coordinates, and mouse on it is `not_found`. Keys, text and paste do not care,
+and reach a Session running off the Layout.
+
+**Input never moves focus.** A left button-down here does not take the
+keyboard any more than a human's click does; `layout.apply` remains the only
+thing that decides where the keyboard goes. Nor does input depend on focus —
+the call names the Session it is for.
+
+At most 256 events per call, 4,096 characters of `text`, and 65,536 of
+`paste`. The batch is checked before any of it is applied, so a call that
+cannot be delivered whole delivers nothing.
+
 ### `layout.apply`
 
 Replaces the Layout and names the Session the keyboard goes to.
@@ -188,13 +240,12 @@ read.
 
 ## Deliberately absent
 
-- **No way to type into a Session.** No send, write, or keys method. Whatever
-  runs in a Session gets its input from the human at the keyboard, or from
-  its own channels.
+- **No byte-level input.** `session.input` speaks keys, text, paste and
+  mouse; it does not take bytes or escape sequences, because encoding belongs
+  to the Session's emulator and not to its caller.
 - **No MCP.** smolmux is a socket; whoever drives it can be an MCP server.
 - **No byte-level observation.** `session.changed` plus `session.capture` is
   the whole reading surface. A pane's bytes never cross the API.
 - **No app, wish, or gating for a Pane.** A Pane shows a Session or a line of
   text. What a Session runs and why is the caller's.
 - **No session rename, reorder, or move.** Apply a new Layout.
-- **No scrollback.** `session.capture` returns the visible screen.

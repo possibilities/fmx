@@ -270,6 +270,22 @@ export class Stage {
     }
   }
 
+  /**
+   * The top-left cell of the Pane showing this Session, or null when none
+   * does. Mouse coordinates are relative to it, so a caller addresses a
+   * Session's own screen and can never reach past it into a neighbour.
+   *
+   * A Session named by more than one Pane is drawn by its first, so that is
+   * the one a click lands on.
+   */
+  paneOrigin(session: string): { x: number; y: number } | null {
+    for (const leaf of this.fitted.leaves) {
+      if (!("session" in leaf.node) || leaf.node.session !== session) continue
+      if (leaf.rect.cols > 0 && leaf.rect.rows > 0) return { x: leaf.rect.x, y: leaf.rect.y }
+    }
+    return null
+  }
+
   /** Paint one divider's own cells from the resolved grid. */
   private paintDivider(id: string, buffer: OptimizedBuffer): void {
     const divider = this.fitted.dividers.find((candidate) => candidate.id === id)
