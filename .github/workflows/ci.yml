@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: fmx-full-ci
+  group: smolmux-full-ci
   cancel-in-progress: true
 
 env:
@@ -48,9 +48,9 @@ jobs:
           set -euo pipefail
           export HOME="$RUNNER_TEMP/home"
           export BUN_INSTALL="$RUNNER_TEMP/bun"
-          export FMX_INSTALL_BIN_DIR="$RUNNER_TEMP/bin"
-          mkdir -p "$HOME" "$BUN_INSTALL/bin" "$FMX_INSTALL_BIN_DIR"
-          export PATH="$BUN_INSTALL/bin:$FMX_INSTALL_BIN_DIR:$PATH"
+          export SMOLMUX_INSTALL_BIN_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$HOME" "$BUN_INSTALL/bin" "$SMOLMUX_INSTALL_BIN_DIR"
+          export PATH="$BUN_INSTALL/bin:$SMOLMUX_INSTALL_BIN_DIR:$PATH"
           ./scripts/install.sh --install
 
       - name: Run full suite
@@ -59,15 +59,15 @@ jobs:
           set -euo pipefail
           export HOME="$RUNNER_TEMP/home"
           export BUN_INSTALL="$RUNNER_TEMP/bun"
-          export FMX_INSTALL_BIN_DIR="$RUNNER_TEMP/bin"
-          export PATH="$BUN_INSTALL/bin:$FMX_INSTALL_BIN_DIR:$PATH"
+          export SMOLMUX_INSTALL_BIN_DIR="$RUNNER_TEMP/bin"
+          export PATH="$BUN_INSTALL/bin:$SMOLMUX_INSTALL_BIN_DIR:$PATH"
           bun run typecheck
           bun test
-          fmx doctor
-          FMX_BINARY_PATH="$BUN_INSTALL/bin/fmx" \
-          FMX_ZMX_PATH="$FMX_INSTALL_BIN_DIR/fmx-zmx" \
-          FMX_RUN_PTY_TESTS=1 \
-            bun test tests/multiplexer.e2e.test.ts
+          smolmux doctor
+          SMOLMUX_BINARY_PATH="$BUN_INSTALL/bin/smolmux" \
+          SMOLMUX_ZMX_PATH="$SMOLMUX_INSTALL_BIN_DIR/smolmux-zmx" \
+          SMOLMUX_RUN_PTY_TESTS=1 \
+            bun test tests/instance.e2e.test.ts
 
       - name: Verify native architectures
         shell: bash
@@ -79,5 +79,4 @@ jobs:
             macos-x86_64) pattern='Mach-O 64-bit executable x86_64' ;;
             macos-aarch64) pattern='Mach-O 64-bit executable arm64' ;;
           esac
-          file "$RUNNER_TEMP/bin/fmx-fx" | grep -Eq "$pattern"
-          file "$RUNNER_TEMP/bin/fmx-zmx" | grep -Eq "$pattern"
+          file "$RUNNER_TEMP/bin/smolmux-zmx" | grep -Eq "$pattern"
