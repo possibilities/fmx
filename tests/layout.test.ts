@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { dragDivider, fitLayout, fitLengths, layoutSessions, paneGeometries, requiredLength } from "../src/layout.ts"
+import { dividerGlyphs, dragDivider, fitLayout, fitLengths, layoutSessions, paneGeometries, requiredLength } from "../src/layout.ts"
 import type { LayoutNode } from "../src/protocol.ts"
 
 const stage = { cols: 100, rows: 30 }
@@ -233,5 +233,50 @@ describe("dragDivider", () => {
     )
     expect(panes).toHaveLength(2)
     expect(panes.filter((pane) => pane.focused)).toHaveLength(1)
+  })
+})
+
+describe("dividerGlyphs", () => {
+  const glyphsFor = (root: LayoutNode, size = stage) => dividerGlyphs(fitLayout(root, size).dividers)
+
+  test("a crossing resolves to a join rather than one line overwriting the other", () => {
+    const grid: LayoutNode = {
+      row: [
+        { column: [{ session: "a" }, { session: "b" }] },
+        { column: [{ session: "c" }, { session: "d" }] },
+      ],
+    }
+    const glyphs = glyphsFor(grid, { cols: 21, rows: 7 })
+    // The vertical divider sits at x=10, the two horizontals at y=3.
+    expect(glyphs.get("10,3")).toBe("┼")
+    expect(glyphs.get("10,2")).toBe("│")
+    expect(glyphs.get("9,3")).toBe("─")
+    expect(glyphs.get("11,3")).toBe("─")
+  })
+
+  test("a divider that stops against another becomes a T", () => {
+    const sidebar: LayoutNode = {
+      column: [
+        { text: "header", size: 1 },
+        { row: [{ column: [{ session: "a" }, { session: "b" }], size: 6 }, { session: "c" }] },
+        { text: "footer", size: 1 },
+      ],
+    }
+    const glyphs = glyphsFor(sidebar, { cols: 20, rows: 11 })
+    // Header divider at y=1, footer divider at y=9, the sidebar's vertical at
+    // x=6 between them, and the sidebar's own horizontal stopping against it.
+    expect(glyphs.get("6,1")).toBe("┬")
+    expect(glyphs.get("6,9")).toBe("┴")
+    expect(glyphs.get("6,5")).toBe("┤")
+    expect(glyphs.get("0,1")).toBe("─")
+  })
+
+  test("a lone divider is still a line", () => {
+    expect(glyphsFor({ row: [{ session: "a" }, { session: "b" }] }).get("50,0")).toBe("│")
+    expect(glyphsFor({ column: [{ session: "a" }, { session: "b" }] }).get("0,15")).toBe("─")
+  })
+
+  test("no dividers, no glyphs", () => {
+    expect(glyphsFor({ session: "a" }).size).toBe(0)
   })
 })

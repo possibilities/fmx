@@ -124,10 +124,12 @@ test.skipIf(!ENABLED)(
       expect(layout.panes.map((pane) => pane.session)).toEqual(["tray", "main"])
       expect(layout.revision).toBeGreaterThan(0)
 
-      // Capture reads a Session's screen whether or not a Pane shows it.
+      // Capture reads a Session's screen whether or not a Pane shows it. The
+      // Pane's size reaches the PTY on a render frame rather than inside the
+      // apply, so wait for the width this asserts and not only for the banner.
       await waitUntil(async () => {
         const capture = await client!.request("session.capture", { name: "tray" })
-        return capture.lines.join("").includes("tray ready")
+        return capture.lines.join("").includes("tray ready") && capture.cols === 26
       })
       const capture = await client.request("session.capture", { name: "tray" })
       expect(capture.title).toBe("the tray")

@@ -41,6 +41,73 @@ export type FittedLayout = {
   dividers: FittedDivider[]
 }
 
+/** Which way a line leaves one cell. */
+type LineCell = { up: boolean; down: boolean; left: boolean; right: boolean }
+
+const cellKey = (x: number, y: number): string => `${x},${y}`
+
+/**
+ * Every divider cell as the glyph that joins it to its neighbours, keyed
+ * `<x>,<y>`.
+ *
+ * Dividers never share a cell — the fitter reserves one for each — so a
+ * crossing is a cell owned by one line with the other stopping either side of
+ * it. Resolving from the neighbours rather than from the owning divider is
+ * what puts a join there instead of one line overwriting the other.
+ */
+export function dividerGlyphs(dividers: readonly FittedDivider[]): Map<string, string> {
+  const vertical = new Set<string>()
+  const horizontal = new Set<string>()
+  for (const divider of dividers) {
+    const { x, y, cols, rows } = divider.rect
+    if (cols <= 0 || rows <= 0) continue
+    const runs = divider.axis === "row" ? vertical : horizontal
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) runs.add(cellKey(x + col, y + row))
+    }
+  }
+
+  const glyphs = new Map<string, string>()
+  for (const key of new Set([...vertical, ...horizontal])) {
+    const [x, y] = key.split(",").map(Number) as [number, number]
+    const glyph = lineGlyph(
+      {
+        up: vertical.has(cellKey(x, y - 1)),
+        down: vertical.has(cellKey(x, y + 1)),
+        left: horizontal.has(cellKey(x - 1, y)),
+        right: horizontal.has(cellKey(x + 1, y)),
+      },
+      vertical.has(key),
+      horizontal.has(key),
+    )
+    if (glyph !== "") glyphs.set(key, glyph)
+  }
+  return glyphs
+}
+
+function lineGlyph(join: LineCell, isVertical: boolean, isHorizontal: boolean): string {
+  // A run with nothing to join draws itself, so a one-cell divider is still a
+  // line rather than a blank.
+  const up = join.up || (isVertical && !join.down)
+  const down = join.down || (isVertical && !join.up)
+  const left = join.left || (isHorizontal && !join.right)
+  const right = join.right || (isHorizontal && !join.left)
+  if (up && down && left && right) return "┼"
+  if (up && down && left) return "┤"
+  if (up && down && right) return "├"
+  if (up && left && right) return "┴"
+  if (down && left && right) return "┬"
+  if (up && down) return "│"
+  if (left && right) return "─"
+  if (down && right) return "┌"
+  if (down && left) return "┐"
+  if (up && right) return "└"
+  if (up && left) return "┘"
+  if (up || down) return "│"
+  if (left || right) return "─"
+  return ""
+}
+
 const DIVIDER = 1
 
 export function fitLayout(root: LayoutNode | null, stage: Stage): FittedLayout {

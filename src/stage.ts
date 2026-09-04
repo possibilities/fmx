@@ -1,6 +1,7 @@
-import { BoxRenderable, type CliRenderer, type MouseEvent, TextRenderable } from "@opentui/core"
+import { BoxRenderable, type CliRenderer, type MouseEvent, type OptimizedBuffer, type RGBA, TextRenderable } from "@opentui/core"
 import { fxnkRamp, type FxnkThemeResolution } from "./host-palette.ts"
 import {
+  dividerGlyphs,
   dragDivider,
   type FittedDivider,
   type FittedLayout,
@@ -47,6 +48,10 @@ export class Stage {
   /** Bumped by every change to the tree, so a caller can refuse a stale write. */
   private treeRevision = 0
   private fitted: FittedLayout = { leaves: [], dividers: [] }
+  /** Divider cells as joined glyphs, keyed `<x>,<y>`; rebuilt with the fit. */
+  private glyphs = new Map<string, string>()
+  private dividerFg: RGBA
+  private dividerBg: RGBA
   private focusName: string | null = null
   /** Sessions with a Pane right now, in tree order. */
   private shown: string[] = []
@@ -57,6 +62,9 @@ export class Stage {
     this.panes = options.panes
     this.onChanged = options.onChanged
     this.theme = options.theme
+    const ramp = fxnkRamp(options.theme.theme)
+    this.dividerFg = ramp.divider
+    this.dividerBg = ramp.background
     this.root = new BoxRenderable(this.renderer, {
       id: "smolmux-stage",
       width: "100%",
@@ -132,10 +140,10 @@ export class Stage {
     for (const pane of this.textPanes.values()) {
       pane.label.fg = ramp.dim
     }
-    for (const divider of this.dividers.values()) {
-      divider.box.borderColor = ramp.divider
-      divider.box.focusedBorderColor = ramp.divider
-    }
+    // The glyphs are painted from these on the next frame, so there is nothing
+    // per-divider to restyle.
+    this.dividerFg = ramp.divider
+    this.dividerBg = ramp.background
   }
 
   destroy(): void {
@@ -226,29 +234,32 @@ export class Stage {
   }
 
   private drawDividers(color: ReturnType<typeof fxnkRamp>["divider"]): void {
+    this.dividerFg = color
+    // Resolved together, because a cell's glyph depends on the lines that stop
+    // beside it and not only on the divider that owns it.
+    this.glyphs = dividerGlyphs(this.fitted.dividers)
     const live = new Set<string>()
     for (const divider of this.fitted.dividers) {
       live.add(divider.id)
       let pane = this.dividers.get(divider.id)
       if (!pane || pane.axis !== divider.axis) {
         pane?.box.destroy()
+        const id = divider.id
+        // The box is the hit target and nothing else: a one-sided border can
+        // only ever draw a straight run, so the glyphs are painted per cell.
         const box = new BoxRenderable(this.renderer, {
-          id: `smolmux-divider-${divider.id}`,
+          id: `smolmux-divider-${id}`,
           position: "absolute",
-          border: divider.axis === "row" ? ["left"] : ["top"],
-          borderStyle: "single",
-          borderColor: color,
-          onMouseDown: (event) => this.beginDrag(divider.id, event),
+          onMouseDown: (event) => this.beginDrag(id, event),
           onMouseDrag: (event) => this.continueDrag(divider, event),
           onMouseUp: () => this.endDrag(),
           onMouseDragEnd: () => this.endDrag(),
+          renderAfter: (buffer) => this.paintDivider(id, buffer),
         })
         this.root.add(box)
         pane = { box, axis: divider.axis }
         this.dividers.set(divider.id, pane)
       }
-      pane.box.borderColor = color
-      pane.box.focusedBorderColor = color
       placeAt(pane.box, divider.rect)
       pane.box.visible = true
     }
@@ -256,6 +267,19 @@ export class Stage {
       if (live.has(id)) continue
       pane.box.destroy()
       this.dividers.delete(id)
+    }
+  }
+
+  /** Paint one divider's own cells from the resolved grid. */
+  private paintDivider(id: string, buffer: OptimizedBuffer): void {
+    const divider = this.fitted.dividers.find((candidate) => candidate.id === id)
+    if (!divider) return
+    const { x, y, cols, rows } = divider.rect
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        const glyph = this.glyphs.get(`${x + col},${y + row}`)
+        if (glyph !== undefined) buffer.setCell(x + col, y + row, glyph, this.dividerFg, this.dividerBg)
+      }
     }
   }
 
