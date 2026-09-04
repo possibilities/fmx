@@ -45,6 +45,17 @@
   frame buffer a render pass fills, which a hidden Pane never gets, and
   `onScreenChange` fires per rendered frame and only while visible — neither
   is usable. Change detection is byte-driven and debounced instead.
+- Scrollback is read from the emulator, never fetched from the Companion. The
+  lines are already in this process, so a read costs one compose per page and
+  no round trip, and it works for a Session whose transport is lost. Measured:
+  a visible-only capture is 0.4 ms and the full 10,000 lines is 19 ms. The
+  Companion's `History` frame would serialize its whole pagelist per call and
+  need a fork change to bound, which is why fmx does not use it.
+- Reading history scrolls the viewport and puts it back **in the same
+  synchronous turn**. Nothing may await in between: the render loop cannot
+  preempt a synchronous function, which is the only reason a frame can never
+  be drawn at the wrong scroll position. The restore scrolls down by exactly
+  what went up, because both ends clamp.
 - Until a caller applies a Layout, the one on screen is the Runtime's own and
   follows the roster: the first Session, or the empty state when there are
   none. The first `layout.apply` takes ownership and the Runtime never

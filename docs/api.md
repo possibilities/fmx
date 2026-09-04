@@ -92,11 +92,30 @@ the screen-reading surface: pair it with `session.changed` and capture only
 what moved.
 
 ```json
-{"name":"tray","lines":["agents","  reviewer"],"cols":26,"rows":30,
+{"name":"tray","lines":["agents","  reviewer"],"screen_start":0,"cols":26,"rows":30,
  "cursor":{"x":0,"y":2,"visible":true},"title":"the tray"}
 ```
 
-Trailing blank lines are trimmed. Scrollback is not included.
+Trailing blank lines are trimmed, and the cursor is relative to the visible
+screen.
+
+`scrollback` asks for that many lines that have scrolled off the top, up to
+10,000. They come first in `lines`, and `screen_start` is the index where the
+visible screen begins, so `lines.slice(screen_start)` is exactly what a
+capture without `scrollback` would have returned.
+
+```json
+{"name":"build","scrollback":500}
+```
+
+History is read from the Session's own emulator, not fetched from the
+Companion, so it costs no round trip and works for a Session whose transport
+is currently lost. A visible-only capture is unaffected; asking for the full
+10,000 lines costs about 20 ms.
+
+Two things it cannot give you. History older than the emulator kept is gone,
+and a run of identical blank screens in the middle of history collapses,
+because pages are joined where they overlap.
 
 ### `layout.apply`
 

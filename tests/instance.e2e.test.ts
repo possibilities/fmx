@@ -132,6 +132,14 @@ test.skipIf(!ENABLED)(
       const capture = await client.request("session.capture", { name: "tray" })
       expect(capture.title).toBe("the tray")
       expect(capture.cols).toBe(26)
+      expect(capture.screen_start).toBe(0)
+
+      // History crosses the socket whole, and the visible screen is its tail.
+      const withHistory = await client.request("session.capture", { name: "tray", scrollback: 200 })
+      expect(withHistory.lines.slice(withHistory.screen_start)).toEqual(capture.lines)
+      await expect(
+        client.request("session.capture", { name: "tray", scrollback: 100_000 }),
+      ).rejects.toMatchObject({ code: "invalid_params" })
 
       // A stale Layout write is refused rather than clobbering what moved.
       await expect(

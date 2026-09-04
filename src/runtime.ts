@@ -192,8 +192,10 @@ export class Runtime {
       }
       case "session.list":
         return { sessions: this.sessions.list() }
-      case "session.capture":
-        return this.sessions.capture((params as Params<"session.capture">).name)
+      case "session.capture": {
+        const request = params as Params<"session.capture">
+        return this.sessions.capture(request.name, request.scrollback ?? 0)
+      }
       case "layout.apply": {
         const request = params as Params<"layout.apply">
         const view = this.stage.apply(request.root, request.focus === undefined ? undefined : request.focus, {

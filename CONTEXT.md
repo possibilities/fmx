@@ -54,10 +54,12 @@ publishes `layout.changed` with cause `drag`.
 _Avoid_: border, splitter, gutter, handle.
 
 **Capture** — a Session's screen as text with its cursor and title, read by
-`session.capture` whether or not a Pane shows it. It composes the emulator
-into a buffer of fmx's own rather than reading the frame a render pass drew,
-because a hidden Pane is never drawn. Paired with `session.changed`, it is the
-whole screen-reading surface; there is no byte-level observation.
+`session.capture` whether or not a Pane shows it, optionally with lines that
+have scrolled off the top. It composes the emulator into a buffer of fmx's own
+rather than reading the frame a render pass drew, because a hidden Pane is
+never drawn, and it reads history from that same emulator rather than from the
+Companion. Paired with `session.changed`, it is the whole screen-reading
+surface; there is no byte-level observation.
 _Avoid_: screenshot, dump, scrape, snapshot.
 
 **Runtime** — the one Companion-held fmx process and PTY for an Instance. It

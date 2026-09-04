@@ -140,6 +140,82 @@ test("captures a Session's screen, cursor, and title whether or not it is shown"
   }
 })
 
+test("captures history above the screen, and says where the screen begins", async () => {
+  const harnessed = await harness()
+  try {
+    // More lines than the screen holds, so most of them scroll off.
+    await harnessed.sessions.create({
+      name: "long",
+      argv: ["/bin/sh", "-c", "i=1; while [ $i -le 40 ]; do printf 'line %s\\r\\n' $i; i=$((i+1)); done; cat"],
+      cwd: process.cwd(),
+      cols: 30,
+      rows: 6,
+    })
+    await waitFor(() => harnessed.sessions.capture("long").lines.join("").includes("line 40"))
+
+    const visible = harnessed.sessions.capture("long")
+    expect(visible.screen_start).toBe(0)
+    expect(visible.lines.length).toBeLessThanOrEqual(6)
+    expect(visible.lines.join("|")).not.toContain("line 1|")
+
+    const withHistory = harnessed.sessions.capture("long", 20)
+    expect(withHistory.lines.length).toBeGreaterThan(visible.lines.length)
+    expect(withHistory.lines.join("|")).toContain("line 20")
+    // The screen is still the tail, and screen_start points at it.
+    expect(withHistory.lines.slice(withHistory.screen_start)).toEqual(visible.lines)
+    // History reads in order with nothing repeated at the seams.
+    const numbered = withHistory.lines.filter((line) => line.startsWith("line "))
+    expect(numbered).toEqual([...new Set(numbered)])
+    expect(numbered.map((line) => Number(line.slice(5)))).toEqual(
+      numbered.map((line) => Number(line.slice(5))).slice().sort((left, right) => left - right),
+    )
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("asking for more history than exists returns what there is", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({
+      name: "short",
+      argv: ["/bin/sh", "-c", "printf 'only\\r\\n'; cat"],
+      cwd: process.cwd(),
+      cols: 20,
+      rows: 5,
+    })
+    await waitFor(() => harnessed.sessions.capture("short").lines.join("").includes("only"))
+    const deep = harnessed.sessions.capture("short", 500)
+    // The walk up clamps at the top; nothing is repeated by it.
+    expect(deep.lines.filter((line) => line === "only")).toHaveLength(1)
+    expect(deep.screen_start).toBe(0)
+  } finally {
+    harnessed.close()
+  }
+})
+
+test("reading history leaves the screen where it was", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({
+      name: "steady",
+      argv: ["/bin/sh", "-c", "i=1; while [ $i -le 30 ]; do printf 'row %s\\r\\n' $i; i=$((i+1)); done; cat"],
+      cwd: process.cwd(),
+      cols: 20,
+      rows: 5,
+    })
+    await waitFor(() => harnessed.sessions.capture("steady").lines.join("").includes("row 30"))
+    const before = harnessed.sessions.capture("steady").lines
+    harnessed.sessions.capture("steady", 20)
+    // The viewport is put back in the same turn, so the visible screen is
+    // exactly what it was and stays that way for later reads.
+    expect(harnessed.sessions.capture("steady").lines).toEqual(before)
+    expect(harnessed.sessions.capture("steady").lines).toEqual(before)
+  } finally {
+    harnessed.close()
+  }
+})
+
 test("announces a change once per debounce window, not once per byte", async () => {
   const harnessed = await harness()
   try {

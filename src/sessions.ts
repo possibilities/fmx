@@ -192,12 +192,13 @@ class Session {
     this.transport = null
   }
 
-  capture(): Capture {
+  capture(scrollback = 0): Capture {
     const size = this.currentSize
-    const screen = this.terminal.captureScreen(size.cols, size.rows)
+    const screen = this.terminal.captureScreen(size.cols, size.rows, scrollback)
     return {
       name: this.identity.name,
       lines: screen.lines,
+      screen_start: screen.screenStart,
       cols: screen.columns,
       rows: screen.rows,
       cursor: { x: screen.cursor.x, y: screen.cursor.y, visible: screen.cursor.visible },
@@ -296,8 +297,8 @@ export class Sessions {
     return this.require(name).view(this.shownNames.has(name))
   }
 
-  capture(name: string): Capture {
-    return this.require(name).capture()
+  capture(name: string, scrollback = 0): Capture {
+    return this.require(name).capture(scrollback)
   }
 
   setTheme(resolution: FxnkThemeResolution): void {

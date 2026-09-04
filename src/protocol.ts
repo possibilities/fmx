@@ -122,12 +122,25 @@ export const layoutViewSchema = z.object({
 })
 export type LayoutView = z.infer<typeof layoutViewSchema>
 
+/**
+ * The most history one capture may carry. A capture crosses the socket whole,
+ * and a connection's unwritten output is capped, so the bound is part of the
+ * contract rather than the caller's discretion.
+ */
+export const MAX_CAPTURE_SCROLLBACK = 10_000
+
 export const captureSchema = z.object({
   name: sessionName,
-  lines: z.array(z.string()).describe("One string per screen row, trailing blanks trimmed"),
+  lines: z
+    .array(z.string())
+    .describe("One string per row, trailing blanks trimmed; history first when scrollback was asked for"),
+  screen_start: z
+    .int()
+    .min(0)
+    .describe("Index in `lines` where the visible screen begins; 0 when no history was asked for or none exists"),
   cols: z.int().min(1),
   rows: z.int().min(1),
-  cursor: z.object({ x: z.int().min(0), y: z.int().min(0), visible: z.boolean() }),
+  cursor: z.object({ x: z.int().min(0), y: z.int().min(0), visible: z.boolean() }).describe("Relative to the visible screen"),
   title: z.string(),
 })
 export type Capture = z.infer<typeof captureSchema>
@@ -190,8 +203,19 @@ export const METHODS = {
     result: z.object({ sessions: z.array(sessionViewSchema) }),
   },
   "session.capture": {
-    description: "A Session's screen as text, with its cursor and title, shown or not.",
-    params: z.object({ name: sessionName }).strict(),
+    description:
+      "A Session's screen as text, with its cursor and title, shown or not. `scrollback` asks for that many lines that have scrolled off the top, read from the Session's own emulator.",
+    params: z
+      .object({
+        name: sessionName,
+        scrollback: z
+          .int()
+          .min(0)
+          .max(MAX_CAPTURE_SCROLLBACK)
+          .optional()
+          .describe(`Lines of history above the screen; at most ${MAX_CAPTURE_SCROLLBACK}, default none`),
+      })
+      .strict(),
     result: captureSchema,
   },
   "layout.apply": {
