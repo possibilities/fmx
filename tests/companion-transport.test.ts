@@ -194,7 +194,7 @@ test.skipIf(!ENABLED)("a reconciled live endpoint attaches without another Compa
     scrollbackLines: 200,
   })
   const inspections: string[] = []
-  const hinted = new CompanionTransportFactory(
+  const watched = new CompanionTransportFactory(
     new Proxy(companion, {
       get(target, property, receiver) {
         if (property === "inspect" || property === "settle") {
@@ -205,11 +205,10 @@ test.skipIf(!ENABLED)("a reconciled live endpoint attaches without another Compa
         }
         return Reflect.get(target, property, receiver)
       },
-    }),
+    }) as CompanionCommand,
     INSTANCE,
-    { attachHints: new Map([["five", liveSession(identity, created.socketPath)]]) },
   )
-  const transport = await hinted.attach(identity, { cols: 80, rows: 24 })
+  const transport = await watched.attach(identity, { cols: 80, rows: 24 }, { socketPath: created.socketPath })
   expect(inspections).toEqual([])
   transport.detach()
 })

@@ -289,6 +289,94 @@ test("stop answers first, then ends every Session and the Runtime", async () => 
   }
 })
 
+test("a signal during adoption stops before drawing into a destroyed Stage", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 30 })
+  const companion = new FakeCompanion()
+  const identity = sessionIdentity(INSTANCE, "tray")
+  companion.add({ name: identity.companionName, labels: identity.labels, cwd: "/work", createdAt: 10 })
+  const transport = new PtyTransportFactory()
+  // Hold adoption inside its attach, the way a real `list` or `settle` holds it.
+  const held = Promise.withResolvers<never>()
+  transport.attachBehavior = () => held.promise
+  const runtime = new Runtime(setup.renderer, {
+    instanceId: INSTANCE,
+    instanceName: "default",
+    socketPath: "/tmp/fmx-test/api",
+    theme: { theme: "dark", background: null, source: "default", explicit: false },
+    sessions: { instanceId: INSTANCE, companion: companion.asCompanion(), transport, environment: {} },
+    publish: () => {},
+  })
+
+  const starting = runtime.start()
+  await Bun.sleep(20)
+  // The signal path: everything is destroyed under the still-running start.
+  await runtime.shutdown(143)
+  held.reject(new Error("the Companion is not answering"))
+  // start() must return without touching the Stage or the renderer.
+  await starting
+  expect(runtime.stopped).toBe(true)
+})
+
+test("a stop seals creation so nothing starts after the kills went out", async () => {
+  const app = await harness()
+  try {
+    // A create the caller queued behind another one, the way a pipelined
+    // connection does.
+    const first = app.call("session.create", { name: "first", argv: [FAKE_APP], cwd: process.cwd() })
+    const second = app.call("session.create", { name: "second", argv: [FAKE_APP], cwd: process.cwd() })
+    await app.call("instance.stop")
+    await first.catch(() => {})
+    await expect(second).rejects.toMatchObject({ code: "conflict" })
+    await app.runtime.waitUntilDone()
+
+    // Whatever was created was killed; nothing started after the stop.
+    const started = app.transport.started.map((entry) => entry.request.identity.name)
+    for (const name of started) expect(app.companion.killed).toContain(`fmx-${INSTANCE}-${name}`)
+  } finally {
+    await app.close()
+  }
+})
+
+test("an adopted Session that answers on a second try is not left unreachable", async () => {
+  const attempts: string[] = []
+  const app = await harness((companion, transport) => {
+    const identity = sessionIdentity(INSTANCE, "tray")
+    companion.add({ name: identity.companionName, labels: identity.labels, cwd: "/work", createdAt: 10 })
+    transport.attachBehavior = (asked) => {
+      attempts.push(asked.name)
+      // A daemon mid-reap refuses once, then answers.
+      if (attempts.length === 1) throw new Error("the Companion is not answering")
+      return new PtyTransportFactory().start({
+        identity: asked,
+        command: [FAKE_APP],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH ?? "" },
+        size: { cols: 80, rows: 24 },
+      })
+    }
+  })
+  try {
+    await waitFor(() => app.runtime.sessions.list()[0]?.state === "live")
+    expect(attempts.length).toBeGreaterThan(1)
+  } finally {
+    await app.close()
+  }
+})
+
+test("adoption hands the endpoint it already read to the first attach", async () => {
+  const app = await harness((companion, transport) => {
+    const identity = sessionIdentity(INSTANCE, "tray")
+    companion.add({ name: identity.companionName, labels: identity.labels, cwd: "/work", createdAt: 10 })
+    transport.attachBehavior = "unreachable"
+  })
+  try {
+    // The listing already knew where it was; nothing looks it up again.
+    expect(app.transport.endpoints[0]).toBe(`/tmp/fmx-${INSTANCE}-tray.sock`)
+  } finally {
+    await app.close()
+  }
+})
+
 test("a theme change retints in one pass and says so", async () => {
   const app = await harness()
   try {

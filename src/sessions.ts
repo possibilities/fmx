@@ -59,6 +59,8 @@ export type SessionsOptions = {
   onChanged: (name: string, title: string) => void
   /** A Session appeared, went away, or changed enough that the Layout must be re-applied. */
   onRoster: () => void
+  /** Where a failure with no caller to tell goes; never the drawn screen. */
+  report?: (line: string) => void
 }
 
 /**
@@ -337,21 +339,29 @@ export class Sessions {
       // An adopted Session's argv is not recoverable: the Companion reports a
       // shell-quoted display string, cut at 256 bytes.
       session.argv = null
-      return session
+      // The endpoint this listing already read, so the first attach does not
+      // inspect the same session again.
+      return { session, endpoint: entry.socketPath ? { socketPath: entry.socketPath } : undefined }
     })
     if (prepared.length > 0) this.options.onRoster()
-    await forEachConcurrent(prepared, ADOPT_CONCURRENCY, async (session) => {
+    await forEachConcurrent(prepared, ADOPT_CONCURRENCY, async ({ session, endpoint }) => {
       if (this.shuttingDown) return
       try {
-        const transport = await this.options.transport.attach(session.identity, session.currentSize)
+        const transport = await this.options.transport.attach(session.identity, session.currentSize, endpoint)
         if (this.shuttingDown || !this.sessions.has(session.identity.name)) {
           transport.detach()
           return
         }
         session.adopt(transport)
       } catch (error) {
-        if (error instanceof SessionEndedError) this.remove(session, error.exit ?? { code: null, signal: null, reason: "gone" })
-        else session.state = "unreachable"
+        if (error instanceof SessionEndedError) {
+          this.remove(session, error.exit ?? { code: null, signal: null, reason: "gone" })
+          return
+        }
+        // One attach is not proof: a daemon mid-reap answers a moment later.
+        // The same recovery a lost transport gets applies here.
+        session.state = "unreachable"
+        await this.recover(session, error instanceof Error ? error : new Error(String(error)))
       }
     })
     return { adopted: prepared.length, unresolved }
@@ -407,7 +417,7 @@ export class Sessions {
         // The process is running; only the way to it failed. It is recovered
         // like a lost transport, never removed.
         session.state = "unreachable"
-        void this.recover(session, error)
+        this.reportFailure(this.recover(session, error), `recovering ${identity.name}`)
         this.options.onRoster()
         return session.view(false)
       }
@@ -436,6 +446,15 @@ export class Sessions {
     )
   }
 
+  /**
+   * Refuse new work without tearing anything down. `instance.stop` seals
+   * before it kills, so a create already queued behind another one cannot
+   * start a process after the kills have gone out and never be killed.
+   */
+  seal(): void {
+    this.shuttingDown = true
+  }
+
   /** Let go of every process without ending it: the Companion keeps them. */
   shutdown(): void {
     this.shuttingDown = true
@@ -449,7 +468,7 @@ export class Sessions {
     const session = new Session(this.options.renderer, identity, cwd, createdAt, this.theme, size, {
       onChanged: (changed) => this.noteChange(changed),
       onExit: (ended, status) => this.remove(ended, status),
-      onLost: (lost, error) => void this.recover(lost, error),
+      onLost: (lost, error) => this.reportFailure(this.recover(lost, error), `recovering ${lost.identity.name}`),
     })
     this.sessions.set(identity.name, session)
     return session
@@ -502,7 +521,7 @@ export class Sessions {
     if (this.shuttingDown || !this.sessions.has(session.identity.name)) return
     session.state = "unreachable"
     this.options.onRoster()
-    void lost
+    this.options.report?.(`session ${session.identity.name} is unreachable: ${lost.message}`)
   }
 
   /**
@@ -526,6 +545,13 @@ export class Sessions {
     const timer = this.changeTimers.get(name)
     if (timer) clearTimeout(timer)
     this.changeTimers.delete(name)
+  }
+
+  /** A failure with nobody to tell goes to the log, never to the screen. */
+  private reportFailure(work: Promise<unknown>, what: string): void {
+    void work.catch((error) => {
+      this.options.report?.(`${what} failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   private require(name: string): Session {

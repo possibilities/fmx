@@ -99,8 +99,16 @@ export class CompanionError extends Error {
 export type SpawnResult = { exitCode: number | null; stdout: string; stderr: string }
 export type Spawner = (args: string[], options: { cwd?: string; env: Record<string, string> }) => Promise<SpawnResult>
 
+/**
+ * How long any one Companion command may take. Without it a wedged `list` —
+ * a hung connect to a half-dead socket, an unresponsive filesystem under
+ * `ZMX_DIR` — leaves a Runtime that has bound its socket, told `fmx start` it
+ * was ready, and will never answer a request.
+ */
+export const COMPANION_COMMAND_TIMEOUT_MS = 15_000
+
 export const spawnCompanion =
-  (binary: string): Spawner =>
+  (binary: string, timeoutMs = COMPANION_COMMAND_TIMEOUT_MS): Spawner =>
   async (args, options) => {
     const proc = Bun.spawn([binary, ...args], {
       cwd: options.cwd,
@@ -109,12 +117,30 @@ export const spawnCompanion =
       stdout: "pipe",
       stderr: "pipe",
     })
-    const [stdout, stderr] = await Promise.all([
+    // The pipes are not awaited past the deadline: a child the Companion
+    // leaves behind could hold them open after the Companion itself is gone.
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const deadline = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs)
+    })
+    const answered = Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
-    ])
-    await proc.exited
-    return { exitCode: proc.exitCode, stdout, stderr }
+      proc.exited,
+    ]).then(([stdout, stderr]) => ({ stdout, stderr }))
+    const outcome = await Promise.race([answered, deadline])
+    if (timer !== null) clearTimeout(timer)
+    if (outcome === null) {
+      proc.kill("SIGKILL")
+      // Cancel the pipes as well as killing the child: an open read handle
+      // keeps the event loop alive, so a Runtime that timed out here would
+      // never exit.
+      void proc.stdout?.cancel().catch(() => {})
+      void proc.stderr?.cancel().catch(() => {})
+      void answered.catch(() => {})
+      throw new CompanionError(`Companion \`${args[0]}\` did not answer within ${timeoutMs} ms`, null, "")
+    }
+    return { exitCode: proc.exitCode, stdout: outcome.stdout, stderr: outcome.stderr }
   }
 
 export class CompanionCommand {

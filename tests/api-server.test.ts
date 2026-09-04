@@ -140,6 +140,36 @@ test("the socket is the Instance singleton, mode 0600, and refuses a second Runt
   expect(await client.call("layout.get")).toEqual({ ok: true })
 })
 
+test("a subscriber that stops reading is dropped rather than growing the heap", async () => {
+  const server = await serve(async () => ({}))
+  // A peer that subscribes and never reads its socket.
+  const received: number[] = []
+  const socket = await Bun.connect({
+    unix: server.path,
+    socket: {
+      data: (_socket, data) => {
+        received.push(data.byteLength)
+      },
+      open: () => {},
+    },
+  })
+  try {
+    socket.write(`${JSON.stringify({ v: 1, type: "request", id: "1", method: "events.subscribe" })}\n`)
+    await Bun.sleep(30)
+    expect(server.subscribers).toBe(1)
+
+    // Nothing reads from here on; the kernel buffer fills and the queue grows.
+    const big = "x".repeat(40_000)
+    for (let index = 0; index < 4_000 && server.subscribers > 0; index += 1) {
+      server.broadcast(eventFrame("session.changed", { name: "tray", title: big }))
+    }
+    // It is dropped, not held forever.
+    expect(server.subscribers).toBe(0)
+  } finally {
+    socket.end()
+  }
+})
+
 test("names the paths an earlier fmx bound for the same Instance", () => {
   expect(retiredSocketPathsFor("/tmp/fmx-501/abc.api")).toEqual([
     "/tmp/fmx-501/abc.ade.sock",

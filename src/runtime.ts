@@ -86,12 +86,17 @@ export class Runtime {
     this.renderer.on(CliRenderEvents.RESIZE, this.resizeHandler)
   }
 
-  /** Adopt what the Companion still holds, then draw the first Layout. */
+  /**
+   * Adopt what the Companion still holds, then draw the first Layout. A
+   * signal can arrive during adoption, so every resumption re-checks: drawing
+   * into a Stage and renderer that `shutdown` already destroyed is a
+   * use-after-free in the layout tree, not a wasted frame.
+   */
   async start(): Promise<void> {
-    let adopted = 0
+    if (this.shuttingDown) return
     try {
       const outcome = await this.sessions.adopt()
-      adopted = outcome.adopted
+      if (this.shuttingDown) return
       if (outcome.unresolved.length > 0) {
         this.options.report?.(
           `${outcome.unresolved.length} Companion session(s) unreachable; left for the next start`,
@@ -102,12 +107,17 @@ export class Runtime {
       // Sessions stay where they are for the next start.
       this.options.report?.(`could not adopt Sessions: ${message(error)}`)
     }
-    void adopted
+    if (this.shuttingDown) return
     this.applyDefaultLayout()
   }
 
   waitUntilDone(): Promise<void> {
     return this.donePromise
+  }
+
+  /** True from the first moment of teardown; nothing may write to the screen after. */
+  get stopped(): boolean {
+    return this.shuttingDown
   }
 
   setTheme(resolution: FxnkThemeResolution): void {
@@ -147,9 +157,15 @@ export class Runtime {
       case "instance.status":
         return this.status()
       case "instance.stop": {
+        // Seal before answering: a create already queued behind another one
+        // would otherwise start its process after the kills went out and
+        // never be killed.
+        this.sessions.seal()
         this.publish("instance.stopping", {})
         // Answer first: the reply is written before anything is torn down.
-        setTimeout(() => void this.stop(), 0)
+        setTimeout(() => {
+          void this.stop().catch((error) => this.options.report?.(`stop failed: ${message(error)}`))
+        }, 0)
         return {}
       }
       case "events.subscribe":

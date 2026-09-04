@@ -54,6 +54,9 @@ export type SessionExit = {
 
 export type TerminalSize = { cols: number; rows: number }
 
+/** A Companion terminal socket a caller already knows about. */
+export type SessionEndpoint = { socketPath: string }
+
 /** Everything needed to start a Session's process. */
 export type SessionStart = {
   identity: SessionIdentity
@@ -81,8 +84,13 @@ export interface SessionTransportFactory {
    * Attach to a running Session. Rejects with `SessionEndedError` when the
    * process has ended — with its status, when that is known — and with
    * anything else when it could not be reached, which says nothing about it.
+   *
+   * `endpoint` is a socket path a caller has just read, so adoption does not
+   * ask about a Session it already looked up. It is a hint: ownership is
+   * still proved on the connection itself, and a stale path falls back to
+   * asking.
    */
-  attach(identity: SessionIdentity, size: TerminalSize): Promise<SessionTransport>
+  attach(identity: SessionIdentity, size: TerminalSize, endpoint?: SessionEndpoint): Promise<SessionTransport>
 }
 
 export class SessionEndedError extends Error {

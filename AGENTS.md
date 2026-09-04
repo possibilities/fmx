@@ -105,7 +105,34 @@
 - A lost transport is not an exit. `Sessions.recover` re-attaches a live
   session (replaying onto the reset emulator), removes one that ended exactly
   as an Exit would, and leaves one it cannot reach after a few tries in the
-  roster as `unreachable`, where the next start's adoption finds it.
+  roster as `unreachable`, where the next start's adoption finds it. Adoption
+  runs the same recovery: one refused attach is not proof, because a daemon
+  mid-reap answers a moment later.
+- **Nothing a Runtime says goes to stderr.** For a headless Runtime that is
+  the Companion PTY OpenTUI draws into, so a diagnostic written there lands
+  across every attached Client's screen. Failures with no caller to tell go to
+  `instanceLogger` (`/tmp/fmx-<uid>/<instance id>.log`, mode 0600), and that
+  includes the Companion's own listener handler — call
+  `setListenerErrorHandler` or its `console.error` default paints the screen.
+- Every `void`-discarded promise needs a `.catch` that reaches the log.
+  OpenTUI installs an `unhandledRejection` handler that is `console.error`,
+  so a rejection nobody catches is a stack trace across the alternate screen.
+- `instance.stop` seals the roster synchronously before it kills anything.
+  Without that a `session.create` already queued behind another one starts its
+  process after the kills went out, is never killed, and reappears on the next
+  start because labels are the record.
+- `Runtime.start` re-checks `shuttingDown` after every await. A signal during
+  adoption destroys the Stage and the renderer; drawing into them afterwards
+  is a use-after-free in the layout tree, because OpenTUI's `add` guards only
+  the child, never the parent.
+- Every Companion command has a deadline (`COMPANION_COMMAND_TIMEOUT_MS`).
+  Without one a wedged `list` leaves a Runtime that bound its socket, told
+  `fmx start` it was ready, and answers no request. The timeout cancels the
+  child's pipes as well as killing it, or the open read handle keeps the
+  process alive.
+- A connection's outbound queue is capped. A subscriber that stops reading
+  without closing is dropped, because a peer that cannot keep up with its own
+  events is not one worth holding the Runtime's heap for.
 - `session.exited` carries `code` and `signal` as nullable with a `reason`
   that always says something. Nothing in fmx acts on the exact status, so a
   Companion that cannot read one (a migrated PTY, say) degrades honestly

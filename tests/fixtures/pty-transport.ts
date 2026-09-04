@@ -7,6 +7,7 @@ import {
   type TerminalSize,
   type TransportHandlers,
 } from "../../src/session-transport.ts"
+import type { SessionEndpoint } from "../../src/session-transport.ts"
 import type { SessionIdentity } from "../../src/session-identity.ts"
 
 /**
@@ -28,7 +29,9 @@ export class PtyTransportFactory implements SessionTransportFactory {
   attachBehavior:
     | "ended"
     | "unreachable"
-    | ((identity: SessionIdentity) => SessionTransport | Promise<SessionTransport>) = "ended"
+    | ((identity: SessionIdentity, endpoint?: SessionEndpoint) => SessionTransport | Promise<SessionTransport>) = "ended"
+  /** Every endpoint a caller handed to `attach`, in order. */
+  readonly endpoints: (string | undefined)[] = []
   /** Holds every `start` until released; for tests of what happens before `adopt`. */
   gate: Promise<void> | null = null
 
@@ -39,11 +42,16 @@ export class PtyTransportFactory implements SessionTransportFactory {
     return transport
   }
 
-  async attach(identity: SessionIdentity): Promise<SessionTransport> {
+  async attach(
+    identity: SessionIdentity,
+    _size: TerminalSize,
+    endpoint?: SessionEndpoint,
+  ): Promise<SessionTransport> {
     this.attaches.set(identity.name, (this.attaches.get(identity.name) ?? 0) + 1)
+    this.endpoints.push(endpoint?.socketPath)
     if (this.attachBehavior === "ended") throw new SessionEndedError(identity, null)
     if (this.attachBehavior === "unreachable") throw new Error("the Companion is not answering")
-    return this.attachBehavior(identity)
+    return this.attachBehavior(identity, endpoint)
   }
 
   /** The transport a Session was started with, by name. */

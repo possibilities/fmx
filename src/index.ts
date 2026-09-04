@@ -5,6 +5,7 @@ import { homedir } from "node:os"
 import { ApiClient } from "./api-client.ts"
 import { ApiServer, apiSocketPathFor, InstanceActiveError } from "./api-server.ts"
 import { type CliOptions, parseArgs, usage, VERSION } from "./cli.ts"
+import { setListenerErrorHandler } from "./companion-client.ts"
 import { CompanionTransportFactory } from "./companion-transport.ts"
 import { loadConfig } from "./config.ts"
 import { doctor } from "./doctor.ts"
@@ -13,6 +14,7 @@ import {
   type FxnkThemeResolution,
   resolveFxnkTheme,
 } from "./host-palette.ts"
+import { instanceLogger, instanceLogPathFor } from "./instance-log.ts"
 import { type Instance, resolveInstance } from "./instance.ts"
 import { HOST_KEYBOARD_PROTOCOL } from "./pane-terminal.ts"
 import { ensurePrivateDirectories } from "./private-directory.ts"
@@ -102,6 +104,10 @@ async function runRuntime(instance: Instance): Promise<void> {
   for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
 
   const socketPath = apiSocketPathFor(instance.id)
+  const report = instanceLogger(instanceLogPathFor(instance.id))
+  // The Companion's listener failures would otherwise reach console.error,
+  // which for a headless Runtime is the screen.
+  setListenerErrorHandler((error) => report(`companion listener failed: ${errorMessage(error)}`))
   const companionPath = await resolveCompanion()
 
   let renderer: CliRenderer | null = null
@@ -166,14 +172,18 @@ async function runRuntime(instance: Instance): Promise<void> {
       instanceName: instance.name,
       socketPath,
       theme,
-      sessions: { instanceId: instance.id, companion, transport, environment: process.env },
+      sessions: { instanceId: instance.id, companion, transport, environment: process.env, report },
       publish: (event: EventName, data: unknown) => server.broadcast(eventFrame(event, data as never)),
-      report: (line) => process.stderr.write(`fmx: ${line}\n`),
+      report,
     })
     const app = runtime
 
     themeMonitor = new FxnkThemeMonitor(themePort, theme, (next) => {
       theme = next
+      // Nothing may open a synchronized update once teardown has begun: no
+      // frame would follow to publish it, leaving every Client's terminal in
+      // synchronized-output mode with a concealed cursor.
+      if (app.stopped) return
       // Publish the physical clear and the atomically retinted frame together.
       process.stdout.write(beginSynchronizedResizeClear(next.theme))
       app.setTheme(next)
@@ -186,7 +196,9 @@ async function runRuntime(instance: Instance): Promise<void> {
       ["SIGQUIT", 131],
       ["SIGTERM", 143],
     ] as const) {
-      const handler = () => void app.shutdown(exitCode)
+      const handler = () => {
+        void app.shutdown(exitCode).catch((error) => report(`shutdown failed: ${errorMessage(error)}`))
+      }
       signalHandlers.set(signal, handler)
       process.once(signal, handler)
     }
@@ -201,6 +213,7 @@ async function runRuntime(instance: Instance): Promise<void> {
     // the resize before OpenTUI's debounced SIGWINCH handler runs, and that
     // interaction must not paint one last frame at the previous owner's size.
     resizeHandler = () => {
+      if (app.stopped) return
       createdRenderer.resize(
         Math.max(1, process.stdout.columns || createdRenderer.width),
         Math.max(1, process.stdout.rows || createdRenderer.height),
@@ -355,5 +368,9 @@ function errorMessage(error: unknown): string {
 
 await main().catch((error) => {
   process.stderr.write(`fmx: ${errorMessage(error)}\n`)
-  process.exitCode = error instanceof InstanceActiveError ? 2 : 1
+  // A signal's exit code is the honest one: a supervisor must be able to tell
+  // a signalled shutdown from a startup failure, even when teardown then threw.
+  if (process.exitCode === undefined || process.exitCode === 0) {
+    process.exitCode = error instanceof InstanceActiveError ? 2 : 1
+  }
 })

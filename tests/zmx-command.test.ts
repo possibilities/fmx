@@ -195,3 +195,24 @@ test.skipIf(!ENABLED)("live: a command that cannot start reports ExecFailed and 
   expect(existsSync(join(dir, name))).toBe(false)
   await live.forget(name)
 })
+
+test("a Companion command that wedges is bounded rather than hanging the Runtime", async () => {
+  const { CompanionCommand, CompanionError, spawnCompanion } = await import("../src/zmx-command.ts")
+  const { writeFile, chmod, mkdtemp, rm } = await import("node:fs/promises")
+  const { join } = await import("node:path")
+  const directory = await mkdtemp("/tmp/fmx-wedged-")
+  try {
+    const wedged = join(directory, "fmx-zmx")
+    // exec, so the shell leaves no child holding the inherited pipe open.
+    await writeFile(wedged, "#!/bin/sh\nexec sleep 300\n")
+    await chmod(wedged, 0o755)
+    const companion = new CompanionCommand(directory, { PATH: "/usr/bin:/bin" }, spawnCompanion(wedged, 250))
+    const started = Date.now()
+    // Without a deadline a wedged `list` leaves a Runtime that has bound its
+    // socket, reported ready, and will never answer a request.
+    await expect(companion.list()).rejects.toBeInstanceOf(CompanionError)
+    expect(Date.now() - started).toBeLessThan(3_000)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 10_000)

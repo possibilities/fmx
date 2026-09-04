@@ -18,6 +18,13 @@ import { isAddressInUse, listenerAnswers, removeSocketFile } from "./unix-socket
 import { privateRootDirectory } from "./zmx-environment.ts"
 
 const MAX_FRAME_BYTES = 1 << 20
+/**
+ * How much unwritten output one connection may hold. A subscriber that stops
+ * reading without closing would otherwise grow the Runtime's heap for as long
+ * as it stays open; past this it is dropped, because a peer that cannot keep
+ * up with its own events is not one worth keeping.
+ */
+const MAX_OUTGOING_BYTES = 4 * 1024 * 1024
 const SINGLETON_HANDOFF_TIMEOUT_MS = 1_000
 const SINGLETON_HANDOFF_INTERVAL_MS = 25
 
@@ -37,6 +44,7 @@ type Connection = {
   subscribed: boolean
   /** Frames not yet fully written; a large result can exceed the socket buffer. */
   outgoing: Uint8Array[]
+  outgoingBytes: number
 }
 
 const encoder = new TextEncoder()
@@ -102,15 +110,15 @@ export class ApiServer {
     removeSocketFile(this.path)
     this.releaseLock()
     this.connections.clear()
+    this.sockets.clear()
   }
 
   broadcast(frame: EventFrame): void {
     if (!this.server) return
     const bytes = encoder.encode(encodeFrame(frame))
-    for (const connection of this.connections.values()) {
+    for (const connection of [...this.connections.values()]) {
       if (!connection.subscribed) continue
-      connection.outgoing.push(bytes)
-      this.flushConnection(connection)
+      this.enqueue(connection, bytes)
     }
   }
 
@@ -129,14 +137,25 @@ export class ApiServer {
 
   private open(socket: Socket<Connection>): void {
     const id = this.nextId++
-    const connection: Connection = { id, buffer: "", subscribed: false, outgoing: [] }
+    const connection: Connection = { id, buffer: "", subscribed: false, outgoing: [], outgoingBytes: 0 }
     socket.data = connection
     this.connections.set(id, connection)
     this.sockets.set(id, socket)
   }
 
   private send(connection: Connection, line: string): void {
-    connection.outgoing.push(encoder.encode(line))
+    this.enqueue(connection, encoder.encode(line))
+  }
+
+  /** Queue bytes, or drop a peer that has stopped reading its own socket. */
+  private enqueue(connection: Connection, bytes: Uint8Array): void {
+    if (connection.outgoingBytes + bytes.byteLength > MAX_OUTGOING_BYTES) {
+      this.sockets.get(connection.id)?.end()
+      this.forget(connection.id)
+      return
+    }
+    connection.outgoing.push(bytes)
+    connection.outgoingBytes += bytes.byteLength
     this.flushConnection(connection)
   }
 
@@ -157,11 +176,16 @@ export class ApiServer {
         this.forget(connection.id)
         return
       }
+      // Bun answers -1 for a socket that errored or closed; retrying the same
+      // chunk would spin. Let `close` clean it up.
+      if (written < 0) return
       if (written < chunk.byteLength) {
-        connection.outgoing[0] = chunk.subarray(Math.max(0, written))
+        connection.outgoing[0] = chunk.subarray(written)
+        connection.outgoingBytes -= written
         return
       }
       connection.outgoing.shift()
+      connection.outgoingBytes -= chunk.byteLength
     }
   }
 

@@ -5,6 +5,7 @@ import {
   HandlerRelay,
   SessionEndedError,
   SessionUnreachableError,
+  type SessionEndpoint,
   type SessionStart,
   type SessionTransport,
   type SessionTransportFactory,
@@ -34,8 +35,6 @@ const EXIT_RECORD_WAIT_MS = 5000
  */
 export class CompanionTransportFactory implements SessionTransportFactory {
   private closed = false
-  /** Fresh live endpoints read by startup adoption, consumed once. */
-  private readonly attachHints: Map<string, SessionEntry>
 
   constructor(
     private readonly companion: CompanionCommand,
@@ -43,12 +42,9 @@ export class CompanionTransportFactory implements SessionTransportFactory {
     private readonly options: {
       scrollbackLines?: number
       client?: string
-      attachHints?: ReadonlyMap<string, SessionEntry>
       connect?: typeof connectCompanionSession
     } = {},
-  ) {
-    this.attachHints = new Map(options.attachHints)
-  }
+  ) {}
 
   /** fmx is leaving: stop waiting on anything. What is not consumed is the next start's. */
   close(): void {
@@ -95,15 +91,15 @@ export class CompanionTransportFactory implements SessionTransportFactory {
     }
   }
 
-  async attach(identity: SessionIdentity, size: TerminalSize): Promise<SessionTransport> {
-    const hint = this.attachHints.get(identity.name)
-    this.attachHints.delete(identity.name)
-    if (hint?.state === "live" && hint.socketPath && ownedSessionName(hint, this.instanceId) === identity.name) {
+  async attach(identity: SessionIdentity, size: TerminalSize, endpoint?: SessionEndpoint): Promise<SessionTransport> {
+    if (endpoint) {
       try {
-        return await this.connectOwned(identity, hint.socketPath, size)
+        // Ownership is proved on this exact connection, so a path the caller
+        // read a moment ago is safe to try before asking again.
+        return await this.connectOwned(identity, endpoint.socketPath, size)
       } catch (error) {
         if (error instanceof SessionEndedError) throw error
-        // The session may have ended since adoption read it. Inspecting now
+        // The session may have ended since the caller read it. Inspecting now
         // recovers the exact ended/unreachable classification instead of
         // treating a stale endpoint as truth.
       }
