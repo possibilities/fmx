@@ -64,6 +64,8 @@ export type SessionsOptions = {
   onExit: (name: string, exit: SessionExit) => void
   /** Debounced: output or a title reached this Session's screen. */
   onChanged: (name: string, title: string) => void
+  /** A Session's transport was lost or came back. */
+  onState: (name: string, state: "live" | "unreachable") => void
   /** A Session appeared, went away, or changed enough that the Layout must be re-applied. */
   onRoster: () => void
   /** Where a failure with no caller to tell goes; never the drawn screen. */
@@ -78,7 +80,18 @@ export type SessionsOptions = {
 class Session {
   readonly terminal: PaneTerminalRenderable
   title = ""
-  state: "live" | "unreachable" = "live"
+  private currentState: "live" | "unreachable" = "live"
+
+  /** Reported wherever it is set, so a client never has to poll to learn it. */
+  get state(): "live" | "unreachable" {
+    return this.currentState
+  }
+
+  set state(next: "live" | "unreachable") {
+    if (next === this.currentState) return
+    this.currentState = next
+    this.events.onState(this, next)
+  }
   pid: number | null = null
   /** Null when adopted: the Companion reports a display string, not an argv. */
   argv: string[] | null = null
@@ -103,6 +116,7 @@ class Session {
       onChanged: (session: Session) => void
       onExit: (session: Session, exit: SessionExit) => void
       onLost: (session: Session, error: Error) => void
+      onState: (session: Session, state: "live" | "unreachable") => void
     },
   ) {
     this.size = size
@@ -210,6 +224,7 @@ class Session {
       rows: screen.rows,
       cursor: { x: screen.cursor.x, y: screen.cursor.y, visible: screen.cursor.visible },
       title: this.title,
+      state: this.state,
     }
   }
 
@@ -538,6 +553,7 @@ export class Sessions {
       onChanged: (changed) => this.noteChange(changed),
       onExit: (ended, status) => this.remove(ended, status),
       onLost: (lost, error) => this.reportFailure(this.recover(lost, error), `recovering ${lost.identity.name}`),
+      onState: (changed, state) => this.options.onState(changed.identity.name, state),
     })
     this.sessions.set(identity.name, session)
     return session

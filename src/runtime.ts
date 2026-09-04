@@ -19,7 +19,7 @@ export type RuntimeOptions = {
   instanceName: string
   socketPath: string
   theme: FxnkThemeResolution
-  sessions: Omit<SessionsOptions, "renderer" | "theme" | "onExit" | "onChanged" | "onRoster">
+  sessions: Omit<SessionsOptions, "renderer" | "theme" | "onExit" | "onChanged" | "onState" | "onRoster">
   publish: (event: EventName, data: unknown) => void
   /** Diagnostics that belong on the Runtime's own terminal, not in a reply. */
   report?: (line: string) => void
@@ -73,6 +73,7 @@ export class Runtime {
       theme: options.theme,
       onExit: (name, exit) => this.publish("session.exited", { name, ...exit }),
       onChanged: (name, title) => this.publish("session.changed", { name, title }),
+      onState: (name, state) => this.publish("session.state", { name, state }),
       onRoster: () => this.refit(),
     })
     this.stage = new Stage({

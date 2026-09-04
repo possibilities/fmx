@@ -16,6 +16,7 @@ async function harness() {
   const transport = new PtyTransportFactory()
   const exits: { name: string; exit: SessionExit }[] = []
   const changes: { name: string; title: string }[] = []
+  const states: { name: string; state: "live" | "unreachable" }[] = []
   let rosters = 0
   const sessions = new Sessions({
     renderer: setup.renderer,
@@ -26,6 +27,7 @@ async function harness() {
     environment: { PATH: process.env.PATH ?? "", HOME: "/home/test", SMOLMUX_SECRET: "x", ZMX_DIR: "/tmp/z", TMUX: "outer" },
     onExit: (name, exit) => exits.push({ name, exit }),
     onChanged: (name, title) => changes.push({ name, title }),
+    onState: (name, state) => states.push({ name, state }),
     onRoster: () => {
       rosters += 1
     },
@@ -37,6 +39,7 @@ async function harness() {
     sessions,
     exits,
     changes,
+    states,
     get rosters() {
       return rosters
     },
@@ -353,8 +356,11 @@ test("input to an unreachable Session is refused rather than dropped", async () 
       expect((error as { code?: string }).code).toBe("conflict")
     }
 
-    // The screen it last had is still readable; only delivery is refused.
-    expect(harnessed.sessions.capture("tray").name).toBe("tray")
+    // The screen it last had is still readable; only delivery is refused. It
+    // says which it is, so a caller is never left guessing.
+    expect(harnessed.sessions.capture("tray")).toMatchObject({ name: "tray", state: "unreachable" })
+    // And the transition was reported rather than left to be polled for.
+    expect(harnessed.states).toEqual([{ name: "tray", state: "unreachable" }])
   } finally {
     harnessed.close()
   }

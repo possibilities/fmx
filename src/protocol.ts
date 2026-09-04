@@ -142,6 +142,9 @@ export const captureSchema = z.object({
   rows: z.int().min(1),
   cursor: z.object({ x: z.int().min(0), y: z.int().min(0), visible: z.boolean() }).describe("Relative to the visible screen"),
   title: z.string(),
+  state: z
+    .enum(["live", "unreachable"])
+    .describe("unreachable: the screen this Session last had, read from its emulator, not one its transport confirmed"),
 })
 export type Capture = z.infer<typeof captureSchema>
 
@@ -356,6 +359,11 @@ export const EVENTS = {
       signal: z.int().or(NONE),
       reason: z.string(),
     }),
+  },
+  "session.state": {
+    description:
+      "A Session's transport was lost or came back. Input to an unreachable Session is refused; its screen stays readable as the one it last had.",
+    data: z.object({ name: sessionName, state: z.enum(["live", "unreachable"]) }),
   },
   "session.changed": {
     description: "Output or a title change reached a Session's screen; debounced. Capture it to read it.",

@@ -46,6 +46,7 @@ describe("the contract", () => {
       "layout.changed",
       "session.changed",
       "session.exited",
+      "session.state",
       "stage.changed",
       "theme.changed",
     ])

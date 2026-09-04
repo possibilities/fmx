@@ -102,11 +102,20 @@ what moved.
 
 ```json
 {"name":"tray","lines":["agents","  reviewer"],"screen_start":0,"cols":26,"rows":30,
- "cursor":{"x":0,"y":2,"visible":true},"title":"the tray"}
+ "cursor":{"x":0,"y":2,"visible":true},"title":"the tray","state":"live"}
 ```
 
 Trailing blank lines are trimmed, and the cursor is relative to the visible
 screen.
+
+`state` is `live`, or `unreachable` when the Session's transport is gone. A
+capture still answers then, because it composes this process's own emulator
+rather than asking the Companion — the screen that Session last had is the
+only way to see what it was doing when it dropped, which is when you most
+want to look. `state` is there so that screen is never mistaken for a current
+one. Input to an unreachable Session is refused rather than dropped, so the
+two calls differ deliberately: a capture still claims only that these bytes
+were received, and that stays true.
 
 `scrollback` asks for that many lines that have scrolled off the top, up to
 10,000. They come first in `lines`, and `screen_start` is the index where the
@@ -240,6 +249,18 @@ rectangle in tree order.
 
 `code` and `signal` on `session.exited` are null when the Companion could not
 read them; `reason` always says something.
+
+### `session.state`
+
+A Session's transport was lost, or came back.
+
+```json
+{"name":"reviewer","state":"unreachable"}
+```
+
+Sent on the transition, so nothing has to poll `session.list` to notice one.
+An unreachable Session is not gone: its process is the Companion's and
+smolmux keeps reaching for it, `session.exited` is what says it ended.
 
 ## Errors
 
