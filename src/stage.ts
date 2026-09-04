@@ -32,7 +32,7 @@ type DividerPane = { box: BoxRenderable; axis: FittedDivider["axis"] }
  * The drawn Layout. Applying one mutates only what moved: a Pane that keeps
  * its rectangle is not resized, so its emulator neither reflows nor tells its
  * PTY anything, and a Session that stays on screen across an apply never
- * blinks. Geometry is fmx's own — every Pane is absolutely positioned at the
+ * blinks. Geometry is smolmux's own — every Pane is absolutely positioned at the
  * rectangle `layout.ts` computed — so one apply is one layout pass.
  */
 export class Stage {
@@ -58,7 +58,7 @@ export class Stage {
     this.onChanged = options.onChanged
     this.theme = options.theme
     this.root = new BoxRenderable(this.renderer, {
-      id: "fmx-stage",
+      id: "smolmux-stage",
       width: "100%",
       height: "100%",
     })
@@ -200,13 +200,13 @@ export class Stage {
     let pane = this.textPanes.get(path)
     if (!pane) {
       const box = new BoxRenderable(this.renderer, {
-        id: `fmx-text-${path || "root"}`,
+        id: `smolmux-text-${path || "root"}`,
         position: "absolute",
         alignItems: "center",
         justifyContent: "center",
       })
       const label = new TextRenderable(this.renderer, {
-        id: `fmx-text-label-${path || "root"}`,
+        id: `smolmux-text-label-${path || "root"}`,
         content: text,
         fg: color,
         selectable: false,
@@ -233,7 +233,7 @@ export class Stage {
       if (!pane || pane.axis !== divider.axis) {
         pane?.box.destroy()
         const box = new BoxRenderable(this.renderer, {
-          id: `fmx-divider-${divider.id}`,
+          id: `smolmux-divider-${divider.id}`,
           position: "absolute",
           border: divider.axis === "row" ? ["left"] : ["top"],
           borderStyle: "single",

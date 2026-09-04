@@ -16,16 +16,16 @@ import {
 } from "./zmx-environment.ts"
 
 /**
- * `fmx doctor`: what a start would find, reported instead of acted on. The
+ * `smolmux doctor`: what a start would find, reported instead of acted on. The
  * Companion is resolved the way a start resolves it and its build compared to
  * the pin; the directory is made private the way a start makes it. Nothing is
- * bound and nothing is adopted — a running fmx is undisturbed.
+ * bound and nothing is adopted — a running smolmux is undisturbed.
  */
 export type DoctorReport = {
   lines: string[]
   /**
    * False when the Companion is missing, unreadable, or not the pinned build,
-   * or its directory is not fmx's own. An overridden Companion build is still
+   * or its directory is not smolmux's own. An overridden Companion build is still
    * reported rather than judged because a start deliberately runs it with a
    * word about it.
    */
@@ -36,7 +36,7 @@ export async function doctor(
   env: NodeJS.ProcessEnv = process.env,
   instance: Instance = resolveInstance(null, env),
 ): Promise<DoctorReport> {
-  const rows: [string, string][] = [["fmx", VERSION]]
+  const rows: [string, string][] = [["smolmux", VERSION]]
   let ok = true
   const fail = (label: string, text: string) => {
     ok = false
@@ -65,7 +65,7 @@ export async function doctor(
     try {
       const build = await companionBuild(companion.path, env)
       if (build === COMPANION_PIN.build) {
-        rows.push(["build", `${build} (the build pinned by this fmx checkout)`])
+        rows.push(["build", `${build} (the build pinned by this smolmux checkout)`])
       } else if (companion.origin === "override") {
         rows.push(["build", companionMismatch(companion, build, PROTOCOL_VERSION)])
       } else {
@@ -83,6 +83,12 @@ export async function doctor(
   rows.push(["instance", `${instance.name} · ${instance.id}`])
   rows.push(["api", apiSocketPathFor(instance.id)])
   rows.push(["config", instance.configPath])
+  // smolmux's directory is its own, while the Companion build still defaults
+  // to the fork's. A human reaching for a session by hand needs the directory
+  // named, so name it rather than leave it to be found out.
+  if (companion !== null) {
+    rows.push(["by hand", `ZMX_DIR=${companionDirectory(env)} ${companion.path} list`])
+  }
 
   const width = Math.max(...rows.map(([label]) => label.length))
   return { lines: rows.map(([label, text]) => `${label.padEnd(width)}  ${text}`), ok }
@@ -93,7 +99,7 @@ function describeOrigin(companion: ResolvedCompanion): string {
     case "override":
       return COMPANION_PATH_ENV_VAR
     case "sibling":
-      return `beside ${installedDirectory() ?? "fmx"}/fmx`
+      return `beside ${installedDirectory() ?? "smolmux"}/smolmux`
     case "path":
       return "on PATH"
   }

@@ -1,7 +1,7 @@
 # Third-party notices
 
-The native fmx executable embeds Bun 1.4.0, OpenTUI, and their runtime
-dependencies, and a release ships the companion executable `fmx-zmx` beside
+The native smolmux executable embeds Bun 1.4.0, OpenTUI, and their runtime
+dependencies, and a release ships the companion executable `smolmux-zmx` beside
 it. The release packaging process appends the exact license, author, and
 patent notices shipped by the installed OpenTUI dependency packages for each
 target platform to this file; the companion's notices are kept here by hand,
@@ -66,9 +66,9 @@ These packages are MIT-licensed.
 The complete upstream Bun 1.4.0 notice is available at
 <https://github.com/oven-sh/bun/blob/bun-v1.4.0/LICENSE.md>.
 
-## Companion (`fmx-zmx`)
+## Companion (`smolmux-zmx`)
 
-The release also ships `fmx-zmx`, the companion daemon that owns each agent's
+The release also ships `smolmux-zmx`, the companion daemon that owns each agent's
 terminal: a build of the zmx fork at `possibilities/zmx` (the commit is
 pinned in `companion.json`), which statically links libghostty-vt and, through
 it, uucode with Unicode Character Database data, simdutf, and Highway. The

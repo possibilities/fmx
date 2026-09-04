@@ -22,7 +22,7 @@ const session = (name: string, state: SessionEntry["state"], labels: Record<stri
   pid: 3,
   clients: 0,
   createdAt: 4,
-  command: ["fmx"],
+  command: ["smolmux"],
   cwd: "/work",
   labels,
   exit: null,
@@ -30,12 +30,12 @@ const session = (name: string, state: SessionEntry["state"], labels: Record<stri
 })
 
 test("the Runtime is one deterministic Companion session per Instance, and it is headless", async () => {
-  expect(NAME).toBe(`fmxr-${INSTANCE}`)
-  expect(LABELS).toEqual({ owner: "fmx", instance: INSTANCE, kind: "runtime" })
+  expect(NAME).toBe(`smolmuxr-${INSTANCE}`)
+  expect(LABELS).toEqual({ owner: "smolmux", instance: INSTANCE, kind: "runtime" })
 
   let created: CreateRequest | null = null
   const companion = {
-    directory: "/tmp/fmx-runtime-test",
+    directory: "/tmp/smolmux-runtime-test",
     settle: async () => session(NAME, "absent", {}),
     create: async (request: CreateRequest) => {
       created = request
@@ -47,16 +47,16 @@ test("the Runtime is one deterministic Companion session per Instance, and it is
     await ensureRuntimeSession(companion, {
       instanceId: INSTANCE,
       cwd: "/work",
-      command: ["fmx", "runtime"],
+      command: ["smolmux", "runtime"],
       env: { PATH: "/bin" },
     }),
   ).toEqual({ socketPath: `/tmp/${NAME}`, created: true })
   expect(created).toMatchObject({
     name: NAME,
     cwd: "/work",
-    command: ["fmx", "runtime"],
+    command: ["smolmux", "runtime"],
     labels: LABELS,
-    env: { PATH: "/bin", FMX_RUNTIME_PROCESS: "1" },
+    env: { PATH: "/bin", SMOLMUX_RUNTIME_PROCESS: "1" },
   })
   // The Runtime holds its Sessions whether or not a terminal is attached.
   expect(created!).not.toHaveProperty("exitOnLastClient", true)
@@ -65,7 +65,7 @@ test("the Runtime is one deterministic Companion session per Instance, and it is
 test("a live owned Runtime is joined and a label impostor is refused", async () => {
   const makeCompanion = (labels: Record<string, string>) =>
     ({ directory: "/tmp/x", settle: async () => session(NAME, "live", labels) }) as unknown as CompanionCommand
-  const request = { instanceId: INSTANCE, cwd: "/work", command: ["fmx"], env: {} }
+  const request = { instanceId: INSTANCE, cwd: "/work", command: ["smolmux"], env: {} }
 
   expect(await ensureRuntimeSession(makeCompanion(LABELS), request)).toEqual({
     socketPath: `/tmp/${NAME}`,
@@ -94,7 +94,7 @@ test("an exited Runtime's record is consumed before a new one is created", async
   } as unknown as CompanionCommand
 
   expect(
-    await ensureRuntimeSession(companion, { instanceId: INSTANCE, cwd: "/work", command: ["fmx"], env: {} }),
+    await ensureRuntimeSession(companion, { instanceId: INSTANCE, cwd: "/work", command: ["smolmux"], env: {} }),
   ).toMatchObject({ created: true })
   expect(forgotten).toEqual([NAME])
   states = []
@@ -112,7 +112,7 @@ test("a racing creator's Runtime is joined rather than fought over", async () =>
   } as unknown as CompanionCommand
 
   expect(
-    await ensureRuntimeSession(companion, { instanceId: INSTANCE, cwd: "/work", command: ["fmx"], env: {} }),
+    await ensureRuntimeSession(companion, { instanceId: INSTANCE, cwd: "/work", command: ["smolmux"], env: {} }),
   ).toEqual({ socketPath: `/tmp/${NAME}`, created: false })
 })
 
@@ -131,7 +131,7 @@ test("a Runtime that is not live is not one a Client can attach to", async () =>
 })
 
 test("waiting for the API socket answers only when something listens", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-ready-"))
+  const directory = await mkdtemp(join(tmpdir(), "smolmux-ready-"))
   try {
     const path = join(directory, "instance.api")
     expect(await waitForRuntimeApi(path, 60, 10)).toBe(false)
@@ -157,8 +157,8 @@ test("the Runtime command distinguishes a source checkout from a compiled binary
     "/src/index.ts",
     "runtime",
   ])
-  expect(currentRuntimeCommand({ executable: "/usr/local/bin/fmx", main: "/$bunfs/root/fmx" })).toEqual([
-    "/usr/local/bin/fmx",
+  expect(currentRuntimeCommand({ executable: "/usr/local/bin/smolmux", main: "/$bunfs/root/smolmux" })).toEqual([
+    "/usr/local/bin/smolmux",
     "runtime",
   ])
   expect(currentRuntimeCommand({ executable: "/usr/bin/bun", main: "/src/index.ts", name: "review" })).toEqual([

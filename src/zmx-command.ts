@@ -4,7 +4,7 @@ import { companionEnvironment } from "./zmx-environment.ts"
 /**
  * The Companion's supervisor surface: `create`, `list`, `inspect`, `forget`,
  * `kill`, driven over their `--json` forms. The terminal socket is
- * `companion-client.ts`; this is everything fmx does to a session from
+ * `companion-client.ts`; this is everything smolmux does to a session from
  * outside it.
  */
 
@@ -102,7 +102,7 @@ export type Spawner = (args: string[], options: { cwd?: string; env: Record<stri
 /**
  * How long any one Companion command may take. Without it a wedged `list` —
  * a hung connect to a half-dead socket, an unresponsive filesystem under
- * `ZMX_DIR` — leaves a Runtime that has bound its socket, told `fmx start` it
+ * `ZMX_DIR` — leaves a Runtime that has bound its socket, told `smolmux start` it
  * was ready, and will never answer a request.
  */
 export const COMPANION_COMMAND_TIMEOUT_MS = 15_000
@@ -146,7 +146,7 @@ export const spawnCompanion =
 export class CompanionCommand {
   private readonly run: Spawner
 
-  /** The environment for commands that start nothing: fmx's own, made safe. */
+  /** The environment for commands that start nothing: smolmux's own, made safe. */
   private readonly environment: Record<string, string>
 
   constructor(
@@ -260,7 +260,7 @@ export function formatLabels(labels: Record<string, string>): string {
 /**
  * The Companion reports a session's directory the way the shell does over
  * OSC 7: `file://<host><path>`, percent-encoded. Only a path on this host is
- * a path fmx can use.
+ * a path smolmux can use.
  */
 export function decodeOsc7Cwd(value: string, hostname: string | null = null): string | null {
   if (value.startsWith("/")) return value

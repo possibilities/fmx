@@ -111,7 +111,7 @@ export class CompanionConnection {
       },
     })
     transport.bind(socket)
-    const hello = clientHello(options.client ?? "fmx")
+    const hello = clientHello(options.client ?? "smolmux")
     if (options.versions) {
       hello.minVersion = options.versions.min
       hello.maxVersion = options.versions.max

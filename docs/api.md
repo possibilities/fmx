@@ -1,15 +1,15 @@
-# The fmx API
+# The smolmux API
 
 Everything past `start`, `stop`, and `attach` is this API. One duplex Unix
 socket per Instance, newline-delimited JSON, defined once in
-`src/protocol.ts` and printed whole by `fmx api`. This document is the prose
+`src/protocol.ts` and printed whole by `smolmux api`. This document is the prose
 half; the schemas there are the machine-readable half, and a test fails when
 one of them names a method this file does not.
 
 ## Connecting
 
-`fmx start` prints the socket path, and `fmx status` reports it again. It is
-`/tmp/fmx-<uid>/<instance id>.api`, mode 0600, inside a directory created
+`smolmux start` prints the socket path, and `smolmux status` reports it again. It is
+`/tmp/smolmux-<uid>/<instance id>.api`, mode 0600, inside a directory created
 0700 and refused when it is not yours.
 
 Frames are one JSON object per line:
@@ -28,7 +28,7 @@ frames until it hangs up.
 
 ## The model
 
-An **Instance** is one running fmx: a Runtime, its Sessions, and one Layout.
+An **Instance** is one running smolmux: a Runtime, its Sessions, and one Layout.
 A **Session** is a command in a Companion-held PTY, named by its caller. The
 **Layout** is a tree of rows and columns whose leaves are **Panes**, each
 showing one Session or one line of text. The **Stage** is the drawn area,
@@ -36,7 +36,7 @@ sized by whichever terminal Client interacted most recently.
 
 A Session runs whether or not a Pane shows it, and it outlives the Runtime:
 the Companion holds it, labelled with the Instance's id, and the next
-Runtime adopts it. fmx stores nothing of its own.
+Runtime adopts it. smolmux stores nothing of its own.
 
 ## Methods
 
@@ -66,11 +66,11 @@ Starts a command in a Companion-held PTY.
 
 `name` is the caller's, unique per Instance, `[a-z][a-z0-9_-]{0,31}`. `argv`
 is the executable first, exec'd directly — there is no shell, so nothing
-needs quoting. `cwd` is absolute. `env` is applied over fmx's own environment
-with its private variables (`FMX_*`, `ZMX_*`, `TMUX*`, `HERDR_*`) removed.
+needs quoting. `cwd` is absolute. `env` is applied over smolmux's own environment
+with its private variables (`SMOLMUX_*`, `ZMX_*`, `TMUX*`, `HERDR_*`) removed.
 `cols` and `rows` size the PTY until a Pane sizes it, 80×24 by default.
 `labels` are kept on the Companion session and returned on adoption; `owner`,
-`instance`, `session`, and `kind` are fmx's own and refused.
+`instance`, `session`, and `kind` are smolmux's own and refused.
 
 Returns the Session. A duplicate name is `conflict`.
 
@@ -191,7 +191,7 @@ read.
 - **No way to type into a Session.** No send, write, or keys method. Whatever
   runs in a Session gets its input from the human at the keyboard, or from
   its own channels.
-- **No MCP.** fmx is a socket; whoever drives it can be an MCP server.
+- **No MCP.** smolmux is a socket; whoever drives it can be an MCP server.
 - **No byte-level observation.** `session.changed` plus `session.capture` is
   the whole reading surface. A pane's bytes never cross the API.
 - **No app, wish, or gating for a Pane.** A Pane shows a Session or a line of

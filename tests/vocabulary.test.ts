@@ -9,7 +9,7 @@ import { METHOD_NAMES } from "../src/protocol.ts"
 const ROOT = resolve(import.meta.dir, "..")
 
 /**
- * Every document that describes fmx as it is. Decision records are history
+ * Every document that describes smolmux as it is. Decision records are history
  * and keep the words they were written with; a superseded one says so at the
  * top instead of being rewritten.
  */
@@ -40,11 +40,11 @@ describe("canonical public vocabulary", () => {
         "\\bAgent\\b",
         "\\bTray\\b",
         "\\bAgent list\\b",
-        "\\bfmx Session\\b",
+        "\\bsmolmux Session\\b",
         "\\bManifest\\b",
         "\\bHome\\b",
         "\\bHerdr\\b",
-        "\\bfmx-mcp\\b",
+        "\\bsmolmux-mcp\\b",
       ]) {
         expect(text, `${file} still says ${retired}`).not.toMatch(new RegExp(retired, "u"))
       }
@@ -68,7 +68,7 @@ describe("canonical public vocabulary", () => {
       "0008-ade-only-fx-lifecycle.md",
       "0009-pinned-private-fx-install.md",
       "0013-mcp-only-agent-automation.md",
-      "0014-independent-named-fmx.md",
+      "0014-independent-named-smolmux.md",
     ]
     const records = await readdir(join(ROOT, "docs/adr"))
     const replacements = await Promise.all(

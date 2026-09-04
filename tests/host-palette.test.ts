@@ -53,11 +53,11 @@ test("fxnk theme parsing matches fx's OSC 11 and COLORFGBG thresholds", () => {
   expect(colorFgBgIsLight("0;999")).toBe(false)
 })
 
-test("fxnk resolution uses FMX_THEME, OSC 11, COLORFGBG, then dark", async () => {
+test("fxnk resolution uses SMOLMUX_THEME, OSC 11, COLORFGBG, then dark", async () => {
   const explicitPort = new FakeThemePort()
-  expect(await resolveFxnkTheme(explicitPort, { FMX_THEME: "LIGHT", COLORFGBG: "0;0" }, 1)).toMatchObject({
+  expect(await resolveFxnkTheme(explicitPort, { SMOLMUX_THEME: "LIGHT", COLORFGBG: "0;0" }, 1)).toMatchObject({
     theme: "light",
-    source: "FMX_THEME",
+    source: "SMOLMUX_THEME",
     explicit: true,
   })
   expect(explicitPort.writes).toEqual([])

@@ -29,7 +29,7 @@ test("splits the Companion's single-quoted command back into argv", () => {
 })
 
 test("formats labels as one space-separated argument and refuses what the Companion would", () => {
-  expect(formatLabels({ owner: "fmx", home: "h1" })).toBe("owner=fmx home=h1")
+  expect(formatLabels({ owner: "smolmux", home: "h1" })).toBe("owner=smolmux home=h1")
   expect(() => formatLabels({ "bad key": "x" })).toThrow("invalid label key")
   expect(() => formatLabels({ k: "has space" })).toThrow("invalid label value")
   expect(() => formatLabels({ k: "a=b" })).toThrow("invalid label value")
@@ -58,30 +58,30 @@ function scripted(answers: [string[], SpawnResult][]) {
 
 test("create passes identity, labels, the command after `--`, and the Companion's own environment", async () => {
   const { spawner, calls } = scripted([
-    [["create"], { exitCode: 0, stdout: '{"ok":true,"name":"fmx-1","socketPath":"/d/fmx-1","pid":5,"createdAt":10}\n', stderr: "" }],
+    [["create"], { exitCode: 0, stdout: '{"ok":true,"name":"smolmux-1","socketPath":"/d/smolmux-1","pid":5,"createdAt":10}\n', stderr: "" }],
     [["list"], { exitCode: 0, stdout: "[]", stderr: "" }],
   ])
-  // fmx's own environment carries an outer surface's names; the fx environment built for the
+  // smolmux's own environment carries an outer surface's names; the fx environment built for the
   // agent must win, with only the Companion's variables replaced.
-  const companion = new CompanionCommand("/tmp/fmx-cmd-test-dir", { PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer" }, spawner)
+  const companion = new CompanionCommand("/tmp/smolmux-cmd-test-dir", { PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer" }, spawner)
   const created = await companion.create({
-    name: "fmx-1",
+    name: "smolmux-1",
     command: ["/fx", "--x"],
     cwd: "/work",
     env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/theirs", ZMX_SESSION: "theirs" },
-    labels: { owner: "fmx" },
+    labels: { owner: "smolmux" },
     timeoutMs: 500,
     exitOnLastClient: true,
   })
-  expect(created).toEqual({ name: "fmx-1", socketPath: "/d/fmx-1", pid: 5, createdAt: 10 })
+  expect(created).toEqual({ name: "smolmux-1", socketPath: "/d/smolmux-1", pid: 5, createdAt: 10 })
   expect(calls[0]).toEqual({
-    args: ["create", "--json", "--labels", "owner=fmx", "--timeout-ms", "500", "--exit-on-last-client", "fmx-1", "--", "/fx", "--x"],
+    args: ["create", "--json", "--labels", "owner=smolmux", "--timeout-ms", "500", "--exit-on-last-client", "smolmux-1", "--", "/fx", "--x"],
     cwd: "/work",
-    env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/tmp/fmx-cmd-test-dir" },
+    env: { PATH: "/bin", TERM: "xterm-256color", HERDR_PANE_ID: "p_1", ZMX_DIR: "/tmp/smolmux-cmd-test-dir" },
   })
   await companion.list()
-  expect(calls[1]?.env).toEqual({ PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer", ZMX_DIR: "/tmp/fmx-cmd-test-dir" })
-  await rm("/tmp/fmx-cmd-test-dir", { recursive: true, force: true })
+  expect(calls[1]?.env).toEqual({ PATH: "/outer", HERDR_PANE_ID: "stranger", TERM: "outer", ZMX_DIR: "/tmp/smolmux-cmd-test-dir" })
+  await rm("/tmp/smolmux-cmd-test-dir", { recursive: true, force: true })
 })
 
 test("a refused create is a typed error; only Timeout may have left a session", async () => {
@@ -91,7 +91,7 @@ test("a refused create is a typed error; only Timeout may have left a session", 
     [["create", "--json", "odd"], { exitCode: 1, stdout: '{"ok":false,"name":"odd","error":"Martian","message":"?"}', stderr: "" }],
     [["create", "--json", "crash"], { exitCode: 134, stdout: "", stderr: "panic" }],
   ])
-  const companion = new CompanionCommand("/tmp/fmx-cmd-test-dir2", {}, spawner)
+  const companion = new CompanionCommand("/tmp/smolmux-cmd-test-dir2", {}, spawner)
   const request = (name: string) => companion.create({ name, command: ["x"], cwd: "/", env: {} })
   const taken = await request("taken").catch((error) => error)
   expect(taken).toBeInstanceOf(CompanionCreateError)
@@ -104,20 +104,20 @@ test("a refused create is a typed error; only Timeout may have left a session", 
   const crash = await request("crash").catch((error) => error)
   expect(crash).toBeInstanceOf(CompanionError)
   expect(crash.message).toContain("panic")
-  await rm("/tmp/fmx-cmd-test-dir2", { recursive: true, force: true })
+  await rm("/tmp/smolmux-cmd-test-dir2", { recursive: true, force: true })
 })
 
 test("list passes --where through, and a Companion that cannot list is an error, not an empty list", async () => {
   const { spawner, calls } = scripted([
-    [["list", "--json", "--where"], { exitCode: 0, stdout: '[{"name":"a","state":"live","labels":{"owner":"fmx"}}]', stderr: "" }],
+    [["list", "--json", "--where"], { exitCode: 0, stdout: '[{"name":"a","state":"live","labels":{"owner":"smolmux"}}]', stderr: "" }],
     [["list"], { exitCode: 1, stdout: "", stderr: "error: AccessDenied" }],
   ])
   const companion = new CompanionCommand("/d", {}, spawner)
   const failure = await companion.list().catch((error) => error)
   expect(failure).toBeInstanceOf(CompanionError)
   expect(failure.message).toContain("AccessDenied")
-  expect((await companion.list({ owner: "fmx" })).map((entry) => entry.name)).toEqual(["a"])
-  expect(calls[1]?.args).toEqual(["list", "--json", "--where", "owner=fmx"])
+  expect((await companion.list({ owner: "smolmux" })).map((entry) => entry.name)).toEqual(["a"])
+  expect(calls[1]?.args).toEqual(["list", "--json", "--where", "owner=smolmux"])
 })
 
 test("settle polls inspect until the state is no longer refused", async () => {
@@ -133,10 +133,10 @@ test("settle polls inspect until the state is no longer refused", async () => {
 })
 
 /**
- * Against the real Companion, when FMX_ZMX_PATH names it. Everything runs in
+ * Against the real Companion, when SMOLMUX_ZMX_PATH names it. Everything runs in
  * a private ZMX_DIR under /tmp and is killed and removed at the end.
  */
-const ZMX = process.env.FMX_ZMX_PATH
+const ZMX = process.env.SMOLMUX_ZMX_PATH
 const ENABLED = Boolean(ZMX && existsSync(ZMX))
 let dir = ""
 let live: CompanionCommand
@@ -144,7 +144,7 @@ const created: string[] = []
 
 beforeAll(async () => {
   if (!ENABLED) return
-  dir = await mkdtemp("/tmp/fmxz-cmd-")
+  dir = await mkdtemp("/tmp/smolmuxz-cmd-")
   live = new CompanionCommand(dir, { PATH: process.env.PATH, HOME: process.env.HOME, TERM: "xterm" }, ZMX!)
 })
 
@@ -157,20 +157,20 @@ afterAll(async () => {
 })
 
 test.skipIf(!ENABLED)("live: create, list with labels, inspect, kill, settle, forget", async () => {
-  const name = "fmx-" + "1".repeat(32)
+  const name = "smolmux-" + "1".repeat(32)
   const result = await live.create({
     name,
     command: ["sh", "-c", "echo hi; sleep 30"],
     cwd: "/tmp",
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ZMX_SESSION: "stranger" },
-    labels: { owner: "fmx", home: "h1", agent: "1".repeat(32), pane: "p_" + "1".repeat(32) },
+    labels: { owner: "smolmux", home: "h1", agent: "1".repeat(32), pane: "p_" + "1".repeat(32) },
   })
   created.push(name)
   expect(result.socketPath).toBe(join(dir, name))
   expect(existsSync(result.socketPath)).toBe(true)
 
-  const [entry] = await live.list({ owner: "fmx", home: "h1" })
-  expect(entry).toMatchObject({ name, state: "live", pid: result.pid, cwd: "/private/tmp", labels: { owner: "fmx", home: "h1" } })
+  const [entry] = await live.list({ owner: "smolmux", home: "h1" })
+  expect(entry).toMatchObject({ name, state: "live", pid: result.pid, cwd: "/private/tmp", labels: { owner: "smolmux", home: "h1" } })
   expect(entry?.command).toEqual(["sh", "-c", "echo hi; sleep 30"])
 
   const again = await live.create({ name, command: ["sleep", "1"], cwd: "/tmp", env: {} }).catch((error) => error)
@@ -186,7 +186,7 @@ test.skipIf(!ENABLED)("live: create, list with labels, inspect, kill, settle, fo
 })
 
 test.skipIf(!ENABLED)("live: a command that cannot start reports ExecFailed and leaves an exit record, not a socket", async () => {
-  const name = "fmx-" + "2".repeat(32)
+  const name = "smolmux-" + "2".repeat(32)
   const failure = await live.create({ name, command: ["/nonexistent/fx"], cwd: "/tmp", env: {} }).catch((error) => error)
   expect(failure.code).toBe("ExecFailed")
   const settled = await live.settle(name)
@@ -200,9 +200,9 @@ test("a Companion command that wedges is bounded rather than hanging the Runtime
   const { CompanionCommand, CompanionError, spawnCompanion } = await import("../src/zmx-command.ts")
   const { writeFile, chmod, mkdtemp, rm } = await import("node:fs/promises")
   const { join } = await import("node:path")
-  const directory = await mkdtemp("/tmp/fmx-wedged-")
+  const directory = await mkdtemp("/tmp/smolmux-wedged-")
   try {
-    const wedged = join(directory, "fmx-zmx")
+    const wedged = join(directory, "smolmux-zmx")
     // exec, so the shell leaves no child holding the inherited pipe open.
     await writeFile(wedged, "#!/bin/sh\nexec sleep 300\n")
     await chmod(wedged, 0o755)

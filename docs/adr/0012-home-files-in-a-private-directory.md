@@ -1,7 +1,7 @@
-# fmx Session files live in a private directory
+# smolmux Session files live in a private directory
 
-fmx binds each fmx Session's ADE socket, Runtime bridge, and singleton lock inside
-`/tmp/fmx-<uid>`, created 0700 and refused when it is not ours or is open to
+smolmux binds each smolmux Session's ADE socket, Runtime bridge, and singleton lock inside
+`/tmp/smolmux-<uid>`, created 0700 and refused when it is not ours or is open to
 others, rather than placing its own names directly in world-writable `/tmp`.
 A Runtime unlinks its sockets when it exits, while Companion-held Fx processes
 can outlive it; a name in `/tmp` could therefore be taken by another user and

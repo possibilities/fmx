@@ -34,7 +34,7 @@ const RECOVERY_INTERVAL_MS = 250
 const ADOPT_CONCURRENCY = 4
 
 /** Variables a child must never inherit from the Runtime that started it. */
-const PRIVATE_ENVIRONMENT = /^(?:FMX_|ZMX_|TMUX|HERDR_)/u
+const PRIVATE_ENVIRONMENT = /^(?:SMOLMUX_|ZMX_|TMUX|HERDR_)/u
 
 export type SessionCreateRequest = {
   name: string
@@ -64,7 +64,7 @@ export type SessionsOptions = {
 }
 
 /**
- * One Session as fmx holds it: the emulator its bytes land in, and what the
+ * One Session as smolmux holds it: the emulator its bytes land in, and what the
  * Companion knows about the process behind them. The process and its PTY are
  * the transport's; this owns the rendering side and the bytes between.
  */
@@ -235,7 +235,7 @@ class Session {
    * hold nothing first: not the screen, not the scrollback, not a cursor
    * query half-translated when the last transport dropped. The resolved
    * terminal-default background goes back on afterwards — the replay restores
-   * what the process set, not fmx's own terminal state.
+   * what the process set, not smolmux's own terminal state.
    */
   private resetTerminal(): void {
     this.cursorReportAdapter = new CursorReportAdapter()
@@ -309,7 +309,7 @@ export class Sessions {
   /**
    * Find the Sessions this Instance's Companion still holds and attach them.
    * Labels are applied by the Companion before any client can see a session,
-   * so they are the record: nothing of fmx's own has to survive a crash.
+   * so they are the record: nothing of smolmux's own has to survive a crash.
    */
   async adopt(): Promise<{ adopted: number; unresolved: string[] }> {
     const entries = await this.options.companion.list()
@@ -383,13 +383,13 @@ export class Sessions {
   }
 
   private async createOne(request: SessionCreateRequest): Promise<SessionView> {
-    if (this.shuttingDown) throw new ApiFailure("conflict", "fmx is shutting down")
+    if (this.shuttingDown) throw new ApiFailure("conflict", "smolmux is shutting down")
     if (this.sessions.has(request.name)) {
       throw new ApiFailure("conflict", `a Session named ${request.name} already exists`)
     }
     for (const key of Object.keys(request.labels ?? {})) {
       if ((RESERVED_LABELS as readonly string[]).includes(key)) {
-        throw new ApiFailure("invalid_params", `label ${key} is fmx's own`)
+        throw new ApiFailure("invalid_params", `label ${key} is smolmux's own`)
       }
     }
     const identity = sessionIdentity(this.options.instanceId, request.name, request.labels)
@@ -410,7 +410,7 @@ export class Sessions {
       })
       if (this.shuttingDown || !this.sessions.has(identity.name)) {
         transport.detach()
-        throw new ApiFailure("conflict", "fmx is shutting down")
+        throw new ApiFailure("conflict", "smolmux is shutting down")
       }
       session.adopt(transport)
     } catch (error) {
@@ -562,7 +562,7 @@ export class Sessions {
   }
 }
 
-/** A child's environment: the Runtime's own, with fmx's private variables removed, plus the caller's. */
+/** A child's environment: the Runtime's own, with smolmux's private variables removed, plus the caller's. */
 export function childEnvironment(
   parent: NodeJS.ProcessEnv,
   requested: Record<string, string> = {},
@@ -575,7 +575,7 @@ export function childEnvironment(
   return { ...env, ...requested }
 }
 
-/** The labels a caller set, without fmx's own. */
+/** The labels a caller set, without smolmux's own. */
 function callerLabels(labels: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {}
   for (const [key, value] of Object.entries(labels)) {

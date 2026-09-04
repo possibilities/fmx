@@ -23,7 +23,7 @@ async function harness() {
     companion: companion.asCompanion(),
     transport,
     theme: { theme: "dark", background: null, source: "default", explicit: false },
-    environment: { PATH: process.env.PATH ?? "", HOME: "/home/test", FMX_SECRET: "x", ZMX_DIR: "/tmp/z", TMUX: "outer" },
+    environment: { PATH: process.env.PATH ?? "", HOME: "/home/test", SMOLMUX_SECRET: "x", ZMX_DIR: "/tmp/z", TMUX: "outer" },
     onExit: (name, exit) => exits.push({ name, exit }),
     onChanged: (name, title) => changes.push({ name, title }),
     onRoster: () => {
@@ -56,9 +56,9 @@ const waitFor = async (check: () => boolean | Promise<boolean>, timeoutMs = 4000
   return check()
 }
 
-test("a child's environment is fmx's own with its private variables removed", () => {
+test("a child's environment is smolmux's own with its private variables removed", () => {
   const env = childEnvironment(
-    { PATH: "/bin", HOME: "/home/test", FMX_RUNTIME_PROCESS: "1", ZMX_DIR: "/tmp/z", TMUX: "outer", HERDR_PANE_ID: "7" },
+    { PATH: "/bin", HOME: "/home/test", SMOLMUX_RUNTIME_PROCESS: "1", ZMX_DIR: "/tmp/z", TMUX: "outer", HERDR_PANE_ID: "7" },
     { EDITOR: "vi" },
   )
   expect(env).toEqual({ PATH: "/bin", HOME: "/home/test", EDITOR: "vi" })
@@ -70,14 +70,14 @@ test("creates a Session, labels it, and reports it in creation order", async () 
     const view = await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
     expect(view).toMatchObject({ name: "tray", cwd: process.cwd(), argv: [FAKE_APP], shown: false, state: "live" })
     expect(harnessed.transport.started).toHaveLength(1)
-    expect(harnessed.transport.started[0]!.request.identity.companionName).toBe(`fmx-${INSTANCE}-tray`)
+    expect(harnessed.transport.started[0]!.request.identity.companionName).toBe(`smolmux-${INSTANCE}-tray`)
     expect(harnessed.transport.started[0]!.request.identity.labels).toEqual({
-      owner: "fmx",
+      owner: "smolmux",
       instance: INSTANCE,
       session: "tray",
     })
     // The private variables never reach the child.
-    expect(harnessed.transport.started[0]!.request.env.FMX_SECRET).toBeUndefined()
+    expect(harnessed.transport.started[0]!.request.env.SMOLMUX_SECRET).toBeUndefined()
     expect(harnessed.transport.started[0]!.request.env.ZMX_DIR).toBeUndefined()
     expect(harnessed.transport.started[0]!.request.env.TMUX).toBeUndefined()
 
@@ -88,7 +88,7 @@ test("creates a Session, labels it, and reports it in creation order", async () 
   }
 })
 
-test("refuses a duplicate name and a label that is fmx's own", async () => {
+test("refuses a duplicate name and a label that is smolmux's own", async () => {
   const harnessed = await harness()
   try {
     await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
@@ -97,7 +97,7 @@ test("refuses a duplicate name and a label that is fmx's own", async () => {
     )
     await expect(
       harnessed.sessions.create({ name: "other", argv: [FAKE_APP], cwd: process.cwd(), labels: { owner: "me" } }),
-    ).rejects.toThrow("label owner is fmx's own")
+    ).rejects.toThrow("label owner is smolmux's own")
   } finally {
     harnessed.close()
   }
@@ -123,7 +123,7 @@ test("captures a Session's screen, cursor, and title whether or not it is shown"
       name: "tray",
       argv: [FAKE_APP],
       cwd: process.cwd(),
-      env: { FMX_TEST_TITLE: "the tray", FMX_TEST_BANNER: "listening" },
+      env: { SMOLMUX_TEST_TITLE: "the tray", SMOLMUX_TEST_BANNER: "listening" },
       cols: 40,
       rows: 8,
     })
@@ -286,13 +286,13 @@ test("adoption takes the Companion's labels as the record and forgets ended resi
       createdAt: 10,
       pid: 42,
     })
-    harnessed.companion.add({ name: `fmx-${INSTANCE}-gone`, state: "exited", labels: {} })
+    harnessed.companion.add({ name: `smolmux-${INSTANCE}-gone`, state: "exited", labels: {} })
     harnessed.companion.add({ name: "someone-elses-session", labels: { owner: "zmx" } })
     harnessed.transport.attachBehavior = "unreachable"
 
     const outcome = await harnessed.sessions.adopt()
     expect(outcome.adopted).toBe(1)
-    expect(harnessed.companion.forgotten).toEqual([`fmx-${INSTANCE}-gone`])
+    expect(harnessed.companion.forgotten).toEqual([`smolmux-${INSTANCE}-gone`])
     const view = harnessed.sessions.view("tray")
     expect(view).toMatchObject({ cwd: "/work", pid: 42, created_at: 10, state: "unreachable" })
     // An adopted Session's argv is not recoverable from the Companion's
@@ -307,11 +307,11 @@ test("adoption takes the Companion's labels as the record and forgets ended resi
 test("adoption leaves a session it cannot read for the next start", async () => {
   const harnessed = await harness()
   try {
-    harnessed.companion.add({ name: `fmx-${INSTANCE}-tray`, state: "refused", labels: {} })
+    harnessed.companion.add({ name: `smolmux-${INSTANCE}-tray`, state: "refused", labels: {} })
     harnessed.companion.add({ name: "stranger", state: "refused", labels: {} })
     const outcome = await harnessed.sessions.adopt()
     expect(outcome.adopted).toBe(0)
-    expect(outcome.unresolved).toEqual([`fmx-${INSTANCE}-tray`])
+    expect(outcome.unresolved).toEqual([`smolmux-${INSTANCE}-tray`])
     expect(harnessed.companion.forgotten).toEqual([])
   } finally {
     harnessed.close()
@@ -323,7 +323,7 @@ test("kill asks the Companion and lets the exit remove the Session", async () =>
   try {
     await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
     await harnessed.sessions.kill("tray")
-    expect(harnessed.companion.killed).toEqual([`fmx-${INSTANCE}-tray`])
+    expect(harnessed.companion.killed).toEqual([`smolmux-${INSTANCE}-tray`])
     // The roster still holds it: the Companion's Exit is what removes it.
     expect(harnessed.sessions.list().map((session) => session.name)).toEqual(["tray"])
     await expect(harnessed.sessions.kill("missing")).rejects.toThrow("no Session named missing")

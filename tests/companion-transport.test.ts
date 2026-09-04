@@ -15,10 +15,10 @@ import { CompanionCommand, CompanionCreateError, type SessionEntry } from "../sr
 /**
  * The Companion behind the Session transport seam, against the real binary:
  * what the Runtime sees when it starts, attaches to, loses, and outlives a
- * Session. Needs FMX_ZMX_PATH; sessions live in a private directory under
+ * Session. Needs SMOLMUX_ZMX_PATH; sessions live in a private directory under
  * /tmp and every one this file starts is ended by it.
  */
-const ZMX = process.env.FMX_ZMX_PATH
+const ZMX = process.env.SMOLMUX_ZMX_PATH
 const ENABLED = Boolean(ZMX && existsSync(ZMX))
 const INSTANCE = "0123456789ab"
 
@@ -104,7 +104,7 @@ const start = (identity: SessionIdentity): Promise<SessionTransport> =>
 
 beforeAll(async () => {
   if (!ENABLED) return
-  dir = await mkdtemp("/tmp/fmxz-tr-")
+  dir = await mkdtemp("/tmp/smolmuxz-tr-")
   companion = new CompanionCommand(dir, { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" }, ZMX!)
   factory = new CompanionTransportFactory(companion, INSTANCE, { scrollbackLines: 200 })
 })
@@ -135,7 +135,7 @@ test.skipIf(!ENABLED)("start creates a labelled session, attaches with a restore
   expect(watcher.restores).toBe(1)
   const session = await companion.inspect(identity.companionName)
   expect(session.state).toBe("live")
-  expect(session.labels).toEqual({ role: "list", owner: "fmx", instance: INSTANCE, session: "one" })
+  expect(session.labels).toEqual({ role: "list", owner: "smolmux", instance: INSTANCE, session: "one" })
   expect(session.clients).toBe(1)
 
   transport.write(new TextEncoder().encode("hello\n"))
@@ -220,7 +220,7 @@ test.skipIf(!ENABLED)("a session under our name that is not ours is left alone",
     command: ["/bin/sh", "-c", CHILD_SCRIPT],
     cwd: dir,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TERM: "xterm" },
-    labels: { owner: "fmx", instance: "stranger", session: "six" },
+    labels: { owner: "smolmux", instance: "stranger", session: "six" },
     scrollbackLines: 200,
   })
   await expect(factory.attach(identity, { cols: 80, rows: 24 })).rejects.toBeInstanceOf(SessionEndedError)

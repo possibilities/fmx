@@ -5,15 +5,15 @@
  * title, echoes what it is typed, and ends when told. Driven by environment
  * variables so a test can shape it without arguments.
  *
- *   FMX_TEST_TITLE     the OSC 2 title it sets at start (default "fake app")
- *   FMX_TEST_BANNER    the line it prints at start (default "ready")
- *   FMX_TEST_LOG       a file each lifecycle event is appended to
+ *   SMOLMUX_TEST_TITLE     the OSC 2 title it sets at start (default "fake app")
+ *   SMOLMUX_TEST_BANNER    the line it prints at start (default "ready")
+ *   SMOLMUX_TEST_LOG       a file each lifecycle event is appended to
  */
 
 import { appendFileSync } from "node:fs"
 
-const title = process.env.FMX_TEST_TITLE ?? "fake app"
-const banner = process.env.FMX_TEST_BANNER ?? "ready"
+const title = process.env.SMOLMUX_TEST_TITLE ?? "fake app"
+const banner = process.env.SMOLMUX_TEST_BANNER ?? "ready"
 
 record("start", process.argv.slice(2))
 process.stdout.write(`\u001b]2;${title}\u0007`)
@@ -51,6 +51,6 @@ process.stdin.on("data", (chunk: Buffer) => {
 record("ready")
 
 function record(event: string, argv: string[] = []): void {
-  const path = process.env.FMX_TEST_LOG
+  const path = process.env.SMOLMUX_TEST_LOG
   if (path) appendFileSync(path, `${event} ${JSON.stringify(argv)}\n`)
 }

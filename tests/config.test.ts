@@ -6,21 +6,21 @@ import { configPath, loadConfig } from "../src/config.ts"
 import { keyMatchesCombo } from "../src/keybindings.ts"
 
 test("resolves the XDG config path and explicit override", () => {
-  expect(configPath({ XDG_CONFIG_HOME: "/tmp/config" }, "/home/test")).toBe("/tmp/config/fmx/config.toml")
-  expect(configPath({}, "/home/test")).toBe("/home/test/.config/fmx/config.toml")
-  expect(configPath({ FMX_CONFIG_PATH: "/tmp/fmx.toml" }, "/home/test")).toBe("/tmp/fmx.toml")
+  expect(configPath({ XDG_CONFIG_HOME: "/tmp/config" }, "/home/test")).toBe("/tmp/config/smolmux/config.toml")
+  expect(configPath({}, "/home/test")).toBe("/home/test/.config/smolmux/config.toml")
+  expect(configPath({ SMOLMUX_CONFIG_PATH: "/tmp/smolmux.toml" }, "/home/test")).toBe("/tmp/smolmux.toml")
 })
 
 test("loads a missing config as the default bindings", async () => {
-  const loaded = await loadConfig("/definitely/missing/fmx-config.toml")
+  const loaded = await loadConfig("/definitely/missing/smolmux-config.toml")
   expect(loaded.diagnostics).toEqual([])
   expect(loaded.keybindings.prefixLabel).toBe("ctrl+b")
 })
 
 test("loads keys from TOML", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-"))
-  const path = join(directory, "fmx", "config.toml")
-  await mkdir(join(directory, "fmx"))
+  const directory = await mkdtemp(join(tmpdir(), "smolmux-config-"))
+  const path = join(directory, "smolmux", "config.toml")
+  await mkdir(join(directory, "smolmux"))
   await writeFile(path, `[keys]\nprefix = "ctrl+space"\ndetach = ["prefix+d", "alt+1"]\n`)
 
   try {
@@ -36,7 +36,7 @@ test("loads keys from TOML", async () => {
 })
 
 test("diagnoses a section it does not know and keeps the defaults", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-sections-"))
+  const directory = await mkdtemp(join(tmpdir(), "smolmux-config-sections-"))
   const path = join(directory, "config.toml")
   await writeFile(path, `project_roots = ["~/code"]\n\n[panels]\nleft = 26\n`)
 
@@ -53,7 +53,7 @@ test("diagnoses a section it does not know and keeps the defaults", async () => 
 })
 
 test("falls back to the defaults on unreadable or malformed TOML", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-config-bad-"))
+  const directory = await mkdtemp(join(tmpdir(), "smolmux-config-bad-"))
   const path = join(directory, "config.toml")
   await writeFile(path, "[keys\n")
 

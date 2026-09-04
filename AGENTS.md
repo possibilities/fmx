@@ -1,6 +1,6 @@
-# fmx agent notes
+# smolmux agent notes
 
-- fmx is a terminal multiplexer driven over a socket. It starts arbitrary
+- smolmux is a terminal multiplexer driven over a socket. It starts arbitrary
   commands in Companion-held PTYs, draws them in a Layout a caller applies,
   and reports what changed. It knows nothing about what a Session runs — no
   agent, harness, lifecycle, or model concept lives here, and none may be
@@ -11,13 +11,13 @@
   was written with rather than being rewritten.
 - **The API is the product.** Every method, param, result, event, and error
   code is defined once in the contract table in `src/protocol.ts`, validated
-  by the Runtime from that definition, printed by `fmx api`, and described in
+  by the Runtime from that definition, printed by `smolmux api`, and described in
   `docs/api.md` in the same commit. `tests/vocabulary.test.ts` fails when
   `docs/api.md` omits a method; the rest is judgement, in the same commit.
 - The CLI is `start`, `attach`, `stop`, `status`, `api`, `doctor`, and the
   hidden `runtime` verb the Companion execs. Do not add a verb for anything
-  the API owns. `fmx` with no verb starts if needed and attaches.
-- fmx claims exactly one chord. The prefix (`ctrl+b`) is a latch the thin
+  the API owns. `smolmux` with no verb starts if needed and attaches.
+- smolmux claims exactly one chord. The prefix (`ctrl+b`) is a latch the thin
   Client holds until the next key proves it is not Detach; every other key,
   the prefix included, reaches the focused Session unchanged. There is no
   help surface, no switching key, no toggle. `config.toml` holds `[keys]`
@@ -40,7 +40,7 @@
   renderable from the layout pass, so a Pane that has never been drawn
   reports one cell, and a transport opened at that size would tell its PTY
   the screen is 1×1.
-- `session.capture` composes the emulator into a buffer of fmx's own
+- `session.capture` composes the emulator into a buffer of smolmux's own
   (`PaneTerminalRenderable.captureScreen`). OpenTUI's `screen()` reads the
   frame buffer a render pass fills, which a hidden Pane never gets, and
   `onScreenChange` fires per rendered frame and only while visible — neither
@@ -50,7 +50,7 @@
   no round trip, and it works for a Session whose transport is lost. Measured:
   a visible-only capture is 0.4 ms and the full 10,000 lines is 19 ms. The
   Companion's `History` frame would serialize its whole pagelist per call and
-  need a fork change to bound, which is why fmx does not use it.
+  need a fork change to bound, which is why smolmux does not use it.
 - A Restore costs about one screenful of history, measured exactly `rows` at
   the current pin: the Companion clears the screen between replaying
   scrollback and redrawing the viewport, so the lines just above the viewport
@@ -96,22 +96,22 @@
 - Both sides of the API socket queue their writes. A socket takes what it
   takes, and a frame written without handling a partial write is a request
   that never completes.
-- fmx's clear goes straight to the terminal, which OpenTUI's diff cannot see,
+- smolmux's clear goes straight to the terminal, which OpenTUI's diff cannot see,
   so `Runtime.repaint` forces the next frame to draw in full. Without it a
   same-size resize or a same-theme retint leaves the cleared stage standing.
 - **The API socket is the Instance singleton.** It is claimed under a lock
   before anything is adopted, so two Runtimes can never hold the same
   Sessions, and requests arriving during adoption wait rather than being told
-  the Sessions do not exist. Its path is `/tmp/fmx-<uid>/<instance id>.api`.
-- **fmx stores nothing.** The Companion applies a Session's labels before its
+  the Sessions do not exist. Its path is `/tmp/smolmux-<uid>/<instance id>.api`.
+- **smolmux stores nothing.** The Companion applies a Session's labels before its
   loop accepts any client, so labels are the record: adoption is one
   `list --json` filtered by label and name. There is no Manifest, no claim to
   write before creating, no `markRunning` after, and no crash window between
   them. The Instance id is derived from the configuration directory and the
-  name, so nothing fmx could lose can cost an Instance its Sessions. The
+  name, so nothing smolmux could lose can cost an Instance its Sessions. The
   directory is part of it because the private socket is one path per machine:
   an id from the name alone would make every `default` Instance the same one,
-  and a test run would fight the operator's own fmx over one socket.
+  and a test run would fight the operator's own smolmux over one socket.
 - An adopted Session's `argv` is null. The Companion reports a shell-quoted
   display string cut at 256 bytes; it is for reading, never for re-running.
 - The Runtime is headless. It renders into its Companion PTY and holds its
@@ -119,13 +119,13 @@
   signal, or a crash — never because the last Client left. Do not restore the
   `--exit-on-last-client` lifecycle or a bootstrap marker.
 - Theme: a headless Runtime asks nothing (`resolveFxnkTheme` with a zero
-  timeout takes `FMX_THEME`, then `COLORFGBG`, then dark), and the first
+  timeout takes `SMOLMUX_THEME`, then `COLORFGBG`, then dark), and the first
   Client samples its own terminal before relaying anything, then sends the
   same CSI 997 notification a terminal would. The existing live-theme path
   does the rest: drain stale replies behind a DA1 fence, sample OSC 11 behind
   a second fence, discard a sample superseded by a newer notification, then
   replace the complete fixed token set in one render turn.
-- Every color fmx paints comes from `fxnkRamp` (`src/host-palette.ts`):
+- Every color smolmux paints comes from `fxnkRamp` (`src/host-palette.ts`):
   fixed indexed roles `255/252/250/245/240` in dark and `235/238/241/247/250`
   in light, plus the surface/unused carve-outs `236/235` and `254/255`. Focus
   and error are direct ANSI slots `4` and `1`, never sampled from the host.
@@ -160,7 +160,7 @@
 - **Nothing a Runtime says goes to stderr.** For a headless Runtime that is
   the Companion PTY OpenTUI draws into, so a diagnostic written there lands
   across every attached Client's screen. Failures with no caller to tell go to
-  `instanceLogger` (`/tmp/fmx-<uid>/<instance id>.log`, mode 0600), and that
+  `instanceLogger` (`/tmp/smolmux-<uid>/<instance id>.log`, mode 0600), and that
   includes the Companion's own listener handler — call
   `setListenerErrorHandler` or its `console.error` default paints the screen.
 - Every `void`-discarded promise needs a `.catch` that reaches the log.
@@ -176,44 +176,44 @@
   the child, never the parent.
 - Every Companion command has a deadline (`COMPANION_COMMAND_TIMEOUT_MS`).
   Without one a wedged `list` leaves a Runtime that bound its socket, told
-  `fmx start` it was ready, and answers no request. The timeout cancels the
+  `smolmux start` it was ready, and answers no request. The timeout cancels the
   child's pipes as well as killing it, or the open read handle keeps the
   process alive.
 - A connection's outbound queue is capped. A subscriber that stops reading
   without closing is dropped, because a peer that cannot keep up with its own
   events is not one worth holding the Runtime's heap for.
 - `session.exited` carries `code` and `signal` as nullable with a `reason`
-  that always says something. Nothing in fmx acts on the exact status, so a
+  that always says something. Nothing in smolmux acts on the exact status, so a
   Companion that cannot read one (a migrated PTY, say) degrades honestly
   rather than breaking a consumer.
-- A child's environment is fmx's own with `FMX_*`, `ZMX_*`, `TMUX*`, and
+- A child's environment is smolmux's own with `SMOLMUX_*`, `ZMX_*`, `TMUX*`, and
   `HERDR_*` removed, plus the caller's `env`. A Session must never be able to
-  tell it is inside fmx, or report against an outer pane.
-- `fmx-mcp` is gone, along with the Runtime bridge, ADE, work control,
+  tell it is inside smolmux, or report against an outer pane.
+- `smolmux-mcp` is gone, along with the Runtime bridge, ADE, work control,
   subagents, the Manifest, the Tray, the picker, Projects, and Worktrees. Do
   not reintroduce any of them. The `.ade.sock`, `.bus`, `.ctl`, and `.obs`
   paths are unlinked as residue when the API socket binds.
-- Every file fmx owns lives under `/tmp/fmx-<uid>`, created 0700 and refused
+- Every file smolmux owns lives under `/tmp/smolmux-<uid>`, created 0700 and refused
   when it is not ours or is open to others — the same check the Companion's
   own directory gets, made before anything is bound into it. A socket in a
   world-writable directory is one another user can take the moment the
   Runtime that held it exits and unlinks it.
-- The Companion's directory is under `/tmp/fmx-<uid>/zmx`, not the config
+- The Companion's directory is under `/tmp/smolmux-<uid>/zmx`, not the config
   directory: macOS caps a socket path near 104 bytes, and sessions do not
-  survive a reboot, so neither need their exit records. fmx sets `ZMX_DIR` on
+  survive a reboot, so neither need their exit records. smolmux sets `ZMX_DIR` on
   every command it runs.
-- The Companion is resolved `FMX_ZMX_PATH`, then `fmx-zmx` beside the
-  installed binary, then `fmx-zmx` on PATH, and its build (`fmx-zmx version`,
-  first line) is compared to `companion.json`. Beside fmx or on PATH, a
+- The Companion is resolved `SMOLMUX_ZMX_PATH`, then `smolmux-zmx` beside the
+  installed binary, then `smolmux-zmx` on PATH, and its build (`smolmux-zmx version`,
+  first line) is compared to `companion.json`. Beside smolmux or on PATH, a
   mismatch is fatal; under the override it is one stderr line, because the
-  override is the development loop. `fmx doctor` runs the same resolution and
+  override is the development loop. `smolmux doctor` runs the same resolution and
   check without binding anything.
 - Moving the pin is a source-installation act: land the fork change on
-  `integration`, push, put the commit and `<fork version>+fmx.<12 hex>` in
+  `integration`, push, put the commit and `<fork version>+smolmux.<12 hex>` in
   `companion.json`, and re-check. The pinned build is always made by
   `scripts/build-companion.sh`, reached by `scripts/install.sh` and
   `scripts/install-companion.sh`; one build path, one set of flags.
-- Fmx publishes no binaries, archives, installer payload, latest pointer, or
+- Smolmux publishes no binaries, archives, installer payload, latest pointer, or
   release tag. `scripts/install.sh` is the consumer and operator path. The
   tested systems are macOS and Linux on arm64 and x86_64. Only
   `scripts/local-gate.sh` on the current Mac architecture blocks a merge.
@@ -222,8 +222,8 @@
   previous Companion keep running the old protocol, and every running Session
   on the machine becomes unreachable at once. Before the first bump, build a
   **drain** (record each Session's Companion build and leave survivors on
-  screen as unreachable, keeping the previous `fmx-zmx` beside the new one)
+  screen as unreachable, keeping the previous `smolmux-zmx` beside the new one)
   or a **carry** (speak every protocol version a survivor may hold), and say
   which in an ADR. Drain is the cheaper first answer. Until one exists, the
-  protocol version does not move. Note that `src/protocol.ts` is fmx's own
+  protocol version does not move. Note that `src/protocol.ts` is smolmux's own
   API version and is unrelated.

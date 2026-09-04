@@ -19,18 +19,18 @@ import { COMPANION_BINARY_NAME } from "../src/zmx-environment.ts"
  */
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const FAKE_APP = join(ROOT, "tests/fixtures/fake-app.ts")
-const FMX_COMMAND = process.env.FMX_BINARY_PATH
-  ? [resolve(ROOT, process.env.FMX_BINARY_PATH)]
+const SMOLMUX_COMMAND = process.env.SMOLMUX_BINARY_PATH
+  ? [resolve(ROOT, process.env.SMOLMUX_BINARY_PATH)]
   : [process.execPath, join(ROOT, "src/index.ts")]
-const COMPANION = process.env.FMX_ZMX_PATH ? resolve(ROOT, process.env.FMX_ZMX_PATH) : Bun.which(COMPANION_BINARY_NAME)
+const COMPANION = process.env.SMOLMUX_ZMX_PATH ? resolve(ROOT, process.env.SMOLMUX_ZMX_PATH) : Bun.which(COMPANION_BINARY_NAME)
 const ENABLED =
-  process.env.FMX_RUN_PTY_TESTS === "1" &&
+  process.env.SMOLMUX_RUN_PTY_TESTS === "1" &&
   typeof Bun.Terminal === "function" &&
   Boolean(COMPANION && fileExists(COMPANION))
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
 
-/** The Instance a given environment selects, exactly as fmx resolves it. */
+/** The Instance a given environment selects, exactly as smolmux resolves it. */
 const socketFor = (env: Record<string, string>, name: string | null = null) =>
   apiSocketPathFor(resolveInstance(name, env).id)
 
@@ -39,17 +39,17 @@ function environment(directory: string, name: string): Record<string, string> {
     ...(process.env as Record<string, string>),
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
-    FMX_THEME: "dark",
-    FMX_CONFIG_PATH: join(directory, "config.toml"),
-    FMX_ZMX_PATH: COMPANION!,
-    FMX_ZMX_DIR: `/tmp/fmxz-${createHash("sha256").update(basename(directory)).digest("hex").slice(0, 12)}`,
+    SMOLMUX_THEME: "dark",
+    SMOLMUX_CONFIG_PATH: join(directory, "config.toml"),
+    SMOLMUX_ZMX_PATH: COMPANION!,
+    SMOLMUX_ZMX_DIR: `/tmp/smolmuxz-${createHash("sha256").update(basename(directory)).digest("hex").slice(0, 12)}`,
     XDG_CONFIG_HOME: join(directory, "config"),
-    FMX_TEST_INSTANCE: name,
+    SMOLMUX_TEST_INSTANCE: name,
   }
 }
 
-async function fmx(args: string[], env: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn([...FMX_COMMAND, ...args], { cwd: ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+async function smolmux(args: string[], env: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn([...SMOLMUX_COMMAND, ...args], { cwd: ROOT, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()])
   return { code: (await proc.exited) ?? 0, stdout, stderr }
 }
@@ -64,7 +64,7 @@ const waitUntil = async (check: () => boolean | Promise<boolean>, timeoutMs = 10
 }
 
 async function endCompanionSessions(env: Record<string, string>): Promise<void> {
-  const companion = new CompanionCommand(env.FMX_ZMX_DIR!, env, COMPANION!)
+  const companion = new CompanionCommand(env.SMOLMUX_ZMX_DIR!, env, COMPANION!)
   for (const session of await companion.list().catch(() => [])) {
     if (session.state === "live") await companion.kill(session.name).catch(() => {})
   }
@@ -78,7 +78,7 @@ test.skipIf(!ENABLED)(
   "an Instance is started, driven, attached to, and stopped entirely over its socket",
   async () => {
     await chmod(FAKE_APP, 0o755)
-    const directory = await mkdtemp(join(tmpdir(), "fmx-e2e-"))
+    const directory = await mkdtemp(join(tmpdir(), "smolmux-e2e-"))
     const env = environment(directory, "default")
     const socketPath = socketFor(env)
     let client: ApiClient | null = null
@@ -86,7 +86,7 @@ test.skipIf(!ENABLED)(
 
     try {
       // Start is headless: no terminal, and it prints the socket to drive.
-      const started = await fmx(["start"], env)
+      const started = await smolmux(["start"], env)
       expect(started.code).toBe(0)
       expect(started.stdout.trim()).toBe(socketPath)
 
@@ -103,7 +103,7 @@ test.skipIf(!ENABLED)(
         name: "tray",
         argv: [FAKE_APP],
         cwd: ROOT,
-        env: { FMX_TEST_TITLE: "the tray", FMX_TEST_BANNER: "tray ready" },
+        env: { SMOLMUX_TEST_TITLE: "the tray", SMOLMUX_TEST_BANNER: "tray ready" },
         labels: { role: "list" },
       })
       // Nobody has applied a Layout, so the Runtime's own one shows the first
@@ -113,7 +113,7 @@ test.skipIf(!ENABLED)(
         name: "main",
         argv: [FAKE_APP],
         cwd: ROOT,
-        env: { FMX_TEST_BANNER: "main ready" },
+        env: { SMOLMUX_TEST_BANNER: "main ready" },
       })
 
       const layout = await client.request("layout.apply", {
@@ -149,7 +149,7 @@ test.skipIf(!ENABLED)(
       // A human attaches, sees the Layout, and detaches without ending anything.
       let output = ""
       const decoder = new TextDecoder()
-      attached = Bun.spawn([...FMX_COMMAND, "attach"], {
+      attached = Bun.spawn([...SMOLMUX_COMMAND, "attach"], {
         cwd: ROOT,
         env,
         terminal: {
@@ -186,9 +186,9 @@ test.skipIf(!ENABLED)(
       // Stop is total: every Session and the Runtime.
       await client.request("instance.stop")
       await waitUntil(async () => !(await answers(socketPath)))
-      const gone = await fmx(["status"], env)
+      const gone = await smolmux(["status"], env)
       expect(gone.code).toBe(1)
-      expect(gone.stderr).toContain("no fmx Runtime is running for default")
+      expect(gone.stderr).toContain("no smolmux Runtime is running for default")
     } finally {
       client?.close()
       if (attached && attached.exitCode === null) attached.kill("SIGKILL")
@@ -204,19 +204,19 @@ test.skipIf(!ENABLED)(
   "Sessions outlive the Runtime that started them and are adopted by the next one",
   async () => {
     await chmod(FAKE_APP, 0o755)
-    const directory = await mkdtemp(join(tmpdir(), "fmx-e2e-adopt-"))
+    const directory = await mkdtemp(join(tmpdir(), "smolmux-e2e-adopt-"))
     const env = environment(directory, "default")
     const socketPath = socketFor(env)
     let client: ApiClient | null = null
 
     try {
-      await fmx(["start"], env)
+      await smolmux(["start"], env)
       client = await ApiClient.connect(socketPath)
       await client.request("session.create", {
         name: "survivor",
         argv: [FAKE_APP],
         cwd: ROOT,
-        env: { FMX_TEST_BANNER: "still here" },
+        env: { SMOLMUX_TEST_BANNER: "still here" },
         labels: { role: "worker" },
       })
       const before = await client.request("instance.status")
@@ -228,7 +228,7 @@ test.skipIf(!ENABLED)(
       await waitUntil(async () => !(await answers(socketPath)))
 
       // The next start finds the Session by the labels the Companion holds.
-      const restarted = await fmx(["start"], env)
+      const restarted = await smolmux(["start"], env)
       expect(restarted.code).toBe(0)
       client = await ApiClient.connect(socketPath)
       const status = await client.request("instance.status")
@@ -259,7 +259,7 @@ test.skipIf(!ENABLED)(
 test.skipIf(!ENABLED)(
   "named Instances are independent and a second Runtime for one is refused",
   async () => {
-    const directory = await mkdtemp(join(tmpdir(), "fmx-e2e-named-"))
+    const directory = await mkdtemp(join(tmpdir(), "smolmux-e2e-named-"))
     const env = environment(directory, "review")
     const defaultSocket = socketFor(env)
     const namedSocket = socketFor(env, "review")
@@ -267,8 +267,8 @@ test.skipIf(!ENABLED)(
     let second: ApiClient | null = null
 
     try {
-      expect((await fmx(["start"], env)).stdout.trim()).toBe(defaultSocket)
-      expect((await fmx(["start", "--name", "review"], env)).stdout.trim()).toBe(namedSocket)
+      expect((await smolmux(["start"], env)).stdout.trim()).toBe(defaultSocket)
+      expect((await smolmux(["start", "--name", "review"], env)).stdout.trim()).toBe(namedSocket)
       expect(defaultSocket).not.toBe(namedSocket)
 
       first = await ApiClient.connect(defaultSocket)
@@ -281,7 +281,7 @@ test.skipIf(!ENABLED)(
       expect((await second.request("instance.status")).name).toBe("review")
 
       // Starting a name that is already running joins it rather than racing.
-      expect((await fmx(["start", "--name", "review"], env)).code).toBe(0)
+      expect((await smolmux(["start", "--name", "review"], env)).code).toBe(0)
       expect((await second.request("instance.status")).name).toBe("review")
 
       await first.request("instance.stop")

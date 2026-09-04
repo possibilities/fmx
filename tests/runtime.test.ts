@@ -19,7 +19,7 @@ async function harness(prepare?: (companion: FakeCompanion, transport: PtyTransp
   const runtime = new Runtime(setup.renderer, {
     instanceId: INSTANCE,
     instanceName: "default",
-    socketPath: `/tmp/fmx-test/${INSTANCE}.api`,
+    socketPath: `/tmp/smolmux-test/${INSTANCE}.api`,
     theme: { theme: "dark", background: null, source: "default", explicit: false },
     sessions: {
       instanceId: INSTANCE,
@@ -174,7 +174,7 @@ test("captures a Session that no Pane shows", async () => {
       name: "hidden",
       argv: [FAKE_APP],
       cwd: process.cwd(),
-      env: { FMX_TEST_BANNER: "working" },
+      env: { SMOLMUX_TEST_BANNER: "working" },
       cols: 40,
       rows: 6,
     })
@@ -201,7 +201,7 @@ test("a shown Session captures correctly after it has been drawn", async () => {
       name: "tray",
       argv: [FAKE_APP],
       cwd: process.cwd(),
-      env: { FMX_TEST_BANNER: "drawn and read" },
+      env: { SMOLMUX_TEST_BANNER: "drawn and read" },
     })
     await app.call("layout.apply", { root: { session: "tray" }, focus: "tray" })
     await waitFor(async () => {
@@ -269,7 +269,7 @@ test("kill goes to the Companion and the exit removes the Session", async () => 
   try {
     await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
     await app.call("session.kill", { name: "tray" })
-    expect(app.companion.killed).toEqual([`fmx-${INSTANCE}-tray`])
+    expect(app.companion.killed).toEqual([`smolmux-${INSTANCE}-tray`])
     await expect(app.call("session.capture", { name: "missing" })).rejects.toThrow("no Session named missing")
   } finally {
     await app.close()
@@ -283,7 +283,7 @@ test("stop answers first, then ends every Session and the Runtime", async () => 
     expect(await app.call<Record<string, never>>("instance.stop")).toEqual({})
     expect(app.events.some((entry) => entry.event === "instance.stopping")).toBe(true)
     await app.runtime.waitUntilDone()
-    expect(app.companion.killed).toEqual([`fmx-${INSTANCE}-tray`])
+    expect(app.companion.killed).toEqual([`smolmux-${INSTANCE}-tray`])
   } finally {
     await app.close()
   }
@@ -301,7 +301,7 @@ test("a signal during adoption stops before drawing into a destroyed Stage", asy
   const runtime = new Runtime(setup.renderer, {
     instanceId: INSTANCE,
     instanceName: "default",
-    socketPath: "/tmp/fmx-test/api",
+    socketPath: "/tmp/smolmux-test/api",
     theme: { theme: "dark", background: null, source: "default", explicit: false },
     sessions: { instanceId: INSTANCE, companion: companion.asCompanion(), transport, environment: {} },
     publish: () => {},
@@ -331,7 +331,7 @@ test("a stop seals creation so nothing starts after the kills went out", async (
 
     // Whatever was created was killed; nothing started after the stop.
     const started = app.transport.started.map((entry) => entry.request.identity.name)
-    for (const name of started) expect(app.companion.killed).toContain(`fmx-${INSTANCE}-${name}`)
+    for (const name of started) expect(app.companion.killed).toContain(`smolmux-${INSTANCE}-${name}`)
   } finally {
     await app.close()
   }
@@ -371,7 +371,7 @@ test("adoption hands the endpoint it already read to the first attach", async ()
   })
   try {
     // The listing already knew where it was; nothing looks it up again.
-    expect(app.transport.endpoints[0]).toBe(`/tmp/fmx-${INSTANCE}-tray.sock`)
+    expect(app.transport.endpoints[0]).toBe(`/tmp/smolmux-${INSTANCE}-tray.sock`)
   } finally {
     await app.close()
   }
@@ -383,7 +383,7 @@ test("a repaint after an external clear forces a full frame", async () => {
     const renderer = app.setup.renderer as unknown as { forceFullRepaintRequested: boolean }
     await app.setup.renderOnce()
     expect(renderer.forceFullRepaintRequested).toBe(false)
-    // fmx's own clear goes straight to the terminal, so the next frame has to
+    // smolmux's own clear goes straight to the terminal, so the next frame has to
     // be told to draw everything rather than diffing against a screen that is
     // no longer there.
     app.runtime.repaint()

@@ -14,7 +14,7 @@ describe("parseArgs", () => {
     expect(parseArgs(["-h"]).help).toBe(true)
     expect(parseArgs(["--version"]).version).toBe(true)
     expect(VERSION).toBe(packageMetadata.version)
-    expect(packageMetadata.bin).toEqual({ fmx: "./src/index.ts" })
+    expect(packageMetadata.bin).toEqual({ smolmux: "./src/index.ts" })
   })
 
   test("selects one independent Instance", () => {
@@ -39,7 +39,7 @@ describe("parseArgs", () => {
     for (const verb of ["session", "layout", "focus", "kill", "new", "capture", "send-keys"]) {
       expect(() => parseArgs([verb])).toThrow(`unknown command: ${verb}`)
     }
-    expect(() => parseArgs(["--socket", "/tmp/fmx.api"])).toThrow("unknown option: --socket")
+    expect(() => parseArgs(["--socket", "/tmp/smolmux.api"])).toThrow("unknown option: --socket")
     expect(() => parseArgs(["status", "now"])).toThrow("unexpected argument: now")
     expect(() => parseArgs(["--agent-picker"])).toThrow("unknown option: --agent-picker")
   })
@@ -50,7 +50,7 @@ describe("parseArgs", () => {
     expect(usage()).not.toContain("runtime ")
   })
 
-  test("names the one chord fmx claims", () => {
+  test("names the one chord smolmux claims", () => {
     expect(usage()).toContain("ctrl-b d")
     expect(usage()).toContain("detach this terminal")
   })

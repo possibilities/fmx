@@ -52,7 +52,7 @@ const SINGLETON_HANDOFF_INTERVAL_MS = 25
 /** Another Runtime owns this Instance's API socket. */
 export class InstanceActiveError extends Error {
   constructor(readonly path: string) {
-    super(`another fmx Runtime is already running for this Instance (listening on ${path})`)
+    super(`another smolmux Runtime is already running for this Instance (listening on ${path})`)
     this.name = "InstanceActiveError"
   }
 }
@@ -315,7 +315,7 @@ export function lockPathFor(apiSocketPath: string): string {
   return apiSocketPath.replace(/\.api$/u, "") + ".lock"
 }
 
-/** Paths earlier fmx versions bound for the same Instance; residue only. */
+/** Paths earlier smolmux versions bound for the same Instance; residue only. */
 export function retiredSocketPathsFor(apiSocketPath: string): string[] {
   const base = apiSocketPath.replace(/\.api$/u, "")
   return [`${base}.ade.sock`, `${base}.bus`, `${base}.ctl`, `${base}.obs`]

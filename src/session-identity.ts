@@ -8,12 +8,12 @@ import type { SessionEntry } from "./zmx-command.ts"
  * that starts finds its Sessions by them and needs no file of its own.
  */
 
-export const OWNER_LABEL = "fmx"
-const SESSION_PREFIX = "fmx"
-const RUNTIME_PREFIX = "fmxr"
+export const OWNER_LABEL = "smolmux"
+const SESSION_PREFIX = "smolmux"
+const RUNTIME_PREFIX = "smolmuxr"
 export const RUNTIME_KIND = "runtime"
 
-/** Labels a caller may not set: fmx's own. */
+/** Labels a caller may not set: smolmux's own. */
 export const RESERVED_LABELS = ["owner", "instance", "session", "kind"] as const
 
 export type SessionIdentity = {

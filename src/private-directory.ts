@@ -4,7 +4,7 @@ import { userInfo } from "node:os"
 /**
  * Create and verify a directory only this user may read or write.
  *
- * Every path fmx owns under `/tmp` is predictable and anyone could have made
+ * Every path smolmux owns under `/tmp` is predictable and anyone could have made
  * it first: a directory another user owns, or one others can write to, could
  * hold sockets that answer as our sessions. Each level is created private and
  * checked every start; nothing is created into one that fails.

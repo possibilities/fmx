@@ -2,14 +2,14 @@
 
 set -euo pipefail
 
-# Build the Companion this fmx is pinned to. The pin (companion.json) names
+# Build the Companion this smolmux is pinned to. The pin (companion.json) names
 # the fork commit and the build string a Companion built from it reports;
 # this script builds exactly that commit and proves the binary reports it.
 #
 #   scripts/build-companion.sh --output PATH [--target TRIPLE]
 #
 # The source is the pinned commit itself, never a checkout's working tree:
-# from FMX_COMPANION_CHECKOUT (default ~/src/zmx when it exists) through a
+# from SMOLMUX_COMPANION_CHECKOUT (default ~/src/zmx when it exists) through a
 # detached worktree when that repository has the commit, else a shallow fetch
 # of the commit from the pin's repository into a temporary directory. Zig of
 # the fork's minimum series and git are required.
@@ -17,7 +17,7 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() {
-  printf 'fmx companion build: %s\n' "$*" >&2
+  printf 'smolmux companion build: %s\n' "$*" >&2
   exit 1
 }
 
@@ -60,7 +60,7 @@ build="$(pin_value build)"
 [[ "$build" == *"+fmx.${commit:0:12}" ]] || fail "companion.json build $build does not name commit ${commit:0:12}"
 [[ -n "$repository" ]] || fail "companion.json has no repository"
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fmx-companion.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/smolmux-companion.XXXXXX")"
 source_repo=""
 source_worktree=""
 cleanup() {
@@ -75,7 +75,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The source: the pinned commit, from wherever it already is.
-checkout="${FMX_COMPANION_CHECKOUT:-}"
+checkout="${SMOLMUX_COMPANION_CHECKOUT:-}"
 if [[ -z "$checkout" && -d "$HOME/src/zmx/.git" ]]; then
   checkout="$HOME/src/zmx"
 fi
@@ -85,14 +85,14 @@ if [[ -n "$checkout" ]] && git -C "$checkout" cat-file -e "$commit^{commit}" 2>/
   source_worktree="$companion_source"
   git -C "$source_repo" worktree add --quiet --detach "$source_worktree" "$commit" \
     || fail "could not check out $commit from $checkout"
-  printf 'fmx companion build: building %s from %s\n' "${commit:0:12}" "$checkout"
+  printf 'smolmux companion build: building %s from %s\n' "${commit:0:12}" "$checkout"
 else
   mkdir -p "$companion_source"
   git -C "$companion_source" init -q
   git -C "$companion_source" fetch -q --depth 1 "$repository" "$commit" \
     || fail "could not fetch $commit from $repository"
   git -C "$companion_source" checkout -q --detach FETCH_HEAD
-  printf 'fmx companion build: building %s fetched from %s\n' "${commit:0:12}" "$repository"
+  printf 'smolmux companion build: building %s fetched from %s\n' "${commit:0:12}" "$repository"
 fi
 [[ "$(git -C "$companion_source" rev-parse HEAD)" == "$commit" ]] || fail "the source is not at the pinned commit"
 
@@ -110,6 +110,10 @@ zig_series="${minimum_zig%.*}"
 [[ "$(zig version)" == "$zig_series".* ]] || fail "the Companion builds with zig $zig_series.x (found $(zig version))"
 
 prefix="$work_dir/out"
+# The `+fmx.` marker is the fork's, not ours: its build.zig refuses a version
+# naming it without -Dcompanion, which is what stops a stock build passing the
+# pin and then keeping sessions in a human's own directory. Renaming it to
+# smolmux would bypass that guard, so it waits for a fork change and a pin move.
 build_args=(-Dcompanion -Doptimize=ReleaseFast "-Dversion=$build")
 [[ -n "$target" ]] && build_args+=("-Dtarget=$target")
 (cd "$companion_source" && zig build "${build_args[@]}" --prefix "$prefix") \
@@ -121,4 +125,4 @@ reported="$(ZMX_DIR="$work_dir/zmx-dir" "$prefix/bin/zmx" version 2>&1 | awk 'NR
 mkdir -p "$(dirname "$output")"
 cp "$prefix/bin/zmx" "$output"
 chmod 0755 "$output"
-printf 'fmx companion build: %s -> %s\n' "$build" "$output"
+printf 'smolmux companion build: %s -> %s\n' "$build" "$output"

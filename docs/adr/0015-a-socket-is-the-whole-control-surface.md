@@ -11,12 +11,12 @@ Everything past `start`, `stop`, and `attach` is one duplex, mode-0600 Unix
 socket per Instance carrying newline-delimited JSON. Nine methods and six
 events cover the whole surface: the roster, the Layout, capture, and the
 Instance's own lifecycle. The contract is one table in `src/protocol.ts`,
-validated by the Runtime, printed by `fmx api`, and described in
+validated by the Runtime, printed by `smolmux api`, and described in
 `docs/api.md`, with a test that fails when they drift.
 
-MCP is gone from fmx. It was the right shape when fmx served one kind of
+MCP is gone from smolmux. It was the right shape when smolmux served one kind of
 agent and the caller was that agent; it is the wrong shape now that the
-caller is a program that owns a surface. Whoever drives fmx can be an MCP
+caller is a program that owns a surface. Whoever drives smolmux can be an MCP
 server, and the tool that does — agentmux — already is one.
 
 The socket carries no way to type into a Session, no byte-level observation,
@@ -26,6 +26,6 @@ or the Session's own channels; reading a screen is `session.changed` plus
 nothing else about it.
 
 The cost is that everything a human might want beyond typing at the focused
-Session has to be built into the API first, and that fmx alone is not usable
-as an agent surface. That is the point: fmx is the multiplexer, and the
+Session has to be built into the API first, and that smolmux alone is not usable
+as an agent surface. That is the point: smolmux is the multiplexer, and the
 surface is somebody else's.

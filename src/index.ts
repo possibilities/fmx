@@ -51,7 +51,7 @@ async function main(): Promise<void> {
   try {
     options = parseArgs(Bun.argv.slice(2))
   } catch (error) {
-    process.stderr.write(`fmx: ${errorMessage(error)}\n\n${usage()}`)
+    process.stderr.write(`smolmux: ${errorMessage(error)}\n\n${usage()}`)
     process.exitCode = 2
     return
   }
@@ -101,7 +101,7 @@ async function main(): Promise<void> {
 
 async function runRuntime(instance: Instance): Promise<void> {
   const loadedConfig = await loadConfig(instance.configPath)
-  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
+  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`smolmux: ${diagnostic}\n`)
 
   const socketPath = apiSocketPathFor(instance.id)
   const report = instanceLogger(instanceLogPathFor(instance.id))
@@ -124,17 +124,17 @@ async function runRuntime(instance: Instance): Promise<void> {
   ready.promise.catch(() => {})
 
   try {
-    // fmx's own files live in a directory only this user can reach, created
+    // smolmux's own files live in a directory only this user can reach, created
     // and checked before anything is bound into it: a socket in a
     // world-writable place can be taken by whoever gets there first once the
     // Runtime that held it exits and unlinks it.
-    await ensurePrivateDirectories([privateRootDirectory()], "fmx")
+    await ensurePrivateDirectories([privateRootDirectory()], "smolmux")
     await ensureCompanionDirectories(companionDirectories())
     const build = await companionBuild(companionPath.path)
     if (build !== COMPANION_PIN.build) {
       const message = companionMismatch(companionPath, build, PROTOCOL_VERSION)
       if (companionPath.origin !== "override") throw new Error(message)
-      process.stderr.write(`fmx: ${message}\n`)
+      process.stderr.write(`smolmux: ${message}\n`)
     }
     const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
 
@@ -255,7 +255,7 @@ async function startInstance(instance: Instance, announce: boolean): Promise<str
   if (build !== COMPANION_PIN.build) {
     const message = companionMismatch(companionPath, build, PROTOCOL_VERSION)
     if (companionPath.origin !== "override") throw new Error(message)
-    process.stderr.write(`fmx: ${message}\n`)
+    process.stderr.write(`smolmux: ${message}\n`)
   }
   const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
   const runtime = await ensureRuntimeSession(companion, {
@@ -266,7 +266,7 @@ async function startInstance(instance: Instance, announce: boolean): Promise<str
   })
   const socketPath = apiSocketPathFor(instance.id)
   if (!(await waitForRuntimeApi(socketPath))) {
-    throw new Error(`the fmx Runtime did not answer ${socketPath}`)
+    throw new Error(`the smolmux Runtime did not answer ${socketPath}`)
   }
   if (announce) process.stdout.write(`${socketPath}\n`)
   return runtime.socketPath
@@ -274,12 +274,12 @@ async function startInstance(instance: Instance, announce: boolean): Promise<str
 
 async function attachClient(instance: Instance, startIfNeeded: boolean): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("fmx attach requires an interactive terminal (TTY)")
+    throw new Error("smolmux attach requires an interactive terminal (TTY)")
   }
-  if (typeof Bun.Terminal !== "function") throw new Error("fmx requires Bun 1.4 or newer")
+  if (typeof Bun.Terminal !== "function") throw new Error("smolmux requires Bun 1.4 or newer")
 
   const loadedConfig = await loadConfig(instance.configPath)
-  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`fmx: ${diagnostic}\n`)
+  for (const diagnostic of loadedConfig.diagnostics) process.stderr.write(`smolmux: ${diagnostic}\n`)
 
   const releaseStartupSignals = installClientStartupSignalGuard()
   // Own the physical cursor before any asynchronous Client preflight. A cold
@@ -296,7 +296,7 @@ async function attachClient(instance: Instance, startIfNeeded: boolean): Promise
       const companion = new CompanionCommand(companionDirectory(), process.env, companionPath.path)
       const session = await findRuntimeSession(companion, instance.id)
       if (!session?.socketPath) {
-        throw new Error(`no fmx Runtime is running for ${instance.name}; run \`fmx start\` first`)
+        throw new Error(`no smolmux Runtime is running for ${instance.name}; run \`smolmux start\` first`)
       }
       terminalSocket = session.socketPath
     }
@@ -336,7 +336,7 @@ async function connect(instance: Instance): Promise<ApiClient> {
   try {
     return await ApiClient.connect(socketPath)
   } catch {
-    throw new Error(`no fmx Runtime is running for ${instance.name} (${socketPath})`)
+    throw new Error(`no smolmux Runtime is running for ${instance.name} (${socketPath})`)
   }
 }
 
@@ -372,7 +372,7 @@ function errorMessage(error: unknown): string {
 }
 
 await main().catch((error) => {
-  process.stderr.write(`fmx: ${errorMessage(error)}\n`)
+  process.stderr.write(`smolmux: ${errorMessage(error)}\n`)
   // A signal's exit code is the honest one: a supervisor must be able to tell
   // a signalled shutdown from a startup failure, even when teardown then threw.
   if (process.exitCode === undefined || process.exitCode === 0) {

@@ -63,7 +63,7 @@ const sixPanels: LayoutNode = {
   ],
 }
 
-/** Geometry as fmx computed it, which is what the API reports and what the
+/** Geometry as smolmux computed it, which is what the API reports and what the
  * next frame draws; Yoga only publishes it on a render. */
 const rect = (view: { panes: { session: string | null; x: number; y: number; cols: number; rows: number }[] }, name: string) => {
   const pane = view.panes.find((candidate) => candidate.session === name)!
@@ -82,7 +82,7 @@ test("applies a Layout by placing every Pane at its fitted rectangle", async () 
     expect(stage.shown).toEqual(["tray", "reviewer", "docs"])
     expect(stage.causes).toEqual(["apply"])
 
-    // What fmx computed is what the frame draws.
+    // What smolmux computed is what the frame draws.
     await stage.setup.renderOnce()
     const drawn = stage.terminals.get("reviewer")!
     expect([drawn.x, drawn.y, drawn.width, drawn.height]).toEqual([27, 0, 52, 30])

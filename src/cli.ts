@@ -11,7 +11,7 @@ export type CliOptions = {
   version: boolean
   /** Absent means start-if-needed and attach. */
   command: Command | null
-  /** `default` for plain `fmx`. */
+  /** `default` for plain `smolmux`. */
   name: string
 }
 
@@ -68,11 +68,11 @@ export function parseArgs(args: string[]): CliOptions {
 }
 
 export function usage(): string {
-  return `Usage: fmx [--name NAME] [command]
+  return `Usage: smolmux [--name NAME] [command]
 
 A terminal multiplexer driven over a socket. Start it, stop it, and attach a
 terminal to it from the command line; everything else — Sessions, the Layout,
-focus — is the API that \`fmx status\` reports the path of.
+focus — is the API that \`smolmux status\` reports the path of.
 
 Commands:
   (none)         start the Instance if it is not running, then attach
@@ -92,6 +92,6 @@ Keys:
   ctrl-b d       detach this terminal, leaving every Session running
 
 Configuration:
-  ~/.config/fmx/config.toml (or FMX_CONFIG_PATH)
+  ~/.config/smolmux/config.toml (or SMOLMUX_CONFIG_PATH)
 `
 }

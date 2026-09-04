@@ -18,7 +18,7 @@ afterEach(async () => {
 })
 
 async function serve(handle: (method: Method, params: unknown) => Promise<unknown>): Promise<ApiServer> {
-  directory = directory || (await mkdtemp(join(tmpdir(), "fmx-api-")))
+  directory = directory || (await mkdtemp(join(tmpdir(), "smolmux-api-")))
   const server = new ApiServer(join(directory, "instance.api"), handle)
   servers.push(server)
   await server.start()
@@ -212,12 +212,12 @@ test("a refusal names the request it refuses, so a caller never waits on it", as
   expect(await client.call("layout.get")).toEqual({ ok: true })
 })
 
-test("names the paths an earlier fmx bound for the same Instance", () => {
-  expect(retiredSocketPathsFor("/tmp/fmx-501/abc.api")).toEqual([
-    "/tmp/fmx-501/abc.ade.sock",
-    "/tmp/fmx-501/abc.bus",
-    "/tmp/fmx-501/abc.ctl",
-    "/tmp/fmx-501/abc.obs",
+test("names the paths an earlier smolmux bound for the same Instance", () => {
+  expect(retiredSocketPathsFor("/tmp/smolmux-501/abc.api")).toEqual([
+    "/tmp/smolmux-501/abc.ade.sock",
+    "/tmp/smolmux-501/abc.bus",
+    "/tmp/smolmux-501/abc.ctl",
+    "/tmp/smolmux-501/abc.obs",
   ])
-  expect(lockPathFor("/tmp/fmx-501/abc.api")).toBe("/tmp/fmx-501/abc.lock")
+  expect(lockPathFor("/tmp/smolmux-501/abc.api")).toBe("/tmp/smolmux-501/abc.lock")
 })

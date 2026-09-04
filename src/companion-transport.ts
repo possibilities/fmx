@@ -46,7 +46,7 @@ export class CompanionTransportFactory implements SessionTransportFactory {
     } = {},
   ) {}
 
-  /** fmx is leaving: stop waiting on anything. What is not consumed is the next start's. */
+  /** smolmux is leaving: stop waiting on anything. What is not consumed is the next start's. */
   close(): void {
     this.closed = true
   }
@@ -106,7 +106,7 @@ export class CompanionTransportFactory implements SessionTransportFactory {
     }
 
     const session = await this.companion.settle(identity.companionName, undefined, undefined, () => this.closed)
-    if (this.closed) throw new Error("fmx is shutting down")
+    if (this.closed) throw new Error("smolmux is shutting down")
     if (session.state === "exited") {
       await this.companion.forget(identity.companionName).catch(() => {})
       throw new SessionEndedError(identity, session.exit ? { code: session.exit.code, signal: session.exit.signal, reason: session.exit.reason } : null)
@@ -132,7 +132,7 @@ export class CompanionTransportFactory implements SessionTransportFactory {
     ownership?: Record<string, string>,
   ): Promise<SessionTransport> {
     return (this.options.connect ?? connectCompanionSession)(socketPath, size, {
-      client: this.options.client ?? "fmx",
+      client: this.options.client ?? "smolmux",
       onExited: () => this.reap(identity),
       ownership,
     })
@@ -180,7 +180,7 @@ export async function connectCompanionSession(
   size: TerminalSize,
   options: CompanionSessionOptions = {},
 ): Promise<SessionTransport> {
-  const connection = await CompanionConnection.connect(socketPath, { client: options.client ?? "fmx" })
+  const connection = await CompanionConnection.connect(socketPath, { client: options.client ?? "smolmux" })
   if (options.ownership) {
     let labels: Record<string, string>
     try {

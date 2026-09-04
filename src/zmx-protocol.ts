@@ -1,5 +1,5 @@
 /**
- * The wire contract fmx speaks to the Companion daemon over its Unix socket.
+ * The wire contract smolmux speaks to the Companion daemon over its Unix socket.
  *
  * Frame and control codecs only: every integer is little-endian at a fixed
  * offset, mirroring `src/ipc.zig` in the pinned Companion fork byte for

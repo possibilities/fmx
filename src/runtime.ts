@@ -122,7 +122,7 @@ export class Runtime {
 
   /**
    * Draw the next frame in full. OpenTUI renders by diffing against what it
-   * believes is on screen, and fmx's own clear goes out behind its back, so
+   * believes is on screen, and smolmux's own clear goes out behind its back, so
    * without this the next frame can decide nothing changed and leave the
    * cleared stage standing. The flag is the one OpenTUI's own clear sets;
    * there is no public spelling for it.
@@ -165,7 +165,7 @@ export class Runtime {
   /** The API's one way in. Params are already validated against the contract. */
   async handle(method: Method, params: unknown): Promise<unknown> {
     if (this.shuttingDown && method !== "instance.status") {
-      throw new ApiFailure("conflict", "fmx is shutting down")
+      throw new ApiFailure("conflict", "smolmux is shutting down")
     }
     switch (method) {
       case "instance.status":

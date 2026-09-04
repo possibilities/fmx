@@ -1,16 +1,16 @@
 {
-  "name": "fmx",
+  "name": "smolmux",
   "version": "0.3.1",
   "packageManager": "bun@1.4.0",
   "description": "A terminal multiplexer driven over a socket",
   "type": "module",
   "bin": {
-    "fmx": "./src/index.ts"
+    "smolmux": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "test:pty": "FMX_RUN_PTY_TESTS=1 bun test tests/instance.e2e.test.ts",
+    "test:pty": "SMOLMUX_RUN_PTY_TESTS=1 bun test tests/instance.e2e.test.ts",
     "install:source": "scripts/install.sh --install",
     "gate:local": "scripts/local-gate.sh"
   },

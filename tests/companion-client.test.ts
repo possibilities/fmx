@@ -35,7 +35,7 @@ afterEach(async () => {
 })
 
 const startStub = async (replyToHello: () => Uint8Array | null): Promise<Stub> => {
-  const dir = await mkdtemp("/tmp/fmxz-stub-")
+  const dir = await mkdtemp("/tmp/smolmuxz-stub-")
   const path = join(dir, "sock")
   const received: Stub["received"] = []
   let client: { write: (bytes: Uint8Array) => number } | null = null
@@ -87,9 +87,9 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30))
 
 test("connect resolves on an accepting Welcome and names the client", async () => {
   const stub = await startStub(() => accept)
-  const connection = await CompanionConnection.connect(stub.path, { client: "fmx-test" })
+  const connection = await CompanionConnection.connect(stub.path, { client: "smolmux-test" })
   expect(connection.welcome.version).toBe(PROTOCOL_VERSION)
-  expect(decodeHello(stub.received[0]!.payload).client).toBe("fmx-test")
+  expect(decodeHello(stub.received[0]!.payload).client).toBe("smolmux-test")
   connection.close()
 })
 
@@ -99,8 +99,8 @@ test("labels reads and validates the identity on the negotiated connection", asy
   const labels = connection.labels()
   await settle()
   expect(stub.received.at(-1)?.tag).toBe(Tag.LabelGet)
-  stub.push(encodeFrame(Tag.LabelData, new TextEncoder().encode("agent=abc home=012 owner=fmx pane=p_abc")))
-  expect(await labels).toEqual({ agent: "abc", home: "012", owner: "fmx", pane: "p_abc" })
+  stub.push(encodeFrame(Tag.LabelData, new TextEncoder().encode("agent=abc home=012 owner=smolmux pane=p_abc")))
+  expect(await labels).toEqual({ agent: "abc", home: "012", owner: "smolmux", pane: "p_abc" })
   connection.close()
 })
 
@@ -109,7 +109,7 @@ test("labels rejects malformed identity data", async () => {
   const connection = await CompanionConnection.connect(stub.path)
   const labels = connection.labels()
   await settle()
-  stub.push(encodeFrame(Tag.LabelData, new TextEncoder().encode("owner=fmx owner=other")))
+  stub.push(encodeFrame(Tag.LabelData, new TextEncoder().encode("owner=smolmux owner=other")))
   await expect(labels).rejects.toThrow("malformed LabelData")
   connection.close()
 })

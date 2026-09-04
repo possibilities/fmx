@@ -50,7 +50,7 @@ describe("the contract", () => {
     expect(ERROR_CODES).not.toContain("tmux_error")
   })
 
-  test("describes every method and event for `fmx api`", () => {
+  test("describes every method and event for `smolmux api`", () => {
     const document = contractDocument() as {
       protocol: number
       methods: Record<string, { description: string; params: unknown; result: unknown }>

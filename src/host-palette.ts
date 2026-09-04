@@ -2,7 +2,7 @@ import { RGBA } from "@opentui/core"
 
 export type FxnkTheme = "dark" | "light"
 
-export type FxnkThemeSource = "FMX_THEME" | "osc11" | "COLORFGBG" | "default"
+export type FxnkThemeSource = "SMOLMUX_THEME" | "osc11" | "COLORFGBG" | "default"
 
 export type FxnkThemeResolution = {
   theme: FxnkTheme
@@ -46,7 +46,7 @@ const LIGHT_NOTIFICATION = "\x1b[?997;2n"
 const OSC11_TIMEOUT_MS = 200
 
 /**
- * fx's indexed roles, plus the two fixed fmx surface steps. The canvas is
+ * fx's indexed roles, plus the two fixed smolmux surface steps. The canvas is
  * always the terminal's default background. Focus and error are direct ANSI
  * intents, not colors sampled from the host palette.
  */
@@ -86,15 +86,15 @@ export function fxnkRamp(theme: FxnkTheme): Ramp {
   return RAMPS[theme]
 }
 
-/** Match fx's own order: FMX_THEME -> OSC 11 -> COLORFGBG -> dark. */
+/** Match fx's own order: SMOLMUX_THEME -> OSC 11 -> COLORFGBG -> dark. */
 export async function resolveFxnkTheme(
   port: Osc11Port,
   env: Record<string, string | undefined> = process.env,
   timeoutMs = OSC11_TIMEOUT_MS,
 ): Promise<FxnkThemeResolution> {
-  const override = explicitTheme(env.FMX_THEME)
+  const override = explicitTheme(env.SMOLMUX_THEME)
   if (override) {
-    return { theme: override, background: null, source: "FMX_THEME", explicit: true }
+    return { theme: override, background: null, source: "SMOLMUX_THEME", explicit: true }
   }
   // A headless Runtime has no terminal to answer, and waiting for the timeout
   // would delay its first frame. The first Client tells it instead.
@@ -145,7 +145,7 @@ export class FxnkThemeMonitor {
   private readonly inputHandler = (sequence: string): boolean => {
     const notification = notificationTheme(sequence)
     if (notification) {
-      // FMX_THEME fixes the palette for the process lifetime. Still own the
+      // SMOLMUX_THEME fixes the palette for the process lifetime. Still own the
       // protocol byte so OpenTUI cannot start a second theme query path.
       if (this.current.explicit) return true
       this.notification = notification

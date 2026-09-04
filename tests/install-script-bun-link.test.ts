@@ -18,7 +18,7 @@ fi
 if [[ "\${1:-}" == "link" ]]; then
   mkdir -p "\${FAKE_BUN_LINK_DIR:?}"
   mkdir -p "\${FAKE_BUN_LINK_DIR}"
-  dest="\${FAKE_BUN_LINK_DIR}/fmx"
+  dest="\${FAKE_BUN_LINK_DIR}/smolmux"
   printf '#!/usr/bin/env bash\\nexit 0\\n' > "\${dest}"
   chmod 0755 "\${dest}"
   exit 0
@@ -40,9 +40,9 @@ exit 0
 
 const FAKE_INSTALL_COMPANION = `#!/usr/bin/env bash
 set -euo pipefail
-install_dir="\${FMX_COMPANION_INSTALL_DIR:?}"
+install_dir="\${SMOLMUX_COMPANION_INSTALL_DIR:?}"
 mkdir -p "\${install_dir}"
-dest="\${install_dir}/fmx-zmx"
+dest="\${install_dir}/smolmux-zmx"
 printf '#!/usr/bin/env bash\\nexit 0\\n' > "\${dest}"
 chmod 0755 "\${dest}"
 exit 0
@@ -54,7 +54,7 @@ async function writeExecutable(path: string, contents: string): Promise<void> {
 }
 
 test("installer discovers the bun link directory without bun pm bin -g", async () => {
-  const fixtureRoot = await mkdtemp(join(tmpdir(), "fmx-install-script-test-"))
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "smolmux-install-script-test-"))
   try {
     const fixtureScripts = join(fixtureRoot, "scripts")
     await mkdir(fixtureScripts, { recursive: true })
@@ -77,7 +77,7 @@ test("installer discovers the bun link directory without bun pm bin -g", async (
           repository: "https://example.invalid/zmx.git",
           branch: "integration",
           commit: "b".repeat(40),
-          build: "0.0.0+fmx.000000000000",
+          build: "0.0.0+smolmux.000000000000",
         },
         null,
         2,
@@ -118,13 +118,13 @@ test("installer discovers the bun link directory without bun pm bin -g", async (
     if (result.exitCode !== 0) {
       throw new Error(`install.sh failed (${result.exitCode}):\n${stdout}\n${stderr}`)
     }
-    expect(stdout).toContain("linked fmx and installed the pinned Companion")
+    expect(stdout).toContain("linked smolmux and installed the pinned Companion")
 
-    expect(await Bun.file(join(bunLinkDir, "fmx")).exists()).toBe(true)
-    expect(await Bun.file(join(localBinDir, "fmx-zmx")).exists()).toBe(true)
-    // fmx installs no program to run inside a Session.
-    expect(await Bun.file(join(bunLinkDir, "fmx-mcp")).exists()).toBe(false)
-    expect(await Bun.file(join(localBinDir, "fmx-fx")).exists()).toBe(false)
+    expect(await Bun.file(join(bunLinkDir, "smolmux")).exists()).toBe(true)
+    expect(await Bun.file(join(localBinDir, "smolmux-zmx")).exists()).toBe(true)
+    // smolmux installs no program to run inside a Session.
+    expect(await Bun.file(join(bunLinkDir, "smolmux-mcp")).exists()).toBe(false)
+    expect(await Bun.file(join(localBinDir, "smolmux-fx")).exists()).toBe(false)
   } finally {
     await rm(fixtureRoot, { force: true, recursive: true })
   }

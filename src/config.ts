@@ -18,7 +18,7 @@ export function configPath(
 }
 
 /**
- * One shared file, read by every Instance. It holds the two keys fmx claims
+ * One shared file, read by every Instance. It holds the two keys smolmux claims
  * and nothing else: what runs in a Session and where its Pane goes are the
  * API's, never a file's.
  */

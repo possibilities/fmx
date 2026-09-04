@@ -11,7 +11,7 @@ const LOCK_NONBLOCKING = 4
 const LOCK_UNLOCK = 8
 
 test("distinguishes a free lock, a held lock, and an absent file", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "fmx-lock-"))
+  const directory = await mkdtemp(join(tmpdir(), "smolmux-lock-"))
   const path = join(directory, "session.lock")
   await writeFile(path, "", { mode: 0o600 })
 

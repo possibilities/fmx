@@ -1,6 +1,6 @@
-# fmx glossary
+# smolmux glossary
 
-**Instance** — one running fmx: a Runtime, its Sessions, one Layout, and one
+**Instance** — one running smolmux: a Runtime, its Sessions, one Layout, and one
 API socket. Named by `--name`, `default` unless told otherwise; several run
 side by side and share nothing but `config.toml`. Its id is derived from that
 file's directory and its name, never stored, and labels every Companion
@@ -9,14 +9,14 @@ path per machine.
 _Avoid_: home, profile, workspace, server.
 
 **Session** — one command running in a Companion-held PTY, together with the
-emulator fmx renders it in. Named by its caller, `[a-z][a-z0-9_-]{0,31}`,
+emulator smolmux renders it in. Named by its caller, `[a-z][a-z0-9_-]{0,31}`,
 unique per Instance. It runs whether or not a Pane shows it, and it
-disappears when its process exits — never when fmx does.
+disappears when its process exits — never when smolmux does.
 _Avoid_: pane, agent, window, tab, instance, job.
 
 **Layout** — the tree of rows and columns whose leaves are Panes, applied
 whole by `layout.apply`. Sizes live in the tree, so resizing a Pane is
-applying a tree with a different size; there is no resize verb. fmx fits it
+applying a tree with a different size; there is no resize verb. smolmux fits it
 to the Stage and re-fits on every change, so each Session hears its size once.
 _Avoid_: window, grid, arrangement, split.
 
@@ -55,25 +55,25 @@ _Avoid_: border, splitter, gutter, handle.
 
 **Capture** — a Session's screen as text with its cursor and title, read by
 `session.capture` whether or not a Pane shows it, optionally with lines that
-have scrolled off the top. It composes the emulator into a buffer of fmx's own
+have scrolled off the top. It composes the emulator into a buffer of smolmux's own
 rather than reading the frame a render pass drew, because a hidden Pane is
 never drawn, and it reads history from that same emulator rather than from the
 Companion. Paired with `session.changed`, it is the whole screen-reading
 surface; there is no byte-level observation.
 _Avoid_: screenshot, dump, scrape, snapshot.
 
-**Runtime** — the one Companion-held fmx process and PTY for an Instance. It
+**Runtime** — the one Companion-held smolmux process and PTY for an Instance. It
 owns the renderer, the roster, the Stage, and the API socket. It is headless:
 it starts, renders, and holds its Sessions whether or not a terminal Client is
 attached, and it ends on `instance.stop`, a signal, or a crash — never
 because the last Client left.
 _Avoid_: server, daemon, host, backend.
 
-**Client** — one thin interactive `fmx attach` and its physical terminal. It
+**Client** — one thin interactive `smolmux attach` and its physical terminal. It
 relays terminal bytes and size, samples its own background so the Runtime can
 follow it, and alone owns Detach. Several may watch and interact with the
 same Stage.
-_Avoid_: viewer, frontend, session, fmx instance.
+_Avoid_: viewer, frontend, session, smolmux instance.
 
 **Sizing owner** — the Client that most recently connected or interacted by
 focus, keyboard, mouse, paste, or resize. The Runtime renders once at its
@@ -86,8 +86,8 @@ is Client-local and closing the terminal has the same result. The Runtime and
 every Session continue.
 _Avoid_: exit, close, quit, stop.
 
-**Companion** — the zmx fork fmx bundles as `fmx-zmx`: a daemon that owns a
-terminal process and its PTY — a Session, or the Runtime itself. fmx drives
+**Companion** — the zmx fork smolmux bundles as `smolmux-zmx`: a daemon that owns a
+terminal process and its PTY — a Session, or the Runtime itself. smolmux drives
 one over a versioned Unix socket instead of owning the PTY, and never through
 a `zmx` a human may have installed.
 _Avoid_: backend, host, server, zmx for the thing itself — though zmx is
@@ -96,22 +96,22 @@ defines.
 
 **Companion pin** — `companion.json`: the exact fork commit the source
 installer builds and the build string that Companion reports. The pin is an
-installation unit; fmx refuses a Companion beside it or on `PATH` that reports
-any other build, and runs one named by `FMX_ZMX_PATH` with a word about it.
+installation unit; smolmux refuses a Companion beside it or on `PATH` that reports
+any other build, and runs one named by `SMOLMUX_ZMX_PATH` with a word about it.
 _Avoid_: lock file, version file, dependency.
 
 **Adoption** — how a starting Runtime finds the Sessions its Companion still
 holds: `list --json`, filtered to the sessions whose labels and name name this
 Instance. Labels are applied before any client can see a session, so they are
-the record and fmx keeps no file of its own. An exited session's record is
+the record and smolmux keeps no file of its own. An exited session's record is
 consumed; one that cannot be read is left for the next start.
 _Avoid_: reconciliation, restore, join, manifest.
 
-**Transport** — what carries one Session's terminal between fmx and the
+**Transport** — what carries one Session's terminal between smolmux and the
 Companion: bytes out, bytes in, the size, and the two ways it ends — the
 process ending, with a status, against the transport itself dropping, which
 says nothing about the process. The seam a Session renders through; the
-Companion's socket is the only one fmx ships.
+Companion's socket is the only one smolmux ships.
 _Avoid_: connection (that is the socket underneath), PTY, backend.
 
 **Restore** — what the Companion sends first on every attach: the Session's
@@ -120,7 +120,7 @@ and a `Ready` after which bytes are live. A reconnect replays onto a clean
 screen for the same reason a first attach does.
 _Avoid_: replay, resync, history.
 
-**Ramp** — the complete fixed indexed set every fmx-owned surface uses after
+**Ramp** — the complete fixed indexed set every smolmux-owned surface uses after
 selecting a dark or light theme: foreground, accent, secondary, dim, divider,
 surface, and unused field. The canvas stays the terminal default. Dark is
 `255/252/250/245/240` with surface/unused `236/235`; light is
@@ -134,6 +134,6 @@ four-platform CI result is later binary observability.
 _Avoid_: release gate, partial verdict, best effort.
 
 **Source installation** — `scripts/install.sh`, the shared consumer and
-operator path that links fmx and builds the Companion pin from exact source.
-Fmx has no binary release or publication path.
+operator path that links smolmux and builds the Companion pin from exact source.
+Smolmux has no binary release or publication path.
 _Avoid_: release, bucket installer, artifact channel.

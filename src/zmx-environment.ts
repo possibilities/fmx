@@ -5,16 +5,16 @@ import companionPin from "../companion.json" with { type: "json" }
 import { ensurePrivateDirectories } from "./private-directory.ts"
 
 /** The development override for where the Companion binary is. */
-export const COMPANION_PATH_ENV_VAR = "FMX_ZMX_PATH"
+export const COMPANION_PATH_ENV_VAR = "SMOLMUX_ZMX_PATH"
 /** Where the Companion keeps its sessions; a test or demo points it somewhere private. */
-export const COMPANION_DIRECTORY_ENV_VAR = "FMX_ZMX_DIR"
-/** What the Companion is called when it is found beside fmx or on PATH rather than named. */
-export const COMPANION_BINARY_NAME = "fmx-zmx"
+export const COMPANION_DIRECTORY_ENV_VAR = "SMOLMUX_ZMX_DIR"
+/** What the Companion is called when it is found beside smolmux or on PATH rather than named. */
+export const COMPANION_BINARY_NAME = "smolmux-zmx"
 
 /**
- * The Companion pin: the exact fork commit this fmx installs from source, and the
- * build string a Companion built from it reports (`fmx-zmx version`, first
- * line). Fmx refuses any other Companion it finds
+ * The Companion pin: the exact fork commit this smolmux installs from source, and the
+ * build string a Companion built from it reports (`smolmux-zmx version`, first
+ * line). Smolmux refuses any other Companion it finds
  * beside itself or on PATH, because the protocol is the pair's and a build
  * that is not the pinned one has nothing to promise.
  */
@@ -22,9 +22,9 @@ export const COMPANION_PIN: { repository: string; branch: string; commit: string
 
 /**
  * Variables the Companion's own protocol defines. Any of them inherited by
- * fmx name a zmx that is not ours — a human running fmx inside their own zmx
+ * smolmux name a zmx that is not ours — a human running smolmux inside their own zmx
  * session — and would make the Companion create into, or prefix for, a
- * stranger's directory. Every Companion command and every fx fmx starts is
+ * stranger's directory. Every Companion command and every fx smolmux starts is
  * started without them.
  */
 export const INHERITED_COMPANION_VARIABLES = [
@@ -51,8 +51,8 @@ export function companionDirectory(
 }
 
 /**
- * The directories fmx owns on the way to the Companion's, outermost first:
- * `/tmp/fmx-<uid>` and its `zmx` by default, or just the one an override
+ * The directories smolmux owns on the way to the Companion's, outermost first:
+ * `/tmp/smolmux-<uid>` and its `zmx` by default, or just the one an override
  * names — whatever is above that is the caller's.
  */
 export function companionDirectories(
@@ -64,14 +64,14 @@ export function companionDirectories(
 }
 
 /**
- * The directory fmx keeps its own files in: the Home sockets and their lock.
+ * The directory smolmux keeps its own files in: the Home sockets and their lock.
  * It is created 0700 and refused when it is not ours or is open to others,
  * which is what keeps the names inside it out of another user's reach — a
  * socket in a world-writable directory can be taken by whoever gets there
  * first once the Runtime that held it exits and unlinks it.
  */
 export function privateRootDirectory(uid: number = userInfo().uid): string {
-  return `/tmp/fmx-${uid}`
+  return `/tmp/smolmux-${uid}`
 }
 
 /**
@@ -105,21 +105,21 @@ export async function ensureCompanionDirectories(directories: readonly string[],
 }
 
 /**
- * Where a Companion was found. `override` is `FMX_ZMX_PATH`, the development
- * loop: a checkout's fmx against a checkout's fork, which may be a debug
+ * Where a Companion was found. `override` is `SMOLMUX_ZMX_PATH`, the development
+ * loop: a checkout's smolmux against a checkout's fork, which may be a debug
  * build or a commit ahead of the pin. `sibling` is the release layout —
- * `fmx-zmx` beside the fmx binary, where the installer put it — and `path`
- * is `fmx-zmx` on PATH. Only the override may run an unpinned build.
+ * `smolmux-zmx` beside the smolmux binary, where the installer put it — and `path`
+ * is `smolmux-zmx` on PATH. Only the override may run an unpinned build.
  */
 export type CompanionOrigin = "override" | "sibling" | "path"
 export type ResolvedCompanion = { path: string; origin: CompanionOrigin }
 
 /**
- * The directory the running fmx was installed in: where the installer put
- * `fmx-zmx` beside it. Only a compiled release has one — `process.execPath`
+ * The directory the running smolmux was installed in: where the installer put
+ * `smolmux-zmx` beside it. Only a compiled release has one — `process.execPath`
  * is the binary itself (symlinks resolved) when Bun's main module is the
  * embedded one; from a checkout it would be `bun`, whose directory is no
- * installation of fmx.
+ * installation of smolmux.
  */
 export function installedDirectory(): string | null {
   if (!Bun.main.startsWith("/$bunfs/")) return null
@@ -127,16 +127,16 @@ export function installedDirectory(): string | null {
 }
 
 /**
- * `FMX_ZMX_PATH` first, then `fmx-zmx` beside the installed fmx, then
- * `fmx-zmx` on PATH. Never a plain `zmx`: the protocol is the fork's, and a
- * human's own zmx would neither speak it nor keep its sessions where fmx
+ * `SMOLMUX_ZMX_PATH` first, then `smolmux-zmx` beside the installed smolmux, then
+ * `smolmux-zmx` on PATH. Never a plain `zmx`: the protocol is the fork's, and a
+ * human's own zmx would neither speak it nor keep its sessions where smolmux
  * looks.
  */
 export async function resolveCompanion(
   env: NodeJS.ProcessEnv = process.env,
   installDirectory: string | null = installedDirectory(),
 ): Promise<ResolvedCompanion> {
-  // An empty override is no override, as an empty `FMX_ZMX_DIR` is no directory.
+  // An empty override is no override, as an empty `SMOLMUX_ZMX_DIR` is no directory.
   const requested = env[COMPANION_PATH_ENV_VAR]
   if (requested) {
     const candidate = requested.includes("/")
@@ -148,16 +148,16 @@ export async function resolveCompanion(
     return { path: await executable(candidate), origin: "override" }
   }
   if (installDirectory !== null) {
-    // Kept as the sibling's own path, not its target: what is beside fmx is
+    // Kept as the sibling's own path, not its target: what is beside smolmux is
     // what a message must name, even when it is a link to something else.
     const sibling = join(installDirectory, COMPANION_BINARY_NAME)
     if (await isExecutable(sibling)) return { path: sibling, origin: "sibling" }
   }
   const onPath = Bun.which(COMPANION_BINARY_NAME, { PATH: env.PATH ?? "" })
   if (!onPath) {
-    const beside = installDirectory === null ? "" : ` beside ${join(installDirectory, "fmx")} or`
+    const beside = installDirectory === null ? "" : ` beside ${join(installDirectory, "smolmux")} or`
     throw new Error(
-      `Companion executable not found:${beside} no ${COMPANION_BINARY_NAME} on PATH (reinstall fmx, or set ${COMPANION_PATH_ENV_VAR})`,
+      `Companion executable not found:${beside} no ${COMPANION_BINARY_NAME} on PATH (reinstall smolmux, or set ${COMPANION_PATH_ENV_VAR})`,
     )
   }
   return { path: await executable(onPath), origin: "path" }
@@ -178,14 +178,14 @@ async function executable(candidate: string): Promise<string> {
   return realpath(candidate)
 }
 
-/** How long `fmx-zmx version` may take: it opens a log and prints four lines. */
+/** How long `smolmux-zmx version` may take: it opens a log and prints four lines. */
 export const COMPANION_VERSION_TIMEOUT_MS = 5000
 
 /**
- * The build a Companion reports: the first line of `fmx-zmx version` is
+ * The build a Companion reports: the first line of `smolmux-zmx version` is
  * `zmx<tabs><build>`. Run in the Companion's own directory, which the
  * caller has already made private — the command creates the directory if
- * it must, and a stock-built fork would create it with a mode fmx refuses.
+ * it must, and a stock-built fork would create it with a mode smolmux refuses.
  * A `version` that hangs — a wedged filesystem under the log — is killed
  * and reported rather than waited on forever before the TUI.
  */
@@ -233,14 +233,14 @@ export function parseCompanionVersion(output: string): string | null {
 
 /**
  * What a Companion that is not the pinned build is told. Under the override
- * it is a diagnostic and fmx runs — the wire still negotiates, and a fork
- * under development is exactly what the override is for. Found beside fmx
+ * it is a diagnostic and smolmux runs — the wire still negotiates, and a fork
+ * under development is exactly what the override is for. Found beside smolmux
  * or on PATH, it is fatal: that is an installation, and a mismatched pair
  * is never used quietly.
  */
 export function companionMismatch(companion: ResolvedCompanion, build: string, protocolVersion: number): string {
-  const where = companion.origin === "override" ? ` (${COMPANION_PATH_ENV_VAR})` : companion.origin === "sibling" ? " (beside fmx)" : " (on PATH)"
-  const facts = `Companion ${companion.path}${where} is build ${build}; this fmx pins ${COMPANION_PIN.build} (protocol ${protocolVersion})`
+  const where = companion.origin === "override" ? ` (${COMPANION_PATH_ENV_VAR})` : companion.origin === "sibling" ? " (beside smolmux)" : " (on PATH)"
+  const facts = `Companion ${companion.path}${where} is build ${build}; this smolmux pins ${COMPANION_PIN.build} (protocol ${protocolVersion})`
   if (companion.origin === "override") return `${facts}; running under the override`
-  return `${facts}. Reinstall fmx to restore the pair, or set ${COMPANION_PATH_ENV_VAR} to a matching build`
+  return `${facts}. Reinstall smolmux to restore the pair, or set ${COMPANION_PATH_ENV_VAR} to a matching build`
 }

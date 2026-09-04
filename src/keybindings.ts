@@ -8,7 +8,7 @@ type KeysConfig = {
 }
 
 /**
- * fmx claims exactly one chord. The prefix is a latch the thin Client holds
+ * smolmux claims exactly one chord. The prefix is a latch the thin Client holds
  * until the next key proves it is not Detach; every other key, the prefix
  * included, reaches the focused Session unchanged.
  */

@@ -5,15 +5,15 @@ import { join } from "node:path"
 export const DEFAULT_INSTANCE_NAME = "default"
 export const INSTANCE_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/u
 
-const CONFIG_PATH_ENV_VAR = "FMX_CONFIG_PATH"
+const CONFIG_PATH_ENV_VAR = "SMOLMUX_CONFIG_PATH"
 
 /**
- * One independent fmx: its own Runtime, Clients, Sessions, and Layout. Every
+ * One independent smolmux: its own Runtime, Clients, Sessions, and Layout. Every
  * Instance reads the one shared configuration, and nothing else about an
  * Instance is stored — its Sessions are the Companion's, labelled with its id.
  */
 export type Instance = {
-  /** `default` for plain `fmx`. */
+  /** `default` for plain `smolmux`. */
   name: string
   configDirectory: string
   /** Shared by every Instance. */
@@ -38,27 +38,27 @@ export function normalizeInstanceName(name: string | null | undefined): string {
 }
 
 /** The one directory holding the shared `config.toml`. */
-export function fmxConfigDirectory(
+export function smolmuxConfigDirectory(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = homedir(),
 ): string {
   const configHome = env.XDG_CONFIG_HOME || join(homeDirectory, ".config")
-  return join(configHome, "fmx")
+  return join(configHome, "smolmux")
 }
 
 /**
  * An Instance id labels every Companion session it creates and keys its
- * private socket. It is derived rather than stored, so nothing fmx could lose
+ * private socket. It is derived rather than stored, so nothing smolmux could lose
  * can cost an Instance its Sessions.
  *
  * The configuration directory is part of it, not decoration: the private
- * socket lives at `/tmp/fmx-<uid>/<id>.api`, one path per machine, so an id
+ * socket lives at `/tmp/smolmux-<uid>/<id>.api`, one path per machine, so an id
  * derived from the name alone would make every `default` Instance on the
  * machine the same one. A test run, a second checkout, and the operator's own
- * fmx would then fight over one socket and one lock.
+ * smolmux would then fight over one socket and one lock.
  */
 export function instanceIdFor(name: string, configDirectory: string): string {
-  return createHash("sha256").update(`fmx-instance:${configDirectory}:${name}`).digest("hex").slice(0, 12)
+  return createHash("sha256").update(`smolmux-instance:${configDirectory}:${name}`).digest("hex").slice(0, 12)
 }
 
 export function resolveInstance(
@@ -67,7 +67,7 @@ export function resolveInstance(
   homeDirectory: string = homedir(),
 ): Instance {
   const name = normalizeInstanceName(requestedName)
-  const configDirectory = fmxConfigDirectory(env, homeDirectory)
+  const configDirectory = smolmuxConfigDirectory(env, homeDirectory)
   return {
     name,
     configDirectory,

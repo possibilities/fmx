@@ -64,6 +64,8 @@ describe("golden wire bytes match the pinned Companion fork", () => {
     expect(decodeResize(hex(c.hex))).toEqual({ rows: c.rows, cols: c.cols, xpixel: c.xpixel, ypixel: c.ypixel })
   })
 
+  // The fixture is the fork's own golden bytes, including the client name it
+  // encodes. It is refreshed with the fork, never renamed with smolmux.
   test("hello", () => {
     const c = fixture.cases.hello
     expect(toHex(encodeHello(c))).toBe(c.hex)

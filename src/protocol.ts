@@ -1,8 +1,8 @@
 import { z } from "zod"
 
 /**
- * The fmx API, defined once. Every method below is validated by the Runtime,
- * typed for the client, printed by `fmx api`, and described in `docs/api.md`,
+ * The smolmux API, defined once. Every method below is validated by the Runtime,
+ * typed for the client, printed by `smolmux api`, and described in `docs/api.md`,
  * all from this table.
  *
  * Wire: newline-delimited JSON over one duplex Unix socket. A client sends
@@ -184,10 +184,10 @@ export const METHODS = {
         name: sessionName,
         argv: z.array(z.string().min(1)).min(1).describe("The executable first"),
         cwd: z.string().min(1).describe("An absolute directory"),
-        env: z.record(z.string(), z.string()).optional().describe("Applied over fmx's own environment with its private variables removed"),
+        env: z.record(z.string(), z.string()).optional().describe("Applied over smolmux's own environment with its private variables removed"),
         cols: z.int().min(1).max(65_535).optional().describe("The PTY size until a Pane sizes it; default 80"),
         rows: z.int().min(1).max(65_535).optional().describe("default 24"),
-        labels: z.record(labelToken, labelToken).optional().describe("Caller labels kept on the Companion session; owner, instance, and session are fmx's"),
+        labels: z.record(labelToken, labelToken).optional().describe("Caller labels kept on the Companion session; owner, instance, and session are smolmux's"),
       })
       .strict(),
     result: sessionViewSchema,
@@ -346,7 +346,7 @@ export function isMethod(name: string): name is Method {
   return Object.hasOwn(METHODS, name)
 }
 
-/** The whole contract as one JSON document: what `fmx api` prints. */
+/** The whole contract as one JSON document: what `smolmux api` prints. */
 export function contractDocument(): Record<string, unknown> {
   const methods: Record<string, unknown> = {}
   for (const name of METHOD_NAMES) {

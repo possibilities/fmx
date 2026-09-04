@@ -13,8 +13,8 @@ import {
 } from "../src/zmx-environment.ts"
 
 test("the Companion directory is short, per user, and overridable", () => {
-  expect(companionDirectory({}, 502)).toBe("/tmp/fmx-502/zmx")
-  expect(companionDirectory({ FMX_ZMX_DIR: "/private/d" }, 502)).toBe("/private/d")
+  expect(companionDirectory({}, 502)).toBe("/tmp/smolmux-502/zmx")
+  expect(companionDirectory({ SMOLMUX_ZMX_DIR: "/private/d" }, 502)).toBe("/private/d")
 })
 
 test("the Companion environment drops every inherited zmx variable and sets its own", () => {
@@ -25,47 +25,47 @@ test("the Companion environment drops every inherited zmx variable and sets its 
   expect(env).toEqual({ PATH: "/bin", ZMX_DIR: "/ours" })
 })
 
-test("the Companion is FMX_ZMX_PATH, else fmx-zmx beside fmx, else fmx-zmx on PATH, never zmx", async () => {
-  const root = await realpath(await mkdtemp("/tmp/fmx-env-"))
+test("the Companion is SMOLMUX_ZMX_PATH, else smolmux-zmx beside smolmux, else smolmux-zmx on PATH, never zmx", async () => {
+  const root = await realpath(await mkdtemp("/tmp/smolmux-env-"))
   try {
     const install = join(root, "install")
     const elsewhere = join(root, "elsewhere")
     await mkdir(install)
     await mkdir(elsewhere)
     for (const dir of [install, elsewhere]) {
-      await writeFile(join(dir, "fmx-zmx"), "#!/bin/sh\nexit 0\n")
-      await chmod(join(dir, "fmx-zmx"), 0o755)
-      // A plain zmx beside either is never what fmx wants.
+      await writeFile(join(dir, "smolmux-zmx"), "#!/bin/sh\nexit 0\n")
+      await chmod(join(dir, "smolmux-zmx"), 0o755)
+      // A plain zmx beside either is never what smolmux wants.
       await writeFile(join(dir, "zmx"), "#!/bin/sh\nexit 0\n")
       await chmod(join(dir, "zmx"), 0o755)
     }
 
-    await expect(resolveCompanion({ FMX_ZMX_PATH: "/nonexistent/fmx-zmx" }, install)).rejects.toThrow("not executable")
+    await expect(resolveCompanion({ SMOLMUX_ZMX_PATH: "/nonexistent/smolmux-zmx" }, install)).rejects.toThrow("not executable")
     // The override is taken as given (a path that is its own realpath, so the comparison holds on every OS).
-    expect(await resolveCompanion({ FMX_ZMX_PATH: join(elsewhere, "zmx"), PATH: "/nonexistent" }, install)).toEqual({ path: join(elsewhere, "zmx"), origin: "override" })
+    expect(await resolveCompanion({ SMOLMUX_ZMX_PATH: join(elsewhere, "zmx"), PATH: "/nonexistent" }, install)).toEqual({ path: join(elsewhere, "zmx"), origin: "override" })
     // A bare name is looked up on the given PATH, and an empty override is none.
-    expect(await resolveCompanion({ FMX_ZMX_PATH: "zmx", PATH: elsewhere }, install)).toEqual({ path: join(elsewhere, "zmx"), origin: "override" })
-    await expect(resolveCompanion({ FMX_ZMX_PATH: "zmx", PATH: "/nonexistent" }, install)).rejects.toThrow("not found: zmx (FMX_ZMX_PATH)")
-    expect(await resolveCompanion({ FMX_ZMX_PATH: "", PATH: elsewhere }, install)).toEqual({ path: join(install, "fmx-zmx"), origin: "sibling" })
+    expect(await resolveCompanion({ SMOLMUX_ZMX_PATH: "zmx", PATH: elsewhere }, install)).toEqual({ path: join(elsewhere, "zmx"), origin: "override" })
+    await expect(resolveCompanion({ SMOLMUX_ZMX_PATH: "zmx", PATH: "/nonexistent" }, install)).rejects.toThrow("not found: zmx (SMOLMUX_ZMX_PATH)")
+    expect(await resolveCompanion({ SMOLMUX_ZMX_PATH: "", PATH: elsewhere }, install)).toEqual({ path: join(install, "smolmux-zmx"), origin: "sibling" })
 
-    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(install, "fmx-zmx"), origin: "sibling" })
-    expect(await resolveCompanion({ PATH: elsewhere }, null)).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
-    expect(await resolveCompanion({ PATH: elsewhere }, join(root, "no-such-install"))).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
+    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(install, "smolmux-zmx"), origin: "sibling" })
+    expect(await resolveCompanion({ PATH: elsewhere }, null)).toEqual({ path: join(elsewhere, "smolmux-zmx"), origin: "path" })
+    expect(await resolveCompanion({ PATH: elsewhere }, join(root, "no-such-install"))).toEqual({ path: join(elsewhere, "smolmux-zmx"), origin: "path" })
 
-    // A link beside fmx is named as the link: what is beside fmx is what a message must say.
+    // A link beside smolmux is named as the link: what is beside smolmux is what a message must say.
     const { symlink, unlink } = await import("node:fs/promises")
-    await unlink(join(install, "fmx-zmx"))
-    await symlink(join(elsewhere, "zmx"), join(install, "fmx-zmx"))
-    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(install, "fmx-zmx"), origin: "sibling" })
-    await unlink(join(install, "fmx-zmx"))
-    await writeFile(join(install, "fmx-zmx"), "#!/bin/sh\nexit 0\n")
+    await unlink(join(install, "smolmux-zmx"))
+    await symlink(join(elsewhere, "zmx"), join(install, "smolmux-zmx"))
+    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(install, "smolmux-zmx"), origin: "sibling" })
+    await unlink(join(install, "smolmux-zmx"))
+    await writeFile(join(install, "smolmux-zmx"), "#!/bin/sh\nexit 0\n")
 
-    // Beside fmx but not executable: passed over, like any other file there.
-    await chmod(join(install, "fmx-zmx"), 0o644)
-    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(elsewhere, "fmx-zmx"), origin: "path" })
+    // Beside smolmux but not executable: passed over, like any other file there.
+    await chmod(join(install, "smolmux-zmx"), 0o644)
+    expect(await resolveCompanion({ PATH: elsewhere }, install)).toEqual({ path: join(elsewhere, "smolmux-zmx"), origin: "path" })
 
-    await expect(resolveCompanion({ PATH: "/nonexistent" }, install)).rejects.toThrow(`beside ${install}/fmx or no fmx-zmx on PATH`)
-    await expect(resolveCompanion({ PATH: "/nonexistent" }, null)).rejects.toThrow("no fmx-zmx on PATH")
+    await expect(resolveCompanion({ PATH: "/nonexistent" }, install)).rejects.toThrow(`beside ${install}/smolmux or no smolmux-zmx on PATH`)
+    await expect(resolveCompanion({ PATH: "/nonexistent" }, null)).rejects.toThrow("no smolmux-zmx on PATH")
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -76,7 +76,11 @@ test("the Companion pin is a fork commit and the build string a Companion built 
   expect(COMPANION_PIN.repository).toMatch(/^https:\/\/github\.com\/possibilities\/zmx(\.git)?$/)
   expect(COMPANION_PIN.branch).toBe("integration")
   expect(COMPANION_PIN.commit).toMatch(/^[0-9a-f]{40}$/)
-  // `<upstream version>+fmx.<12 hex of the commit>`: the build metadata names the commit, so the two can never disagree.
+  // `<upstream version>+fmx.<12 hex of the commit>`: the build metadata names
+  // the commit, so the two can never disagree. The `+fmx.` marker is the
+  // fork's own and outlived the rename: its build.zig refuses a version
+  // naming it without -Dcompanion, and renaming it here would bypass that
+  // guard. It moves when the fork does.
   expect(COMPANION_PIN.build).toMatch(/^\d+\.\d+\.\d+\+fmx\.[0-9a-f]{12}$/)
   expect(COMPANION_PIN.build.endsWith(`+fmx.${COMPANION_PIN.commit.slice(0, 12)}`)).toBe(true)
 })
@@ -85,15 +89,15 @@ test("a Companion's build is the first line of its version output", async () => 
   expect(parseCompanionVersion("zmx\t\t0.7.0+fmx.0123456789ab\nghostty_vt\tghostty-1.3.2\nsocket_dir\t/tmp/x\n")).toBe("0.7.0+fmx.0123456789ab")
   expect(parseCompanionVersion("zmx 0.7.0\n")).toBe("0.7.0")
   expect(parseCompanionVersion("zmx 0.7.0")).toBe("0.7.0")
-  expect(parseCompanionVersion("fmx 0.1.1\n")).toBeNull()
+  expect(parseCompanionVersion("smolmux 0.1.1\n")).toBeNull()
   // Only the first line: a later line is never the build, whatever it says.
   expect(parseCompanionVersion("something else\nzmx\t\t0.7.0\n")).toBeNull()
   expect(parseCompanionVersion("zmx_extra 1\n")).toBeNull()
   expect(parseCompanionVersion("")).toBeNull()
 
-  const root = await mkdtemp("/tmp/fmx-env-")
+  const root = await mkdtemp("/tmp/smolmux-env-")
   try {
-    const fake = join(root, "fmx-zmx")
+    const fake = join(root, "smolmux-zmx")
     await writeFile(fake, `#!/bin/sh\n[ "$1" = version ] || exit 2\nprintf 'zmx\\t\\t%s\\nsocket_dir\\t%s\\n' "$FAKE_BUILD" "$ZMX_DIR"\n`)
     await chmod(fake, 0o755)
     const directory = join(root, "zmx")
@@ -119,13 +123,13 @@ test("a Companion's build is the first line of its version output", async () => 
 
 test("a Companion that is not the pinned build is refused unless the override named it", () => {
   const pinned = COMPANION_PIN.build
-  const sibling = companionMismatch({ path: "/opt/fmx/fmx-zmx", origin: "sibling" }, "0.7.0", 1)
-  expect(sibling).toContain("/opt/fmx/fmx-zmx (beside fmx) is build 0.7.0")
+  const sibling = companionMismatch({ path: "/opt/smolmux/smolmux-zmx", origin: "sibling" }, "0.7.0", 1)
+  expect(sibling).toContain("/opt/smolmux/smolmux-zmx (beside smolmux) is build 0.7.0")
   expect(sibling).toContain(`pins ${pinned} (protocol 1)`)
-  expect(sibling).toContain("Reinstall fmx to restore the pair, or set FMX_ZMX_PATH")
-  expect(companionMismatch({ path: "/usr/local/bin/fmx-zmx", origin: "path" }, "0.8.0+fmx.000000000000", 1)).toContain("(on PATH)")
+  expect(sibling).toContain("Reinstall smolmux to restore the pair, or set SMOLMUX_ZMX_PATH")
+  expect(companionMismatch({ path: "/usr/local/bin/smolmux-zmx", origin: "path" }, "0.8.0+fmx.000000000000", 1)).toContain("(on PATH)")
   const override = companionMismatch({ path: "/src/zmx/zig-out/bin/zmx", origin: "override" }, "0.7.0", 1)
-  expect(override).toContain("(FMX_ZMX_PATH) is build 0.7.0")
+  expect(override).toContain("(SMOLMUX_ZMX_PATH) is build 0.7.0")
   expect(override).toContain("running under the override")
   expect(override).not.toContain("Reinstall")
 })
@@ -134,21 +138,21 @@ test("the Companion directory is made private and refused when it is not ours", 
   const { mkdtemp, chmod, rm, stat } = await import("node:fs/promises")
   const { join } = await import("node:path")
   const { companionDirectories, ensureCompanionDirectories } = await import("../src/zmx-environment.ts")
-  expect(companionDirectories({}, 7)).toEqual(["/tmp/fmx-7", "/tmp/fmx-7/zmx"])
-  expect(companionDirectories({ FMX_ZMX_DIR: "/elsewhere/zmx" }, 7)).toEqual(["/elsewhere/zmx"])
-  const root = await mkdtemp("/tmp/fmx-env-")
+  expect(companionDirectories({}, 7)).toEqual(["/tmp/smolmux-7", "/tmp/smolmux-7/zmx"])
+  expect(companionDirectories({ SMOLMUX_ZMX_DIR: "/elsewhere/zmx" }, 7)).toEqual(["/elsewhere/zmx"])
+  const root = await mkdtemp("/tmp/smolmux-env-")
   try {
-    const directory = join(root, "fmx-1", "zmx")
-    const chain = [join(root, "fmx-1"), directory]
+    const directory = join(root, "smolmux-1", "zmx")
+    const chain = [join(root, "smolmux-1"), directory]
     await ensureCompanionDirectories(chain)
     expect((await stat(directory)).mode & 0o777).toBe(0o700)
-    expect((await stat(join(root, "fmx-1"))).mode & 0o777).toBe(0o700)
+    expect((await stat(join(root, "smolmux-1"))).mode & 0o777).toBe(0o700)
     // Idempotent, and a second start finds it acceptable.
     await ensureCompanionDirectories(chain)
     // Someone else could write into it: refused.
-    await chmod(join(root, "fmx-1"), 0o777)
+    await chmod(join(root, "smolmux-1"), 0o777)
     await expect(ensureCompanionDirectories(chain)).rejects.toThrow("writable by others")
-    await chmod(join(root, "fmx-1"), 0o700)
+    await chmod(join(root, "smolmux-1"), 0o700)
     // Not ours at all: refused.
     await expect(ensureCompanionDirectories(chain, 0)).rejects.toThrow("owned by uid")
   } finally {

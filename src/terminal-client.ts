@@ -85,7 +85,7 @@ export function revealClientCursor(stdout: Pick<NodeJS.WriteStream, "write"> = p
 export async function runTerminalClient(options: TerminalClientOptions): Promise<number> {
   const stdin = options.stdin ?? process.stdin
   const stdout = options.stdout ?? process.stdout
-  const connection = await CompanionConnection.connect(options.socketPath, { client: "fmx-client" })
+  const connection = await CompanionConnection.connect(options.socketPath, { client: "smolmux-client" })
   const completion = Promise.withResolvers<ClientOutcome>()
   let completed = false
   let sawExit = false
@@ -299,7 +299,7 @@ function clampDimension(value: number | undefined): number {
 
 /**
  * Ask this terminal for its background before any relaying begins, so the
- * reply cannot race the Runtime's byte stream. `FMX_THEME` fixes it without
+ * reply cannot race the Runtime's byte stream. `SMOLMUX_THEME` fixes it without
  * a query, exactly as it fixes the Runtime's.
  */
 async function sampleTerminalTheme(
@@ -308,7 +308,7 @@ async function sampleTerminalTheme(
   env: NodeJS.ProcessEnv = process.env,
   timeoutMs = THEME_SAMPLE_TIMEOUT_MS,
 ): Promise<FxnkTheme | null> {
-  const override = env.FMX_THEME?.toLowerCase()
+  const override = env.SMOLMUX_THEME?.toLowerCase()
   if (override === "light" || override === "dark") return override
   if (!stdin.isTTY || !stdout.isTTY) return null
 
@@ -343,5 +343,5 @@ async function sampleTerminalTheme(
 }
 
 function closeError(reason: CloseReason): Error {
-  return reason.kind === "error" ? reason.error : new Error("the fmx Runtime closed its terminal connection")
+  return reason.kind === "error" ? reason.error : new Error("the smolmux Runtime closed its terminal connection")
 }

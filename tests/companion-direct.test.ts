@@ -17,14 +17,14 @@ import {
 /**
  * Drives a real Companion daemon over its socket, with no PTY on this side.
  *
- * Needs the fork binary: set FMX_ZMX_PATH to it (the development override the
+ * Needs the fork binary: set SMOLMUX_ZMX_PATH to it (the development override the
  * shipped Companion will also honor). Sessions live in a private short ZMX_DIR
  * under /tmp so nothing here can see or touch the user's own zmx sessions.
  * Only sessions this file created are ever killed, and only by name through
  * the Companion in that private directory; the run ends by proving the
  * directory holds no sessions and removing it.
  */
-const ZMX = process.env.FMX_ZMX_PATH
+const ZMX = process.env.SMOLMUX_ZMX_PATH
 const ENABLED = Boolean(ZMX && existsSync(ZMX))
 
 const decoder = new TextDecoder()
@@ -77,7 +77,7 @@ const startSession = async (name: string, script = CHILD_SCRIPT) => {
   return join(dir, name)
 }
 
-/** `create --json`, parsed: the shape fmx will consume. */
+/** `create --json`, parsed: the shape smolmux will consume. */
 const create = async (name: string, argv: string[], labels?: string) => {
   const args = ["create", "--json", ...(labels ? ["--labels", labels] : []), name, "--", ...argv]
   const { code, stdout, stderr } = await zmx(...args)
@@ -154,7 +154,7 @@ class Capture {
 
 beforeAll(async () => {
   if (!ENABLED) return
-  dir = await mkdtemp("/tmp/fmxz-")
+  dir = await mkdtemp("/tmp/smolmuxz-")
   env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ZMX_DIR: dir, ZMX_NO_DETACH_KEY: "1", TERM: "xterm-256color" }
 })
 
@@ -179,7 +179,7 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   expect(alive(pid!)).toBe(true)
 
   // Negotiate and attach.
-  const first = await CompanionConnection.connect(socket, { client: "fmx-test" })
+  const first = await CompanionConnection.connect(socket, { client: "smolmux-test" })
   expect(first.welcome.version).toBe(PROTOCOL_VERSION)
   const output = new Capture(first)
   first.attach({ rows: 30, cols: 100 })
@@ -211,7 +211,7 @@ test.skipIf(!ENABLED)("a Bun client attaches, drives, detaches from, and reattac
   // Reattach: the restore replays the screen, and the session is live again.
   // (The restore covers everything since a client last attached. Output from
   // before the FIRST attach can be lost — an upstream gap tranche 2 closes.)
-  const second = await CompanionConnection.connect(socket, { client: "fmx-test" })
+  const second = await CompanionConnection.connect(socket, { client: "smolmux-test" })
   const replay = new Capture(second)
   second.attach({ rows: 20, cols: 60 })
   await replay.until("got:hello-from-bun")
@@ -434,7 +434,7 @@ test.skipIf(!ENABLED)("a client the daemon cannot serve is told the daemon's ran
 })
 
 test.skipIf(!ENABLED)("create answers on readiness, with labels the session is born with; exit records agree with Exit", async () => {
-  const report = await create("s5", ["sh", "-c", CHILD_SCRIPT], "owner=fmx agent=s5")
+  const report = await create("s5", ["sh", "-c", CHILD_SCRIPT], "owner=smolmux agent=s5")
   sessions.push("s5")
   expect(report).toMatchObject({ ok: true, name: "s5", socketPath: join(dir, "s5") })
   expect(typeof report.pid).toBe("number")
@@ -446,7 +446,7 @@ test.skipIf(!ENABLED)("create answers on readiness, with labels the session is b
     name: "s5",
     state: "live",
     pid: report.pid,
-    labels: { owner: "fmx", agent: "s5" },
+    labels: { owner: "smolmux", agent: "s5" },
     lifecycle: "running",
     protocol: { minVersion: PROTOCOL_VERSION, maxVersion: PROTOCOL_VERSION },
   })
@@ -483,7 +483,7 @@ test.skipIf(!ENABLED)("create answers on readiness, with labels the session is b
   expect(await inspect("s5")).toMatchObject({
     state: "exited",
     pid: report.pid,
-    labels: { owner: "fmx", agent: "s5" },
+    labels: { owner: "smolmux", agent: "s5" },
     exit: { code: 7, signal: 0, reason: "natural" },
   })
 

@@ -3,9 +3,9 @@ import { OWNER_LABEL, RUNTIME_KIND, runtimeLabels, runtimeSessionName } from "./
 import { listenerAnswers } from "./unix-socket.ts"
 
 /** Set on the Runtime child so a human reading `ps` can tell it apart. */
-export const RUNTIME_PROCESS_ENV_VAR = "FMX_RUNTIME_PROCESS"
+export const RUNTIME_PROCESS_ENV_VAR = "SMOLMUX_RUNTIME_PROCESS"
 
-/** How long `fmx start` waits for a new Runtime to answer its API socket. */
+/** How long `smolmux start` waits for a new Runtime to answer its API socket. */
 export const RUNTIME_READY_TIMEOUT_MS = 15_000
 const RUNTIME_READY_INTERVAL_MS = 25
 
@@ -44,7 +44,7 @@ export async function ensureRuntimeSession(
     assertOwnedRuntime(name, labels, session)
     await companion.forget(name)
   } else if (session.state === "refused" || session.state === "unreachable") {
-    throw new Error(`fmx Runtime is ${session.state}${session.detail ? ` (${session.detail})` : ""}`)
+    throw new Error(`smolmux Runtime is ${session.state}${session.detail ? ` (${session.detail})` : ""}`)
   }
 
   const environment = { ...request.env, [RUNTIME_PROCESS_ENV_VAR]: "1" }
@@ -94,7 +94,7 @@ export async function waitForRuntimeApi(
 
 function attachedRuntime(name: string, labels: Record<string, string>, session: SessionEntry): string {
   assertOwnedRuntime(name, labels, session)
-  if (!session.socketPath) throw new Error(`fmx Runtime ${name} has no terminal socket`)
+  if (!session.socketPath) throw new Error(`smolmux Runtime ${name} has no terminal socket`)
   return session.socketPath
 }
 
@@ -104,10 +104,10 @@ function assertOwnedRuntime(name: string, labels: Record<string, string>, sessio
     session.labels.owner === OWNER_LABEL &&
     session.labels.instance === labels.instance &&
     session.labels.kind === RUNTIME_KIND
-  if (!owned) throw new Error(`Companion session ${name} does not belong to this fmx Runtime`)
+  if (!owned) throw new Error(`Companion session ${name} does not belong to this smolmux Runtime`)
 }
 
-/** argv for this same fmx, whether it is a Bun source checkout or one binary. */
+/** argv for this same smolmux, whether it is a Bun source checkout or one binary. */
 export type RuntimeCommandOptions = {
   executable?: string
   main?: string
