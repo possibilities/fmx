@@ -1,5 +1,8 @@
 # fmx installs a pinned private Fx
 
+Superseded by [ADR 0016](0016-sessions-are-arbitrary-commands.md): fmx pins
+and installs no program to run inside a Session.
+
 An fmx checkout pins one approved Fx Integration commit in `fx.json`.
 `scripts/install.sh` builds that exact source as the sibling `fmx-fx`, leaving
 the separately managed `fx` untouched. The Runtime resolves and probes Fx once

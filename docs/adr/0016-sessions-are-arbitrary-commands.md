@@ -1,6 +1,7 @@
 # A Session is any command, and fmx knows nothing about it
 
 Supersedes [ADR 0005](0005-agent-tray-vocabulary.md),
+[ADR 0006](0006-native-session-names-over-ade.md),
 [ADR 0008](0008-ade-only-fx-lifecycle.md), and
 [ADR 0009](0009-pinned-private-fx-install.md).
 

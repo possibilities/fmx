@@ -60,24 +60,41 @@ describe("canonical public vocabulary", () => {
     }
   })
 
-  test("every decision the rewrite overturned says what replaced it", async () => {
+  test("every decision the rewrite overturned points at what replaced it", async () => {
     const superseded = [
       "0005-agent-tray-vocabulary.md",
+      "0006-native-session-names-over-ade.md",
       "0007-companion-held-shared-runtime.md",
       "0008-ade-only-fx-lifecycle.md",
       "0009-pinned-private-fx-install.md",
       "0013-mcp-only-agent-automation.md",
       "0014-independent-named-fmx.md",
     ]
+    const records = await readdir(join(ROOT, "docs/adr"))
     const replacements = await Promise.all(
-      ["0015", "0016", "0017", "0018"].map(async (number) => {
-        const files = await readdir(join(ROOT, "docs/adr"))
-        const file = files.find((path) => path.startsWith(number))!
-        return readFile(join(ROOT, "docs/adr", file), "utf8")
-      }),
+      records
+        .filter((path) => /^001[5-9]/u.test(path))
+        .map((path) => readFile(join(ROOT, "docs/adr", path), "utf8")),
     )
     for (const record of superseded) {
+      // The successor names it, and it names the successor: a reader who
+      // opens a retired record cold must be told it was overturned.
       expect(replacements.some((text) => text.includes(record)), `nothing supersedes ${record}`).toBe(true)
+      const text = await readFile(join(ROOT, "docs/adr", record), "utf8")
+      expect(text, `${record} does not say it was superseded`).toMatch(/[Ss]uperseded by|is superseded by/u)
+    }
+  })
+
+  test("a decision reference names its file, because two records share a number", async () => {
+    const records = await readdir(join(ROOT, "docs/adr"))
+    const numbers = records.map((path) => path.slice(0, 4))
+    expect(new Set(numbers).size, "renumbering would rewrite history; references name files instead").toBeLessThan(
+      numbers.length,
+    )
+    for (const path of records.filter((name) => /^001[5-9]/u.test(name))) {
+      const text = await readFile(join(ROOT, "docs/adr", path), "utf8")
+      // No bare "ADRs 0002, 0010" style reference, which the duplicates make ambiguous.
+      expect(text, `${path} references a decision by bare number`).not.toMatch(/ADRs \d{4}/u)
     }
   })
 

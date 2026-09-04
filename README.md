@@ -29,6 +29,7 @@ fmx attach           # attach this terminal to a running Instance
 fmx status           # the Instance as JSON
 fmx stop             # end every Session and the Instance
 fmx api              # the API contract as JSON
+fmx doctor           # verify the Companion and its private directory
 ```
 
 `--name NAME` selects an independent Instance; several run side by side and
@@ -77,8 +78,8 @@ a divider a human can drag, and a drag moves the Layout's revision on, so a
 caller writing from a stale read is refused rather than undoing the gesture.
 
 The **Stage** is the drawn area. Several terminals can attach at once; the
-one that interacted most recently sets the size, larger ones have flat unused
-space, and smaller ones crop.
+**sizing owner** — whichever interacted most recently — sets the size, larger
+ones have flat unused space, and smaller ones crop.
 
 ## Configure
 

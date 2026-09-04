@@ -1,7 +1,9 @@
 # The Companion's labels are the record; fmx stores nothing
 
 Supersedes the Manifest of [ADR 0005](0005-agent-tray-vocabulary.md) and the
-persisted UI state of [ADR 0014](0014-independent-named-fmx.md).
+persisted UI state of [ADR 0014](0014-independent-named-fmx.md). ADR 0014's
+own subject, the `--name` flag and the independence it gives an Instance,
+remains in force.
 
 Fmx writes no file. A Session's identity is its name, its Companion session
 is `fmx-<instance id>-<name>`, and its labels carry `owner`, `instance`, and

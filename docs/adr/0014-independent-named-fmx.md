@@ -1,5 +1,9 @@
 # Names select independent fmx Sessions with shared configuration
 
+Its persisted state is superseded by
+[ADR 0018](0018-labels-are-the-record.md); `--name` and the independence it
+establishes remain in force.
+
 `fmx --name NAME` selects an fmx Session whose internal state lives under
 `~/.config/fmx/homes/<name>`, giving it
 independent Agents, Manifest, UI state, Runtime, Clients, and private sockets,

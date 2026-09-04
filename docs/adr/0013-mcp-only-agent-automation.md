@@ -1,5 +1,9 @@
 # MCP is the only agent automation surface
 
+Superseded by
+[ADR 0015](0015-a-socket-is-the-whole-control-surface.md), which replaces MCP
+with one socket API.
+
 fmx removes its automation CLI and makes the separate stdio `fmx-mcp`
 executable the only supported agent-facing interface, superseding the client
 choices in ADRs 0002, 0010, and 0011. MCP exposes Orientation, Agent creation

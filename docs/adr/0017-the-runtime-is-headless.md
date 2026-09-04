@@ -1,7 +1,9 @@
 # The Runtime is headless, and its socket is the Instance singleton
 
-Supersedes [ADR 0007](0007-companion-held-shared-runtime.md)'s final-Client
-lifecycle.
+Supersedes the final-Client lifecycle of [a Companion-held Runtime serves
+every terminal Client](0007-companion-held-shared-runtime.md). The rest of
+that record — one shared Runtime, and sizing that follows the most recently
+interacting Client — remains in force.
 
 A Runtime starts without a terminal, renders into its Companion-held PTY,
 binds its API socket, and holds its Sessions whether or not anyone is
