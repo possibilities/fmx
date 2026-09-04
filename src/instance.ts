@@ -48,11 +48,17 @@ export function fmxConfigDirectory(
 
 /**
  * An Instance id labels every Companion session it creates and keys its
- * private socket. It is derived from the name rather than stored, so nothing
- * fmx could lose can cost an Instance its Sessions.
+ * private socket. It is derived rather than stored, so nothing fmx could lose
+ * can cost an Instance its Sessions.
+ *
+ * The configuration directory is part of it, not decoration: the private
+ * socket lives at `/tmp/fmx-<uid>/<id>.api`, one path per machine, so an id
+ * derived from the name alone would make every `default` Instance on the
+ * machine the same one. A test run, a second checkout, and the operator's own
+ * fmx would then fight over one socket and one lock.
  */
-export function instanceIdFor(name: string): string {
-  return createHash("sha256").update(`fmx-instance:${name}`).digest("hex").slice(0, 12)
+export function instanceIdFor(name: string, configDirectory: string): string {
+  return createHash("sha256").update(`fmx-instance:${configDirectory}:${name}`).digest("hex").slice(0, 12)
 }
 
 export function resolveInstance(
@@ -66,6 +72,6 @@ export function resolveInstance(
     name,
     configDirectory,
     configPath: env[CONFIG_PATH_ENV_VAR] || join(configDirectory, "config.toml"),
-    id: instanceIdFor(name),
+    id: instanceIdFor(name, configDirectory),
   }
 }

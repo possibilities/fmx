@@ -89,8 +89,11 @@
   loop accepts any client, so labels are the record: adoption is one
   `list --json` filtered by label and name. There is no Manifest, no claim to
   write before creating, no `markRunning` after, and no crash window between
-  them. The Instance id is derived from its name, so nothing fmx could lose
-  can cost an Instance its Sessions.
+  them. The Instance id is derived from the configuration directory and the
+  name, so nothing fmx could lose can cost an Instance its Sessions. The
+  directory is part of it because the private socket is one path per machine:
+  an id from the name alone would make every `default` Instance the same one,
+  and a test run would fight the operator's own fmx over one socket.
 - An adopted Session's `argv` is null. The Companion reports a shell-quoted
   display string cut at 256 bytes; it is for reading, never for re-running.
 - The Runtime is headless. It renders into its Companion PTY and holds its

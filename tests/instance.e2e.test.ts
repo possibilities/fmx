@@ -7,7 +7,7 @@ import { basename, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { ApiClient } from "../src/api-client.ts"
 import { apiSocketPathFor } from "../src/api-server.ts"
-import { instanceIdFor } from "../src/instance.ts"
+import { resolveInstance } from "../src/instance.ts"
 import type { EventFrame, LayoutView, SessionView } from "../src/protocol.ts"
 import { CompanionCommand } from "../src/zmx-command.ts"
 import { COMPANION_BINARY_NAME } from "../src/zmx-environment.ts"
@@ -29,6 +29,10 @@ const ENABLED =
   Boolean(COMPANION && fileExists(COMPANION))
 
 const control = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64
+
+/** The Instance a given environment selects, exactly as fmx resolves it. */
+const socketFor = (env: Record<string, string>, name: string | null = null) =>
+  apiSocketPathFor(resolveInstance(name, env).id)
 
 function environment(directory: string, name: string): Record<string, string> {
   return {
@@ -76,7 +80,7 @@ test.skipIf(!ENABLED)(
     await chmod(FAKE_APP, 0o755)
     const directory = await mkdtemp(join(tmpdir(), "fmx-e2e-"))
     const env = environment(directory, "default")
-    const socketPath = apiSocketPathFor(instanceIdFor("default"))
+    const socketPath = socketFor(env)
     let client: ApiClient | null = null
     let attached: ReturnType<typeof Bun.spawn> | null = null
 
@@ -102,7 +106,9 @@ test.skipIf(!ENABLED)(
         env: { FMX_TEST_TITLE: "the tray", FMX_TEST_BANNER: "tray ready" },
         labels: { role: "list" },
       })
-      expect(tray).toMatchObject({ name: "tray", shown: false, state: "live" })
+      // Nobody has applied a Layout, so the Runtime's own one shows the first
+      // Session rather than an empty state that claims nothing is running.
+      expect(tray).toMatchObject({ name: "tray", shown: true, state: "live" })
       await client.request("session.create", {
         name: "main",
         argv: [FAKE_APP],
@@ -192,7 +198,7 @@ test.skipIf(!ENABLED)(
     await chmod(FAKE_APP, 0o755)
     const directory = await mkdtemp(join(tmpdir(), "fmx-e2e-adopt-"))
     const env = environment(directory, "default")
-    const socketPath = apiSocketPathFor(instanceIdFor("default"))
+    const socketPath = socketFor(env)
     let client: ApiClient | null = null
 
     try {
@@ -247,8 +253,8 @@ test.skipIf(!ENABLED)(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "fmx-e2e-named-"))
     const env = environment(directory, "review")
-    const defaultSocket = apiSocketPathFor(instanceIdFor("default"))
-    const namedSocket = apiSocketPathFor(instanceIdFor("review"))
+    const defaultSocket = socketFor(env)
+    const namedSocket = socketFor(env, "review")
     let first: ApiClient | null = null
     let second: ApiClient | null = null
 

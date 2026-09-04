@@ -17,10 +17,13 @@ test("plain fmx is the default Instance and names select independent ones", () =
   expect(() => normalizeInstanceName("Review")).toThrow(InvalidInstanceNameError)
 })
 
-test("an Instance id is derived from its name, never stored", () => {
-  expect(instanceIdFor("default")).toMatch(/^[0-9a-f]{12}$/u)
-  expect(instanceIdFor("default")).toBe(instanceIdFor("default"))
-  expect(instanceIdFor("review")).not.toBe(instanceIdFor("default"))
+test("an Instance id is derived, never stored, and unique per configuration", () => {
+  expect(instanceIdFor("default", "/home/a/.config/fmx")).toMatch(/^[0-9a-f]{12}$/u)
+  expect(instanceIdFor("default", "/home/a/.config/fmx")).toBe(instanceIdFor("default", "/home/a/.config/fmx"))
+  expect(instanceIdFor("review", "/home/a/.config/fmx")).not.toBe(instanceIdFor("default", "/home/a/.config/fmx"))
+  // The private socket is one path per machine, so two `default` Instances
+  // with different configurations must not be the same Instance.
+  expect(instanceIdFor("default", "/tmp/other/fmx")).not.toBe(instanceIdFor("default", "/home/a/.config/fmx"))
 })
 
 test("every Instance reads the one shared configuration", () => {
@@ -36,6 +39,7 @@ test("every Instance reads the one shared configuration", () => {
 
 test("an Instance's private names all key off its id", () => {
   const instance = resolveInstance("review", { XDG_CONFIG_HOME: "/tmp/config" }, "/home/test")
+  expect(instance.id).toBe(instanceIdFor("review", instance.configDirectory))
   expect(apiSocketPathFor(instance.id, 501)).toBe(`/tmp/fmx-501/${instance.id}.api`)
   expect(runtimeSessionName(instance.id)).toBe(`fmxr-${instance.id}`)
   expect(sessionIdentity(instance.id, "tray").companionName).toBe(`fmx-${instance.id}-tray`)

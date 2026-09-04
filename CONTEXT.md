@@ -2,8 +2,10 @@
 
 **Instance** — one running fmx: a Runtime, its Sessions, one Layout, and one
 API socket. Named by `--name`, `default` unless told otherwise; several run
-side by side and share nothing but `config.toml`. Its id is derived from its
-name, never stored, and labels every Companion session it creates.
+side by side and share nothing but `config.toml`. Its id is derived from that
+file's directory and its name, never stored, and labels every Companion
+session it creates; the directory is in it because the private socket is one
+path per machine.
 _Avoid_: home, profile, workspace, server.
 
 **Session** — one command running in a Companion-held PTY, together with the
