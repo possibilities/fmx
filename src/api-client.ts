@@ -1,4 +1,5 @@
 import type { Socket } from "bun"
+import { LineBuffer } from "./line-buffer.ts"
 import {
   ApiFailure,
   encodeFrame,
@@ -12,19 +13,25 @@ import {
   type Result,
 } from "./protocol.ts"
 
-type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void }
+type Pending = {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
 
 const encoder = new TextEncoder()
 
 export type ApiClientOptions = {
   onEvent?: (event: EventFrame) => void
   onClose?: () => void
+  /** A deadline fails the connection; a mutating request may already have acted. */
+  timeoutMs?: number
 }
 
 /** One connection to a Runtime's API socket: requests by name, events by subscription. */
 export class ApiClient {
   private readonly pending = new Map<string, Pending>()
-  private buffer = ""
+  private readonly buffer = new LineBuffer(4 * 1024 * 1024)
   private nextId = 1
   private socket: Socket | null = null
   private closed = false
@@ -83,6 +90,7 @@ export class ApiClient {
   /** One request by name, unchecked. */
   call(method: string, params?: unknown): Promise<unknown> {
     if (this.closed || !this.socket) return Promise.reject(new ApiFailure("internal", "not connected"))
+    if (this.pending.size >= 128) return Promise.reject(new ApiFailure("internal", "too many pending requests"))
     const id = String(this.nextId++)
     const frame: RequestFrame = {
       v: PROTOCOL_VERSION,
@@ -91,23 +99,30 @@ export class ApiClient {
       method,
       params: (params ?? {}) as Record<string, unknown>,
     }
+    const bytes = encoder.encode(encodeFrame(frame))
+    if (bytes.byteLength > (1 << 20) + 1) return Promise.reject(new ApiFailure("invalid_request", "frame too large"))
+    if (this.outgoing.reduce((sum, chunk) => sum + chunk.byteLength, 0) + bytes.byteLength > 4 * 1024 * 1024)
+      return Promise.reject(new ApiFailure("internal", "outbound queue is full"))
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      this.write(encodeFrame(frame))
+      const timer = setTimeout(() => {
+        this.disconnect(new ApiFailure("internal", `${method} timed out; its outcome is unknown`))
+      }, this.options.timeoutMs ?? 60_000)
+      this.pending.set(id, { resolve, reject, timer })
+      this.outgoing.push(bytes)
+      this.flush()
     })
   }
 
   close(): void {
-    if (this.closed) return
-    this.closed = true
-    this.socket?.end()
-    this.failPending()
+    this.disconnect(new ApiFailure("internal", "connection closed"), false)
   }
 
-  /** Queue a frame and write what the socket will take; the rest waits for `drain`. */
-  private write(line: string): void {
-    this.outgoing.push(encoder.encode(line))
-    this.flush()
+  private disconnect(error: Error, notify = true): void {
+    if (this.closed) return
+    this.closed = true
+    this.socket?.terminate()
+    this.failPending(error)
+    if (notify) this.options.onClose?.()
   }
 
   private flush(): void {
@@ -119,10 +134,14 @@ export class ApiClient {
       try {
         written = socket.write(chunk)
       } catch {
+        this.handleClose()
         return
       }
       // A negative result is an errored or closed socket; `close` cleans up.
-      if (written < 0) return
+      if (written < 0) {
+        this.handleClose()
+        return
+      }
       if (written < chunk.byteLength) {
         this.outgoing[0] = chunk.subarray(written)
         return
@@ -132,13 +151,13 @@ export class ApiClient {
   }
 
   private data(data: Buffer): void {
-    this.buffer += data.toString("utf8")
-    let newline = this.buffer.indexOf("\n")
-    while (newline >= 0) {
-      const line = this.buffer.slice(0, newline).trim()
-      this.buffer = this.buffer.slice(newline + 1)
-      if (line.length > 0) this.handle(line)
-      newline = this.buffer.indexOf("\n")
+    try {
+      this.buffer.push(data, (line) => {
+        if (line.trim().length > 0) this.handle(line)
+      })
+    } catch {
+      this.socket?.terminate()
+      this.handleClose()
     }
   }
 
@@ -146,7 +165,17 @@ export class ApiClient {
     let frame: ResponseFrame | EventFrame
     try {
       frame = JSON.parse(line)
+      if (frame?.v !== 1 || (frame.type !== "event" && frame.type !== "response")) throw new Error("invalid frame")
+      if (
+        frame.type === "response" &&
+        ((typeof frame.id !== "string" && frame.id !== null) ||
+          typeof frame.ok !== "boolean" ||
+          (frame.ok && frame.id === null) ||
+          (!frame.ok && (typeof frame.error?.code !== "string" || typeof frame.error?.message !== "string")))
+      )
+        throw new Error("invalid response")
     } catch {
+      this.disconnect(new ApiFailure("internal", "invalid response frame"))
       return
     }
     if (frame.type === "event") {
@@ -158,26 +187,28 @@ export class ApiClient {
       // A refusal the Runtime could not correlate: it could not tell what was
       // asked, so nothing in flight can be trusted to be answered. Failing
       // them is honest; waiting forever is not.
-      if (!frame.ok) this.failPending(new ApiFailure(frame.error.code, frame.error.message))
+      if (!frame.ok) this.disconnect(new ApiFailure(frame.error.code, frame.error.message))
       return
     }
     const pending = this.pending.get(frame.id)
     if (!pending) return
     this.pending.delete(frame.id)
+    clearTimeout(pending.timer)
     if (frame.ok) pending.resolve(frame.result)
     else pending.reject(new ApiFailure(frame.error.code, frame.error.message))
   }
 
   private handleClose(): void {
-    if (this.closed) return
-    this.closed = true
-    this.failPending()
-    this.options.onClose?.()
+    this.disconnect(new ApiFailure("internal", "connection closed"))
   }
 
-  private failPending(error = new ApiFailure("internal", "connection closed")): void {
-    for (const pending of this.pending.values()) pending.reject(error)
+  private failPending(error: Error = new ApiFailure("internal", "connection closed")): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(error)
+    }
     this.pending.clear()
     this.outgoing = []
+    this.buffer.clear()
   }
 }

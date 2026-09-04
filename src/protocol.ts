@@ -270,18 +270,19 @@ export const METHODS = {
   },
   "session.create": {
     description:
-      "Start a command in a Companion-held PTY under a caller-chosen name. It runs whether or not a Pane shows it; put it in the Layout with layout.apply.",
+      "Start a command in a Companion-held PTY under a caller-chosen name. It runs whether or not a Pane shows it; put it in the Layout with layout.apply. Initial size is limited to 262144 cells and 4096 per dimension.",
     params: z
       .object({
         name: sessionName,
         argv: z.array(z.string().min(1)).min(1).describe("The executable first"),
         cwd: z.string().min(1).describe("An absolute directory"),
         env: z.record(z.string(), z.string()).optional().describe("Applied over smolmux's own environment with its private variables removed"),
-        cols: z.int().min(1).max(65_535).optional().describe("The PTY size until a Pane sizes it; default 80"),
-        rows: z.int().min(1).max(65_535).optional().describe("default 24"),
+        cols: z.int().min(1).max(4096).optional().describe("The PTY size until a Pane sizes it; default 80"),
+        rows: z.int().min(1).max(4096).optional().describe("default 24"),
         labels: z.record(labelToken, labelToken).optional().describe("Caller labels kept on the Companion session; owner, instance, and session are smolmux's"),
       })
-      .strict(),
+      .strict()
+      .refine((params) => (params.cols ?? 80) * (params.rows ?? 24) <= 262_144, "initial size must not exceed 262144 cells"),
     result: sessionViewSchema,
   },
   "session.kill": {

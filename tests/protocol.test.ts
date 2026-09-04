@@ -137,3 +137,11 @@ describe("parameter shapes", () => {
     expect(apply.safeParse({}).success).toBe(false)
   })
 })
+
+test("initial native viewport allocation is bounded before Session creation", () => {
+  const create = METHODS["session.create"].params;
+  const base = {name: "a", argv: ["sh"], cwd: "/"};
+  expect(create.safeParse({...base, cols: 4096, rows: 64}).success).toBe(true);
+  expect(create.safeParse({...base, cols: 4096, rows: 65}).success).toBe(false);
+  expect(create.safeParse({...base, cols: 65535, rows: 65535}).success).toBe(false);
+});

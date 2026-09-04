@@ -1,6 +1,7 @@
 import { chmodSync } from "node:fs"
 import { userInfo } from "node:os"
 import type { Socket } from "bun"
+import { FrameLimitError, LineBuffer } from "./line-buffer.ts"
 import { acquireExclusiveLock, type HeldLock } from "./file-lock.ts"
 import {
   ApiFailure,
@@ -61,8 +62,9 @@ export type ApiHandler = (method: Method, params: unknown) => Promise<unknown>
 
 type Connection = {
   id: number
-  buffer: string
+  buffer: LineBuffer
   subscribed: boolean
+  pending: number
   /** Frames not yet fully written; a large result can exceed the socket buffer. */
   outgoing: Uint8Array[]
   outgoingBytes: number
@@ -130,7 +132,7 @@ export class ApiServer {
     this.server = null
     removeSocketFile(this.path)
     this.releaseLock()
-    this.connections.clear()
+    for (const id of this.connections.keys()) this.forget(id)
     this.sockets.clear()
   }
 
@@ -152,13 +154,26 @@ export class ApiServer {
   private readonly sockets = new Map<number, Socket<Connection>>()
 
   private forget(id: number): void {
+    const connection = this.connections.get(id)
+    if (connection) {
+      connection.outgoing = []
+      connection.outgoingBytes = 0
+      connection.buffer.clear()
+    }
     this.connections.delete(id)
     this.sockets.delete(id)
   }
 
   private open(socket: Socket<Connection>): void {
     const id = this.nextId++
-    const connection: Connection = { id, buffer: "", subscribed: false, outgoing: [], outgoingBytes: 0 }
+    const connection: Connection = {
+      id,
+      buffer: new LineBuffer(MAX_FRAME_BYTES),
+      subscribed: false,
+      pending: 0,
+      outgoing: [],
+      outgoingBytes: 0,
+    }
     socket.data = connection
     this.connections.set(id, connection)
     this.sockets.set(id, socket)
@@ -170,8 +185,9 @@ export class ApiServer {
 
   /** Queue bytes, or drop a peer that has stopped reading its own socket. */
   private enqueue(connection: Connection, bytes: Uint8Array): void {
+    if (!this.connections.has(connection.id)) return
     if (connection.outgoingBytes + bytes.byteLength > MAX_OUTGOING_BYTES) {
-      this.sockets.get(connection.id)?.end()
+      this.sockets.get(connection.id)?.terminate()
       this.forget(connection.id)
       return
     }
@@ -194,12 +210,17 @@ export class ApiServer {
       try {
         written = socket.write(chunk)
       } catch {
+        socket.terminate()
         this.forget(connection.id)
         return
       }
       // Bun answers -1 for a socket that errored or closed; retrying the same
       // chunk would spin. Let `close` clean it up.
-      if (written < 0) return
+      if (written < 0) {
+        socket.terminate()
+        this.forget(connection.id)
+        return
+      }
       if (written < chunk.byteLength) {
         connection.outgoing[0] = chunk.subarray(written)
         connection.outgoingBytes -= written
@@ -212,27 +233,33 @@ export class ApiServer {
 
   private data(socket: Socket<Connection>, data: Buffer): void {
     const connection = socket.data
-    connection.buffer += data.toString("utf8")
-    if (connection.buffer.length > MAX_FRAME_BYTES) {
-      this.send(connection, encodeFrame(failureFrame(frameId(connection.buffer), "invalid_request", "frame too large")))
+    try {
+      connection.buffer.push(data, (raw) => {
+        const line = raw.trim()
+        if (line.length === 0 || !this.connections.has(connection.id)) return
+        if (connection.pending >= 128) {
+          socket.terminate()
+          this.forget(connection.id)
+          return
+        }
+        connection.pending += 1
+        void this.accept(line, connection)
+          .catch((error) => {
+            this.send(
+              connection,
+              encodeFrame(
+                failureFrame(frameId(line), "internal", error instanceof Error ? error.message : String(error)),
+              ),
+            )
+          })
+          .finally(() => {
+            connection.pending -= 1
+          })
+      })
+    } catch (error) {
+      if (!(error instanceof FrameLimitError)) throw error
+      this.send(connection, encodeFrame(failureFrame(frameId(error.prefix), "invalid_request", error.message)))
       socket.end()
-      return
-    }
-    let newline = connection.buffer.indexOf("\n")
-    while (newline >= 0) {
-      const line = connection.buffer.slice(0, newline).trim()
-      connection.buffer = connection.buffer.slice(newline + 1)
-      // A handler that rejects would otherwise reach OpenTUI's
-      // unhandledRejection handler, which draws on the screen.
-      if (line.length > 0) {
-        void this.accept(line, connection).catch((error) => {
-          this.send(
-            connection,
-            encodeFrame(failureFrame(null, "internal", error instanceof Error ? error.message : String(error))),
-          )
-        })
-      }
-      newline = connection.buffer.indexOf("\n")
     }
   }
 
@@ -243,7 +270,9 @@ export class ApiServer {
     if (frameNestingDepth(line, MAX_FRAME_DEPTH) > MAX_FRAME_DEPTH) {
       this.send(
         connection,
-        encodeFrame(failureFrame(frameId(line), "invalid_request", `a request may nest at most ${MAX_LAYOUT_DEPTH} deep`)),
+        encodeFrame(
+          failureFrame(frameId(line), "invalid_request", `a request may nest at most ${MAX_LAYOUT_DEPTH} deep`),
+        ),
       )
       return
     }
@@ -260,7 +289,10 @@ export class ApiServer {
     const request = requestSchema.safeParse(parsed)
     if (!request.success) {
       const id = isRecord(parsed) && typeof parsed.id === "string" ? parsed.id : null
-      this.send(connection, encodeFrame(failureFrame(id, "invalid_request", request.error.issues.map((issue) => issue.message).join("; "))))
+      this.send(
+        connection,
+        encodeFrame(failureFrame(id, "invalid_request", request.error.issues.map((issue) => issue.message).join("; "))),
+      )
       return
     }
     const { id, method, params } = request.data

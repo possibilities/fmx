@@ -52,15 +52,16 @@ on the socket that `smolmux start` and `smolmux status` report.
 ```
 
 The methods are `instance.status`, `instance.stop`, `events.subscribe`,
-`session.create`, `session.kill`, `session.list`, `session.capture`,
+`session.create`, `session.kill`, `session.list`, `session.capture`, `session.input`,
 `layout.apply`, and `layout.get`. The events are `session.exited`,
-`session.changed`, `layout.changed`, `stage.changed`, `theme.changed`, and
+`session.changed`, `session.state`, `layout.changed`, `stage.changed`, `theme.changed`, and
 `instance.stopping`. The full reference is [docs/api.md](docs/api.md), and
 `smolmux api` prints the same contract as JSON Schema.
 
-There is deliberately no way to type into a Session over the API, no MCP
-surface, and no byte-level observation: `session.changed` tells you a screen
-moved and `session.capture` reads it.
+Use `session.input` for ordered keys, text, paste and mouse events. Input targets
+a Session without moving human focus. `session.changed` tells you a screen
+moved; `session.capture` reads it and says whether its transport is live.
+Smolmux has no MCP surface or byte-level observation.
 
 ## The model
 

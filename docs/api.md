@@ -22,8 +22,10 @@ Frames are one JSON object per line:
 ```
 
 A connection is long-lived and may carry any number of requests. `id` is the
-caller's; a response carries it back. Requests are answered in the order they
-arrive. After `events.subscribe`, that same connection also receives event
+caller's; a response carries it back. Requests may complete out of order; correlate replies by `id`. Await a reply
+before sending an operation that depends on it. Each request is at most 1 MiB
+in UTF-8 bytes. A subscriber with more than 4 MiB of queued output is disconnected;
+reconnect, subscribe, and read `instance.status` to obtain current state. After `events.subscribe`, that same connection also receives event
 frames until it hangs up.
 
 ## The model
@@ -88,7 +90,8 @@ controller that inherits nothing will fall back to the default Instance and
 quietly build a second one. Forward what it needs explicitly —
 `SMOLMUX_CONFIG_PATH`, `SMOLMUX_ZMX_DIR`, `SMOLMUX_ZMX_PATH` — rather than
 relying on inheritance that is designed not to happen.
-`cols` and `rows` size the PTY until a Pane sizes it, 80×24 by default.
+`cols` and `rows` size the PTY until a Pane sizes it, 80×24 by default. Each dimension is at most 4096 and the initial viewport is
+at most 262144 cells; larger requests return `invalid_params` before native allocation.
 `labels` are kept on the Companion session and returned on adoption; `owner`,
 `instance`, `session`, and `kind` are smolmux's own and refused.
 
@@ -290,3 +293,9 @@ read.
 - **No app, wish, or gating for a Pane.** A Pane shows a Session or a line of
   text. What a Session runs and why is the caller's.
 - **No session rename, reorder, or move.** Apply a new Layout.
+
+Connections carrying more than 128 concurrent requests are dropped. The bundled
+client permits 128 pending requests and 4 MiB of queued output; its default
+request deadline is 60 seconds (`timeoutMs` can override it). A deadline or
+connection loss leaves a mutating request's outcome unknown: read current state
+before retrying. Explicitly closing a client rejects all pending calls.
