@@ -331,3 +331,31 @@ test("kill asks the Companion and lets the exit remove the Session", async () =>
     harnessed.close()
   }
 })
+
+test("input to an unreachable Session is refused rather than dropped", async () => {
+  const harnessed = await harness()
+  try {
+    await harnessed.sessions.create({ name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    // Delivered while the transport is there.
+    harnessed.sessions.input("tray", [{ text: "before" }], null)
+
+    harnessed.transport.attachBehavior = "unreachable"
+    harnessed.transport.forName("tray")!.lose()
+    await waitFor(() => harnessed.sessions.view("tray").state === "unreachable")
+
+    // Nothing carries the bytes now, and the emulator's own callback would
+    // drop them silently, so success would be a lie.
+    expect(() => harnessed.sessions.input("tray", [{ text: "after" }], null)).toThrowError(/unreachable/u)
+    try {
+      harnessed.sessions.input("tray", [{ key: "enter" }], null)
+      throw new Error("expected a refusal")
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe("conflict")
+    }
+
+    // The screen it last had is still readable; only delivery is refused.
+    expect(harnessed.sessions.capture("tray").name).toBe("tray")
+  } finally {
+    harnessed.close()
+  }
+})

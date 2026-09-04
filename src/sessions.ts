@@ -227,6 +227,17 @@ class Session {
    * cannot be delivered whole delivers nothing.
    */
   input(events: readonly InputEvent[], origin: PaneOrigin | null): void {
+    // Nothing carries input to the child without a transport, and the
+    // emulator's own data callback drops it silently, so a call that got this
+    // far would answer success for bytes that went nowhere. A caller cannot
+    // preflight this with session.list either: the transport can drop between
+    // the two calls, and only here are the check and the write together.
+    if (this.transport === null || this.ended) {
+      throw new ApiFailure(
+        "conflict",
+        `Session ${this.identity.name} is ${this.ended ? "gone" : "unreachable"}: input would be dropped rather than delivered`,
+      )
+    }
     for (const event of events) {
       if ("mouse" in event) {
         if (origin === null) {
