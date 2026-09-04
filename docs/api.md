@@ -47,8 +47,19 @@ stage size, theme, every Session, and the Layout. Takes no params.
 
 ### `instance.stop`
 
-Answers, then kills every Session and ends the Runtime. Every Client
-detaches. `instance.stopping` goes out first. Takes no params.
+Kills every Session, then answers and ends the Runtime. Every Client
+detaches, and `instance.stopping` goes out just before teardown. Takes no
+params.
+
+The kills come first so the answer can be about what happened. When any
+Session cannot be ended, the call is refused with `companion_error` naming
+what survived and **the Instance stays running** — nothing is torn down, so
+`session.list` still names what is left and a retry goes to the same Instance.
+Reporting success there would leave live processes with nothing managing them
+and a caller who believes they are gone.
+
+Success therefore means every process is gone. It does not retry on your
+behalf; retry the call.
 
 ### `events.subscribe`
 

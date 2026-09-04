@@ -72,7 +72,11 @@ export class FakeCompanion {
     return { name: entry.name, socketPath: entry.socketPath!, pid: entry.pid!, createdAt: entry.createdAt! }
   }
 
+  /** Names whose kill refuses, so a test can hold a Session against a stop. */
+  killRefuses = new Set<string>()
+
   async kill(name: string): Promise<void> {
+    if (this.killRefuses.has(name)) throw new Error(`kill ${name} refused`)
     this.killed.push(name)
   }
 

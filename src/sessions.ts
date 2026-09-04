@@ -522,12 +522,24 @@ export class Sessions {
   }
 
   /** Every Session ends; used by `instance.stop`. */
-  async killAll(): Promise<void> {
+  /**
+   * End every Session, and name the ones that would not go. A swallowed
+   * failure here is a process nothing is managing any more: the Runtime that
+   * held it exits, its Companion session stays live and labelled, and the
+   * caller was told the Instance stopped.
+   */
+  async killAll(): Promise<string[]> {
+    const survived: string[] = []
     await Promise.all(
-      [...this.sessions.values()].map((session) =>
-        this.options.companion.kill(session.identity.companionName).catch(() => {}),
-      ),
+      [...this.sessions.values()].map(async (session) => {
+        try {
+          await this.options.companion.kill(session.identity.companionName)
+        } catch {
+          survived.push(session.identity.name)
+        }
+      }),
     )
+    return survived.sort()
   }
 
   /**
@@ -537,6 +549,11 @@ export class Sessions {
    */
   seal(): void {
     this.shuttingDown = true
+  }
+
+  /** Take the seal off: a stop that could not finish leaves the Instance usable. */
+  unseal(): void {
+    this.shuttingDown = false
   }
 
   /** Let go of every process without ending it: the Companion keeps them. */

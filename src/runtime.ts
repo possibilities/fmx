@@ -172,14 +172,28 @@ export class Runtime {
       case "instance.status":
         return this.status()
       case "instance.stop": {
-        // Seal before answering: a create already queued behind another one
+        // Seal before killing: a create already queued behind another one
         // would otherwise start its process after the kills went out and
         // never be killed.
         this.sessions.seal()
+        // Kill before answering, so the answer can be about what happened.
+        // Companion commands are time-bounded, so this cannot hang the caller.
+        const survived = await this.sessions.killAll()
+        if (survived.length > 0) {
+          // Stay up. Reporting success here would leave live processes with
+          // nothing managing them and a caller that believes they are gone;
+          // staying means session.list still names what is left and the
+          // caller can retry against the same Instance.
+          this.sessions.unseal()
+          throw new ApiFailure(
+            "companion_error",
+            `could not end ${survived.length} Session(s): ${survived.join(", ")}. The Instance is still running.`,
+          )
+        }
         this.publish("instance.stopping", {})
         // Answer first: the reply is written before anything is torn down.
         setTimeout(() => {
-          void this.stop().catch((error) => this.options.report?.(`stop failed: ${message(error)}`))
+          void this.shutdown(0).catch((error) => this.options.report?.(`stop failed: ${message(error)}`))
         }, 0)
         return {}
       }
@@ -229,11 +243,6 @@ export class Runtime {
       sessions: this.sessions.list(),
       layout: this.stage.view,
     }
-  }
-
-  private async stop(): Promise<void> {
-    await this.sessions.killAll().catch(() => {})
-    await this.shutdown(0)
   }
 
   /**

@@ -258,7 +258,8 @@ export const METHODS = {
     result: instanceStatusSchema,
   },
   "instance.stop": {
-    description: "Respond, then kill every Session and end the Runtime. Every Client detaches.",
+    description:
+      "Kill every Session, then respond and end the Runtime; every Client detaches. Refused with companion_error, and the Instance left running, when any Session could not be ended — so success means every process is gone.",
     params: empty,
     result: empty,
   },

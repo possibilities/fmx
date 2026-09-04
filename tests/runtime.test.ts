@@ -276,7 +276,7 @@ test("kill goes to the Companion and the exit removes the Session", async () => 
   }
 })
 
-test("stop answers first, then ends every Session and the Runtime", async () => {
+test("stop ends every Session, then answers, then ends the Runtime", async () => {
   const app = await harness()
   try {
     await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
@@ -401,6 +401,34 @@ test("a theme change retints in one pass and says so", async () => {
       { event: "theme.changed", data: { theme: "light" } },
     ])
     expect((await app.call<InstanceStatus>("instance.status")).theme).toBe("light")
+  } finally {
+    await app.close()
+  }
+})
+
+test("stop that cannot end a Session says so and stays up", async () => {
+  const app = await harness()
+  try {
+    await app.call("session.create", { name: "tray", argv: [FAKE_APP], cwd: process.cwd() })
+    await app.call("session.create", { name: "dock", argv: [FAKE_APP], cwd: process.cwd() })
+    app.companion.killRefuses.add(`smolmux-${INSTANCE}-tray`)
+
+    // Reporting success would leave a live process nothing is managing and a
+    // caller who believes it is gone.
+    await expect(app.call("instance.stop")).rejects.toMatchObject({ code: "companion_error" })
+    expect(app.events.some((entry) => entry.event === "instance.stopping")).toBe(false)
+
+    // Still there to retry against, and still saying what is left.
+    expect(app.runtime.stopped).toBe(false)
+    expect(await app.call("session.list")).toBeDefined()
+
+    // The seal came off, so the Instance is usable rather than a zombie.
+    await app.call("session.create", { name: "third", argv: [FAKE_APP], cwd: process.cwd() })
+
+    // Retrying against the same Instance finishes once the Companion lets go.
+    app.companion.killRefuses.clear()
+    expect(await app.call<Record<string, never>>("instance.stop")).toEqual({})
+    await app.runtime.waitUntilDone()
   } finally {
     await app.close()
   }
