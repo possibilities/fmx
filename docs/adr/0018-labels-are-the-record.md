@@ -17,8 +17,11 @@ crash window between them to reconcile: the Companion either holds a labelled
 session or it does not. An exited session's record is consumed; one whose
 labels cannot be read is left for the next start.
 
-The Instance id follows: derived from the name rather than from a directory
-digest, so nothing smolmux could lose can cost an Instance its Sessions.
+The Instance id follows: a digest of the config directory and the name, so
+nothing smolmux itself could lose can cost an Instance its Sessions, and two
+Instances that differ only by config directory never adopt each other's. Both
+halves matter for isolation — the API socket path and the adoption label are
+the same id.
 
 Two things are given up. An adopted Session's argv is not recoverable — the
 Companion reports a shell-quoted display string cut at 256 bytes — so it is

@@ -68,6 +68,15 @@ Starts a command in a Companion-held PTY.
 is the executable first, exec'd directly — there is no shell, so nothing
 needs quoting. `cwd` is absolute. `env` is applied over smolmux's own environment
 with its private variables (`SMOLMUX_*`, `ZMX_*`, `TMUX*`, `HERDR_*`) removed.
+
+The removal comes first and `env` is applied on top, which is the escape hatch
+for the one case that wants those variables back: a Session that hosts the
+program *driving* this Instance. Every ordinary Session should not believe it
+is inside smolmux, but a controller needs to find its way home, and a hosted
+controller that inherits nothing will fall back to the default Instance and
+quietly build a second one. Forward what it needs explicitly —
+`SMOLMUX_CONFIG_PATH`, `SMOLMUX_ZMX_DIR`, `SMOLMUX_ZMX_PATH` — rather than
+relying on inheritance that is designed not to happen.
 `cols` and `rows` size the PTY until a Pane sizes it, 80×24 by default.
 `labels` are kept on the Companion session and returned on adoption; `owner`,
 `instance`, `session`, and `kind` are smolmux's own and refused.
