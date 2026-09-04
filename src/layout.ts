@@ -262,9 +262,15 @@ export function dragDivider(
   }
   // Otherwise spend the drag on whichever adjacent child is fixed. Both are
   // tried, because which one actually moves the boundary depends on where the
-  // elastic children are.
-  if (beforeSized) candidates.push(withSizes(root, containerPath, [[index, Math.max(beforeFloor, beforeLength + delta)]]))
-  if (afterSized) candidates.push(withSizes(root, containerPath, [[index + 1, Math.max(afterFloor, afterLength - delta)]]))
+  // elastic children are. When neither is fixed the boundary is only implied
+  // by the remainder split, so pin one side to where the drag put it — the
+  // other stays elastic and keeps absorbing the stage.
+  if (beforeSized || !afterSized) {
+    candidates.push(withSizes(root, containerPath, [[index, Math.max(beforeFloor, beforeLength + delta)]]))
+  }
+  if (afterSized || !beforeSized) {
+    candidates.push(withSizes(root, containerPath, [[index + 1, Math.max(afterFloor, afterLength - delta)]]))
+  }
   if (candidates.length === 0) return null
 
   let best: { tree: LayoutNode; distance: number } | null = null

@@ -124,8 +124,28 @@ describe("dragDivider", () => {
     expect(dragDivider(sixPanels, ":0", 0, stage)).toBeNull()
   })
 
-  test("a divider between two remainder children cannot move", () => {
-    expect(dragDivider({ row: [{ session: "a" }, { session: "b" }] }, ":0", 3, stage)).toBeNull()
+  test("a divider between two remainder children moves, pinning one side", () => {
+    const root: LayoutNode = { row: [{ session: "a" }, { session: "b" }] }
+    // 100 cols less one divider splits 50/49, so the boundary starts at 50.
+    expect(fitLayout(root, stage).dividers[0]!.rect.x).toBe(50)
+    const dragged = dragDivider(root, ":0", 12, stage)!
+    expect(fitLayout(dragged, stage).dividers[0]!.rect.x).toBe(62)
+    const rects = Object.fromEntries(fitLayout(dragged, stage).leaves.map((leaf) => [leaf.path, leaf.rect]))
+    expect(rects["0"]!.cols).toBe(62)
+    expect(rects["1"]!.cols).toBe(37)
+  })
+
+  test("a remainder divider drags up as well as left", () => {
+    const root: LayoutNode = { column: [{ session: "a" }, { session: "b" }] }
+    expect(fitLayout(root, stage).dividers[0]!.rect.y).toBe(15)
+    const dragged = dragDivider(root, ":0", -6, stage)!
+    expect(fitLayout(dragged, stage).dividers[0]!.rect.y).toBe(9)
+  })
+
+  test("a remainder drag still refuses to cross a minimum", () => {
+    const root: LayoutNode = { row: [{ session: "a", min: 40 }, { session: "b" }] }
+    const dragged = dragDivider(root, ":0", -30, stage)!
+    expect(fitLayout(dragged, stage).dividers[0]!.rect.x).toBe(40)
   })
 
   test("drawers drag inside their column", () => {

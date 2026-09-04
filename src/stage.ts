@@ -311,6 +311,13 @@ export class Stage {
     if (!next) return
     this.tree = next
     this.treeRevision += 1
+    // The gesture's own write is not an apply landing mid-gesture. Without
+    // this the next event sees its own increment as someone else's and
+    // re-baselines instead of dragging, so the divider tracks the pointer at
+    // half speed and never catches up.
+    // `root` and the anchor stay where the gesture began, so the delta above
+    // remains cumulative.
+    drag.revision = this.treeRevision
     this.draw()
     this.onChanged("drag")
   }
