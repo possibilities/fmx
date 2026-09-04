@@ -205,6 +205,29 @@ describe("dragDivider", () => {
     }
   })
 
+  test("a child's minimum applies only along its parent's axis", () => {
+    expect(requiredLength({ row: [{ session: "a", min: 40 }] }, "column")).toBe(1)
+
+    const tree: LayoutNode = {
+      column: [
+        { text: "hdr", size: 1 },
+        {
+          row: [
+            { session: "claude", min: 60 },
+            { column: [{ session: "clock", size: 12 }, { session: "tree" }], size: 48 },
+          ],
+        },
+      ],
+    }
+    const fitted = fitLayout(tree, { cols: 161, rows: 46 })
+    expect(fitted.leaves.map((leaf) => [leaf.node, leaf.rect])).toEqual([
+      [{ text: "hdr", size: 1 }, { x: 0, y: 0, cols: 161, rows: 1 }],
+      [{ session: "claude", min: 60 }, { x: 0, y: 2, cols: 112, rows: 44 }],
+      [{ session: "clock", size: 12 }, { x: 113, y: 2, cols: 48, rows: 12 }],
+      [{ session: "tree" }, { x: 113, y: 15, cols: 48, rows: 31 }],
+    ])
+  })
+
   test("a squeezed-out Pane is reported at zero rather than dropped", () => {
     const tree: LayoutNode = {
       row: [

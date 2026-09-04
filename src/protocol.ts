@@ -42,7 +42,7 @@ export type SessionView = z.infer<typeof sessionViewSchema>
 
 const sizedLeaf = {
   size: z.int().min(1).optional().describe("Fixed columns in a row, rows in a column; omitted takes the remainder"),
-  min: z.int().min(1).optional().describe("The smallest size this leaf may be squeezed to; default 1"),
+  min: z.int().min(1).optional().describe("The smallest length along this node's parent's axis; default 1"),
 }
 
 export type LayoutNode =

@@ -189,6 +189,15 @@ test.skipIf(!ENABLED)(
       )
       await waitUntil(async () => (await client!.request("instance.status")).stage.cols === 100)
 
+      // The Client receives Kitty keyboard protocol from the host terminal,
+      // but the focused Session receives the legacy byte it understands.
+      attached.terminal?.write(new TextEncoder().encode("\x1b[99;5u"))
+      await waitUntil(() =>
+        events.some(
+          (event) => event.event === "session.exited" && (event.data as { name: string }).name === "main",
+        ),
+      )
+
       attached.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
       expect(await attached.exited).toBe(0)
       attached.terminal?.close()
@@ -196,14 +205,20 @@ test.skipIf(!ENABLED)(
 
       // Detaching a Client never ends a Session or the Runtime.
       const afterDetach = await client.request("session.list")
-      expect(afterDetach.sessions.map((session) => session.name)).toEqual(["tray", "main"])
+      expect(afterDetach.sessions.map((session) => session.name)).toEqual(["tray"])
 
       // A Session that ends is reported and leaves the roster.
       await client.request("session.kill", { name: "tray" })
-      await waitUntil(() => events.some((event) => event.event === "session.exited"))
-      const exited = events.find((event) => event.event === "session.exited")!.data as { name: string }
+      await waitUntil(() =>
+        events.some(
+          (event) => event.event === "session.exited" && (event.data as { name: string }).name === "tray",
+        ),
+      )
+      const exited = events.find(
+        (event) => event.event === "session.exited" && (event.data as { name: string }).name === "tray",
+      )!.data as { name: string }
       expect(exited.name).toBe("tray")
-      await waitUntil(async () => (await client!.request("session.list")).sessions.length === 1)
+      await waitUntil(async () => (await client!.request("session.list")).sessions.length === 0)
 
       // Stop is total: every Session and the Runtime.
       await client.request("instance.stop")
@@ -328,4 +343,3 @@ async function answers(path: string): Promise<boolean> {
     return false
   }
 }
-

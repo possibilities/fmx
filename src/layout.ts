@@ -172,16 +172,17 @@ function containerChildren(node: LayoutNode): LayoutNode[] | null {
 }
 
 /**
- * The smallest length a node can be drawn in along `axis`. A leaf answers its
- * own `min`; a container answers what its children need, which is their sum
- * plus dividers along its own axis and their largest across it.
+ * The smallest length a node can be drawn in along `axis`. A node's own `min`
+ * applies only when its parent is being fitted on that axis; a container also
+ * answers what its children need, which is their sum plus dividers along its
+ * own axis and their largest across it.
  */
-export function requiredLength(node: LayoutNode, axis: Axis): number {
-  const declared = Math.max(1, node.min ?? 1)
+export function requiredLength(node: LayoutNode, axis: Axis, applyDeclared = true): number {
+  const declared = applyDeclared ? Math.max(1, node.min ?? 1) : 1
   const children = containerChildren(node)
   if (children === null) return declared
   const own: Axis = "row" in node ? "row" : "column"
-  const parts = children.map((child) => requiredLength(child, axis))
+  const parts = children.map((child) => requiredLength(child, axis, own === axis))
   const needed =
     own === axis
       ? parts.reduce((sum, value) => sum + value, 0) + DIVIDER * (children.length - 1)

@@ -221,8 +221,8 @@ that however the roster moves.
 
 A node is `{row:[…]}`, `{column:[…]}`, `{session:"name"}`, or
 `{text:"one line"}`. Any node may carry `size` (columns in a row, rows in a
-column) and `min`. A node without `size` takes the remainder; several share
-it equally.
+column) and `min`, which is measured along that same parent axis. A node
+without `size` takes the remainder; several share it equally.
 
 When a container does not fit, sized children are squeezed from the last to
 the first down to their `min`, then children are dropped from the last. Every
