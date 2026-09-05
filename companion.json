@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/possibilities/zmx.git",
   "branch": "integration",
-  "commit": "2ffb1c1e425f56a996577d344f24417f8dd6d603",
-  "build": "0.7.0+fmx.2ffb1c1e425f"
+  "commit": "2be662da7716607fcacfe4e55c26f7ba4146c3d5",
+  "build": "0.7.0+fmx.2be662da7716"
 }
