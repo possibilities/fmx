@@ -19,6 +19,8 @@ This links `smolmux` from the checkout and builds its exact pinned Companion
 source as `smolmux-zmx`. Smolmux publishes no binaries. See the
 [source installation guide](docs/source-install.md) for requirements and the
 tested platform boundary. `smolmux doctor` reports what an installation has.
+The OpenTUI core and native packages are pinned together to the maintained
+agentbrowse carry release: the renderer and its native library are one build.
 
 ## Use
 

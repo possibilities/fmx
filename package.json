@@ -1,6 +1,6 @@
 {
   "name": "smolmux",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "packageManager": "bun@1.4.0",
   "description": "A terminal multiplexer driven over a socket",
   "type": "module",
@@ -15,12 +15,16 @@
     "gate:local": "scripts/local-gate.sh"
   },
   "dependencies": {
-    "@opentui/core": "0.5.6",
+    "@opentui/core": "0.5.10",
     "zod": "4.5.2"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "@opentui/core": "https://github.com/possibilities/opentui/releases/download/agentbrowse-v0.5.10.1/opentui-core-0.5.10-agentbrowse.1.tgz",
+    "@opentui/core-darwin-arm64": "https://github.com/possibilities/opentui/releases/download/agentbrowse-v0.5.10.1/opentui-core-darwin-arm64-0.5.10-agentbrowse.1.tgz"
   },
   "engines": {
     "bun": ">=1.4.0"
