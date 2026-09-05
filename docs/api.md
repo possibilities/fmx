@@ -174,6 +174,14 @@ legacy keys, cursor-key mode, bracketed paste, whichever mouse reports it
 asked for — because it is the only thing that knows them. The bytes then take
 exactly the path a human's keystroke takes, out to the same PTY.
 
+Input is queued for transport; a successful reply does not prove that the
+program has acted on it. Each Companion connection holds at most 32 MiB or
+4096 outgoing frames. A queue overflow, write failure, or 30-second drain
+stall closes the connection and starts normal Session recovery. Input already
+handed to the socket may have reached the program: inspect its screen before
+retrying a command, because recovery never replays input. Closing a connection
+allows queued bytes one second to drain.
+
 Four kinds of event:
 
 - `{"key":…}` is one press. `key` is a named key — `enter`, `escape`, `tab`,

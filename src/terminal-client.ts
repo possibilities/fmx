@@ -100,18 +100,27 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
     completion.resolve(outcome)
   }
   const detach = (): void => finish({ exitCode: 0 })
-  const onData = (bytes: Buffer): void => inputFilter?.push(bytes)
+  // EventEmitter and parser timer callbacks run outside this async function's
+  // try/finally. Turn synchronous transport failures into its normal outcome.
+  const guard = (action: () => void): void => {
+    try {
+      action()
+    } catch (error) {
+      finish({ exitCode: 1, error: error instanceof Error ? error : new Error(String(error)) })
+    }
+  }
+  const onData = (bytes: Buffer): void => guard(() => inputFilter?.push(bytes))
   const onEnd = (): void => detach()
   const onResize = (): void => {
-    if (!connection.isClosed) connection.resize(terminalSize(stdout))
+    if (!connection.isClosed) guard(() => connection.resize(terminalSize(stdout)))
   }
   const signalHandlers = new Map<NodeJS.Signals, () => void>()
 
   connection.onRestoreBegin(() => outputRelay.beginRestore())
-  connection.onOutput((bytes) => outputRelay.output(bytes))
+  connection.onOutput((bytes) => guard(() => outputRelay.output(bytes)))
   connection.onFrame((frame) => {
     if (frame.tag === Tag.Resize && frame.payload.byteLength === 0 && !connection.isClosed) {
-      connection.resize(terminalSize(stdout))
+      guard(() => connection.resize(terminalSize(stdout)))
     }
   })
   connection.onExit((status) => {
@@ -134,7 +143,7 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
     // terminal what its background is. Tell it the way a terminal would: the
     // notification its live-theme path already listens for, after which the
     // Runtime samples OSC 11 through this Client itself.
-    if (theme && !connection.isClosed) connection.write(themeModeReport(theme))
+    if (theme && !connection.isClosed) guard(() => connection.write(themeModeReport(theme!)))
     ready.resolve()
   })
 
@@ -144,7 +153,7 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
     inputFilter = new ClientInputFilter(
       options.keybindings,
       (bytes) => {
-        if (!connection.isClosed) connection.write(bytes)
+        if (!connection.isClosed) guard(() => connection.write(bytes))
       },
       detach,
     )
@@ -179,11 +188,17 @@ export async function runTerminalClient(options: TerminalClientOptions): Promise
       stdout.off("resize", onResize)
     }
     for (const [signal, handler] of signalHandlers) process.off(signal, handler)
-    inputFilter?.destroy()
-    if (!connection.isClosed) connection.detach()
-    stdin.pause()
-    stdin.setRawMode?.(wasRaw)
-    stdout.write(TERMINAL_CLEANUP)
+    try {
+      inputFilter?.destroy()
+      if (!connection.isClosed) connection.detach()
+    } finally {
+      try {
+        stdin.pause()
+        stdin.setRawMode?.(wasRaw)
+      } finally {
+        stdout.write(TERMINAL_CLEANUP)
+      }
+    }
   }
 }
 

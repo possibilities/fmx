@@ -179,6 +179,11 @@
   `smolmux start` it was ready, and answers no request. The timeout cancels the
   child's pipes as well as killing it, or the open read handle keeps the
   process alive.
+- The Companion connection bounds both pre-listener output and pending input
+  at 32 MiB or 4096 frames. Pending input has a 30-second drain deadline and
+  a one-second close grace. A failed flush stays failed after queue cleanup;
+  closing a transport must never make dropped input look delivered. Recovery
+  replays the screen, never input whose effect may already have happened.
 - A connection's outbound queue is capped. A subscriber that stops reading
   without closing is dropped, because a peer that cannot keep up with its own
   events is not one worth holding the Runtime's heap for.

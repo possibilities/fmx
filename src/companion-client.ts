@@ -6,6 +6,7 @@ import {
   encodeHello,
   encodeResize,
   FrameReader,
+  HEADER_LEN,
   type Exit,
   type Frame,
   type Hello,
@@ -96,9 +97,15 @@ export class CompanionConnection {
   private backlogBytes = 0
   /** Cleared once the caller has had its synchronous turn to subscribe. */
   private holding = true
-  private static readonly BACKLOG_MAX_BYTES = 1024 * 1024
+  private static readonly BACKLOG_MAX_BYTES = 32 * 1024 * 1024
 
   static async connect(socketPath: string, options: CompanionConnectionOptions = {}): Promise<CompanionConnection> {
+    const hello = clientHello(options.client ?? "smolmux")
+    if (options.versions) {
+      hello.minVersion = options.versions.min
+      hello.maxVersion = options.versions.max
+    }
+    const greeting = encodeFrame(Tag.Hello, encodeHello(hello))
     const transport = new Transport()
     const socket = await Bun.connect({
       unix: socketPath,
@@ -111,13 +118,9 @@ export class CompanionConnection {
       },
     })
     transport.bind(socket)
-    const hello = clientHello(options.client ?? "smolmux")
-    if (options.versions) {
-      hello.minVersion = options.versions.min
-      hello.maxVersion = options.versions.max
-    }
-    transport.send(encodeFrame(Tag.Hello, encodeHello(hello)))
-    const welcome = await transport.awaitWelcome(options.helloTimeoutMs ?? 5000, hello)
+    const welcomed = transport.awaitWelcome(options.helloTimeoutMs ?? 5000, hello)
+    transport.send(greeting)
+    const welcome = await welcomed
     const connection = new CompanionConnection(welcome, transport)
     // A task, not a microtask: the caller's `await` resumes as a microtask and
     // subscribes there, so anything queued sooner would run before it had the
@@ -164,7 +167,13 @@ export class CompanionConnection {
       )
       removeClose = closeSubscription
       if (finished) closeSubscription()
-      if (!finished) this.send(Tag.LabelGet)
+      if (!finished) {
+        try {
+          this.send(Tag.LabelGet)
+        } catch (error) {
+          finish(() => reject(error))
+        }
+      }
     })
   }
 
@@ -254,8 +263,13 @@ export class CompanionConnection {
   }
 
   private send(tag: number, payload?: Uint8Array): void {
-    if (this.closed) throw new Error("zmx connection is closed")
+    this.assertOpen()
     this.transport.send(encodeFrame(tag, payload))
+    this.assertOpen()
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw this.closed.kind === "error" ? this.closed.error : new Error("zmx connection is closed")
   }
 
   private get hasListeners(): boolean {
@@ -270,10 +284,13 @@ export class CompanionConnection {
 
   private dispatch(frame: Frame): void {
     if (this.holding && (!this.hasListeners || this.backlog.length > 0)) {
-      if (this.backlogBytes + frame.payload.byteLength <= CompanionConnection.BACKLOG_MAX_BYTES) {
-        this.backlog.push(frame)
-        this.backlogBytes += frame.payload.byteLength
+      const bytes = HEADER_LEN + frame.payload.byteLength
+      if (this.backlogBytes + bytes > CompanionConnection.BACKLOG_MAX_BYTES || this.backlog.length >= 4096) {
+        this.transport.abort(new ProtocolError("Companion output before listeners exceeded the backlog limit"))
+        return
       }
+      this.backlog.push(frame)
+      this.backlogBytes += bytes
       return
     }
     this.deliver(frame)
@@ -308,7 +325,7 @@ export class CompanionConnection {
   private flushBacklog(): void {
     while (this.backlog.length > 0 && this.canDeliver(this.backlog[0]!)) {
       const frame = this.backlog.shift()!
-      this.backlogBytes -= frame.payload.byteLength
+      this.backlogBytes -= HEADER_LEN + frame.payload.byteLength
       this.deliver(frame)
     }
   }
@@ -366,6 +383,11 @@ export class CompanionConnection {
   private finish(reason: CloseReason): void {
     if (this.closed) return
     this.closed = reason
+    if (reason.kind === "error") {
+      this.backlog = []
+      this.backlogBytes = 0
+      this.holding = false
+    }
     for (const listener of this.closeListeners) safely(() => listener(reason))
   }
 }
@@ -402,7 +424,11 @@ class Transport {
   /** Frames and a close that arrived between Welcome and the handlers being bound. */
   private backlog: Frame[] = []
   private socket: Socket | null = null
-  private readonly reader = new FrameReader()
+  private reader = new FrameReader()
+  private backlogBytes = 0
+  private queuedBytes = 0
+  private flushFailure: Error | null = null
+  private drainTimer: ReturnType<typeof setTimeout> | null = null
   private queue: Uint8Array[] = []
   private drained: { resolve: () => void; reject: (error: Error) => void }[] = []
   private endWhenDrained = false
@@ -422,12 +448,18 @@ class Transport {
     this.onClose = onClose
     const backlog = this.backlog
     this.backlog = []
+    this.backlogBytes = 0
     for (const frame of backlog) onFrame(frame)
     if (this.closeReason) onClose(this.closeReason)
   }
 
   send(bytes: Uint8Array): void {
     if (this.ended) return
+    if (this.queuedBytes + bytes.byteLength > 32 * 1024 * 1024 || this.queue.length >= 4096) {
+      this.fail(new ProtocolError("Companion outbound queue exceeded its limit; input outcome is unknown"))
+      return
+    }
+    this.queuedBytes += bytes.byteLength
     this.queue.push(bytes)
     this.flush()
   }
@@ -438,14 +470,33 @@ class Transport {
     if (!socket) return
     while (this.queue.length > 0) {
       const head = this.queue[0]!
-      const written = socket.write(head)
-      if (written < 0) return
+      let written: number
+      try {
+        written = socket.write(head)
+      } catch (error) {
+        this.fail(error instanceof Error ? error : new Error(String(error)))
+        return
+      }
+      if (written < 0) {
+        this.fail(new ProtocolError("Companion socket write failed"))
+        return
+      }
+      this.queuedBytes -= written
       if (written < head.byteLength) {
         this.queue[0] = head.subarray(written)
+        // A stalled daemon must not retain input or a flushed() waiter forever.
+        if (!this.drainTimer) {
+          this.drainTimer = setTimeout(
+            () => this.fail(new ProtocolError("Companion input did not drain within 30 seconds; outcome unknown")),
+            30_000,
+          )
+        }
         return
       }
       this.queue.shift()
     }
+    if (this.drainTimer) clearTimeout(this.drainTimer)
+    this.drainTimer = null
     const waiters = this.drained
     this.drained = []
     for (const waiter of waiters) waiter.resolve()
@@ -457,11 +508,7 @@ class Transport {
 
   /** Rejects rather than resolves if the connection dies with bytes still queued. */
   flushed(): Promise<void> {
-    if (this.closeReason) {
-      return this.queue.length === 0
-        ? Promise.resolve()
-        : Promise.reject(new ProtocolError("connection closed with unsent bytes still queued"))
-    }
+    if (this.flushFailure) return Promise.reject(this.flushFailure)
     if (this.queue.length === 0) return Promise.resolve()
     return new Promise((resolve, reject) => this.drained.push({ resolve, reject }))
   }
@@ -472,10 +519,15 @@ class Transport {
     const socket = this.socket
     if (!socket) return
     if (this.queue.length === 0) socket.end()
-    else this.endWhenDrained = true
+    else {
+      this.endWhenDrained = true
+      if (this.drainTimer) clearTimeout(this.drainTimer)
+      this.drainTimer = setTimeout(() => this.fail(new ProtocolError("Companion connection closed before input drained")), 1000)
+    }
   }
 
   receive(bytes: Uint8Array): void {
+    if (this.closeReason) return
     try {
       this.reader.push(bytes)
     } catch (error) {
@@ -485,15 +537,29 @@ class Transport {
     for (let frame = this.reader.next(); frame; frame = this.reader.next()) {
       if (this.welcomeWaiter) {
         this.acceptWelcome(frame)
+        if (this.closeReason) return
         continue
       }
       if (this.onFrame) this.onFrame(frame)
-      else this.backlog.push(frame)
+      else {
+        this.backlogBytes += HEADER_LEN + frame.payload.byteLength
+        if (this.backlogBytes > 32 * 1024 * 1024 || this.backlog.length >= 4096) {
+          this.fail(new ProtocolError("Companion handshake backlog exceeded its limit"))
+          return
+        }
+        this.backlog.push(frame)
+      }
+      if (this.closeReason) return
     }
   }
 
   awaitWelcome(timeoutMs: number, hello: Hello): Promise<Welcome> {
     this.hello = hello
+    if (this.closeReason) {
+      return Promise.reject(this.closeReason.kind === "error"
+        ? this.closeReason.error
+        : new ProtocolError("Companion connection closed before Welcome"))
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.fail(new ProtocolError(`no Welcome from daemon within ${timeoutMs}ms`))
@@ -515,12 +581,23 @@ class Transport {
     if (this.closeReason) return
     this.closeReason = reason
     this.ended = true
+    if (this.drainTimer) clearTimeout(this.drainTimer)
+    this.drainTimer = null
     const dropped = this.queue.length > 0
+    this.flushFailure = dropped
+      ? new ProtocolError("connection closed with unsent bytes still queued")
+      : reason.kind === "error" ? reason.error : null
     this.queue = []
+    this.queuedBytes = 0
+    this.reader = new FrameReader()
+    if (reason.kind === "error") {
+      this.backlog = []
+      this.backlogBytes = 0
+    }
     const waiters = this.drained
     this.drained = []
     for (const waiter of waiters) {
-      if (dropped) waiter.reject(new ProtocolError("connection closed with unsent bytes still queued"))
+      if (this.flushFailure) waiter.reject(this.flushFailure)
       else waiter.resolve()
     }
     if (this.welcomeWaiter) {
@@ -550,8 +627,20 @@ class Transport {
       this.fail(new ProtocolError(`daemon speaks protocol ${welcome.minVersion}..${welcome.maxVersion}; this client speaks ${mine}`))
       return
     }
+    const hello = this.hello!
+    if (
+      welcome.version < hello.minVersion || welcome.version > hello.maxVersion ||
+      welcome.version < welcome.minVersion || welcome.version > welcome.maxVersion
+    ) {
+      this.fail(new ProtocolError("daemon selected a protocol version outside the negotiated range"))
+      return
+    }
     this.welcomeWaiter = null
     waiter.resolve(welcome)
+  }
+
+  abort(error: Error): void {
+    this.fail(error)
   }
 
   private fail(error: Error): void {

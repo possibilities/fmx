@@ -1,6 +1,8 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { resolveKeybindings } from "../src/keybindings.ts"
-import { ClientInputFilter, ClientOutputRelay } from "../src/terminal-client.ts"
+import { EventEmitter } from "node:events"
+import { CompanionConnection } from "../src/companion-client.ts"
+import { ClientInputFilter, ClientOutputRelay, runTerminalClient } from "../src/terminal-client.ts"
 
 test("an empty Runtime Restore leaves the shell surface intact", () => {
   const writes: Uint8Array[] = []
@@ -125,3 +127,57 @@ function joinBytes(parts: Uint8Array[]): Uint8Array {
   }
   return out
 }
+
+
+test("transport failure during input, resize, or Detach always restores the terminal", async () => {
+  for (const failure of ["input", "resize", "detach"]) {
+    const stdin = Object.assign(new EventEmitter(), {
+      isRaw: false, isTTY: false,
+      setRawMode(raw: boolean) { this.isRaw = raw },
+      resume() {}, pause() {},
+    })
+    const writes: string[] = []
+    const stdout = Object.assign(new EventEmitter(), {
+      isTTY: false, columns: 80, rows: 24,
+      write(bytes: string | Uint8Array) { writes.push(Buffer.from(bytes).toString()); return true },
+    })
+    let ready = () => {}
+    const broken = () => { throw new Error("broken transport") }
+    const connection = {
+      isClosed: false,
+      onRestoreBegin() {}, onOutput() {}, onFrame() {}, onExit() {}, onClose() {},
+      onReady(listener: () => void) { ready = listener },
+      attach() { ready() },
+      write: failure === "input" ? broken : () => {},
+      resize: failure === "resize" ? broken : () => {},
+      detach: failure === "detach" ? broken : () => {},
+    }
+    const connect = spyOn(CompanionConnection, "connect").mockResolvedValue(connection as unknown as CompanionConnection)
+    const installed = Promise.withResolvers<void>()
+    try {
+      const running = runTerminalClient({
+        socketPath: "unused",
+        keybindings: resolveKeybindings().keybindings,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: stdout as unknown as NodeJS.WriteStream,
+        onSignalHandlersInstalled: () => installed.resolve(),
+      })
+      const outcome = running.catch((error: Error) => error)
+      await installed.promise
+      expect(stdin.isRaw).toBe(true)
+      expect(() => {
+        if (failure === "input") stdin.emit("data", Buffer.from("x"))
+        else if (failure === "resize") stdout.emit("resize")
+        else stdin.emit("end")
+      }).not.toThrow()
+      expect(await outcome).toBeInstanceOf(Error)
+      expect(stdin.isRaw).toBe(false)
+      expect(stdin.listenerCount("data")).toBe(0)
+      expect(stdout.listenerCount("resize")).toBe(0)
+      expect(writes.join("")).toContain("\x1b[?2026l")
+      expect(writes.join("")).toContain("\x1b[?25h")
+    } finally {
+      connect.mockRestore()
+    }
+  }
+})

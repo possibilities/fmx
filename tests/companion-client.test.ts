@@ -263,3 +263,84 @@ test("an oversized frame from the daemon fails the connection", async () => {
   stub.push(Buffer.concat([output("fine"), bad]))
   expect(await reason).toMatch(/announced a 4294967295-byte payload/)
 })
+
+// Replace only socket writes to exercise failure and backpressure deterministically.
+// The connection and its lifecycle still use a real Unix socket.
+type TestTransport = {
+  socket: { write(bytes: Uint8Array): number; end(): void; terminate(): void }
+  queuedBytes: number
+  closed(reason: { kind: "peer-closed" }): void
+  receive(bytes: Uint8Array): void
+}
+const transportOf = (connection: CompanionConnection): TestTransport =>
+  (connection as unknown as { transport: TestTransport }).transport
+
+
+test("a Welcome cannot select a version outside the offer", async () => {
+  const bad = encodeFrame(Tag.Welcome, encodeWelcome({ version: 2, minVersion: 1, maxVersion: 2, capabilities: 0 }))
+  const stub = await startStub(() => bad)
+  await expect(CompanionConnection.connect(stub.path)).rejects.toThrow("outside the negotiated range")
+})
+
+test("flushed remembers unsent bytes even when called after close", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const transport = transportOf(connection)
+  const socket = transport.socket
+  transport.socket = { write: () => 0, end: () => socket.end(), terminate: () => socket.terminate() }
+  connection.write("held input")
+  transport.closed({ kind: "peer-closed" })
+  socket.terminate()
+  await expect(connection.flushed()).rejects.toThrow("unsent bytes")
+})
+
+test("socket write errors fail the transport and bound queued input", async () => {
+  for (const failure of ["throws", "negative", "blocked"]) {
+    const stub = await startStub(() => accept)
+    const connection = await CompanionConnection.connect(stub.path)
+    const transport = transportOf(connection)
+    const socket = transport.socket
+    transport.socket = {
+      write: () => {
+        if (failure === "throws") throw new Error("broken socket")
+        return failure === "negative" ? -1 : 0
+      },
+      end: () => socket.end(),
+      terminate: () => socket.terminate(),
+    }
+    expect(() => {
+      if (failure === "blocked") {
+        const chunk = new Uint8Array(1024 * 1024)
+        for (let i = 0; i < 33 && !connection.isClosed; i++) connection.write(chunk)
+      } else connection.write("hello")
+    }).toThrow()
+    expect(connection.isClosed).toBe(true)
+    expect(transport.queuedBytes).toBe(0)
+    await expect(connection.flushed()).rejects.toBeInstanceOf(Error)
+  }
+})
+
+test("output arriving before listeners is bounded without silently losing frames", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const transport = transportOf(connection)
+  const closed: string[] = []
+  connection.onClose((reason) => closed.push(reason.kind === "error" ? reason.error.message : reason.kind))
+  // Deliver one complete read synchronously: kernel packet splitting must not
+  // release the subscription grace between pieces of this boundary test.
+  transport.receive(Buffer.concat(Array.from({ length: 4097 }, () => encodeFrame(Tag.Output))))
+  expect(closed.join(" ")).toContain("backlog")
+  expect(connection.isClosed).toBe(true)
+})
+
+test("closing with undrained input finishes within the close grace", async () => {
+  const stub = await startStub(() => accept)
+  const connection = await CompanionConnection.connect(stub.path)
+  const transport = transportOf(connection)
+  const socket = transport.socket
+  transport.socket = { write: () => 0, end: () => socket.end(), terminate: () => socket.terminate() }
+  connection.write("held")
+  const flushed = connection.flushed().catch((error: Error) => error)
+  connection.close()
+  expect(await flushed).toBeInstanceOf(Error)
+})

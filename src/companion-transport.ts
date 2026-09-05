@@ -247,19 +247,28 @@ class CompanionTransport implements SessionTransport {
   }
 
   write(bytes: Uint8Array): void {
-    if (this.connection.isClosed) return
-    this.connection.write(bytes)
+    this.send(() => this.connection.write(bytes))
   }
 
   resize(size: TerminalSize): void {
-    if (this.connection.isClosed) return
-    this.connection.resize({ rows: size.rows, cols: size.cols })
+    this.send(() => this.connection.resize({ rows: size.rows, cols: size.cols }))
   }
 
   detach(): void {
     if (this.detached) return
     this.detached = true
     this.relay.stop()
-    this.connection.detach()
+    this.send(() => this.connection.detach())
+  }
+
+  private send(action: () => void): void {
+    if (this.connection.isClosed) return
+    try {
+      action()
+    } catch (error) {
+      // The connection has already reported this loss to recovery. Re-throwing
+      // it out of a render callback would also corrupt the Runtime's terminal.
+      if (!this.connection.isClosed) throw error
+    }
   }
 }
