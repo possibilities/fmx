@@ -189,6 +189,17 @@ test.skipIf(!ENABLED)(
       )
       await waitUntil(async () => (await client!.request("instance.status")).stage.cols === 100)
 
+      // A copy reaches the terminal the human sits at, wherever that is: the
+      // Runtime writes OSC 52 and the Client relays it like any other byte.
+      const copiedText = "copied over the wire ✓"
+      expect(await client.request("client.copy", { text: copiedText })).toEqual({ written: true })
+      const payload = Buffer.from(copiedText, "utf8").toString("base64")
+      await waitUntil(
+        () => output.includes("\x1b]52;") && output.includes(payload),
+        10_000,
+        () => JSON.stringify(output.slice(-400)),
+      )
+
       // The Client receives Kitty keyboard protocol from the host terminal,
       // but the focused Session receives the legacy byte it understands.
       attached.terminal?.write(new TextEncoder().encode("\x1b[99;5u"))
@@ -206,6 +217,29 @@ test.skipIf(!ENABLED)(
       // Detaching a Client never ends a Session or the Runtime.
       const afterDetach = await client.request("session.list")
       expect(afterDetach.sessions.map((session) => session.name)).toEqual(["tray"])
+
+      // Nothing of the copy is kept: a Client attaching later gets the screen
+      // through Restore and no OSC 52 with it.
+      let later = ""
+      const laterDecoder = new TextDecoder()
+      attached = Bun.spawn([...SMOLMUX_COMMAND, "attach"], {
+        cwd: ROOT,
+        env,
+        terminal: {
+          cols: 100,
+          rows: 30,
+          data: (_terminal, bytes) => {
+            later += laterDecoder.decode(bytes, { stream: true })
+          },
+        },
+      })
+      await waitUntil(() => later.includes("tray ready"), 10_000, () => JSON.stringify(later.slice(-400)))
+      await Bun.sleep(300)
+      expect(later).not.toContain("\x1b]52;")
+      attached.terminal?.write(Uint8Array.of(control("b"), "d".charCodeAt(0)))
+      expect(await attached.exited).toBe(0)
+      attached.terminal?.close()
+      attached = null
 
       // A Session that ends is reported and leaves the roster.
       await client.request("session.kill", { name: "tray" })

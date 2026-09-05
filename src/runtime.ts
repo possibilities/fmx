@@ -228,6 +228,12 @@ export class Runtime {
       }
       case "layout.get":
         return this.stage.view
+      case "client.copy": {
+        // The same path a mouse selection copy takes: the renderer writes OSC 52
+        // into the Runtime's output and every attached Client relays it.
+        const request = params as Params<"client.copy">
+        return { written: this.renderer.copyToClipboardOSC52(request.text) }
+      }
     }
   }
 

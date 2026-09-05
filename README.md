@@ -55,7 +55,7 @@ on the socket that `smolmux start` and `smolmux status` report.
 
 The methods are `instance.status`, `instance.stop`, `events.subscribe`,
 `session.create`, `session.kill`, `session.list`, `session.capture`, `session.input`,
-`layout.apply`, and `layout.get`. The events are `session.exited`,
+`layout.apply`, `layout.get`, and `client.copy`. The events are `session.exited`,
 `session.changed`, `session.state`, `layout.changed`, `stage.changed`, `theme.changed`, and
 `instance.stopping`. The full reference is [docs/api.md](docs/api.md), and
 `smolmux api` prints the same contract as JSON Schema.

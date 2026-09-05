@@ -19,6 +19,7 @@ import {
 describe("the contract", () => {
   test("is exactly the methods the design names, and no more", () => {
     expect([...METHOD_NAMES].sort()).toEqual([
+      "client.copy",
       "events.subscribe",
       "instance.status",
       "instance.stop",

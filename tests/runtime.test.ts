@@ -433,3 +433,15 @@ test("stop that cannot end a Session says so and stays up", async () => {
     await app.close()
   }
 })
+
+test("client.copy writes one OSC 52 through the renderer and keeps nothing", async () => {
+  const app = await harness()
+  try {
+    expect(await app.call<{ written: boolean }>("client.copy", { text: "copied" })).toEqual({ written: true })
+    // Nothing is stored: the status is the same Runtime as before.
+    const status = await app.call<InstanceStatus>("instance.status")
+    expect(status).toMatchObject({ name: "default", sessions: [] })
+  } finally {
+    await app.close()
+  }
+})

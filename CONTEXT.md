@@ -72,7 +72,7 @@ _Avoid_: server, daemon, host, backend.
 **Client** — one thin interactive `smolmux attach` and its physical terminal. It
 relays terminal bytes and size, samples its own background so the Runtime can
 follow it, and alone owns Detach. Several may watch and interact with the
-same Stage.
+same Stage, and `client.copy` puts text on every one's clipboard.
 _Avoid_: viewer, frontend, session, smolmux instance.
 
 **Sizing owner** — the Client that most recently connected or interacted by

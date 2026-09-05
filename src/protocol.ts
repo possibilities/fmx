@@ -345,6 +345,14 @@ export const METHODS = {
     params: empty,
     result: layoutViewSchema,
   },
+  "client.copy": {
+    description:
+      "Put text on the clipboard of the terminal every attached Client runs in, the way a mouse selection copy does: the Runtime writes one OSC 52 sequence into its output and each Client relays it to its terminal, so a copy lands where a human attached over SSH is sitting. Write-only; terminals refuse OSC 52 reads. Nothing is kept: a Client that attaches later receives nothing. `written` is false when the host terminal was detected as not supporting OSC 52.",
+    params: z
+      .object({ text: z.string().min(1).max(MAX_INPUT_PASTE).describe("What the clipboard should hold; as much as a paste") })
+      .strict(),
+    result: z.object({ written: z.boolean().describe("Whether the sequence was written; false when OSC 52 is known unsupported") }).strict(),
+  },
 } as const
 
 export type Method = keyof typeof METHODS

@@ -258,6 +258,27 @@ The Layout as fitted to the stage right now: the tree with sizes as they
 stand after drags, the focus, the stage size, the revision, and every Pane's
 rectangle in tree order.
 
+### `client.copy`
+
+Puts text on the clipboard of the terminal every attached Client runs in,
+the way a mouse selection copy does: the Runtime writes one OSC 52 sequence
+into its output and each Client relays it, unread, to its terminal. That is
+what lets a copy land where a human attached over SSH is sitting, on the
+machine their terminal is on, with nothing configured at either end.
+
+```json
+{"text":"git switch -c fix/clipboard"}
+```
+
+Returns `{ "written": true }`, or `false` when the host terminal has been
+detected as not supporting OSC 52. Nothing is kept: a Client that attaches
+later receives nothing, and one not attached now misses it. Every attached
+Client receives it. Whether the terminal honours the sequence, and how large
+a payload it accepts, is the terminal's: modern terminals allow OSC 52 writes
+by default, Terminal.app ignores them. `text` is 1 to 65,536 characters, as
+much as a paste. Write-only: there is no read, because terminals refuse OSC
+52 reads.
+
 ## Events
 
 | Event | When | Data |
@@ -301,6 +322,8 @@ read.
 - **No app, wish, or gating for a Pane.** A Pane shows a Session or a line of
   text. What a Session runs and why is the caller's.
 - **No session rename, reorder, or move.** Apply a new Layout.
+- **No clipboard read.** `client.copy` writes; terminals refuse OSC 52 reads,
+  and a program that wants what the human copied reads it where the human is.
 
 Connections carrying more than 128 concurrent requests are dropped. The bundled
 client permits 128 pending requests and 4 MiB of queued output; its default
